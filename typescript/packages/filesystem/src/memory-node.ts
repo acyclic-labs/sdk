@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
 
 import type { FsVolumeEngine, MemoryFsOptions, WasmBindings } from "./contracts.js";
-import { openMemoryFsWith } from "./memory-options.js";
+import { resolveMemoryFsOptions } from "./memory-options.js";
+import { adaptWasmFs, rustPositiveBoundValidator } from "./wasm-adapter.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
@@ -36,5 +37,8 @@ async function bindings(): Promise<WasmBindings> {
 export function openMemoryFs(): Promise<FsVolumeEngine>;
 export function openMemoryFs(options: MemoryFsOptions): Promise<FsVolumeEngine>;
 export function openMemoryFs(options?: MemoryFsOptions): Promise<FsVolumeEngine> {
-  return openMemoryFsWith(options, async (resolved) => (await bindings()).openMemoryFs(resolved));
+  return bindings().then(binding => adaptWasmFs(
+    binding.openMemoryFs(resolveMemoryFsOptions(options)),
+    rustPositiveBoundValidator(binding.validateHostedPageBound),
+  ));
 }

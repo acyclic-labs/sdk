@@ -6,14 +6,34 @@
 //! identity, byte deduplication, path heads, generation history, and bounded
 //! residency.
 
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::contract::canonical_json_digest;
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::conversation::FileDescriptor;
 use crate::conversation::{FileRef, MAX_PRIVATE_DIRECTORY_PAGE, VolumeRef, is_internal_path};
 use crate::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
+
+/// Default byte residency for an ephemeral memory conversation.
+///
+/// This belongs to the Rust content policy so native and browser hosts cannot
+/// silently drift when their thin language adapters choose defaults.
+#[allow(dead_code, reason = "exported through the WASM policy boundary")]
+pub(crate) const DEFAULT_RESIDENT_BYTES: u64 = 256 * 1024 * 1024;
+/// Default number of immutable file versions retained by an ephemeral host.
+#[allow(dead_code, reason = "exported through the WASM policy boundary")]
+pub(crate) const DEFAULT_RESIDENT_FILES: u64 = 65_536;
+
+/// Default number of retryable commands retained by a browser outbox.
+///
+/// The host owns IndexedDB I/O, while this Rust policy owns the default bound
+/// shared by browser and native facades.
+#[allow(dead_code, reason = "exported through the WASM policy boundary")]
+pub(crate) const DEFAULT_OUTBOX_COMMANDS: u64 = 1_024;
+/// Default bytes retained by a browser outbox.
+#[allow(dead_code, reason = "exported through the WASM policy boundary")]
+pub(crate) const DEFAULT_OUTBOX_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 struct StoredFile {
@@ -90,7 +110,7 @@ impl MemoryStore {
         })
     }
 
-    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub(crate) fn stage(
         &mut self,
         path: &str,
@@ -241,7 +261,7 @@ impl MemoryStore {
         Ok(stored.bytes.to_vec())
     }
 
-    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn has(&self, file: &FileRef) -> Result<bool> {
         file.validate()?;
         if file.volume() != &self.volume {

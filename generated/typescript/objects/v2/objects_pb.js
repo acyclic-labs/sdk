@@ -270,6 +270,8 @@ export const ObjectsLimitSchema = /*@__PURE__*/
   enumDesc(file_objects_v2_objects, 0);
 
 /**
+ * Fixed protocol limits for Objects operations.
+ *
  * @generated from enum acyclic.objects.v2.ObjectsLimit
  */
 export const ObjectsLimit = /*@__PURE__*/
@@ -282,25 +284,34 @@ export const ErrorCodeSchema = /*@__PURE__*/
   enumDesc(file_objects_v2_objects, 1);
 
 /**
+ * Stable customer-visible error categories returned by Objects services.
+ *
  * @generated from enum acyclic.objects.v2.ErrorCode
  */
 export const ErrorCode = /*@__PURE__*/
   tsEnum(ErrorCodeSchema);
 
 /**
+ * Creates, inspects, and deletes logical object buckets.
+ *
  * @generated from service acyclic.objects.v2.BucketsService
  */
 export const BucketsService = /*@__PURE__*/
   serviceDesc(file_objects_v2_objects, 0);
 
 /**
+ * Publishes, reads, lists, and deletes logical objects.
+ *
  * @generated from service acyclic.objects.v2.ObjectsService
  */
 export const ObjectsService = /*@__PURE__*/
   serviceDesc(file_objects_v2_objects, 1);
 
 /**
+ * Stages and publishes multipart object uploads.
+ *
  * @generated from service acyclic.objects.v2.MultipartService
  */
 export const MultipartService = /*@__PURE__*/
   serviceDesc(file_objects_v2_objects, 2);
+

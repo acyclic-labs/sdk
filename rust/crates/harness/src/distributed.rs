@@ -1,5 +1,6 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
+use crate::BoxFuture;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
@@ -16,8 +17,10 @@ use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
     StreamClient, StreamError, StreamProvider,
 };
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use bytes::Bytes;
-use futures::{TryStreamExt as _, future::BoxFuture};
+use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -316,6 +319,25 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         };
         value.refresh().await?;
         Ok(value)
+    }
+
+    /// Opens a coordinator backed by the canonical Rust local journal.
+    ///
+    /// The returned coordinator owns the provider and its lock. Dropping it
+    /// closes the journal; a later call with the same root replays the exact
+    /// committed history, which is the process-restart composition used by
+    /// durable Harness hosts.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn open_local(
+        root: impl AsRef<std::path::Path>,
+        limits: LocalStreamLimits,
+        content_verifier: Arc<dyn ContentResidencyVerifier>,
+    ) -> Result<DistributedCoordinator<LocalStream>> {
+        let provider = LocalStream::open(root, limits)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let client = StreamClient::new(Arc::new(provider));
+        DistributedCoordinator::open(&client, content_verifier).await
     }
 
     /// Replays commits made by other coordinator instances from the exact
@@ -1221,8 +1243,8 @@ mod tests {
         })
     }
 
-    async fn declare(
-        coordinator: &mut DistributedCoordinator<MemoryStream>,
+    async fn declare<P: StreamProvider>(
+        coordinator: &mut DistributedCoordinator<P>,
         spec: OperationSpec,
         key: &str,
     ) -> Result<CoordinatorApply> {
@@ -1287,6 +1309,34 @@ mod tests {
             declare(&mut reopened, spec(operation_id, 0)?, "valid-state").await?,
             CoordinatorApply::Replayed
         );
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn local_coordinator_reopens_after_process_style_drop() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let operation_id = OperationId::from_bytes([53; 16]);
+        let verifier: Arc<dyn ContentResidencyVerifier> = Arc::new(TestContentVerifier);
+        let mut coordinator = DistributedCoordinator::<acyclic_stream::LocalStream>::open_local(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+            verifier.clone(),
+        )
+        .await?;
+        assert_eq!(
+            declare(&mut coordinator, spec(operation_id, 0)?, "local-reopen").await?,
+            CoordinatorApply::Applied
+        );
+        drop(coordinator);
+
+        let reopened = DistributedCoordinator::<acyclic_stream::LocalStream>::open_local(
+            directory.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+            verifier,
+        )
+        .await?;
+        assert!(reopened.scheduler().operation(operation_id).is_some());
         Ok(())
     }
 

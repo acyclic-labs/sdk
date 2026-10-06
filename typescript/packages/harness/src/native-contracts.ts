@@ -31,6 +31,23 @@ export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
 
+/** Rust-owned retry schedule; the host supplies only the timer and token. */
+export interface HarnessReplayBackoff {
+  readonly delayMs: number;
+  readonly nextAttempt: number;
+}
+
+/** Rust-owned replay transitions; hosts only dispatch and persist them. */
+export interface HarnessReplayAcknowledgement<Cursor> {
+  readonly operationId: string;
+  readonly cursor: Cursor;
+}
+
+export interface HarnessReplayReconciliation<Cursor> {
+  readonly cursor: Cursor;
+  readonly acknowledgements: readonly HarnessReplayAcknowledgement<Cursor>[];
+}
+
 /** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
 export interface ExecutionPlacementWire {
   readonly provider: MachineIdentityWire;
@@ -483,6 +500,51 @@ export class NativeContracts {
     if (digest.byteLength !== 32) throw new TypeError("native canonical digest has an invalid length");
     return digest;
   }
+
+  /** Admit a retryable command through the Rust-owned outbox policy. */
+  validateOfflineCommand<Command>(value: Command): Command {
+    return this.native.validateOfflineCommand(value) as Command;
+  }
+
+  /** Validate replay generation, authority, and cursor continuity in Rust. */
+  validateReplayDelivery<Cursor, Delivery>(previous: Cursor | null, delivery: Delivery): Cursor {
+    return this.native.validateReplayDelivery(previous, delivery) as Cursor;
+  }
+
+  harnessReplayBackoff(attempt: number): HarnessReplayBackoff {
+    const projected = this.native.harnessReplayBackoff(attempt) as {
+      readonly delayMs: number | bigint;
+      readonly nextAttempt: number | bigint;
+    };
+    const delayMs = typeof projected.delayMs === "bigint" ? Number(projected.delayMs) : projected.delayMs;
+    const nextAttempt = typeof projected.nextAttempt === "bigint" ? Number(projected.nextAttempt) : projected.nextAttempt;
+    if (!Number.isSafeInteger(delayMs) || !Number.isSafeInteger(nextAttempt)) {
+      throw new RangeError("Rust replay backoff projection exceeds JavaScript limits");
+    }
+    return { delayMs, nextAttempt };
+  }
+
+  reconcileReplayDelivery<Cursor, Delivery>(
+    previous: Cursor | null,
+    delivery: Delivery,
+  ): HarnessReplayReconciliation<Cursor> {
+    return this.native.reconcileReplayDelivery(previous, delivery) as HarnessReplayReconciliation<Cursor>;
+  }
+
+  /** Rust-owned defaults for durable browser outbox capacity. */
+  harnessDefaultOutboxCommands(): number {
+    return safePolicyNumber(this.native.harnessDefaultOutboxCommands(), "outbox command limit");
+  }
+
+  harnessDefaultOutboxBytes(): number {
+    return safePolicyNumber(this.native.harnessDefaultOutboxBytes(), "outbox byte limit");
+  }
+}
+
+function safePolicyNumber(value: number | bigint, label: string): number {
+  const number = typeof value === "bigint" ? Number(value) : value;
+  if (!Number.isSafeInteger(number) || number <= 0) throw new RangeError(`Rust ${label} is invalid`);
+  return number;
 }
 
 /** Strip executable parser/handler members before crossing the serde WASM ABI. */

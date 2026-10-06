@@ -1,7 +1,7 @@
 //! Code-first agent behavior over the same typed task context as tools and tasks.
 
 use crate::{Outcome, Result, conversation::Attachment, runtime::TaskContext};
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -54,7 +54,7 @@ impl AgentOutput {
 
 /// Replaceable live behavior. Durable loops implement the separate resumable
 /// task machine contract; this future is never claimed to survive host loss.
-pub trait AgentLoop: Send + Sync {
+pub trait AgentLoop: crate::PlatformServiceBounds {
     /// Runs with the same scoped model, context, tool, task, interaction, and
     /// file operations that application-authored tasks receive.
     fn run(

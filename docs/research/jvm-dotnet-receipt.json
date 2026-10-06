@@ -1,0 +1,611 @@
+{
+  "schema": "acyclic.sdk.binding-receipt.v1",
+  "status": "pass",
+  "source": {
+    "authority": "rust",
+    "manifest": "staged-jvm-dotnet-evidence/authority/rust-authority.json",
+    "manifest_sha256": "3A56DB31E27584B49A7410342B03AD3F40CFFAD8CA9E9BF4746C25F643025D37",
+    "source_revision": "d91f4e0dde99c6a86fe3220ff494edc8eb7e7171d2e90114eec1d2aa7978e2d7",
+    "exporter_sha256": "8e4a73a9c609abf100f395fc9b8a0d18d2902dc8ea158025cf565298795bd47f",
+    "families": [
+      {
+        "name": "actors/v1",
+        "source_sha256": "6456ad6c501f483be06779392118f4b16a06f42eeda9674c90d7a54f077e68ab",
+        "descriptor_sha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf"
+      },
+      {
+        "name": "stream/v2",
+        "source_sha256": "3047fe47eb65dc734298f907a02184c67147febd6bfd85b13fa3a6243608f578",
+        "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c"
+      },
+      {
+        "name": "objects/v2",
+        "source_sha256": "a53adbb89d6cb05bb0fdd45af77d7f24c632dac885f749b0bd359706e9496fcf",
+        "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f"
+      },
+      {
+        "name": "workers/v1",
+        "source_sha256": "82a917655bb8b7c8a94b764b8ae876a5a3ec14f790fa4d70841257798d574193",
+        "descriptor_sha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128"
+      },
+      {
+        "name": "filesystem/v2",
+        "source_sha256": "eb71fce3dd8dc65f9a6494d993601565b7ffce75667932ccf90b8b05708609ef",
+        "descriptor_sha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1"
+      },
+      {
+        "name": "harness/v2",
+        "source_sha256": "7325b68fe8f493b957c027aa13602137f53cf1f70358b19eef8cabbaf141e876",
+        "descriptor_sha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e"
+      },
+      {
+        "name": "protocol/v1",
+        "source_sha256": "e9b3abd5386a875799cfedaf0245998724bc3f5e48a4c6dd43f05c0539262497",
+        "descriptor_sha256": "ce697a9dede342fa869397ca984dd148d6c6375d33a0a633483615a506398660"
+      },
+      {
+        "name": "inference/v1",
+        "source_sha256": "de2a9b3895b94e94c4ac44c5b278bee47133bac4a91091f8eaf5f3c30e55567e",
+        "descriptor_sha256": "2dc76c646796f90a69f037a46df8945633593a22301b88847b52b17d219e6682"
+      },
+      {
+        "name": "machines/v1",
+        "source_sha256": "4c293693004f5b430c9706cc6f13eaa2cac1f593a698d52fce5c50deae37e0fc",
+        "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7"
+      }
+    ],
+    "proto_inputs": 10,
+    "source_descriptor_pairs_verified": 9,
+    "examples_renderer": {
+      "source": "rust/crates/sdk-examples/src/lib.rs",
+      "source_sha256": "2C14631A894FB6D0522364977F99A1580DD043D741C7DA4FCDBA755397540F09",
+      "bundle_manifest": "staged-jvm-dotnet-evidence/examples/sdk-examples-manifest.json",
+      "bundle_manifest_sha256": "43A8B872B7B4357D979D805EA50B36E99184FD8DB72D548B3557874B8DA787BB",
+      "scenario_ids": [
+        "actors-create-roundtrip",
+        "stream-append-read"
+      ],
+      "languages": [
+        "java",
+        "csharp"
+      ],
+      "tool_binary_staged": false,
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d"
+    },
+    "examples_renderer_current": {
+      "source": "rust/crates/sdk-examples",
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "source_file_sha256": "5C90AEC378D705506B0EB471D10BE6BE7ADC90B1273BF748B0B4A5F7827D55C5",
+      "bundle_manifest": "staged-jvm-dotnet-evidence/examples-current/sdk-examples-manifest.json",
+      "bundle_manifest_sha256": "C39461CA65B9301636721528631CFC1F976B800C512E11B10FBA90B30E805AFB",
+      "scenario_ids": [
+        "actors-create-roundtrip",
+        "stream-append-read"
+      ],
+      "languages": [
+        "java",
+        "csharp"
+      ],
+      "tool_binary_staged": false,
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d"
+    }
+  },
+  "contract": {
+    "transport": "protobuf/grpc",
+    "validation_options": "validation/v1/options.proto",
+    "wire_identity": "preserved",
+    "fixture_endpoint": "127.0.0.1:54837",
+    "fixture_source": "rust/crates/sdk-examples/src/lib.rs",
+    "fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4",
+    "fixture_source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d",
+    "fixture_source_closure": {
+      "status": "current-source-identified; fixture rebuild blocked by NUL-corrupted dependency build scripts",
+      "sha256": "F27B9DA485C80008D66DE1C4EE65B0B6EDCA14632D0DDF0AAD0E0A8F744706CA",
+      "hash_algorithm": "sha256(path NUL file_bytes NUL for each path in order)",
+      "files": [
+        "rust/crates/sdk-examples/src/lib.rs",
+        "rust/crates/sdk-examples/src/filesystem_scenarios.rs",
+        "rust/crates/sdk-examples/src/harness_scenarios.rs",
+        "rust/crates/sdk-examples/src/inference_scenarios.rs",
+        "rust/crates/sdk-examples/src/machines_scenarios.rs",
+        "rust/crates/sdk-examples/src/objects_scenarios.rs",
+        "rust/crates/sdk-examples/src/workers_scenarios.rs",
+        "rust/crates/sdk-examples/src/bin/fixture-server.rs",
+        "rust/crates/sdk-examples/build.rs",
+        "rust/crates/sdk-examples/Cargo.toml",
+        "rust/crates/sdk-examples/Cargo.lock"
+      ],
+      "renderer_only_file_excluded": "rust/crates/sdk-examples/src/main.rs",
+      "build_check": "cargo check --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server --offline",
+      "build_blocker": "rust/crates/machines/build.rs and rust/crates/inference/build.rs contain NUL bytes"
+    },
+    "fixture_operations": [
+      "Actors CreateActor unary",
+      "Stream Append unary commit",
+      "Stream Append idempotency replay",
+      "Stream InspectIdempotency observation",
+      "Stream Append idempotency mismatch rejection",
+      "Stream Read server-stream cancellation",
+      "Stream Follow replay cancellation",
+      "Stream Append resume at if_tail boundary",
+      "Stream Read resumed record",
+      "client cancellation"
+    ],
+    "golden_fixture": {
+      "schema": "acyclic.sdk.cross-language-fixtures.v1",
+      "path": "staged-jvm-dotnet-evidence/golden/tmp-cross-language-family-fixtures.json",
+      "sha256": "B5D9401A427FF477BE0B2A611DF66D4B755AEC519976F38C244BBC302AEEABE0",
+      "families": 9,
+      "source_authority_manifest_sha256": "3A56DB31E27584B49A7410342B03AD3F40CFFAD8CA9E9BF4746C25F643025D37"
+    },
+    "rendered_scenarios": {
+      "ids": [
+        "actors-create-roundtrip",
+        "stream-append-read"
+      ],
+      "families": [
+        "actors/v1",
+        "stream/v2"
+      ],
+      "transport": "live Rust gRPC fixture",
+      "source_bound": true
+    },
+    "rendered_scenarios_current": {
+      "ids": [
+        "actors-create-roundtrip",
+        "stream-append-read"
+      ],
+      "families": [
+        "actors/v1",
+        "stream/v2"
+      ],
+      "transport": "live Rust gRPC fixture",
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4",
+      "fixture_source_closure_sha256": "F27B9DA485C80008D66DE1C4EE65B0B6EDCA14632D0DDF0AAD0E0A8F744706CA",
+      "source_bound": true,
+      "fixture_source_matches_current_renderer": false,
+      "fixture_source_current_build": "blocked-by-dependency-source-corruption"
+    }
+  },
+  "artifacts": {
+    "jvm_jar": {
+      "path": "staged-jvm-dotnet-evidence/jvm/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+      "sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F",
+      "reproducible_second_build": "staged-jvm-dotnet-evidence/jvm-second/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"
+    },
+    "dotnet_nupkg": {
+      "path": "staged-jvm-dotnet-evidence/dotnet/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+      "sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891",
+      "reproducible_second_build": "staged-jvm-dotnet-evidence/dotnet-second/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg"
+    },
+    "cross_language_fixture": {
+      "path": "staged-jvm-dotnet-evidence/golden/tmp-cross-language-family-fixtures.json",
+      "sha256": "B5D9401A427FF477BE0B2A611DF66D4B755AEC519976F38C244BBC302AEEABE0",
+      "families": 9
+    },
+    "adapter_integrity": {
+      "script": "staged-jvm-dotnet-evidence/adaptation/adapt-generated-harness.ps1",
+      "script_sha256": "D7E076392B6A7482C1B34EDD62E2F3EEAA4767B73E8D3F83238EDB4BABA3D577",
+      "generated_source": "staged-jvm-dotnet-evidence/adaptation/Harness.java",
+      "generated_source_sha256": "EBB8147877E566EA7551D5CCC5FC1DA3D9F01C2D671AC5C73F78D925B3595806",
+      "second_generated_source": "staged-jvm-dotnet-evidence/adaptation/Harness.second.java",
+      "second_generated_source_sha256": "EBB8147877E566EA7551D5CCC5FC1DA3D9F01C2D671AC5C73F78D925B3595806",
+      "repeatable": true,
+      "negative_mutation": {
+        "script": "staged-jvm-dotnet-evidence/adaptation/verify-harness-adapter-negative.ps1",
+        "script_sha256": "B72752D9ACDFCCA301E71B955E4D624DEDAF8AE8BB4832265619EDF91DA2BC47",
+        "result": "pass: mutated FieldAccessorTable marker rejected",
+        "reflection_wire_test": "pass: descriptor field 4, JSON name descriptor, static reflection lookup, parse/serialize round-trip"
+      }
+    },
+    "staged_reports": {
+      "jvm": "staged-jvm-dotnet-evidence/reports/jvm-full-maven.xml",
+      "java": "staged-jvm-dotnet-evidence/reports/java-installed-consumer.xml",
+      "kotlin": "staged-jvm-dotnet-evidence/reports/kotlin-installed-consumer.xml",
+      "dotnet": "staged-jvm-dotnet-evidence/reports/dotnet-installed-consumer.txt",
+      "fixture_source_bound_jvm": "staged-jvm-dotnet-evidence/reports/jvm-full-maven.xml",
+      "fixture_source_bound_dotnet": "staged-jvm-dotnet-evidence/reports/dotnet-installed-consumer.txt"
+      ,"rendered_current": "staged-jvm-dotnet-evidence/reports/rendered-snippets-current.txt"
+    },
+    "authority_export": {
+      "root": "staged-jvm-dotnet-evidence/authority",
+      "manifest": "staged-jvm-dotnet-evidence/authority/rust-authority.json",
+      "manifest_sha256": "3A56DB31E27584B49A7410342B03AD3F40CFFAD8CA9E9BF4746C25F643025D37",
+      "families": 9,
+      "source_descriptor_pairs_verified": 9
+    },
+    "rendered_examples": {
+      "manifest": "staged-jvm-dotnet-evidence/examples/sdk-examples-manifest.json",
+      "manifest_sha256": "43A8B872B7B4357D979D805EA50B36E99184FD8DB72D548B3557874B8DA787BB",
+      "source_sha256": "2C14631A894FB6D0522364977F99A1580DD043D741C7DA4FCDBA755397540F09",
+      "snippets": [
+        "staged-jvm-dotnet-evidence/examples/snippets/actors-create-roundtrip/java.java",
+        "staged-jvm-dotnet-evidence/examples/snippets/actors-create-roundtrip/csharp.cs",
+        "staged-jvm-dotnet-evidence/examples/snippets/stream-append-read/java.java",
+        "staged-jvm-dotnet-evidence/examples/snippets/stream-append-read/csharp.cs"
+      ],
+      "tool_binary_staged": false,
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d"
+    },
+    "rendered_examples_current": {
+      "manifest": "staged-jvm-dotnet-evidence/examples-current/sdk-examples-manifest.json",
+      "manifest_sha256": "C39461CA65B9301636721528631CFC1F976B800C512E11B10FBA90B30E805AFB",
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "source_file_sha256": "5C90AEC378D705506B0EB471D10BE6BE7ADC90B1273BF748B0B4A5F7827D55C5",
+      "snippet_execution_report": "staged-jvm-dotnet-evidence/reports/rendered-snippets-current.txt",
+      "snippets": [
+        "staged-jvm-dotnet-evidence/examples-current/snippets/actors-create-roundtrip/java.java",
+        "staged-jvm-dotnet-evidence/examples-current/snippets/actors-create-roundtrip/csharp.cs",
+        "staged-jvm-dotnet-evidence/examples-current/snippets/stream-append-read/java.java",
+        "staged-jvm-dotnet-evidence/examples-current/snippets/stream-append-read/csharp.cs"
+      ],
+      "tool_binary_staged": false,
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d"
+    }
+  },
+  "suites": [
+    {
+      "name": "jvm-full-maven",
+      "result": "pass",
+      "tests": 5,
+      "artifact": "jvm_jar",
+      "report": "staged-jvm-dotnet-evidence/reports/jvm-full-maven.xml",
+      "assertions": [
+        "uint64 round-trip",
+        "oneof presence",
+        "all 9 Rust golden messages parse and serialize byte-identically",
+        "Harness reflection and serialized round-trip",
+        "in-process stream cancellation",
+        "source-matched live Actors/Stream fixture: unary, idempotency replay/inspection/mismatch, read/follow cancellation, and resumed read boundary"
+      ]
+    },
+    {
+      "name": "java-installed-consumer",
+      "result": "pass",
+      "tests": 1,
+      "artifact": "jvm_jar",
+      "report": "staged-jvm-dotnet-evidence/reports/java-installed-consumer.xml",
+      "assertions": [
+        "clean installed Maven artifact",
+        "Actors and Stream generated types",
+        "uint64 consumer values"
+      ]
+    },
+    {
+      "name": "kotlin-installed-consumer",
+      "result": "pass",
+      "tests": 3,
+      "artifact": "jvm_jar",
+      "report": "staged-jvm-dotnet-evidence/reports/kotlin-installed-consumer.xml",
+      "assertions": [
+        "installed Maven artifact",
+        "all 9 Rust golden messages parse and serialize byte-identically",
+        "coroutine unary and stream collection",
+        "live fixture cancellation when endpoint is set"
+      ]
+    },
+    {
+      "name": "dotnet-installed-consumer",
+      "result": "pass",
+      "tests": 1,
+      "artifact": "dotnet_nupkg",
+      "assertions": [
+        "clean local NuGet install",
+        "all 9 Rust golden messages parse and serialize byte-identically",
+        "uint64 and oneof",
+        "source-matched live Actors/Stream unary, idempotency replay/inspection/mismatch, read/follow cancellation, and resumed read boundary"
+      ],
+      "report": "staged-jvm-dotnet-evidence/reports/dotnet-installed-consumer.txt"
+    },
+    {
+      "name": "java-rendered-scenarios",
+      "result": "pass",
+      "tests": 2,
+      "artifact": "jvm_jar",
+      "report": "staged-jvm-dotnet-evidence/reports/rendered-snippets.txt",
+      "assertions": [
+        "Rust-rendered Actors Java snippet compiled against installed JAR and executed live unary",
+        "Rust-rendered Stream Java snippet compiled against installed JAR and executed live append/read"
+      ]
+    },
+    {
+      "name": "dotnet-rendered-scenarios",
+      "result": "pass",
+      "tests": 2,
+      "artifact": "dotnet_nupkg",
+      "report": "staged-jvm-dotnet-evidence/reports/rendered-snippets.txt",
+      "assertions": [
+        "Rust-rendered Actors C# snippet compiled against installed nupkg and executed live unary",
+        "Rust-rendered Stream C# snippet compiled against installed nupkg and executed live append/read"
+      ]
+    },
+    {
+      "name": "java-rendered-scenarios-current-source",
+      "result": "pass",
+      "tests": 2,
+      "artifact": "jvm_jar",
+      "report": "staged-jvm-dotnet-evidence/reports/rendered-snippets-current.txt",
+      "assertions": [
+        "current-source Actors Java snippet compiled against installed JAR and executed live unary",
+        "current-source Stream Java snippet compiled against installed JAR and executed live append/read"
+      ],
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4"
+    },
+    {
+      "name": "dotnet-rendered-scenarios-current-source",
+      "result": "pass",
+      "tests": 2,
+      "artifact": "dotnet_nupkg",
+      "report": "staged-jvm-dotnet-evidence/reports/rendered-snippets-current.txt",
+      "assertions": [
+        "current-source Actors C# snippet compiled against installed nupkg and executed live unary",
+        "current-source Stream C# snippet compiled against installed nupkg and executed live append/read"
+      ],
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4"
+    }
+  ],
+  "coverage": {
+    "bindings": {
+      "jvm_java": {
+        "authority_families_enumerated": 9,
+        "proto_inputs_generated": 10,
+        "generated_and_compiled": 9,
+        "installed_artifact": "pass"
+      },
+      "kotlin": {
+        "authority_families_enumerated": 9,
+        "proto_inputs_generated": 10,
+        "generated_and_compiled": 9,
+        "installed_artifact": "pass"
+      },
+      "dotnet": {
+        "authority_families_enumerated": 9,
+        "proto_inputs_generated": 10,
+        "generated_and_compiled": 9,
+        "installed_artifact": "pass"
+      }
+    },
+    "executed_transport": {
+      "families": [
+        "actors/v1",
+        "stream/v2"
+      ],
+      "operations": [
+        "Actors CreateActor unary",
+        "Stream Append unary commit",
+        "Stream Append idempotency replay",
+        "Stream InspectIdempotency observation",
+        "Stream Append idempotency mismatch rejection",
+        "Stream Read server-stream cancellation",
+        "Stream Follow replay cancellation",
+        "Stream Append resume at if_tail boundary",
+        "Stream Read resumed record",
+        "client cancellation"
+      ],
+      "jvm_java": "pass",
+      "kotlin": "pass",
+      "dotnet": "pass"
+    },
+    "offline_assertions": {
+      "jvm_java": [
+        "uint64",
+        "oneof",
+        "in-process cancellation",
+        "Harness reflection and serialization"
+      ],
+      "kotlin": [
+        "installed coroutine stubs",
+        "uint64"
+      ],
+      "dotnet": [
+        "uint64",
+        "oneof",
+        "cancellation token"
+      ]
+    },
+    "golden_serialization": {
+      "fixture": "staged-jvm-dotnet-evidence/golden/tmp-cross-language-family-fixtures.json",
+      "fixture_sha256": "B5D9401A427FF477BE0B2A611DF66D4B755AEC519976F38C244BBC302AEEABE0",
+      "families": 9,
+      "jvm_java": "pass",
+      "dotnet": "pass",
+      "kotlin": "pass"
+    },
+    "rendered_snippets": {
+      "source": "rust/crates/sdk-examples/src/lib.rs",
+      "source_sha256": "2C14631A894FB6D0522364977F99A1580DD043D741C7DA4FCDBA755397540F09",
+      "scenarios": 2,
+      "java": "pass: compile and execute",
+      "kotlin": "pass: installed generated coroutine consumer exercises same Actors/Stream APIs",
+      "dotnet": "pass: compile and execute",
+      "renderer_bundle_sha256": "43A8B872B7B4357D979D805EA50B36E99184FD8DB72D548B3557874B8DA787BB",
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d"
+    },
+    "rendered_snippets_current": {
+      "source": "rust/crates/sdk-examples",
+      "source_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+      "scenarios": 2,
+      "java": "pass: compile and execute",
+      "dotnet": "pass: compile and execute",
+      "renderer_bundle_sha256": "C39461CA65B9301636721528631CFC1F976B800C512E11B10FBA90B30E805AFB",
+      "fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4",
+      "fixture_source_closure_sha256": "F27B9DA485C80008D66DE1C4EE65B0B6EDCA14632D0DDF0AAD0E0A8F744706CA",
+      "source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d",
+      "fixture_source_matches_current_renderer": false,
+      "fixture_source_current_build": "blocked-by-dependency-source-corruption"
+    },
+    "portable_artifact_identity": {
+      "schema": "acyclic.sdk.jvm-dotnet.portable-artifact-identity.v1",
+      "source_identity": {
+        "recorded_fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4",
+        "recorded_fixture_source_revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d",
+        "recorded_fixture_source_closure_sha256": "F27B9DA485C80008D66DE1C4EE65B0B6EDCA14632D0DDF0AAD0E0A8F744706CA",
+        "current_renderer_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+        "current_fixture_matches_renderer": false,
+        "current_fixture_build": "blocked-by-dependency-source-corruption"
+      },
+      "artifacts": {
+        "jvm": {
+          "package": "dev.acyclic:acyclic-sdk-jvm-transport",
+          "version": "0.2.0-SNAPSHOT",
+          "path": "staged-jvm-dotnet-evidence/portable-20261003/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+          "sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F"
+        },
+        "dotnet": {
+          "package": "Acyclic.Sdk.Transport",
+          "version": "0.2.0-alpha.1",
+          "path": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+          "sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891"
+        }
+      },
+      "portable_receipt": {
+        "path": "staged-jvm-dotnet-evidence/portable-20261003/PORTABLE-RECEIPT.txt",
+        "sha256": "F78E7EB4C6D4F930B5EC4547C8315696005652F0E99BDB0FB9A1C1E89212F443"
+      },
+      "consumers": {
+        "java": {
+          "exact_consumer": "jvm/consumer/src/test/java/dev/acyclic/consumer/TransportConsumerTest.java",
+          "exact_consumer_sha256": "FD46AA3F1B3E9F81E55084A544DFB46A034E1E2742E384C41DC96C204C56E926",
+          "locked_dependencies": {
+            "pom": "jvm/consumer/pom.xml",
+            "pom_sha256": "4E5E832C6DBC2804D5FB1ECF62AA0FBC7687AAC8433C39787DDAAFC86BEC8657"
+          },
+          "output": {
+            "receipt": "staged-jvm-dotnet-evidence/reports/java-installed-consumer.xml",
+            "receipt_sha256": "56FFF33C8F0DB365B95C2CF24CFBB0122349A2F50906F8AB97EC1E2C6D571D0F"
+          }
+        },
+        "kotlin": {
+          "exact_consumer": "staged-jvm-dotnet-evidence/portable-20261003/consumer/KotlinTransportConsumerTest.kt",
+          "exact_consumer_sha256": "1413140D1832A1044CF3B3C9C6948003A3D158098EEC8A4AF7BD32524698DFAA",
+          "locked_dependencies": {
+            "pom": "staged-jvm-dotnet-evidence/portable-20261003/consumer/kotlin-consumer-pom.xml",
+            "pom_sha256": "AAF8601F8548912DE50B973E8E079305C4DB12FFCC80B5683F885B053C00C5AC",
+            "bootstrap_settings": "staged-jvm-dotnet-evidence/portable-20261003/lock/maven-settings.xml",
+            "bootstrap_settings_sha256": "8DBB264565A0CBB117076F993412C080B33031E3751BABE688A7F515772AC8A",
+            "bootstrap_coordinate": "org.jetbrains.kotlin:kotlin-test-junit5:2.1.21",
+            "bootstrap_sha256": "3C8099D9850475C08EB761FD6A0B704EB3D908EE546DE997858C59AF26F88208"
+          },
+          "output": {
+            "receipt": "staged-jvm-dotnet-evidence/portable-20261003/output/TEST-dev.acyclic.consumer.KotlinTransportConsumerTest.xml",
+            "receipt_sha256": "E0C14C8C000B8EC6D25FA0D75DB6AD899AF82791B72DD4E56B6A686F17FE09E0",
+            "structured_receipt": "staged-jvm-dotnet-evidence/reports/kotlin-installed-consumer-receipt-20261003.json",
+            "structured_receipt_sha256": "FEF8279A3EA72A65FC74BC3E5A4C1E1BD923F87CF3205D710FEA2AF223750AD5",
+            "tests": 5,
+            "failures": 0,
+            "errors": 0
+          }
+        },
+        "dotnet": {
+          "exact_consumer": "dotnet/consumer/Program.cs",
+          "exact_consumer_sha256": "52F357123D31CEE3E3A4A51EDB6FCDA59FE7A3E28BEB17306C12A0BDB2D07CA1",
+          "locked_dependencies": {
+            "project": "dotnet/consumer/Acyclic.Sdk.Transport.Consumer.csproj",
+            "project_sha256": "7BB8DCFDB20F176308CC833E84C8249CBC579AAE48E6032D1C54C0D2221A93FC",
+            "nuget_config": "dotnet/consumer/NuGet.Config",
+            "nuget_config_sha256": "2C485E00BB4CA791C2185993C3E15E1E26E9DB886BA189894DF80215A0BE6A5F",
+            "assets_lock": "dotnet/consumer/obj/project.assets.json",
+            "assets_lock_sha256": "45198E686029FD745D1C2D2B33B1632BB1A9AF56ECAFB8F472B67F2BE049AC33"
+          },
+          "output": {
+            "receipt": "staged-jvm-dotnet-evidence/reports/dotnet-installed-consumer.txt",
+            "receipt_sha256": "798D33D6B25E151CA4B7485BCAEB6BA252AE4DEE0D0109BA3D29467032A667FF",
+            "consumer_binary": "dotnet/consumer/bin/Debug/net8.0/Acyclic.Sdk.Transport.Consumer.dll",
+            "consumer_binary_sha256": "887AA6156E29A38C23E308E500013D5342FB7D9766A46171B0CF8D19DCA79FBE"
+          }
+        }
+      },
+      "qualification": "Portable package and installed-consumer evidence is source-neutral; current rendered-snippet and current-fixture qualification remain unclaimed until the examples producer supplies an immutable source window."
+    },
+    "installed_consumer_scope": {
+      "executed": {
+        "jvm_java": [
+          "clean installed-consumer compile and generated Actors/Stream API assertions",
+          "recorded JVM transport and nine-family golden checks in the staged reports"
+        ],
+        "kotlin": [
+          "nine-family golden parse and byte round-trip",
+          "generated unary and server-stream coroutine stub presence",
+          "uint64 boundary and installed coroutine consumer checks",
+          "optional presence and Actors oneof selection",
+          "FAILED_PRECONDITION idempotency_mismatch status and detail through an in-process service",
+          "in-process Stream append recovery at if_tail and server-stream cancellation",
+          "optional fixture unary/stream/cancellation probe is guarded by ACYCLIC_FIXTURE_ENDPOINT"
+        ],
+        "dotnet": [
+          "nine-family golden parse and byte round-trip",
+          "uint64, oneof, generated unary and server-stream API checks",
+          "cancellation token path",
+          "optional fixture Actors/Stream idempotency, mismatch, cancellation, follow, and resume probes are guarded by ACYCLIC_FIXTURE_ENDPOINT"
+        ]
+      },
+      "unexecuted": [
+        "live server execution for objects, workers, filesystem, harness, machines, inference, and protocol",
+        "current-source live fixture execution while the current examples closure remains source-stale",
+        "Kotlin exact rendered current snippets against the current fixture",
+        "transport error-status mapping across every authority family",
+        "presence and optional-field matrix across every authority family",
+        "stream append/read/follow/recovery across non-Stream services",
+        "idempotency and mismatch behavior for non-Stream services",
+        "clean-machine restore and install from an external dependency cache"
+      ],
+      "evidence_boundary": "The Kotlin result is a five-test installed-package check and does not broaden rendered-snippet or live-fixture qualification.",
+      "boundary_resolution": {
+        "live_non_stream_families": {
+          "status": "unavailable",
+          "evidence": "staged-jvm-dotnet-evidence/reports/fixture-service-availability-20261003.json",
+          "evidence_sha256": "41C6E004804A0ABDB7981B9A78409E21D5DC857EB44C83B717E0950A5FE73F1D",
+          "detail": "The retained fixture endpoint refused availability; no live operation is claimed for the seven non-Stream families."
+        },
+        "current_source_live_fixture": {
+          "status": "blocked",
+          "detail": "Current renderer and retained fixture source closures do not match, and the current fixture rebuild remains blocked by dependency source corruption."
+        },
+        "kotlin_current_rendered_snippets": {
+          "status": "pending_immutable_bundle",
+          "detail": "The Kotlin installed consumer is qualified against the portable package; exact current rendered snippets wait for the examples producer's immutable dependency closure."
+        },
+        "error_status_mapping": {
+          "status": "partial_installed_package_coverage",
+          "covered": ["Kotlin Stream FAILED_PRECONDITION idempotency_mismatch status and detail"],
+          "remaining": "No service implementation is available for a complete all-family live error matrix."
+        },
+        "presence_optional_matrix": {
+          "status": "partial_installed_package_coverage",
+          "covered": ["Kotlin Stream optional presence", "Kotlin Actors oneof selection", "all-nine-family golden parse and byte round-trip"],
+          "remaining": "A complete presence matrix for every field in every family is not claimed."
+        },
+        "stream_operations_non_stream_families": {
+          "status": "inapplicable",
+          "detail": "Append, Read, Follow, and recovery are defined on Stream; no equivalent operations exist on the other authority families."
+        },
+        "idempotency_non_stream_families": {
+          "status": "inapplicable",
+          "detail": "The installed package exposes idempotency and mismatch behavior on the exercised Actors/Stream surfaces; no non-Stream service surface is available to qualify."
+        },
+        "clean_machine_restore": {
+          "status": "not_executed",
+          "detail": "Portable JAR/nupkg, consumer source, lock settings, and outputs are staged; restore from an independent machine cache remains outside this run."
+        }
+      }
+    }
+  },
+  "bounded": [
+    "The live fixture implements Actors and Stream only; the other seven authority families have binding, golden serialization, compile, and package evidence and no server execution claim.",
+    "The executed JVM and .NET fixture probes are source-bound to sdk-examples/lib.rs SHA-256 2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4 at revision cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d; their structured reports are staged beside the artifacts.",
+    "The current renderer closure is separately identified as BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9. The current fixture dependency closure, excluding renderer-only src/main.rs, is F27B9DA485C80008D66DE1C4EE65B0B6EDCA14632D0DDF0AAD0E0A8F744706CA and is listed in contract.fixture_source_closure. Its rebuild is blocked by NUL-corrupted dependency build scripts; the exact Java/C# snippets therefore execute against the retained fixture binary identified as source SHA-256 2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4 and are not relabeled as a current-source fixture build.",
+    "Golden bytes are Rust-produced and source-bound by the fixture SHA plus current authority manifest SHA; they verify wire serialization only.",
+    "JVM Harness uses a repeatable generated-source accessor adapter; protobuf field numbers, names, JSON mappings, RPC identities, descriptors, reflection, builders, and bytes remain unchanged.",
+    "Embedded/native qualification is outside this transport receipt.",
+    "Rendered Java and C# snippets execute only Actors and Stream scenarios because those are the current Rust renderer registry entries; Kotlin uses the installed generated coroutine consumer suite.",
+    "The Kotlin installed-consumer result is a five-test source-neutral package check; it does not broaden current rendered-snippet or live-fixture qualification."
+  ],
+  "staging": {
+    "root": "staged-jvm-dotnet-evidence",
+    "paths_are_workspace_relative": true,
+    "authority_manifest_sha256": "3A56DB31E27584B49A7410342B03AD3F40CFFAD8CA9E9BF4746C25F643025D37"
+  }
+}

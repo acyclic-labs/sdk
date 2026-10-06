@@ -47,6 +47,12 @@ pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 /// Connection configuration failure.
 #[derive(Debug, Error)]
 pub enum ConnectError {
+    /// The authenticated control service rejected the handshake.
+    #[error("Stream control handshake rejected: {0}")]
+    RemoteStatus(tonic::Status),
+    /// The endpoint did not prove the required contract identity.
+    #[error("Stream control identity mismatch: {0}")]
+    Negotiation(String),
     /// Endpoint URI was invalid or the TLS connection failed.
     #[error("invalid or unavailable Stream endpoint: {0}")]
     Endpoint(#[from] tonic::transport::Error),
@@ -105,6 +111,70 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
 }
 
 impl Client {
+    /// Connect after proving the independent Rust-owned control identity.
+    ///
+    /// # Errors
+    /// Authentication and identity errors are terminal. Absent or unavailable
+    /// control services return `None` without sending an application operation.
+    pub async fn connect_verified(
+        endpoint: &str,
+        token: &str,
+        ca: Option<&[u8]>,
+    ) -> Result<Option<Self>, ConnectError> {
+        use crate::control_wire::protocol::v1::{
+            Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
+        };
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let client = Self::connect_with_tls([endpoint], token, ca)?;
+        let family = BindingFamily::Stream;
+        let version = control::control_protocol_version(family);
+        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(client.channels[0].clone())
+            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        let mut request = Request::new(HandshakeRequest {
+            protocol: Some(ProtocolIdentity {
+                version: version.into(),
+                descriptor_digest: control::archived_descriptor_digest(family),
+            }),
+            required: Some(CapabilitySet {
+                capabilities: vec![Capability {
+                    name: family.name().into(),
+                    version: version.into(),
+                }],
+            }),
+        });
+        request
+            .metadata_mut()
+            .insert("authorization", client.authorization.clone());
+        request.metadata_mut().insert(
+            control::FAMILY_METADATA_KEY,
+            MetadataValue::from_static(family.name()),
+        );
+        request.set_timeout(OPERATION_DEADLINE);
+        let response = match probe.handshake(request).await {
+            Ok(response) => response.into_inner(),
+            Err(status)
+                if matches!(
+                    status.code(),
+                    Code::Unimplemented | Code::Unavailable | Code::DeadlineExceeded
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(status) => return Err(ConnectError::RemoteStatus(status)),
+        };
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &response.encode_to_vec(),
+            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+        )
+        .map_err(|error| ConnectError::Negotiation(format!("{error:?}")))?;
+        Ok(Some(client))
+    }
     /// Connects to a TLS endpoint with an account-bound bearer credential.
     pub async fn connect(
         endpoint: impl AsRef<str>,
@@ -221,6 +291,89 @@ impl Client {
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
         })
+    }
+
+    /// Executes one canonical wire request through the Rust provider. Native
+    /// bindings use these methods so protobuf projection and domain admission
+    /// remain in this crate instead of being reimplemented by consumers.
+    pub async fn inspect_idempotency_wire(
+        &self,
+        request: wire::InspectIdempotencyRequest,
+    ) -> Result<wire::InspectIdempotencyResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let key = IdempotencyKey::new(request.idempotency_key)?;
+        let observation = StreamProvider::inspect_idempotency(self, key)
+            .await?
+            .map(observation_wire);
+        Ok(wire::InspectIdempotencyResponse { observation })
+    }
+
+    /// Executes one paged hierarchy request through the canonical Rust client.
+    pub async fn children_page_wire(
+        &self,
+        request: wire::ChildrenPageRequest,
+    ) -> Result<wire::ChildrenPageResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let request = ChildrenPageRequest {
+            parent: request.parent.map(path).transpose()?,
+            after: request.after.map(path).transpose()?,
+            hierarchy_version: request
+                .hierarchy_version
+                .as_deref()
+                .map(commit_id)
+                .transpose()?,
+            limit: request.limit,
+        };
+        let page = StreamProvider::children_page(self, request).await?;
+        Ok(wire::ChildrenPageResponse {
+            hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
+            children: page
+                .children
+                .into_iter()
+                .map(|child| wire::Child {
+                    path: child.path.to_string(),
+                })
+                .collect(),
+            next_after: page.next_after.map(|path| path.to_string()),
+        })
+    }
+
+    /// Executes one coordinated commit through the canonical Rust client.
+    pub async fn commit_wire(
+        &self,
+        request: wire::CommitRequest,
+    ) -> Result<wire::CommitResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let deadline = request.deadline_unix_millis;
+        let request = CommitRequest {
+            conditions: request
+                .conditions
+                .into_iter()
+                .map(condition_from_wire)
+                .collect::<Result<_, _>>()?,
+            mutations: request
+                .mutations
+                .into_iter()
+                .map(mutation_from_wire)
+                .collect::<Result<_, _>>()?,
+            idempotency_key: IdempotencyKey::new(request.idempotency_key)?,
+        };
+        let outcome = match deadline {
+            Some(deadline) => StreamProvider::commit_before(self, request, deadline).await?,
+            None => StreamProvider::commit(self, request).await?,
+        };
+        Ok(commit_outcome_wire(outcome))
+    }
+
+    /// Reads one immutable envelope through the canonical Rust client.
+    pub async fn read_commit_wire(
+        &self,
+        request: wire::ReadCommitRequest,
+    ) -> Result<wire::CommittedEnvelope, StreamError> {
+        check_native_command_size(&request)?;
+        let id = commit_id(&request.commit_id)?;
+        let envelope = StreamProvider::read_commit(self, id).await?;
+        Ok(envelope_wire(envelope))
     }
 
     #[allow(
@@ -387,6 +540,14 @@ impl Client {
     }
 }
 
+fn check_native_command_size<T: Message>(request: &T) -> Result<(), StreamError> {
+    if request.encoded_len() > crate::MAX_COMMAND_BYTES {
+        Err(StreamError::LimitExceeded)
+    } else {
+        Ok(())
+    }
+}
+
 fn bounded_ca_certificate(value: &[u8]) -> Result<&[u8], ConnectError> {
     if value.is_empty() || value.len() > MAX_CA_CERTIFICATE_BYTES {
         Err(ConnectError::InvalidCaCertificate)
@@ -401,6 +562,30 @@ struct RecordCursor {
     next: u64,
     remaining: Option<u32>,
     active: Option<ActiveRecords>,
+}
+
+struct ChildCursor {
+    client: Client,
+    body: wire::ChildrenRequest,
+    remaining: u32,
+    active: Option<ActiveChildren>,
+    emitted: bool,
+    terminal: bool,
+}
+
+struct ActiveChildren {
+    children: tonic::Streaming<wire::ChildrenResponse>,
+}
+
+impl ChildCursor {
+    async fn open(&self) -> Result<ActiveChildren, StreamError> {
+        self.client
+            .unary(self.body.clone(), |mut service, request| {
+                Box::pin(async move { service.children(request).await })
+            })
+            .await
+            .map(|children| ActiveChildren { children })
+    }
 }
 
 struct ActiveRecords {
@@ -608,42 +793,74 @@ impl StreamProvider for Client {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        if request.limit == 0 || request.limit as usize > crate::MAX_ITEMS {
+            return Err(StreamError::LimitExceeded);
+        }
         let body = wire::ChildrenRequest {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         };
-        let mut last = None;
-        for _ in 0..self.channels.len() {
-            let response = self
-                .unary(body.clone(), |mut service, request| {
-                    Box::pin(async move { service.children(request).await })
-                })
-                .await?;
-            let collected = response
-                .map(|item| {
-                    let child = item
-                        .map_err(|error| status(&error))?
-                        .child
-                        .ok_or(StreamError::Unavailable)?;
-                    Ok(Child {
-                        path: path(child.path)?,
-                    })
-                })
-                .collect::<Vec<_>>()
-                .await;
-            if collected.iter().all(Result::is_ok) {
-                return Ok(stream::iter(collected).boxed());
-            }
-            let error = collected
-                .into_iter()
-                .find_map(Result::err)
-                .unwrap_or(StreamError::Unavailable);
-            if error != StreamError::Unavailable {
-                return Err(error);
-            }
-            last = Some(error);
-        }
-        Err(last.unwrap_or(StreamError::Unavailable))
+        let client = self.clone();
+        Ok(stream::unfold(
+            ChildCursor {
+                client,
+                body,
+                remaining: request.limit,
+                active: None,
+                emitted: false,
+                terminal: false,
+            },
+            |mut cursor| async move {
+                loop {
+                    if cursor.terminal || cursor.remaining == 0 {
+                        return None;
+                    }
+                    if cursor.active.is_none() {
+                        match cursor.open().await {
+                            Ok(active) => cursor.active = Some(active),
+                            Err(error) => return Some((Err(error), cursor)),
+                        }
+                    }
+                    let Some(active) = cursor.active.as_mut() else {
+                        return Some((Err(StreamError::Unavailable), cursor));
+                    };
+                    match active.children.next().await {
+                        Some(Ok(response)) => {
+                            let Some(child) = response.child else {
+                                cursor.active = None;
+                                cursor.terminal = true;
+                                return Some((Err(StreamError::Unavailable), cursor));
+                            };
+                            let child = match path(child.path) {
+                                Ok(path) => Child { path },
+                                Err(error) => {
+                                    cursor.active = None;
+                                    cursor.terminal = true;
+                                    return Some((Err(error), cursor));
+                                }
+                            };
+                            cursor.remaining = cursor.remaining.saturating_sub(1);
+                            cursor.emitted = true;
+                            return Some((Ok(child), cursor));
+                        }
+                        // A child listing has no resume cursor. Retrying after emitting a
+                        // child would duplicate an already-observed snapshot, so only retry
+                        // an ambiguous transport failure before the first item is delivered.
+                        Some(Err(error)) if !cursor.emitted && retryable(&error) => {
+                            cursor.active = None;
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+                        Some(Err(error)) => {
+                            cursor.active = None;
+                            cursor.terminal = true;
+                            return Some((Err(status(&error)), cursor));
+                        }
+                        None => return None,
+                    }
+                }
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(
@@ -1115,6 +1332,100 @@ mod tests {
         }
     }
 
+    struct ChildStreamGuard(Arc<tokio::sync::Notify>);
+
+    impl Drop for ChildStreamGuard {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    struct BlockingChildren {
+        inner: MemoryStream,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        cancelled: Arc<tokio::sync::Notify>,
+        burst: Option<usize>,
+        fail_after_first: bool,
+    }
+
+    #[async_trait]
+    impl StreamProvider for BlockingChildren {
+        async fn inspect_idempotency(
+            &self,
+            key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            self.inner.append(request).await
+        }
+
+        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            if let Some(count) = self.burst {
+                return Ok(stream::iter((0..count).map(|index| {
+                    Ok(Child {
+                        path: StreamPath::new(format!("burst/{index}"))
+                            .unwrap_or_else(|_| unreachable!("test path is valid")),
+                    })
+                }))
+                .boxed());
+            }
+            if self.fail_after_first {
+                return Ok(stream::iter([
+                    Ok(Child {
+                        path: StreamPath::new("partial/child")
+                            .unwrap_or_else(|_| unreachable!("test path is valid")),
+                    }),
+                    Err(StreamError::Unavailable),
+                ])
+                .boxed());
+            }
+            let started = self.started.clone();
+            let release = self.release.clone();
+            let cancelled = self.cancelled.clone();
+            Ok(stream::once(async move {
+                started.notify_one();
+                let _guard = ChildStreamGuard(cancelled);
+                release.notified().await;
+                Ok(Child {
+                    path: StreamPath::new("blocked/child")
+                        .unwrap_or_else(|_| unreachable!("test path is valid")),
+                })
+            })
+            .boxed())
+        }
+
+        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
+
     fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
         provider_channel(Service::new(provider))
     }
@@ -1146,6 +1457,132 @@ mod tests {
             "fixture",
         )?;
         crate::conformance::verify(&transport).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_is_demand_driven_and_cancellable()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(tokio::sync::Notify::new());
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: started.clone(),
+                release: release.clone(),
+                cancelled: cancelled.clone(),
+                burst: None,
+                fail_after_first: false,
+            })))]),
+            "fixture",
+        )?;
+
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 1,
+            })
+            .await?;
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(100), children.next()).await;
+        assert!(
+            pending.is_err(),
+            "the first item should remain demand-driven"
+        );
+        tokio::time::timeout(std::time::Duration::from_millis(100), started.notified()).await?;
+        drop(children);
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancelled.notified()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_enforces_the_wire_item_bound()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(Arc::from([unavailable_channel()]), "fixture")?;
+        assert!(matches!(
+            transport
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: 0,
+                })
+                .await,
+            Err(StreamError::LimitExceeded)
+        ));
+        assert!(matches!(
+            transport
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: (crate::MAX_ITEMS as u32).saturating_add(1),
+                })
+                .await,
+            Err(StreamError::LimitExceeded)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_stops_at_the_requested_bound_without_draining()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(tokio::sync::Notify::new()),
+                burst: Some(2),
+                fail_after_first: false,
+            })))]),
+            "fixture",
+        )?;
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(
+            children
+                .next()
+                .await
+                .transpose()?
+                .map(|child| child.path.to_string()),
+            Some("burst/0".to_owned())
+        );
+        assert!(children.next().await.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_surfaces_partial_stream_failure_without_replaying()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(tokio::sync::Notify::new()),
+                burst: None,
+                fail_after_first: true,
+            })))]),
+            "fixture",
+        )?;
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 2,
+            })
+            .await?;
+        assert_eq!(
+            children
+                .next()
+                .await
+                .transpose()?
+                .map(|child| child.path.to_string()),
+            Some("partial/child".to_owned())
+        );
+        assert!(matches!(children.next().await, Some(Err(StreamError::Unavailable))));
+        assert!(children.next().await.is_none());
         Ok(())
     }
 

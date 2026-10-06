@@ -10,7 +10,7 @@ pub mod workers_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    ///
+    /// Publishes immutable Worker versions, selects deployments, and executes jobs.
     #[derive(Debug, Clone)]
     pub struct WorkersServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -91,7 +91,7 @@ pub mod workers_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        ///
+        /// Publishes an immutable JavaScript module version.
         pub async fn publish_version(
             &mut self,
             request: impl tonic::IntoRequest<super::PublishVersionRequest>,
@@ -121,7 +121,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Selects a version for a deployment alias with revision compare-and-swap.
         pub async fn select_deployment(
             &mut self,
             request: impl tonic::IntoRequest<super::SelectDeploymentRequest>,
@@ -151,7 +151,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Accepts durable input and returns the accepted job.
         pub async fn submit_job(
             &mut self,
             request: impl tonic::IntoRequest<super::SubmitJobRequest>,
@@ -178,7 +178,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Returns the current durable job observation.
         pub async fn inspect_job(
             &mut self,
             request: impl tonic::IntoRequest<super::InspectJobRequest>,
@@ -205,7 +205,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Requests cancellation of a durable job.
         pub async fn cancel_job(
             &mut self,
             request: impl tonic::IntoRequest<super::CancelJobRequest>,
@@ -232,7 +232,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Invokes an immutable Worker version as ordinary HTTP work.
         pub async fn invoke_version(
             &mut self,
             request: impl tonic::IntoRequest<super::InvokeVersionRequest>,
@@ -256,7 +256,7 @@ pub mod workers_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Invokes the version selected by a deployment alias.
         pub async fn invoke_deployment(
             &mut self,
             request: impl tonic::IntoRequest<super::InvokeDeploymentRequest>,
@@ -298,7 +298,7 @@ pub mod workers_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with WorkersServiceServer.
     #[async_trait]
     pub trait WorkersService: std::marker::Send + std::marker::Sync + 'static {
-        ///
+        /// Publishes an immutable JavaScript module version.
         async fn publish_version(
             &self,
             request: tonic::Request<super::PublishVersionRequest>,
@@ -306,7 +306,7 @@ pub mod workers_service_server {
             tonic::Response<super::PublishVersionResponse>,
             tonic::Status,
         >;
-        ///
+        /// Selects a version for a deployment alias with revision compare-and-swap.
         async fn select_deployment(
             &self,
             request: tonic::Request<super::SelectDeploymentRequest>,
@@ -314,7 +314,7 @@ pub mod workers_service_server {
             tonic::Response<super::SelectDeploymentResponse>,
             tonic::Status,
         >;
-        ///
+        /// Accepts durable input and returns the accepted job.
         async fn submit_job(
             &self,
             request: tonic::Request<super::SubmitJobRequest>,
@@ -322,7 +322,7 @@ pub mod workers_service_server {
             tonic::Response<super::SubmitJobResponse>,
             tonic::Status,
         >;
-        ///
+        /// Returns the current durable job observation.
         async fn inspect_job(
             &self,
             request: tonic::Request<super::InspectJobRequest>,
@@ -330,7 +330,7 @@ pub mod workers_service_server {
             tonic::Response<super::InspectJobResponse>,
             tonic::Status,
         >;
-        ///
+        /// Requests cancellation of a durable job.
         async fn cancel_job(
             &self,
             request: tonic::Request<super::CancelJobRequest>,
@@ -338,18 +338,18 @@ pub mod workers_service_server {
             tonic::Response<super::CancelJobResponse>,
             tonic::Status,
         >;
-        ///
+        /// Invokes an immutable Worker version as ordinary HTTP work.
         async fn invoke_version(
             &self,
             request: tonic::Request<super::InvokeVersionRequest>,
         ) -> std::result::Result<tonic::Response<super::InvokeResponse>, tonic::Status>;
-        ///
+        /// Invokes the version selected by a deployment alias.
         async fn invoke_deployment(
             &self,
             request: tonic::Request<super::InvokeDeploymentRequest>,
         ) -> std::result::Result<tonic::Response<super::InvokeResponse>, tonic::Status>;
     }
-    ///
+    /// Publishes immutable Worker versions, selects deployments, and executes jobs.
     #[derive(Debug)]
     pub struct WorkersServiceServer<T> {
         inner: Arc<T>,

@@ -17,8 +17,16 @@ describe("Workers v1 generated transport", () => {
       endpoint: "https://workers.example.test/api/",
       token: "secret",
       fetcher: async (input, init) => {
-        seen.push(String(input));
-        expect(init?.headers).toMatchObject({ authorization: "Bearer secret" });
+        const url = String(input);
+        if (url.endsWith("/v1/sdk/workers/handshake")) {
+          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
+          return new Response(JSON.stringify({
+            protocol: { version: "acyclic.workers.v1", descriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8" },
+            supported: { capabilities: [{ name: "workers", version: "acyclic.workers.v1" }] },
+          }));
+        }
+        seen.push(url);
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer secret");
         return new Response(JSON.stringify({ status: 200, resolvedSha256: "AQ==", resolvedRevision: "4" }));
       },
     });

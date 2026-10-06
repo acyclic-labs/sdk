@@ -37,6 +37,26 @@ pub fn validate_binary(
                 return Err(invalid());
             }
         }
+        "objects/get" => {
+            let query = decode!(GetObjectRequest, query);
+            let frame = decode!(GetObjectResponse, bytes);
+            match frame.frame.ok_or_else(invalid)? {
+                wire::get_object_response::Frame::Header(header) => {
+                    get_header(&header, &query.range, body_length)?;
+                }
+                wire::get_object_response::Frame::Body(body) => {
+                    if body.len() > super::HTTP_BODY_FRAME_BYTES {
+                        return Err(invalid());
+                    }
+                }
+                wire::get_object_response::Frame::Error(detail) => {
+                    let code = wire::ErrorCode::try_from(detail.code).map_err(|_| invalid())?;
+                    if code == wire::ErrorCode::Unspecified {
+                        return Err(invalid());
+                    }
+                }
+            }
+        }
         "objects/head" => {
             let info = decode!(HeadObjectResponse, bytes);
             object_info(info.object.as_ref().ok_or_else(invalid)?)?;
@@ -90,6 +110,78 @@ pub fn validate_get_header(query: &[u8], bytes: &[u8], maximum: u64) -> Result<u
     get_header(&header, &query.range, maximum)
 }
 
+/// Validates one bounded download body frame and returns the remaining bytes.
+/// Native and WASM transports use this same state transition so frame-size and
+/// selected-range accounting cannot drift between adapters.
+pub fn validate_get_body(body_length: u64, remaining: u64) -> Result<u64, Error> {
+    if body_length > super::HTTP_BODY_FRAME_BYTES as u64 || body_length > remaining {
+        return Err(invalid());
+    }
+    Ok(remaining - body_length)
+}
+
+/// Maps one HTTP status and optional wire error detail to the canonical
+/// Objects error vocabulary used by native and browser transports.
+pub fn http_error_code(status: u16, detail: Option<i32>) -> wire::ErrorCode {
+    if let Some(detail) = detail
+        && let Ok(code) = wire::ErrorCode::try_from(detail)
+        && code != wire::ErrorCode::Unspecified
+    {
+        return code;
+    }
+    match status {
+        304 => wire::ErrorCode::NotModified,
+        400 => wire::ErrorCode::InvalidArgument,
+        401 | 403 => wire::ErrorCode::AccessDenied,
+        404 => wire::ErrorCode::NotFound,
+        409 => wire::ErrorCode::AlreadyExists,
+        412 => wire::ErrorCode::PreconditionFailed,
+        413 | 429 => wire::ErrorCode::QuotaExceeded,
+        416 => wire::ErrorCode::RangeNotSatisfiable,
+        501 => wire::ErrorCode::Unsupported,
+        _ => wire::ErrorCode::Unavailable,
+    }
+}
+
+/// Maps a Connect/tonic status and optional wire detail to the canonical
+/// Objects error vocabulary before it crosses a native or WASM boundary.
+pub fn grpc_error_code(status: u32, detail: Option<i32>) -> wire::ErrorCode {
+    if let Some(detail) = detail
+        && let Ok(code) = wire::ErrorCode::try_from(detail)
+        && code != wire::ErrorCode::Unspecified
+    {
+        return code;
+    }
+    match status {
+        3 => wire::ErrorCode::InvalidArgument,
+        5 => wire::ErrorCode::NotFound,
+        6 => wire::ErrorCode::AlreadyExists,
+        7 | 16 => wire::ErrorCode::AccessDenied,
+        8 => wire::ErrorCode::QuotaExceeded,
+        9 => wire::ErrorCode::PreconditionFailed,
+        12 => wire::ErrorCode::Unsupported,
+        _ => wire::ErrorCode::Unavailable,
+    }
+}
+
+/// Validates the endpoint and transport policy shared by native and WASM HTTP clients.
+pub fn validate_http_endpoint(endpoint: &str) -> Result<(), Error> {
+    let endpoint = url::Url::parse(endpoint).map_err(|_| wire::ErrorCode::InvalidArgument)?;
+    let loopback = matches!(
+        endpoint.host_str(),
+        Some("localhost" | "127.0.0.1" | "::1" | "[::1]")
+    );
+    if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+    {
+        return Err(wire::ErrorCode::InvalidArgument.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn invalid() -> Error {
     wire::ErrorCode::Unavailable.into()
 }
@@ -110,6 +202,74 @@ pub fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
         return Err(invalid());
     }
     request::metadata(&value.metadata).map_err(|_| invalid())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{grpc_error_code, http_error_code, validate_get_body, validate_http_endpoint};
+    use crate::v2::wire;
+
+    #[test]
+    fn http_status_projection_prefers_wire_detail_and_covers_object_statuses() {
+        assert_eq!(
+            http_error_code(500, Some(wire::ErrorCode::NotFound as i32)),
+            wire::ErrorCode::NotFound
+        );
+        assert_eq!(http_error_code(304, None), wire::ErrorCode::NotModified);
+        assert_eq!(http_error_code(401, None), wire::ErrorCode::AccessDenied);
+        assert_eq!(
+            http_error_code(412, None),
+            wire::ErrorCode::PreconditionFailed
+        );
+        assert_eq!(
+            http_error_code(416, None),
+            wire::ErrorCode::RangeNotSatisfiable
+        );
+        assert_eq!(http_error_code(503, None), wire::ErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn http_endpoint_policy_allows_https_and_loopback_http_only() {
+        for endpoint in [
+            "https://objects.example",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            assert!(validate_http_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "http://objects.example",
+            "https://user@objects.example",
+            "https://objects.example/?query=1",
+            "https://objects.example/#fragment",
+        ] {
+            assert!(validate_http_endpoint(endpoint).is_err(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn download_body_accounting_is_bounded_and_request_relative() {
+        assert_eq!(
+            validate_get_body(super::super::HTTP_BODY_FRAME_BYTES as u64, 100_000).unwrap(),
+            34_464
+        );
+        assert!(validate_get_body(65_537, 100_000).is_err());
+        assert!(validate_get_body(2, 1).is_err());
+    }
+
+    #[test]
+    fn grpc_status_projection_prefers_wire_detail_and_covers_connect_codes() {
+        assert_eq!(
+            grpc_error_code(14, Some(wire::ErrorCode::NotFound as i32)),
+            wire::ErrorCode::NotFound
+        );
+        assert_eq!(grpc_error_code(3, None), wire::ErrorCode::InvalidArgument);
+        assert_eq!(grpc_error_code(16, None), wire::ErrorCode::AccessDenied);
+        assert_eq!(grpc_error_code(8, None), wire::ErrorCode::QuotaExceeded);
+        assert_eq!(grpc_error_code(12, None), wire::ErrorCode::Unsupported);
+        assert_eq!(grpc_error_code(14, None), wire::ErrorCode::Unavailable);
+    }
 }
 /// Validates a complete or ranged download selection within its decoded allocation bound.
 pub fn get_header(

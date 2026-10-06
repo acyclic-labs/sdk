@@ -1,14 +1,14 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import initStreamWasm, { encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
+import initStreamWasm, { encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateChildrenPageResponse, validateHttpEndpoint, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AbsentConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
   ReadRequestSchema, FollowRequestSchema,
   ChildrenRequestSchema, ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
-  CreateTokenRequestSchema,
+  CreateTokenRequestSchema, ChildrenPageResponseSchema,
 } from "../generated/proto/stream/v2/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
+import type { AppendOptions, ChildrenPage, ChildrenPageRequest, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -49,8 +49,8 @@ function initializeStreamWasmSync(): boolean {
   return true;
 }
 
-function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly validateAppendRequest: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
-  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
+function verifyExports(instance: { readonly decodeHttpResponse: unknown; readonly encodeHttpRequest: unknown; readonly is_stream_error_code: unknown; readonly normalizeCommitRequest: unknown; readonly projectMemoryResponse: unknown; readonly validateAppendRequest: unknown; readonly validateChildrenPageResponse: unknown; readonly validateHttpEndpoint: unknown; readonly validateGrpcResponseIdentity: unknown; readonly validateIdempotencyKey: unknown; readonly validatePath: unknown; readonly validateRequest: unknown; readonly validateSequence: unknown; readonly __wbindgen_free: unknown }): void {
+  if (typeof instance.decodeHttpResponse !== "function" || typeof instance.encodeHttpRequest !== "function" || typeof instance.is_stream_error_code !== "function" || typeof instance.validateAppendRequest !== "function" || typeof instance.validateChildrenPageResponse !== "function" || typeof instance.validateHttpEndpoint !== "function" || typeof instance.validateGrpcResponseIdentity !== "function" || typeof instance.validateIdempotencyKey !== "function" || typeof instance.normalizeCommitRequest !== "function" || typeof instance.projectMemoryResponse !== "function" || typeof instance.validatePath !== "function" || typeof instance.validateRequest !== "function" || typeof instance.validateSequence !== "function" || typeof instance.__wbindgen_free !== "function") {
     throw new StreamError("configuration", "stream WASM exports do not match the packaged contract");
   }
 }
@@ -60,6 +60,11 @@ export function validatePathValue(value: unknown): void {
   if (typeof value !== "string") throw new StreamError("invalid_path", "path must be text");
   const error = validatePath(value);
   if (error) validationError(error, "path");
+}
+
+export function validateHttpEndpointValue(value: string): void {
+  const error = validateHttpEndpoint(value);
+  if (error) throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
 }
 
 /** Validates one sequence through Rust's canonical unsigned 64-bit boundary. */
@@ -173,6 +178,46 @@ export async function validateWireRequest(request: WireRequest): Promise<void> {
   if (error) validationError(error, "request");
 }
 
+/** Synchronous compatibility guard for the public children iterator factory. */
+export function validateChildrenPageRequest(request: ChildrenPageRequest): void {
+  const input = wireRequest({
+    kind: "children_page",
+    limit: request.limit,
+    ...(request.parent === undefined ? {} : { parent: request.parent }),
+    ...(request.after === undefined ? {} : { after: request.after }),
+    ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+  });
+  const error = validateRequest("children_page", input);
+  if (error) validationError(error, "request");
+}
+
+/** Synchronous compatibility guard for the public read iterator factory. */
+export function validateReadRequest(path: string, from: bigint, limit: number): void {
+  const input = wireRequest({ kind: "read", path, from, limit });
+  const error = validateRequest("read", input);
+  if (error) validationError(error, "request");
+}
+
+/** Re-project a provider page through Rust so ordering, UTF-8 paths, and
+ * identity widths stay canonical even for custom providers. */
+export async function projectChildrenPage(request: ChildrenPageRequest, value: ChildrenPage): Promise<ChildrenPage> {
+  await ensureStreamWasm();
+  const requestBytes = wireRequest({
+    kind: "children_page",
+    ...(request.parent === undefined ? {} : { parent: request.parent }),
+    ...(request.after === undefined ? {} : { after: request.after }),
+    ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+    limit: request.limit,
+  });
+  const input = toBinary(ChildrenPageResponseSchema, create(ChildrenPageResponseSchema, {
+    hierarchyVersion: value.hierarchyVersion,
+    children: value.children.map(child => ({ path: child.path })),
+    ...(value.nextAfter === undefined ? {} : { nextAfter: value.nextAfter }),
+  }));
+  validateChildrenPageResponse(requestBytes, input);
+  return projectMemoryResponse("children_page", input) as ChildrenPage;
+}
+
 function requirePathType(value: unknown): void {
   if (typeof value !== "string") throw new StreamError("invalid_argument", "stream path must be text");
 }
@@ -203,6 +248,12 @@ export async function validateWireAppend(path: string, records: readonly Uint8Ar
   const input = wireAppendRequest(path, records, options);
   await ensureStreamWasm();
   const error = validateAppendRequest(input);
+  if (error) validationError(error, "append");
+}
+
+/** Validate a record batch through the Rust append admission boundary. */
+export function validateRecordBatch(records: readonly Uint8Array[]): void {
+  const error = validateAppendRequest(wireAppendRequest("records", records));
   if (error) validationError(error, "append");
 }
 

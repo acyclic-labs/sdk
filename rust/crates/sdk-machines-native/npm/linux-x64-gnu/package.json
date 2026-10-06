@@ -1,0 +1,1 @@
+{"name":"@acyclic-labs/machines-linux-x64-gnu","version":"0.2.0","license":"Apache-2.0","os":["linux"],"cpu":["x64"],"main":"index.js","files":["index.js","sdk_machines_native.node"]}

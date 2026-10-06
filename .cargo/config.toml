@@ -3,3 +3,7 @@
 # the executables from the Visual C++ redistributable.
 [target.'cfg(all(windows, target_env = "msvc"))']
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Generation tooling remains isolated from publishable runtime crates.
+[alias]
+sdk-generation = "run --locked --manifest-path rust/crates/sdk-generation/Cargo.toml --"

@@ -1,0 +1,1 @@
+#![doc = include_str!("../docs/managed-agent-runtime.md")]

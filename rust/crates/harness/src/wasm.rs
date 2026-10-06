@@ -9,12 +9,11 @@ use crate::wire_codec::{
     protocol_identity,
 };
 use crate::{
-    AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
-    SessionId, TaskId, TurnId,
     conversation::{
-        Attachment, ContentGrant, ConversationMessage, ConversationState, FileDescriptor, FileRef,
-        Limits, ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
-        VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
+        decode_attachment_manifest, encode_attachment_manifest, Attachment, ContentGrant,
+        ConversationMessage, ConversationState, FileDescriptor, FileRef, Limits,
+        ModelContextSelection, ReferencedAttachments, TaskOutcomeRecord, VolumeOperation,
+        VolumeRef,
     },
     core::{
         AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
@@ -27,18 +26,20 @@ use crate::{
     merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{
-        AttachmentListResolver, SelectedModelContext, select_model_context_at_revision,
-        validate_model_context_selection_at_revision,
+        select_model_context_at_revision, validate_model_context_selection_at_revision,
+        AttachmentListResolver, SelectedModelContext,
     },
     resources::{ProviderRef, ResourceRef},
     runtime::{
+        batch_member_operation_id, task_admission_identities, task_definition_digest,
+        validate_children_page, validate_children_request, validate_task_requirements,
         BatchGroupPolicy, DurableBatchRequest, TaskAdmissionRecord, TaskChild, TaskChildrenPage,
-        TaskDependencyEnvironment, TaskRunLimits, batch_member_operation_id,
-        task_admission_identities, task_definition_digest, validate_children_page,
-        validate_children_request, validate_task_requirements,
+        TaskDependencyEnvironment, TaskRunLimits,
     },
-    tool::{ToolDefinition, validate_value},
+    tool::{validate_value, ToolDefinition},
     turn::prepare_turn,
+    AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
+    SessionId, TaskId, TurnId,
 };
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
@@ -46,6 +47,109 @@ use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
+
+/// Returns the Rust-owned policy used by ephemeral memory content hosts.
+///
+/// These exports are deliberately small scalar values so generated bindings
+/// remain strongly typed in every host language and adapters do not need to
+/// deserialize a second policy document.
+#[wasm_bindgen(js_name = harnessDefaultResidentBytes)]
+pub fn harness_default_resident_bytes() -> f64 {
+    crate::memory_store::DEFAULT_RESIDENT_BYTES as f64
+}
+
+#[wasm_bindgen(js_name = harnessDefaultResidentFiles)]
+pub fn harness_default_resident_files() -> f64 {
+    crate::memory_store::DEFAULT_RESIDENT_FILES as f64
+}
+
+#[wasm_bindgen(js_name = harnessDefaultOutboxCommands)]
+pub fn harness_default_outbox_commands() -> f64 {
+    crate::memory_store::DEFAULT_OUTBOX_COMMANDS as f64
+}
+
+#[wasm_bindgen(js_name = harnessDefaultOutboxBytes)]
+pub fn harness_default_outbox_bytes() -> f64 {
+    crate::memory_store::DEFAULT_OUTBOX_BYTES as f64
+}
+
+#[wasm_bindgen(js_name = harnessMaxInlineAttachments)]
+pub fn harness_max_inline_attachments() -> u32 {
+    crate::conversation::MAX_INLINE_ATTACHMENTS as u32
+}
+
+#[wasm_bindgen(js_name = harnessAttachmentManifestMediaType)]
+pub fn harness_attachment_manifest_media_type() -> String {
+    crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE.to_owned()
+}
+
+/// Rust-owned authenticated browser remote client re-exported by the Harness
+/// WASM package. The wrapper keeps protobuf bytes opaque to JavaScript while
+/// preserving the generated Rust service types and handshake rules.
+#[wasm_bindgen]
+pub struct BrowserHarnessRemoteClient {
+    inner: acyclic_sdk_remote_web::BrowserHarnessClient,
+}
+
+#[wasm_bindgen]
+impl BrowserHarnessRemoteClient {
+    /// Connect with the Rust-owned browser transport and safe bounds.
+    #[wasm_bindgen(js_name = connect)]
+    pub async fn connect_js(endpoint: String, bearer_token: String) -> Result<Self, JsValue> {
+        let inner =
+            acyclic_sdk_remote_web::BrowserHarnessClient::connect_js(endpoint, bearer_token)
+                .await?;
+        Ok(Self { inner })
+    }
+
+    /// Connect with explicit bounds for advanced consumers.
+    #[wasm_bindgen(js_name = connectWithLimits)]
+    pub async fn connect_with_limits_js(
+        endpoint: String,
+        bearer_token: String,
+        maximum_request_bytes: u64,
+        maximum_response_bytes: u64,
+    ) -> Result<Self, JsValue> {
+        let inner = acyclic_sdk_remote_web::BrowserHarnessClient::connect_with_limits_js(
+            endpoint,
+            bearer_token,
+            maximum_request_bytes,
+            maximum_response_bytes,
+        )
+        .await?;
+        Ok(Self { inner })
+    }
+
+    /// Return the negotiated Rust protocol identity.
+    #[wasm_bindgen(js_name = capabilities)]
+    pub fn capabilities_js(&self) -> Result<JsValue, JsValue> {
+        self.inner.capabilities_js()
+    }
+
+    /// Submit one encoded command envelope.
+    #[wasm_bindgen(js_name = submit)]
+    pub async fn submit_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.submit_js(request).await
+    }
+
+    /// Replay encoded deliveries from the requested cursor.
+    #[wasm_bindgen(js_name = replay)]
+    pub async fn replay_js(&self, request: Vec<u8>) -> Result<js_sys::Array, JsValue> {
+        self.inner.replay_js(request).await
+    }
+
+    /// Observe one encoded operation status.
+    #[wasm_bindgen(js_name = observe)]
+    pub async fn observe_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.observe_js(request).await
+    }
+
+    /// Cancel one encoded operation.
+    #[wasm_bindgen(js_name = cancel)]
+    pub async fn cancel_js(&self, request: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        self.inner.cancel_js(request).await
+    }
+}
 
 #[derive(Deserialize, Tsify)]
 #[tsify(from_wasm_abi)]
@@ -779,17 +883,14 @@ impl AttachmentListResolver for WasmProjectionResolver {
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+    ) -> crate::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
             decode_attachment_manifest(manifest, &bytes, item_count)
         })
     }
 
-    fn read<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(&'a self, file: &'a FileRef) -> crate::BoxFuture<'a, crate::Result<Vec<u8>>> {
         Box::pin(async move { self.bytes(file) })
     }
 }
@@ -1163,6 +1264,307 @@ pub fn encode_canonical_json(value: JsValue) -> Result<Vec<u8>, JsValue> {
     Ok(bytes)
 }
 
+/// Admit one retryable browser command through the same Rust policy used by
+/// native Harness hosts. The JavaScript facade keeps persistence and event
+/// callbacks, while command shape, identity, and credential/body exclusions
+/// remain owned by this boundary.
+#[wasm_bindgen(js_name = validateOfflineCommand)]
+pub fn validate_offline_command(value: JsValue) -> Result<JsValue, JsValue> {
+    let value = js_json_value(&value)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("offline outbox command must be an object"))?;
+    require_exact_keys(
+        object,
+        &["operationId", "authority", "kind", "payload", "offlineSafe"],
+    )?;
+    if object.get("offlineSafe") != Some(&serde_json::Value::Bool(true)) {
+        return Err(JsValue::from_str(
+            "command is not safe for the offline outbox",
+        ));
+    }
+    let kind = object
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("offline outbox command kind is invalid"))?;
+    if kind == "interaction.resolve.approval" {
+        return Err(JsValue::from_str(
+            "command is not safe for the offline outbox",
+        ));
+    }
+    let operation_id = object
+        .get("operationId")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("offline outbox operation identity is invalid"))?;
+    validate_identity("operation", operation_id)?;
+    let authority = object
+        .get("authority")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| JsValue::from_str("offline outbox authority is invalid"))?;
+    require_exact_keys(authority, &["kind", "id"])?;
+    let authority_kind = authority
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("offline outbox authority kind is invalid"))?;
+    let authority_id = authority
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("offline outbox authority identity is invalid"))?;
+    validate_safe_authority_id(authority_kind, authority_id)?;
+    let payload = object
+        .get("payload")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| JsValue::from_str("offline outbox payload must be a ref-only record"))?;
+    for key in payload.keys() {
+        if !matches!(
+            key.as_str(),
+            "content" | "attachments" | "artifacts" | "references" | "metadata"
+        ) {
+            return Err(JsValue::from_str(
+                "offline outbox payload contains an unsupported field",
+            ));
+        }
+    }
+    if let Some(content) = payload.get("content") {
+        serde_json::from_value::<FileRef>(content.clone())
+            .map_err(|_| JsValue::from_str("offline outbox content reference is invalid"))?;
+    }
+    if let Some(attachments) = payload.get("attachments") {
+        serde_json::from_value::<ReferencedAttachments>(attachments.clone())
+            .map_err(|_| JsValue::from_str("offline outbox attachments are invalid"))?;
+    }
+    for name in ["artifacts", "references"] {
+        if let Some(references) = payload.get(name) {
+            let references = references
+                .as_array()
+                .ok_or_else(|| JsValue::from_str("offline outbox references must be a list"))?;
+            for reference in references {
+                serde_json::from_value::<FileRef>(reference.clone())
+                    .map_err(|_| JsValue::from_str("offline outbox file reference is invalid"))?;
+            }
+        }
+    }
+    if let Some(metadata) = payload.get("metadata") {
+        let metadata = metadata
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("offline outbox metadata must be a record"))?;
+        if metadata
+            .values()
+            .any(|value| !value.is_null() && !value.is_boolean() && !value.is_number())
+        {
+            return Err(JsValue::from_str(
+                "offline outbox metadata contains an unsafe value",
+            ));
+        }
+    }
+    reject_forbidden_keys(&value)?;
+    to_js(&value)
+}
+
+/// Rust owns the retry schedule. Hosts only wait using the returned duration
+/// and carry the opaque attempt token into the next call.
+#[wasm_bindgen(js_name = harnessReplayBackoff)]
+pub fn harness_replay_backoff(attempt: u32) -> Result<JsValue, JsValue> {
+    let exponent = attempt.min(7);
+    let delay_ms = 50_u32.saturating_mul(1_u32 << exponent).min(5_000);
+    to_js(&serde_json::json!({
+        "delayMs": delay_ms,
+        "nextAttempt": attempt.saturating_add(1),
+    }))
+}
+
+/// Validate one replay delivery and return the durable state transitions. The
+/// host performs listener dispatch and storage I/O, while Rust owns generation,
+/// contiguity, operation identity, and the per-event acknowledgement cursors.
+#[wasm_bindgen(js_name = reconcileReplayDelivery)]
+pub fn reconcile_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<JsValue, JsValue> {
+    let previous = js_json_value(&previous)?;
+    let delivery = js_json_value(&delivery)?;
+    let result = reconcile_replay_delivery_value(&previous, &delivery)?;
+    to_js(&result)
+}
+
+/// Backward-compatible cursor-only projection for generated consumers that do
+/// not need acknowledgement details.
+#[wasm_bindgen(js_name = validateReplayDelivery)]
+pub fn validate_replay_delivery(previous: JsValue, delivery: JsValue) -> Result<JsValue, JsValue> {
+    let previous = js_json_value(&previous)?;
+    let delivery = js_json_value(&delivery)?;
+    let result = reconcile_replay_delivery_value(&previous, &delivery)?;
+    to_js(
+        result
+            .get("cursor")
+            .ok_or_else(|| JsValue::from_str("replay cursor is missing"))?,
+    )
+}
+
+fn reconcile_replay_delivery_value(
+    previous: &serde_json::Value,
+    delivery: &serde_json::Value,
+) -> Result<serde_json::Value, JsValue> {
+    let delivery = delivery
+        .as_object()
+        .ok_or_else(|| JsValue::from_str("replay delivery must be an object"))?;
+    let authority = delivery
+        .get("authority")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| JsValue::from_str("replay delivery authority is invalid"))?;
+    require_exact_keys(authority, &["kind", "id"])?;
+    let authority_kind = authority
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("replay delivery authority kind is invalid"))?;
+    let authority_id = authority
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| JsValue::from_str("replay delivery authority identity is invalid"))?;
+    validate_safe_authority_id(authority_kind, authority_id)?;
+    let generation = delivery
+        .get("generation")
+        .and_then(serde_json::Value::as_str)
+        .filter(|generation| !generation.is_empty())
+        .ok_or_else(|| JsValue::from_str("replay generation is invalid"))?;
+    let from_revision = json_u64(delivery.get("fromRevision"), "replay start revision")?;
+    let through_revision = json_u64(delivery.get("throughRevision"), "replay end revision")?;
+    if through_revision < from_revision {
+        return Err(JsValue::from_str("replay delivery coverage is invalid"));
+    }
+    let expected_revision = match previous {
+        serde_json::Value::Null => 0,
+        serde_json::Value::Object(previous) => {
+            let previous_generation = previous
+                .get("generation")
+                .and_then(serde_json::Value::as_str)
+                .filter(|generation| !generation.is_empty())
+                .ok_or_else(|| JsValue::from_str("replay cursor generation is invalid"))?;
+            if previous_generation != generation {
+                return Err(JsValue::from_str("replay generation changed"));
+            }
+            json_u64(previous.get("revision"), "replay cursor revision")?
+        }
+        _ => return Err(JsValue::from_str("replay cursor is invalid")),
+    };
+    if from_revision != expected_revision {
+        return Err(JsValue::from_str("replay delivery is not contiguous"));
+    }
+    let events = delivery
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| JsValue::from_str("replay delivery events are invalid"))?;
+    let mut revision = expected_revision;
+    let mut acknowledgements = Vec::with_capacity(events.len());
+    let mut operation_ids = BTreeSet::new();
+    for event in events {
+        let event = event
+            .as_object()
+            .ok_or_else(|| JsValue::from_str("replay event is invalid"))?;
+        let event_authority = event
+            .get("authority")
+            .ok_or_else(|| JsValue::from_str("replay event authority is missing"))?;
+        if event_authority
+            != delivery
+                .get("authority")
+                .unwrap_or(&serde_json::Value::Null)
+        {
+            return Err(JsValue::from_str("replay event authority mismatch"));
+        }
+        revision = revision
+            .checked_add(1)
+            .ok_or_else(|| JsValue::from_str("replay revision exceeds the supported range"))?;
+        if json_u64(event.get("revision"), "replay event revision")? != revision {
+            return Err(JsValue::from_str("replay event revision mismatch"));
+        }
+        let operation_id = event
+            .get("operationId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| JsValue::from_str("replay event operation identity is invalid"))?;
+        let normalized = validate_identity("operation", operation_id)?;
+        if !operation_ids.insert(normalized.clone()) {
+            return Err(JsValue::from_str(
+                "replay event operation identity is duplicated",
+            ));
+        }
+        acknowledgements.push(serde_json::json!({
+            "operationId": normalized,
+            "cursor": { "generation": generation, "revision": revision },
+        }));
+    }
+    if revision != through_revision {
+        return Err(JsValue::from_str("replay delivery coverage mismatch"));
+    }
+    Ok(serde_json::json!({
+        "cursor": { "generation": generation, "revision": revision },
+        "acknowledgements": acknowledgements,
+    }))
+}
+
+fn json_u64(value: Option<&serde_json::Value>, field: &str) -> Result<u64, JsValue> {
+    value
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| JsValue::from_str(&format!("{field} must be a non-negative integer")))
+}
+
+fn validate_safe_authority_id(kind: &str, value: &str) -> Result<(), JsValue> {
+    if kind.is_empty()
+        || value.is_empty()
+        || matches!(value, "." | "..")
+        || value
+            .chars()
+            .any(|character| character == '/' || character == '\\' || character.is_control())
+    {
+        return Err(JsValue::from_str(
+            "authority identity is not a safe path segment",
+        ));
+    }
+    Ok(())
+}
+
+fn require_exact_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+) -> Result<(), JsValue> {
+    if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+        return Err(JsValue::from_str(
+            "offline outbox command contains an unsupported field",
+        ));
+    }
+    Ok(())
+}
+
+fn reject_forbidden_keys(value: &serde_json::Value) -> Result<(), JsValue> {
+    match value {
+        serde_json::Value::Object(fields) => {
+            for (key, child) in fields {
+                let normalized = key.to_ascii_lowercase();
+                if normalized.contains("token")
+                    || normalized.contains("authorization")
+                    || normalized.contains("credential")
+                    || normalized.contains("secret")
+                    || normalized.contains("password")
+                    || normalized.contains("api_key")
+                    || normalized.contains("api-key")
+                    || matches!(
+                        normalized.as_str(),
+                        "scope" | "proof" | "body" | "text" | "bytes" | "base64" | "data"
+                    )
+                {
+                    return Err(JsValue::from_str(
+                        "offline outbox cannot persist inline bytes or credentials",
+                    ));
+                }
+                reject_forbidden_keys(child)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                reject_forbidden_keys(item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn js_json_value(value: &JsValue) -> Result<serde_json::Value, JsValue> {
     let mut ancestors = Vec::new();
     let mut nodes = 0;
@@ -1306,7 +1708,9 @@ fn snapshot_js_json(
         let ordinary: JsValue =
             js_sys::Object::get_prototype_of(&js_sys::Object::new().into()).into();
         if !prototype.is_null() && !js_sys::Object::is(&prototype, &ordinary) {
-            return Err(JsValue::from_str("only plain objects are canonical JSON"));
+            return Err(JsValue::from_str(
+                "command contains a non-canonical structured value",
+            ));
         }
     }
     ancestors.push(value.clone());
@@ -1348,7 +1752,7 @@ fn snapshot_js_json(
             let key_text = key
                 .as_string()
                 .ok_or_else(|| JsValue::from_str("JSON object key is invalid"))?;
-            let child = js_sys::Reflect::get(value, &key)?;
+            let child = snapshot_data_property(object, &key)?;
             let admitted = snapshot_js_json(&child, depth + 1, ancestors, nodes)?;
             if snapshot.insert(key_text, admitted).is_some() {
                 return Err(JsValue::from_str("duplicate JSON object key"));
@@ -1358,6 +1762,25 @@ fn snapshot_js_json(
     };
     ancestors.pop();
     Ok(snapshot)
+}
+
+/// Read only data properties at the Rust boundary.  A getter is executable
+/// policy supplied by the host and can change between validation and storage;
+/// requiring a detached data property keeps canonical admission reproducible.
+fn snapshot_data_property(
+    object: &js_sys::Object,
+    key: &JsValue,
+) -> Result<JsValue, JsValue> {
+    let descriptor = js_sys::Reflect::get_own_property_descriptor(object, key)?;
+    if descriptor.is_undefined() {
+        return Err(JsValue::from_str("canonical JSON property is unavailable"));
+    }
+    let getter = js_sys::Reflect::has(&descriptor, &JsValue::from_str("get"))?;
+    let setter = js_sys::Reflect::has(&descriptor, &JsValue::from_str("set"))?;
+    if getter || setter {
+        return Err(JsValue::from_str("command contains an accessor property"));
+    }
+    js_sys::Reflect::get(object, key)
 }
 
 /// Opaque synchronous reducer hosted in WebAssembly.
@@ -2242,6 +2665,7 @@ fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue>
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_large_number_types_as_bigints(true)
+        .serialize_maps_as_objects(true)
         .serialize_missing_as_null(true);
     value
         .serialize(&serializer)
@@ -2738,6 +3162,43 @@ impl WasmContentStore {
         maximum_resident_files: f64,
     ) -> Result<Self, JsValue> {
         let volume: VolumeRef = from_js(volume)?;
+        Self::from_limits(
+            volume,
+            maximum_file_bytes,
+            maximum_path_bytes,
+            maximum_resident_bytes,
+            maximum_resident_files,
+        )
+    }
+
+    /// Constructs a store with the canonical Rust policy for resident data.
+    ///
+    /// File and path limits remain explicit because they are selected by the
+    /// conversation contract; residency defaults are platform policy and must
+    /// not be independently re-authored by a JavaScript adapter.
+    #[wasm_bindgen(js_name = newDefault)]
+    pub fn new_default(
+        volume: JsValue,
+        maximum_file_bytes: f64,
+        maximum_path_bytes: f64,
+    ) -> Result<Self, JsValue> {
+        let volume: VolumeRef = from_js(volume)?;
+        Self::from_limits(
+            volume,
+            maximum_file_bytes,
+            maximum_path_bytes,
+            crate::memory_store::DEFAULT_RESIDENT_BYTES as f64,
+            crate::memory_store::DEFAULT_RESIDENT_FILES as f64,
+        )
+    }
+
+    fn from_limits(
+        volume: VolumeRef,
+        maximum_file_bytes: f64,
+        maximum_path_bytes: f64,
+        maximum_resident_bytes: f64,
+        maximum_resident_files: f64,
+    ) -> Result<Self, JsValue> {
         let store = crate::memory_store::MemoryStore::new(
             volume,
             exact_nonnegative_u64(maximum_file_bytes, "maximum_file_bytes")?,

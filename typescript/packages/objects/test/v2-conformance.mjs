@@ -7,12 +7,14 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
 import { MemoryObjectsV2 } from "@acyclic-labs/objects";
 import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
-import { ObjectsV2Memory, objects_v2_http_type, decode_objects_v2_json, encode_objects_v2_json } from "../generated/wasm/acyclic_objects_wasm.js";
+import { OBJECTS_ROUTES } from "../dist/generated-client.js";
+import { ObjectsV2Memory, decode_objects_v2_json, encode_objects_v2_json, objects_v2_http_body_frame_bytes, objects_v2_http_json_frame_bytes, objects_v2_http_type, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 
-const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
+const expectedRoutes = Object.values(OBJECTS_ROUTES).map(({ path }) => path.replace(/^\/?v2\/objects\//, ""));
 const make = (name, value) => create(wire[`${name}Schema`], value);
 const fail = (code) => error => error.code === code;
 const bytes = new Uint8Array(135000).map((_, index) => index % 251);
+const frameLimits = () => ({ json: objects_v2_http_json_frame_bytes(), body: objects_v2_http_body_frame_bytes() });
 
 async function fixture() {
   await MemoryObjectsV2.create(); // initialize the shared WASM runtime
@@ -37,12 +39,12 @@ async function fixture() {
         const lines = data.toString("utf8").trimEnd().split("\n");
         const schema = route === "objects/put" ? wire.PutObjectRequestSchema : wire.UploadPartRequestSchema;
         const headerSchema = route === "objects/put" ? wire.PutObjectHeaderSchema : wire.UploadPartHeaderSchema;
-        const frames = lines.map(line => fromBinary(schema, decode_objects_v2_json(input, Buffer.from(line), 128 * 1024)));
+        const frames = lines.map(line => fromBinary(schema, decode_objects_v2_json(input, Buffer.from(line), frameLimits().json)));
         assert.equal(frames.shift().frame.case, "header");
         assert.deepEqual(frames.pop().frame, { case: "complete", value: true });
-        const first = fromBinary(schema, decode_objects_v2_json(input, Buffer.from(lines[0]), 128 * 1024));
+        const first = fromBinary(schema, decode_objects_v2_json(input, Buffer.from(lines[0]), frameLimits().json));
         query = toBinary(headerSchema, first.frame.value);
-        body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); return frame.value; }));
+        body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= frameLimits().body); return frame.value; }));
       } else query = decode_objects_v2_json(input, data, 16 * 1024 * 1024);
       const result = await memory.invoke(route, query, body, 64n * 1024n * 1024n);
       const encoded = result.map(frame => Buffer.from(encode_objects_v2_json(output, frame, 16 * 1024 * 1024)));
@@ -86,7 +88,7 @@ test("Objects v2 rejects invalid requests before HTTP and bounds response alloca
 test("Objects v2 HTTP cancels oversized downloads at the header before pulling the body", async () => {
   await MemoryObjectsV2.create();
   const frame = make("GetObjectResponse", { frame: { case: "header", value: { object: { etag: "opaque", size: 1000000n, lastModified: { seconds: 0n, nanos: 0 } } } } });
-  const header = Buffer.concat([Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024)), Buffer.from("\n")]);
+  const header = Buffer.concat([Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), frameLimits().json)), Buffer.from("\n")]);
   let pulls = 0;
   let cancelled = false;
   const fetcher = async () => new Response(new ReadableStream({
@@ -101,10 +103,13 @@ test("Objects v2 HTTP cancels oversized downloads at the header before pulling t
 
 test("Objects v2 validates remote metadata, ranges, framing and terminal errors", async () => {
   await MemoryObjectsV2.create();
+  const bodyFrameBytes = frameLimits().body;
   const info = { etag: "opaque", size: 1n, lastModified: { seconds: 0n, nanos: 0 } };
   const header = make("GetObjectResponse", { frame: { case: "header", value: { object: info } } });
   const body = make("GetObjectResponse", { frame: { case: "body", value: new Uint8Array([1]) } });
-  const encode = frame => Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024));
+  const oversizedHeader = make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: BigInt(bodyFrameBytes + 1) } } } });
+  const oversizedBody = make("GetObjectResponse", { frame: { case: "body", value: new Uint8Array(bodyFrameBytes + 1) } });
+  const encode = frame => Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), frameLimits().json));
   const lines = frames => Buffer.concat(frames.flatMap(frame => [encode(frame), Buffer.from("\n")]));
   const query = make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" });
   for (const [payload, media, code] of [
@@ -120,6 +125,10 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
     const client = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(payload, { headers: { "content-type": media } }) });
     await assert.rejects(client.get(query, 16n), fail(code));
   }
+  const oversizedClient = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([oversizedHeader, oversizedBody]), { headers: { "content-type": "application/x-ndjson" } }) });
+  await assert.rejects(oversizedClient.get(query, 65537n), fail(wire.ErrorCode.UNAVAILABLE));
+  const oversizedQuery = toBinary(wire.GetObjectRequestSchema, query);
+  assert.throws(() => validate_objects_v2_response("objects/get", oversizedQuery, toBinary(wire.GetObjectResponseSchema, oversizedBody), BigInt(bodyFrameBytes + 1)));
   const corrupt = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response('{"bucket":{"name":"different.bucket"},"createdAt":"1970-01-01T00:00:00Z"}', { headers: { "content-type": "application/json" } }) });
   await assert.rejects(corrupt.headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.UNAVAILABLE));
 });

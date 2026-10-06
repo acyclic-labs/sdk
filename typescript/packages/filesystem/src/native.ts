@@ -1,4 +1,5 @@
 import { arch, platform } from "node:process";
+import { createRequire } from "node:module";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -79,6 +80,7 @@ import {
 } from "./compat.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
+import { FILESYSTEM_NATIVE_COMPANION_TARGETS } from "./generated-client.js";
 import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
@@ -104,6 +106,7 @@ type NativeAdapterScope = {
   readonly rawGeneration: typeof rawGeneration;
   readonly adaptChangeSet: typeof adaptChangeSet;
   readonly workspaceHandles: WeakMap<FsWorkspace, NativeRawWorkspace>;
+  readonly validateU32Bound: (value: number, label: string) => void;
 };
 
 const nativeScope: NativeAdapterScope = {
@@ -111,6 +114,7 @@ const nativeScope: NativeAdapterScope = {
   rawGeneration,
   adaptChangeSet,
   workspaceHandles,
+  validateU32Bound: requirePositiveInteger,
 };
 const workspaceScopes = new WeakMap<FsWorkspace, NativeAdapterScope>();
 type NativeFsHandle = { readonly raw: NativeRawFs; readonly scope: NativeAdapterScope };
@@ -136,16 +140,10 @@ export { CrossVolumeError, MountedView } from "./mounted.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 const PACKAGE_VERSION = "0.2.0";
-const TARGETS = new Set([
-  "win32-x64",
-  "win32-arm64",
-  "linux-x64",
-  "linux-arm64",
-  "darwin-x64",
-  "darwin-arm64",
-]);
+const TARGETS = new Set<string>(FILESYSTEM_NATIVE_COMPANION_TARGETS);
 
 let bindingPromise: Promise<NativeBindings> | undefined;
+const requireNative = createRequire(import.meta.url);
 
 type NativeModuleNamespace = NativeBindings & {
   readonly default?: NativeBindings;
@@ -156,7 +154,7 @@ async function bindings(): Promise<NativeBindings> {
   if (!TARGETS.has(target)) {
     throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
   }
-  bindingPromise ??= import(`@acyclic-labs/fs-${target}`).then((module): NativeBindings => {
+  bindingPromise ??= Promise.resolve().then(() => requireNative(`@acyclic-labs/fs-${target}`) as NativeModuleNamespace).then((module): NativeBindings => {
     const namespace = module as NativeModuleNamespace;
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
@@ -200,6 +198,16 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
       maximumInFlight: options.objectCache.maximumInFlight,
       maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
     }),
+    (value, label) => {
+      try {
+        binding.validateHostedPageBound(value);
+      } catch (error) {
+        if (error instanceof Error && error.message.length > 0) {
+          throw new RangeError(`${label} is invalid: ${error.message}`);
+        }
+        throw error;
+      }
+    },
   );
 }
 
@@ -522,10 +530,17 @@ function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
   );
 }
 
-function adaptFs(raw: NativeRawFs): NativeFsEngine {
+function adaptFs(
+  raw: NativeRawFs,
+  validateU32Bound: (value: number, label: string) => void = requirePositiveInteger,
+): NativeFsEngine {
   const targetMount = nativeMount(raw.capabilities.platform, raw.capabilities.nativeMount);
   const generationAdapter = createGenerationAdapter(
-    copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, "filesystem engine",
+    copyWorkspaceStat,
+    copyWorkspaceDirectoryPage,
+    copyWorkspaceExtentPlan,
+    "filesystem engine",
+    validateU32Bound,
   );
   const changeSetAdapter = createChangeSetAdapter(
     generationAdapter.adaptGeneration, nativeGenerationDiff, "filesystem engine",
@@ -534,6 +549,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     ...generationAdapter,
     adaptChangeSet: changeSetAdapter.adaptChangeSet,
     workspaceHandles: new WeakMap<FsWorkspace, NativeRawWorkspace>(),
+    validateU32Bound,
   };
   const capabilities: EngineCapabilities = {
     version: raw.capabilities.version,
@@ -937,6 +953,7 @@ function adaptWorkspace(
       nativeBoundary<Parameters<typeof workspaceOperations>[0]>(raw),
       value => scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(value)),
       value => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(value)),
+      scope.validateU32Bound,
     ),
     async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
@@ -970,7 +987,7 @@ function adaptWorkspace(
       );
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-      requirePositiveInteger(maximumChanges, "maximum changes");
+      scope.validateU32Bound(maximumChanges, "maximum changes");
       return scope.adaptChangeSet(
         nativeBoundary<Parameters<typeof scope.adaptChangeSet>[0]>(
           await raw.diff(

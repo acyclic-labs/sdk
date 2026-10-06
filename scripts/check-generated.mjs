@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings, rustAuthorityBufTemplate, rustAuthorityExport } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -53,6 +53,10 @@ const runtimeFingerprint = value => {
   return value;
 };
 const wasmSmoke = {
+  actors: module => {
+    module.validate_remote_web_endpoint("https://actors.example.test");
+    return [typeof module.validate_actors_invoke === "function", typeof module.validate_remote_web_response_chunk === "function"];
+  },
   filesystem: module => typeof module.openMemoryFs === "function",
   harness: module => module.decodeAggregateKind(1),
   inference: module => typeof module.validate_customer_wire === "function",
@@ -64,20 +68,28 @@ const wasmSmoke = {
     }
     return [module.validatePath("/check-generated"), module.validateSequence("0")];
   },
+  workers: module => {
+    module.validate_remote_web_endpoint("https://workers.example.test");
+    return [typeof module.validate_workers_invoke_version === "function", typeof module.validate_workers_invoke_deployment === "function"];
+  },
 };
 const wasmPackages = [
+  ["actors", "build-remote-web-wasm.mjs", "acyclic_remote_web_wasm"],
   ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
   ["harness", "build-harness-wasm.mjs", "acyclic_harness_wasm"],
   ["inference", "build-inference-wasm.mjs", "acyclic_inference_wasm"],
   ["machines", "build-machines-wasm.mjs", "acyclic_machines_wasm"],
   ["objects", "build-objects-wasm.mjs", "acyclic_objects_wasm"],
   ["stream", "build-stream-wasm.mjs", "acyclic_stream_wasm"],
+  ["workers", "build-remote-web-wasm.mjs", "acyclic_remote_web_wasm"],
 ];
+let authorityCargoEnv = { ...process.env };
 const checkWasmPackage = async ([packageName, buildScript, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
   const built = spawnSync(process.execPath, [join(root, "scripts", buildScript), output], {
     cwd: root,
     encoding: "utf8",
+    env: authorityCargoEnv,
   });
   if (built.status !== 0) {
     process.stderr.write(built.stdout ?? "");
@@ -132,6 +144,17 @@ const checkWasmPackage = async ([packageName, buildScript, basename]) => {
 
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
+  const authority = rustAuthorityExport();
+  authorityCargoEnv = { ...process.env, CARGO_TARGET_DIR: authority.cargoTargetDir };
+  const authorityInput = authority.inputRoot ?? authority.root;
+  const authorityFor = source => {
+    const normalized = source
+      .replaceAll("\\", "/")
+      .replace(/^proto\//, "")
+      .replace(/^rust\/crates\/stream\/proto\//, "");
+    return authority.manifest.families.find(family =>
+      family.source === normalized || family.source.startsWith(`${normalized}/`));
+  };
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);
@@ -147,8 +170,8 @@ try {
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
   const generated = spawnSync(
     executable,
-    ["generate", "--output", temporary],
-    { cwd: root, encoding: "utf8" },
+    ["generate", "--template", rustAuthorityBufTemplate(authority), "--output", temporary, authorityInput],
+    { cwd: root, encoding: "utf8", env: authorityCargoEnv },
   );
   if (generated.status !== 0) {
     process.stderr.write(generated.stdout ?? "");
@@ -163,25 +186,65 @@ try {
   }
   for (const relative of freshFiles) {
     const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
-    const committed = readFileSync(join(committedTypeScript, relative), "utf8");
+    const committed = normalizeGeneratedTypeScript(readFileSync(join(committedTypeScript, relative), "utf8"));
     if (fresh !== committed) throw new Error(`generated TypeScript drift: ${relative}`);
   }
   const freshRust = join(temporary, "generated/rust");
   const committedRust = join(root, "generated/rust");
+  const rustProductFiles = new Set(
+    packagedRustBindings
+      .filter(([relative]) => /^(?:acyclic)\/(?:actors|workers|objects)\//.test(relative.replaceAll("\\", "/")))
+      .map(([relative]) => relative.replaceAll("\\", "/")),
+  );
   const freshRustFiles = generatedFiles(freshRust);
   if (JSON.stringify(freshRustFiles) !== JSON.stringify(generatedFiles(committedRust))) {
     throw new Error("generated Rust file set drift; run bun run generate");
   }
   for (const relative of freshRustFiles) {
-    const fresh = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(freshRust, relative), "utf8"));
-    const committed = readFileSync(join(committedRust, relative), "utf8");
+    const normalized = relative.replaceAll("\\", "/");
+    if (rustProductFiles.has(normalized)) continue;
+    const fresh = normalizeGeneratedRust(normalized, readFileSync(join(freshRust, relative), "utf8"));
+    const committed = normalizeGeneratedRust(normalized, readFileSync(join(committedRust, relative), "utf8"));
     if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
   }
+  const products = spawnSync(
+    "cargo",
+    [
+      "run",
+      "--quiet",
+      "--locked",
+      "--offline",
+      "--manifest-path",
+      join(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
+      "--",
+      "check-products",
+      "--root",
+      root,
+    ],
+    { cwd: root, encoding: "utf8", env: authorityCargoEnv },
+  );
+  if (products.status !== 0) {
+    process.stderr.write(products.stdout ?? "");
+    process.stderr.write(products.stderr ?? "");
+    throw new Error(`Rust product parity failed with status ${products.status ?? "unknown"}`);
+  }
+  const rustProductDescriptors = new Set([
+    "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+    "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+    "rust/crates/inference/inference_descriptor.bin",
+    "rust/crates/inference-contract/inference_descriptor.bin",
+  ]);
   for (const [source, destination] of generatedDescriptors) {
+    if (rustProductDescriptors.has(destination)) continue;
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
-    const built = spawnSync(executable, ["build", "--path", source, "-o", descriptor], {
-      cwd: root,
+    const family = authorityFor(source);
+    const buildRoot = family ? authorityInput : root;
+    const input = family ? family.source : source;
+    const built = spawnSync(executable, ["build", "--path", input, "-o", descriptor], {
+      cwd: buildRoot,
       encoding: "utf8",
+      env: authorityCargoEnv,
     });
     if (built.status !== 0) {
       process.stderr.write(built.stdout ?? "");

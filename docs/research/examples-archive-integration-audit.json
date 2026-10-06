@@ -1,0 +1,31 @@
+{
+  "schema": "acyclic.sdk.examples.archive-integration-audit.v1",
+  "checked_at": "2026-10-04",
+  "output_root": "Q:/sdk/work/sdk-final-match-bundle4-20261004",
+  "scope": "actors-create-roundtrip Rust receipt; observed output, not full pipeline qualification",
+  "status": "incomplete",
+  "archive": {
+    "path": "qualification/packages/actors-create-roundtrip-sdk-package.tgz",
+    "sha256": "db172b009446733ef4b34f60f76ab2362aff709be0ee6f51ec33fe3dcb8e54b4",
+    "prefix_hex": "1F-8B-08-10-FE-91-C1-6A-00-03",
+    "gzip_mtime_seconds": 1791070718
+  },
+  "declared_package": {
+    "name": "acyclic-sdk-bundle",
+    "version": "0.0.0",
+    "source_revision": "31b9ff52d63c91f2b9bf87e16b78ad682d26546f",
+    "manifest": "[package]\nname = \"acyclic-sdk-bundle\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+    "present_in_consumer_lock": false,
+    "consumer_manifest": "[package]\nname = \"rendered-actors-create-roundtrip\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = { path = \"../../qualification/packages/actors-create-roundtrip-sdk-package/crates/actors\" }\nacyclic-stream = { path = \"../../qualification/packages/actors-create-roundtrip-sdk-package/crates/stream\", features = [\"grpc\"] }\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = { version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }\n"
+  },
+  "findings": [
+    "Archive gzip timestamp is nonzero; producer invokes unnormalized tar -czf and adds gzip comment metadata.",
+    "Declared bundle manifest has no dependencies; consumer uses nested actors and stream paths instead of declaring the bundle.",
+    "Receipt source revision equals original checkout31b9ff52, not observed SDK branch9e87cbc35; exact captured source provenance must be resolved before current qualification."
+  ],
+  "next": [
+    "Consume a genuine SDK package identity through a fresh resolver-produced lockfile.",
+    "Use deterministic pinned OSS archive generation with normalized ordering/metadata.",
+    "Commit essential producer source then regenerate against exact immutable SDK source revision."
+  ]
+}

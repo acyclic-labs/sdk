@@ -1,9 +1,10 @@
 //! Authenticated client for the generated Actors v1 service.
 
 use crate::wire;
+use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
 use prost::Message;
 use tonic::{
-    Request, Status,
+    Code, Request, Status,
     metadata::{Ascii, MetadataValue},
     service::Interceptor,
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
@@ -30,6 +31,12 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 /// Client configuration error.
 #[derive(Debug, thiserror::Error)]
 pub enum ConnectError {
+    /// The authenticated control service rejected the handshake.
+    #[error("Actors control handshake rejected: {0}")]
+    RemoteStatus(Status),
+    /// The endpoint did not prove the required Rust-owned contract identity.
+    #[error("Actors control identity mismatch: {0}")]
+    Negotiation(String),
     /// Endpoint must use authenticated TLS.
     #[error("Actors endpoints must use https")]
     InsecureEndpoint,
@@ -61,6 +68,87 @@ pub async fn connect_with_ca_certificate(
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
+    let (channel, authorization) = connect_channel_with_ca_certificate(endpoint, token, ca).await?;
+    Ok(
+        wire::actors_service_client::ActorsServiceClient::with_interceptor(
+            channel,
+            BearerAuth(authorization),
+        )
+        .max_decoding_message_size(16 * 1024 * 1024)
+        .max_encoding_message_size(16 * 1024 * 1024),
+    )
+}
+
+/// Connect after proving the independent Rust-owned Actors identity.
+///
+/// An absent or unavailable control service returns `None`; authentication,
+/// identity, and protocol failures remain terminal so they cannot silently
+/// switch the caller to another wire contract.
+pub async fn connect_verified(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<Option<Client>, ConnectError> {
+    use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+    use crate::control_wire::protocol::v1::{Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity};
+
+    let (channel, authorization) = connect_channel_with_ca_certificate(endpoint, token, ca).await?;
+    let family = BindingFamily::Actors;
+    let version = control::control_protocol_version(family);
+    let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel.clone())
+        .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES)
+        .max_encoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+    let mut request = Request::new(HandshakeRequest {
+        protocol: Some(ProtocolIdentity {
+            version: version.into(),
+            descriptor_digest: control::archived_descriptor_digest(family),
+        }),
+        required: Some(CapabilitySet {
+            capabilities: vec![Capability {
+                name: family.name().into(),
+                version: version.into(),
+            }],
+        }),
+    });
+    request.metadata_mut().insert("authorization", authorization.clone());
+    request.metadata_mut().insert(
+        control::FAMILY_METADATA_KEY,
+        MetadataValue::from_static(family.name()),
+    );
+    request.set_timeout(std::time::Duration::from_secs(10));
+    let response = match probe.handshake(request).await {
+        Ok(response) => response.into_inner(),
+        Err(status) if matches!(status.code(), Code::Unimplemented | Code::Unavailable | Code::DeadlineExceeded) => {
+            return Ok(None);
+        }
+        Err(status) => return Err(ConnectError::RemoteStatus(status)),
+    };
+    control::validate_handshake_response(
+        family,
+        version,
+        &[control::RequiredCapability {
+            name: family.name(),
+            version,
+        }],
+        &response.encode_to_vec(),
+        control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+    )
+    .map_err(|error| ConnectError::Negotiation(format!("{error:?}")))?;
+    Ok(Some(
+        wire::actors_service_client::ActorsServiceClient::with_interceptor(
+            channel,
+            BearerAuth(authorization),
+        )
+        .max_decoding_message_size(16 * 1024 * 1024)
+        .max_encoding_message_size(16 * 1024 * 1024),
+    ))
+}
+
+async fn connect_channel_with_ca_certificate(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<(Channel, MetadataValue<Ascii>), ConnectError> {
     let valid_endpoint = reqwest::Url::parse(endpoint).is_ok_and(|url| {
         url.scheme() == "https"
             && url.username().is_empty()
@@ -71,7 +159,7 @@ pub async fn connect_with_ca_certificate(
     if !valid_endpoint {
         return Err(ConnectError::InsecureEndpoint);
     }
-    if token.trim().is_empty() {
+    if !credential::validate(BEARER_NO_CRLF, token) {
         return Err(ConnectError::InvalidCredential);
     }
     let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
@@ -89,14 +177,7 @@ pub async fn connect_with_ca_certificate(
         .tls_config(tls)?
         .connect()
         .await?;
-    Ok(
-        wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            channel,
-            BearerAuth(authorization),
-        )
-        .max_decoding_message_size(16 * 1024 * 1024)
-        .max_encoding_message_size(16 * 1024 * 1024),
-    )
+    Ok((channel, authorization))
 }
 
 /// Decode the canonical semantic error carried in gRPC status details.

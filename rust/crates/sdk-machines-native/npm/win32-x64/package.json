@@ -1,0 +1,1 @@
+{"name":"@acyclic-labs/machines-win32-x64","version":"0.2.0","license":"Apache-2.0","os":["win32"],"cpu":["x64"],"main":"index.js","files":["index.js","sdk_machines_native.node"]}

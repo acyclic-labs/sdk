@@ -8,6 +8,18 @@
     )
 )]
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/quickstart.md")]
+#![doc = include_str!("../docs/topics.md")]
+#![doc = include_str!("../docs/service-availability.md")]
+#![doc = include_str!("../docs/integrations.md")]
+#![doc = include_str!("../docs/filesystem.md")]
+#![doc = include_str!("../docs/grpc.md")]
+#![doc = include_str!("../docs/machines.md")]
+#![doc = include_str!("../docs/managed-agent-runtime.md")]
+#![doc = include_str!("../docs/objects.md")]
+
+use std::future::Future;
+use futures::Stream;
 
 pub mod agent_loop;
 pub mod bundle;
@@ -22,21 +34,23 @@ pub mod effect_host;
 pub mod effects;
 pub mod executor;
 pub mod extension;
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub mod filesystem;
 pub mod fork;
-#[cfg(feature = "grpc")]
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 mod handles;
+pub mod integrations;
 pub mod interaction;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod live;
+#[cfg(target_arch = "wasm32")]
+#[path = "live_wasm.rs"]
 pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
-#[cfg(any(
-    test,
-    feature = "filesystem",
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+pub mod managed_agent_runtime;
+#[cfg(any(test, feature = "filesystem", target_arch = "wasm32"))]
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
@@ -50,14 +64,127 @@ pub mod scheduler;
 pub mod store;
 pub mod tool;
 pub mod turn;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod wasm;
+#[cfg(target_arch = "wasm32")]
+pub use acyclic_sdk_remote_web::{BrowserHarnessCapabilities, BrowserHarnessClient};
 pub mod wire_api;
 mod wire_codec;
 pub use wire_codec::encode_error;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
+
+/// Future ABI used by the harness traits. Native providers may cross worker
+/// threads; browser providers remain on the browser executor and therefore
+/// use local futures.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type BoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type BoxFuture<'a, T> = futures::future::LocalBoxFuture<'a, T>;
+pub(crate) type SendBoxFuture<'a, T> = futures::future::BoxFuture<'a, T>;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) type PlatformBoxStream<'a, T> = futures::stream::BoxStream<'a, T>;
+#[cfg(target_arch = "wasm32")]
+pub(crate) type PlatformBoxStream<'a, T> = futures::stream::LocalBoxStream<'a, T>;
+
+/// Box a future using the executor model of the compiled target.  Native
+/// builds retain Send futures; browser builds remain on the local executor.
+pub(crate) trait PlatformFutureExt: Future + Sized {
+    fn platform_boxed<'a>(self) -> BoxFuture<'a, Self::Output>
+    where
+        Self: 'a;
+}
+
+pub(crate) trait PlatformStreamExt: Stream + Sized {
+    fn platform_boxed<'a>(self) -> PlatformBoxStream<'a, Self::Item>
+    where
+        Self: 'a;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<S: Stream + Send> PlatformStreamExt for S {
+    fn platform_boxed<'a>(self) -> PlatformBoxStream<'a, Self::Item>
+    where
+        Self: 'a,
+    {
+        Box::pin(self)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<S: Stream> PlatformStreamExt for S {
+    fn platform_boxed<'a>(self) -> PlatformBoxStream<'a, Self::Item>
+    where
+        Self: 'a,
+    {
+        Box::pin(self)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<F: Future + Send> PlatformFutureExt for F {
+    fn platform_boxed<'a>(self) -> BoxFuture<'a, Self::Output>
+    where
+        Self: 'a,
+    {
+        Box::pin(self)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl<F: Future> PlatformFutureExt for F {
+    fn platform_boxed<'a>(self) -> BoxFuture<'a, Self::Output>
+    where
+        Self: 'a,
+    {
+        Box::pin(self)
+    }
+}
+
+/// Platform-specific marker bounds for pluggable Harness services.
+///
+/// Native providers cross worker threads; browser providers remain on the
+/// browser executor and therefore intentionally do not require `Send` or
+/// `Sync`. Keeping this boundary in Rust lets every generated facade inherit
+/// the same platform behavior without consumer feature flags.
+#[doc(hidden)]
+#[cfg(not(target_arch = "wasm32"))]
+pub trait PlatformServiceBounds: Send + Sync {}
+#[doc(hidden)]
+#[cfg(target_arch = "wasm32")]
+pub trait PlatformServiceBounds {}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: ?Sized + Send + Sync> PlatformServiceBounds for T {}
+
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> PlatformServiceBounds for T {}
+
+/// Bounds for live task callbacks, which are thread-safe only on native
+/// targets. Browser callbacks stay on the local executor.
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub trait PlatformTaskCallback: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync> PlatformTaskCallback for T {}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub trait PlatformTaskCallback {}
+#[cfg(target_arch = "wasm32")]
+impl<T> PlatformTaskCallback for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+pub trait PlatformTaskFuture: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> PlatformTaskFuture for T {}
+#[cfg(target_arch = "wasm32")]
+#[doc(hidden)]
+pub trait PlatformTaskFuture {}
+#[cfg(target_arch = "wasm32")]
+impl<T> PlatformTaskFuture for T {}
 
 /// Generated Protobuf packages, nested as their package names are, so the
 /// harness messages resolve the shared protocol handshake they import.
@@ -68,13 +195,18 @@ pub mod workflow;
     clippy::large_enum_variant
 )]
 mod generated {
+    /// Generated protobuf package namespace.
     pub mod acyclic {
+        /// Harness service messages and envelopes.
         pub mod harness {
+            /// Version-two harness wire contract.
             pub mod v2 {
                 include!(concat!(env!("OUT_DIR"), "/acyclic.harness.v2.rs"));
             }
         }
+        /// Shared protocol negotiation messages.
         pub mod protocol {
+            /// Version-one protocol handshake contract.
             pub mod v1 {
                 include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
             }

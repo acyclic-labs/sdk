@@ -11,15 +11,21 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_protocol_v1_protocol: GenFile;
 
 /**
+ * Identifies a service family's versioned wire contract and descriptor digest. The accepting service defines its identity matching policy.
+ *
  * @generated from message acyclic.protocol.v1.ProtocolIdentity
  */
 export declare type ProtocolIdentity = Message<"acyclic.protocol.v1.ProtocolIdentity"> & {
   /**
+   * The version identifier of the service family's wire contract.
+   *
    * @generated from field: string version = 1;
    */
   version: string;
 
   /**
+   * The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
+   *
    * @generated from field: string descriptor_digest = 2;
    */
   descriptorDigest: string;
@@ -32,15 +38,21 @@ export declare type ProtocolIdentity = Message<"acyclic.protocol.v1.ProtocolIden
 export declare const ProtocolIdentitySchema: GenMessage<ProtocolIdentity>;
 
 /**
+ * Identifies a named, versioned capability offered or requested during a handshake.
+ *
  * @generated from message acyclic.protocol.v1.Capability
  */
 export declare type Capability = Message<"acyclic.protocol.v1.Capability"> & {
   /**
+   * The capability name recognized by the service family.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * The version associated with this named capability.
+   *
    * @generated from field: string version = 2;
    */
   version: string;
@@ -53,10 +65,14 @@ export declare type Capability = Message<"acyclic.protocol.v1.Capability"> & {
 export declare const CapabilitySchema: GenMessage<Capability>;
 
 /**
+ * Groups the named, versioned capabilities exchanged during protocol negotiation.
+ *
  * @generated from message acyclic.protocol.v1.CapabilitySet
  */
 export declare type CapabilitySet = Message<"acyclic.protocol.v1.CapabilitySet"> & {
   /**
+   * The capabilities in this set, each identified by its name and version.
+   *
    * @generated from field: repeated acyclic.protocol.v1.Capability capabilities = 1;
    */
   capabilities: Capability[];
@@ -69,15 +85,21 @@ export declare type CapabilitySet = Message<"acyclic.protocol.v1.CapabilitySet">
 export declare const CapabilitySetSchema: GenMessage<CapabilitySet>;
 
 /**
+ * Requests protocol negotiation with a service family's identity and required capabilities. The family defines which omissions and capabilities it accepts.
+ *
  * @generated from message acyclic.protocol.v1.HandshakeRequest
  */
 export declare type HandshakeRequest = Message<"acyclic.protocol.v1.HandshakeRequest"> & {
   /**
+   * The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
+   *
    * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
   /**
+   * The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
+   *
    * @generated from field: acyclic.protocol.v1.CapabilitySet required = 2;
    */
   required?: CapabilitySet | undefined;
@@ -90,15 +112,21 @@ export declare type HandshakeRequest = Message<"acyclic.protocol.v1.HandshakeReq
 export declare const HandshakeRequestSchema: GenMessage<HandshakeRequest>;
 
 /**
+ * Reports the service family's protocol identity and supported capabilities after negotiation.
+ *
  * @generated from message acyclic.protocol.v1.HandshakeResponse
  */
 export declare type HandshakeResponse = Message<"acyclic.protocol.v1.HandshakeResponse"> & {
   /**
+   * The protocol identity reported by the accepting service.
+   *
    * @generated from field: acyclic.protocol.v1.ProtocolIdentity protocol = 1;
    */
   protocol?: ProtocolIdentity | undefined;
 
   /**
+   * The capabilities advertised by the accepting service.
+   *
    * @generated from field: acyclic.protocol.v1.CapabilitySet supported = 2;
    */
   supported?: CapabilitySet | undefined;
@@ -109,3 +137,4 @@ export declare type HandshakeResponse = Message<"acyclic.protocol.v1.HandshakeRe
  * Use `create(HandshakeResponseSchema)` to create a new message.
  */
 export declare const HandshakeResponseSchema: GenMessage<HandshakeResponse>;
+

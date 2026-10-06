@@ -1,0 +1,848 @@
+{
+  "field_mappings": [
+    {
+      "family": "actors",
+      "field": "actor_id",
+      "semantic_type": "actor_id"
+    },
+    {
+      "family": "actors",
+      "field": "method",
+      "semantic_type": "method"
+    },
+    {
+      "family": "workers",
+      "field": "alias",
+      "semantic_type": "alias"
+    },
+    {
+      "family": "workers",
+      "field": "version_sha256",
+      "semantic_type": "version_sha256"
+    },
+    {
+      "family": "workers",
+      "field": "idempotency_key",
+      "semantic_type": "idempotency_key_text"
+    },
+    {
+      "family": "workers",
+      "field": "job_id",
+      "semantic_type": "job_id"
+    },
+    {
+      "family": "workers",
+      "field": "method",
+      "semantic_type": "method"
+    },
+    {
+      "family": "stream",
+      "field": "idempotency_key",
+      "semantic_type": "idempotency_key_bytes"
+    },
+    {
+      "family": "stream",
+      "field": "path",
+      "semantic_type": "path"
+    },
+    {
+      "family": "stream",
+      "field": "source",
+      "semantic_type": "source"
+    },
+    {
+      "family": "stream",
+      "field": "destination",
+      "semantic_type": "destination"
+    },
+    {
+      "family": "stream",
+      "field": "limit",
+      "semantic_type": "page_limit"
+    },
+    {
+      "family": "stream",
+      "field": "commit_id",
+      "semantic_type": "commit_id"
+    },
+    {
+      "family": "objects",
+      "field": "key",
+      "semantic_type": "object_key"
+    },
+    {
+      "family": "objects",
+      "field": "etag",
+      "semantic_type": "opaque_text"
+    },
+    {
+      "family": "objects",
+      "field": "idempotency_key",
+      "semantic_type": "idempotency_key_text"
+    },
+    {
+      "family": "objects",
+      "field": "upload_id",
+      "semantic_type": "upload_id"
+    },
+    {
+      "family": "objects",
+      "field": "page_size",
+      "semantic_type": "page_limit"
+    },
+    {
+      "family": "inference",
+      "field": "run_id",
+      "semantic_type": "run_id"
+    },
+    {
+      "family": "inference",
+      "field": "revision",
+      "semantic_type": "revision_digest"
+    },
+    {
+      "family": "inference",
+      "field": "commitment",
+      "semantic_type": "sha256_digest"
+    },
+    {
+      "family": "inference",
+      "field": "evaluation_id",
+      "semantic_type": "evaluation_id"
+    },
+    {
+      "family": "inference",
+      "field": "spec_digest",
+      "semantic_type": "sha256_digest"
+    },
+    {
+      "family": "machines",
+      "field": "image",
+      "semantic_type": "immutable_image"
+    },
+    {
+      "family": "machines",
+      "field": "idempotency_key",
+      "semantic_type": "idempotency_key_message"
+    },
+    {
+      "family": "machines",
+      "field": "machine_id",
+      "semantic_type": "machine_id"
+    },
+    {
+      "family": "machines",
+      "field": "checkpoint_id",
+      "semantic_type": "checkpoint_id"
+    },
+    {
+      "family": "machines",
+      "field": "operation_id",
+      "semantic_type": "operation_id"
+    },
+    {
+      "family": "machines",
+      "field": "page_limit",
+      "semantic_type": "page_limit"
+    },
+    {
+      "family": "filesystem",
+      "field": "path",
+      "semantic_type": "path"
+    },
+    {
+      "family": "harness",
+      "field": "path",
+      "semantic_type": "path"
+    }
+  ],
+  "languages": [
+    {
+      "checker": "cargo check + clippy",
+      "integers": "u64/i64",
+      "language": "rust",
+      "nominal_types": "newtype structs with private fields",
+      "presence": "Option<T> plus prost presence",
+      "refinements": "TryFrom constructors and typed errors",
+      "unions": "enum with non_exhaustive unknown arm",
+      "unknown_values": "raw enum number and UnknownOneof payload"
+    },
+    {
+      "checker": "tsc --strict + eslint type rules",
+      "integers": "bigint for uint64; never number",
+      "language": "typescript",
+      "nominal_types": "branded string/number/Uint8Array types",
+      "presence": "exactOptionalPropertyTypes and explicit null",
+      "refinements": "user-defined asserts and branded constructors",
+      "unions": "discriminated readonly unions with never exhaustiveness",
+      "unknown_values": "Unknown(raw number) enum arm and UnknownOneof object"
+    },
+    {
+      "checker": "pyright strict + mypy strict",
+      "integers": "int with range validators; no float coercion",
+      "language": "python",
+      "nominal_types": "NewType plus Annotated validators",
+      "presence": "NotRequired versus Optional under strict mode",
+      "refinements": "Annotated metadata with runtime constructor",
+      "unions": "Literal discriminants, TypedDict and Never",
+      "unknown_values": "IntEnum fallback carrying raw integer and UnknownOneof"
+    },
+    {
+      "checker": "go vet + go test + staticcheck",
+      "integers": "uint64/int64; never float",
+      "language": "go",
+      "nominal_types": "defined string/byte/integer types with constructors",
+      "presence": "pointers/wrappers for explicit presence",
+      "refinements": "constructor errors and validation methods",
+      "unions": "tagged structs and sealed interfaces where possible",
+      "unknown_values": "enum raw value plus UnknownOneof bytes"
+    },
+    {
+      "checker": "javac -Xlint + Error Prone",
+      "integers": "long with unsigned helper/value wrapper",
+      "language": "java",
+      "nominal_types": "records/value wrappers and private constructors",
+      "presence": "optional wrappers only where presence is explicit",
+      "refinements": "factory methods returning typed validation errors",
+      "unions": "sealed interfaces plus records",
+      "unknown_values": "UNRECOGNIZED plus raw number and UnknownOneof"
+    },
+    {
+      "checker": "dotnet build nullable=enable + analyzers",
+      "integers": "ulong/long; checked conversions",
+      "language": "csharp",
+      "nominal_types": "readonly record structs and required members",
+      "presence": "nullable annotations plus Optional wrapper",
+      "refinements": "static factories and nullable flow analysis",
+      "unions": "sealed record hierarchy with exhaustive switch",
+      "unknown_values": "raw enum integer and UnknownOneof record"
+    },
+    {
+      "checker": "swiftc -warnings-as-errors",
+      "integers": "UInt64/Int64",
+      "language": "swift",
+      "nominal_types": "struct wrappers with failable initializers",
+      "presence": "Optional only for explicit presence",
+      "refinements": "init? / throws and validation types",
+      "unions": "enum associated values",
+      "unknown_values": "unknown(rawValue:) enum case and unknown oneof"
+    },
+    {
+      "checker": "clang++ -std=c++20 -Werror",
+      "integers": "std::uint64_t/std::int64_t",
+      "language": "cpp",
+      "nominal_types": "strong typedef structs and explicit constructors",
+      "presence": "std::optional only for explicit presence",
+      "refinements": "expected<T, Error> and constexpr checks",
+      "unions": "std::variant with Unknown alternative",
+      "unknown_values": "raw enum value and variant UnknownOneof"
+    },
+    {
+      "checker": "ruby syntax + runtime contract tests",
+      "integers": "Integer with no narrowing",
+      "language": "ruby",
+      "nominal_types": "value objects with private constructors",
+      "presence": "explicit sentinel versus nil",
+      "refinements": "constructor validation and typed result objects",
+      "unions": "tagged immutable value objects",
+      "unknown_values": "open enum raw integer wrapper and unknown oneof"
+    },
+    {
+      "checker": "phpstan level max + PHPUnit",
+      "integers": "int with string fallback for uint64",
+      "language": "php",
+      "nominal_types": "readonly value objects and enums",
+      "presence": "nullability plus explicit presence wrapper",
+      "refinements": "named constructors and exceptions",
+      "unions": "sealed-style interfaces plus readonly records",
+      "unknown_values": "Unknown(raw enum integer) and UnknownOneof"
+    },
+    {
+      "checker": "dart analyze --fatal-infos + test",
+      "integers": "int (64-bit) with checked JSON",
+      "language": "dart",
+      "nominal_types": "sealed class value objects",
+      "presence": "nullable only when descriptor permits",
+      "refinements": "factory constructors and Result types",
+      "unions": "sealed classes with pattern matching",
+      "unknown_values": "unknown raw enum integer and UnknownOneof subclass"
+    },
+    {
+      "checker": "kotlinc + detekt",
+      "integers": "ULong/Long with protobuf adapters",
+      "language": "kotlin",
+      "nominal_types": "@JvmInline value classes",
+      "presence": "nullable only for explicit presence",
+      "refinements": "require/factory returning typed failures",
+      "unions": "sealed interfaces/data classes",
+      "unknown_values": "UNRECOGNIZED(raw) and UnknownOneof"
+    },
+    {
+      "checker": "scalac -Xfatal-warnings + munit",
+      "integers": "Long with UInt64 value class",
+      "language": "scala",
+      "nominal_types": "opaque types and case classes",
+      "presence": "Option only for explicit presence",
+      "refinements": "refined constructors and Either",
+      "unions": "sealed traits with case classes",
+      "unknown_values": "open enum Unknown case carrying raw integer"
+    },
+    {
+      "checker": "mix format + dialyzer + ExUnit",
+      "integers": "integer with range guards",
+      "language": "elixir",
+      "nominal_types": "typed structs and opaque typespecs",
+      "presence": "absent key versus nil",
+      "refinements": "guards and changesets",
+      "unions": "tagged tuples with @type",
+      "unknown_values": "raw enum integer and unknown tagged tuple"
+    },
+    {
+      "checker": "bal build + tests",
+      "integers": "int/decimal with explicit uint64 codec",
+      "language": "ballerina",
+      "nominal_types": "distinct types and readonly records",
+      "presence": "optional fields versus nil",
+      "refinements": "distinct constructors and error values",
+      "unions": "typed unions with match exhaustiveness",
+      "unknown_values": "open enum raw integer and unknown union member"
+    },
+    {
+      "checker": "clang -Weverything",
+      "integers": "uint64_t/int64_t",
+      "language": "objective-c",
+      "nominal_types": "class wrappers and NS_SWIFT_NAME annotations",
+      "presence": "nullable annotations plus presence bit",
+      "refinements": "nullable designated initializers",
+      "unions": "tagged classes with Unknown subclass",
+      "unknown_values": "raw enum number and unknown object"
+    },
+    {
+      "checker": "rebar3 dialyzer + EUnit",
+      "integers": "integer guards",
+      "language": "erlang",
+      "nominal_types": "opaque types and dialyzer specs",
+      "presence": "absent map key versus undefined",
+      "refinements": "guards and error tuples",
+      "unions": "tagged tuples",
+      "unknown_values": "raw enum integer and unknown tuple"
+    },
+    {
+      "checker": "dune build + warnings-as-errors",
+      "integers": "int64/int32 exact codecs",
+      "language": "ocaml",
+      "nominal_types": "private type aliases and modules",
+      "presence": "option only for explicit presence",
+      "refinements": "smart constructors returning result",
+      "unions": "polymorphic variants or closed variants",
+      "unknown_values": "open Unknown polymorphic variant carrying raw number"
+    },
+    {
+      "checker": "SBCL compile + runtime vectors",
+      "integers": "(unsigned-byte 64)/(signed-byte 64)",
+      "language": "common-lisp",
+      "nominal_types": "deftype plus constructor predicates",
+      "presence": "sentinel distinct from NIL",
+      "refinements": "type declarations and condition types",
+      "unions": "tagged structures",
+      "unknown_values": "raw enum integer and unknown structure"
+    },
+    {
+      "checker": "gnatmake -gnatwae",
+      "integers": "Interfaces.Unsigned_64/Integer_64",
+      "language": "ada",
+      "nominal_types": "subtypes and private types",
+      "presence": "presence discriminant",
+      "refinements": "range constraints and predicates",
+      "unions": "variant records",
+      "unknown_values": "raw enum representation and unknown variant"
+    },
+    {
+      "checker": "clang -Wall -Wextra -Werror",
+      "integers": "uint64_t/int64_t",
+      "language": "c",
+      "nominal_types": "opaque structs and constructor functions",
+      "presence": "has_field bit plus value",
+      "refinements": "status-returning validators",
+      "unions": "tagged unions with explicit Unknown",
+      "unknown_values": "raw enum integer and unknown union tag"
+    },
+    {
+      "checker": "clj-kondo + spec tests",
+      "integers": "long/bigint exact",
+      "language": "clojure",
+      "nominal_types": "specs and namespaced maps",
+      "presence": "contains? versus nil",
+      "refinements": "clojure.spec.alpha",
+      "unions": "tagged maps",
+      "unknown_values": "raw enum integer and unknown tag"
+    },
+    {
+      "checker": "crystal build --error-trace",
+      "integers": "UInt64/Int64",
+      "language": "crystal",
+      "nominal_types": "struct wrappers and aliases",
+      "presence": "Nil union only when explicit",
+      "refinements": "constructor validation",
+      "unions": "union types with tagged wrappers",
+      "unknown_values": "raw enum integer and unknown wrapper"
+    },
+    {
+      "checker": "elm make",
+      "integers": "Int with Bytes codec for uint64",
+      "language": "elm",
+      "nominal_types": "custom types and opaque modules",
+      "presence": "Maybe only for explicit presence",
+      "refinements": "smart constructors returning Result",
+      "unions": "custom type constructors",
+      "unknown_values": "Unknown(raw Int) constructor"
+    },
+    {
+      "checker": "godot --headless --check-only",
+      "integers": "int with checked codec",
+      "language": "gdscript",
+      "nominal_types": "typed classes and exported typed fields",
+      "presence": "explicit has-field flag",
+      "refinements": "runtime validators with typed return",
+      "unions": "tagged classes",
+      "unknown_values": "raw enum integer and unknown class"
+    },
+    {
+      "checker": "Julia package tests",
+      "integers": "UInt64/Int64",
+      "language": "julia",
+      "nominal_types": "primitive/value structs",
+      "presence": "Missing versus Nothing",
+      "refinements": "inner constructors and type assertions",
+      "unions": "Union types with tagged structs",
+      "unknown_values": "raw enum integer and unknown struct"
+    },
+    {
+      "checker": "nim check --warnings:all",
+      "integers": "uint64/int64",
+      "language": "nim",
+      "nominal_types": "distinct types",
+      "presence": "Option[T] for explicit presence",
+      "refinements": "validated constructors and concepts",
+      "unions": "object variants",
+      "unknown_values": "raw enum integer and unknown object"
+    },
+    {
+      "checker": "perl -c + prove",
+      "integers": "Math::Int64 or strings for uint64",
+      "language": "perl",
+      "nominal_types": "checked constructors and immutable objects",
+      "presence": "exists versus undef",
+      "refinements": "Type::Tiny constraints",
+      "unions": "tagged hashes/classes",
+      "unknown_values": "raw enum integer and unknown tag"
+    },
+    {
+      "checker": "PSScriptAnalyzer + Pester",
+      "integers": "UInt64/Int64",
+      "language": "powershell",
+      "nominal_types": "classes with typed properties",
+      "presence": "nullable property plus presence marker",
+      "refinements": "ValidateScript/argument transformation",
+      "unions": "tagged classes",
+      "unknown_values": "raw enum integer and unknown class"
+    },
+    {
+      "checker": "R CMD check",
+      "integers": "bit64::integer64",
+      "language": "r",
+      "nominal_types": "S3/S4 classes with validators",
+      "presence": "NULL versus explicit value",
+      "refinements": "validity methods",
+      "unions": "S4 class unions",
+      "unknown_values": "raw enum integer and unknown S4 class"
+    },
+    {
+      "checker": "shellcheck + bats",
+      "integers": "decimal strings; never shell arithmetic for uint64",
+      "language": "bash",
+      "nominal_types": "validated shell variables at process boundary",
+      "presence": "jq has() versus null",
+      "refinements": "fail-closed validation functions",
+      "unions": "tagged JSON objects",
+      "unknown_values": "raw enum integer and unknown JSON tag"
+    },
+    {
+      "checker": "GHC -Wall -Werror + hlint",
+      "integers": "Word64/Int64",
+      "language": "haskell",
+      "nominal_types": "newtype and smart constructors",
+      "presence": "Maybe only for explicit presence",
+      "refinements": "refined types and smart constructors",
+      "unions": "ADTs, GADTs and pattern exhaustiveness",
+      "unknown_values": "Unknown(raw Int) constructor and unknown ADT arm"
+    },
+    {
+      "checker": "luacheck + runtime vectors",
+      "integers": "decimal strings for uint64",
+      "language": "lua",
+      "nominal_types": "validated userdata/table constructors",
+      "presence": "key absence versus nil",
+      "refinements": "runtime constructors",
+      "unions": "tagged tables",
+      "unknown_values": "raw enum integer and unknown table tag"
+    }
+  ],
+  "schema": "acyclic.sdk.type-policy.v1",
+  "semantic_types": [
+    {
+      "id": "actor_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "ActorId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "method",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "MethodName",
+      "wire_kind": "string"
+    },
+    {
+      "id": "path",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "ResourcePath",
+      "wire_kind": "string"
+    },
+    {
+      "id": "source",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "SourceName",
+      "wire_kind": "string"
+    },
+    {
+      "id": "destination",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "DestinationName",
+      "wire_kind": "string"
+    },
+    {
+      "id": "bucket_name",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "BucketName",
+      "wire_kind": "string"
+    },
+    {
+      "id": "object_key",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "ObjectKey",
+      "wire_kind": "string"
+    },
+    {
+      "id": "alias",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "VersionAlias",
+      "wire_kind": "string"
+    },
+    {
+      "id": "job_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "JobId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "machine_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "MachineId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "operation_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "OperationId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "checkpoint_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "CheckpointId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "idempotency_key_bytes",
+      "rules": [
+        {
+          "kind": "non_empty"
+        }
+      ],
+      "rust_name": "IdempotencyKeyBytes",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "idempotency_key_text",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "IdempotencyKeyText",
+      "wire_kind": "string"
+    },
+    {
+      "id": "idempotency_key_message",
+      "rules": [],
+      "rust_name": "IdempotencyKey",
+      "wire_kind": "message"
+    },
+    {
+      "id": "opaque_text",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "OpaqueText",
+      "wire_kind": "string"
+    },
+    {
+      "id": "upload_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "utf8"
+        }
+      ],
+      "rust_name": "UploadId",
+      "wire_kind": "string"
+    },
+    {
+      "id": "version_sha256",
+      "rules": [
+        {
+          "kind": "fixed_length",
+          "length": 32
+        },
+        {
+          "kind": "sha256_digest"
+        }
+      ],
+      "rust_name": "Sha256Digest",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "sha256_digest",
+      "rules": [
+        {
+          "kind": "fixed_length",
+          "length": 32
+        },
+        {
+          "kind": "sha256_digest"
+        }
+      ],
+      "rust_name": "Sha256Digest",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "revision_digest",
+      "rules": [
+        {
+          "kind": "fixed_length",
+          "length": 32
+        }
+      ],
+      "rust_name": "RevisionDigest",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "immutable_image",
+      "rules": [
+        {
+          "kind": "immutable"
+        }
+      ],
+      "rust_name": "Image",
+      "wire_kind": "message"
+    },
+    {
+      "id": "revision",
+      "rules": [
+        {
+          "kind": "non_negative"
+        }
+      ],
+      "rust_name": "Revision",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "run_id",
+      "rules": [
+        {
+          "kind": "fixed_length",
+          "length": 16
+        }
+      ],
+      "rust_name": "RunId",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "evaluation_id",
+      "rules": [
+        {
+          "kind": "fixed_length",
+          "length": 16
+        }
+      ],
+      "rust_name": "EvaluationId",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "page_limit",
+      "rules": [
+        {
+          "kind": "strictly_positive"
+        },
+        {
+          "kind": "max_items",
+          "max": 1000
+        }
+      ],
+      "rust_name": "PageLimit",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "commit_id",
+      "rules": [
+        {
+          "kind": "non_empty"
+        }
+      ],
+      "rust_name": "CommitId",
+      "wire_kind": "bytes"
+    },
+    {
+      "id": "enum_value",
+      "rules": [
+        {
+          "kind": "preserve_unknown_enum"
+        }
+      ],
+      "rust_name": "OpenEnumValue",
+      "wire_kind": "enum"
+    },
+    {
+      "id": "oneof_arm",
+      "rules": [
+        {
+          "kind": "exact_oneof"
+        },
+        {
+          "kind": "preserve_unknown_oneof"
+        }
+      ],
+      "rust_name": "WireChoice",
+      "wire_kind": "oneof"
+    }
+  ],
+  "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
+  "union_variants": [
+    {
+      "payload_wire_kind": "message",
+      "tag": "known",
+      "union": "wire_choice",
+      "variant": "KnownOneof"
+    },
+    {
+      "payload_wire_kind": "bytes",
+      "tag": "unknown",
+      "union": "wire_choice",
+      "variant": "UnknownOneof"
+    }
+  ]
+}

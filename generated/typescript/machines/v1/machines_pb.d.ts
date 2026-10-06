@@ -11,15 +11,21 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_machines_v1_machines: GenFile;
 
 /**
+ * Identifies the protocol version required by a Machines request.
+ *
  * @generated from message acyclic.machines.v1.ProtocolVersion
  */
 export declare type ProtocolVersion = Message<"acyclic.machines.v1.ProtocolVersion"> & {
   /**
+   * The major value carried by ProtocolVersion.
+   *
    * @generated from field: uint32 major = 1;
    */
   major: number;
 
   /**
+   * The minor value carried by ProtocolVersion.
+   *
    * @generated from field: uint32 minor = 2;
    */
   minor: number;
@@ -32,10 +38,14 @@ export declare type ProtocolVersion = Message<"acyclic.machines.v1.ProtocolVersi
 export declare const ProtocolVersionSchema: GenMessage<ProtocolVersion>;
 
 /**
+ * Identifies an admitted asynchronous machine operation.
+ *
  * @generated from message acyclic.machines.v1.OperationId
  */
 export declare type OperationId = Message<"acyclic.machines.v1.OperationId"> & {
   /**
+   * The value value carried by OperationId.
+   *
    * @generated from field: bytes value = 1;
    */
   value: Uint8Array;
@@ -48,10 +58,14 @@ export declare type OperationId = Message<"acyclic.machines.v1.OperationId"> & {
 export declare const OperationIdSchema: GenMessage<OperationId>;
 
 /**
+ * Binds retries of one machine mutation intent.
+ *
  * @generated from message acyclic.machines.v1.IdempotencyKey
  */
 export declare type IdempotencyKey = Message<"acyclic.machines.v1.IdempotencyKey"> & {
   /**
+   * The value value carried by IdempotencyKey.
+   *
    * @generated from field: bytes value = 1;
    */
   value: Uint8Array;
@@ -64,10 +78,14 @@ export declare type IdempotencyKey = Message<"acyclic.machines.v1.IdempotencyKey
 export declare const IdempotencyKeySchema: GenMessage<IdempotencyKey>;
 
 /**
+ * Identifies a machine.
+ *
  * @generated from message acyclic.machines.v1.MachineId
  */
 export declare type MachineId = Message<"acyclic.machines.v1.MachineId"> & {
   /**
+   * The value value carried by MachineId.
+   *
    * @generated from field: bytes value = 1;
    */
   value: Uint8Array;
@@ -80,10 +98,14 @@ export declare type MachineId = Message<"acyclic.machines.v1.MachineId"> & {
 export declare const MachineIdSchema: GenMessage<MachineId>;
 
 /**
+ * Identifies an immutable machine checkpoint.
+ *
  * @generated from message acyclic.machines.v1.CheckpointId
  */
 export declare type CheckpointId = Message<"acyclic.machines.v1.CheckpointId"> & {
   /**
+   * The value value carried by CheckpointId.
+   *
    * @generated from field: bytes value = 1;
    */
   value: Uint8Array;
@@ -96,10 +118,14 @@ export declare type CheckpointId = Message<"acyclic.machines.v1.CheckpointId"> &
 export declare const CheckpointIdSchema: GenMessage<CheckpointId>;
 
 /**
+ * Describes a managed, custom, or checkpoint image source.
+ *
  * @generated from message acyclic.machines.v1.Image
  */
 export declare type Image = Message<"acyclic.machines.v1.Image"> & {
   /**
+   * The kind value carried by Image.
+   *
    * @generated from field: acyclic.machines.v1.ImageKind kind = 1;
    */
   kind: ImageKind;
@@ -109,18 +135,24 @@ export declare type Image = Message<"acyclic.machines.v1.Image"> & {
    */
   immutableReference: {
     /**
+     * The managed digest value carried by Image.
+     *
      * @generated from field: bytes managed_digest = 2;
      */
     value: Uint8Array;
     case: "managedDigest";
   } | {
     /**
+     * The custom digest value carried by Image.
+     *
      * @generated from field: bytes custom_digest = 3;
      */
     value: Uint8Array;
     case: "customDigest";
   } | {
     /**
+     * The checkpoint value carried by Image.
+     *
      * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 4;
      */
     value: CheckpointId;
@@ -135,15 +167,21 @@ export declare type Image = Message<"acyclic.machines.v1.Image"> & {
 export declare const ImageSchema: GenMessage<Image>;
 
 /**
+ * Declares whether image compatibility is best-effort or required.
+ *
  * @generated from message acyclic.machines.v1.CompatibilityPolicy
  */
 export declare type CompatibilityPolicy = Message<"acyclic.machines.v1.CompatibilityPolicy"> & {
   /**
+   * The mode value carried by CompatibilityPolicy.
+   *
    * @generated from field: acyclic.machines.v1.CompatibilityMode mode = 1;
    */
   mode: CompatibilityMode;
 
   /**
+   * The required value carried by CompatibilityPolicy.
+   *
    * @generated from field: repeated acyclic.machines.v1.Capability required = 2;
    */
   required: Capability[];
@@ -156,20 +194,28 @@ export declare type CompatibilityPolicy = Message<"acyclic.machines.v1.Compatibi
 export declare const CompatibilityPolicySchema: GenMessage<CompatibilityPolicy>;
 
 /**
+ * Reports image capabilities and compatibility revision.
+ *
  * @generated from message acyclic.machines.v1.ImageQualification
  */
 export declare type ImageQualification = Message<"acyclic.machines.v1.ImageQualification"> & {
   /**
+   * The image value carried by ImageQualification.
+   *
    * @generated from field: acyclic.machines.v1.Image image = 1;
    */
   image?: Image | undefined;
 
   /**
+   * The capabilities value carried by ImageQualification.
+   *
    * @generated from field: repeated acyclic.machines.v1.Capability capabilities = 2;
    */
   capabilities: Capability[];
 
   /**
+   * The compatibility revision value carried by ImageQualification.
+   *
    * @generated from field: bytes compatibility_revision = 3;
    */
   compatibilityRevision: Uint8Array;
@@ -182,6 +228,8 @@ export declare type ImageQualification = Message<"acyclic.machines.v1.ImageQuali
 export declare const ImageQualificationSchema: GenMessage<ImageQualification>;
 
 /**
+ * Declares manual or idle based machine suspension.
+ *
  * @generated from message acyclic.machines.v1.SuspensionPolicy
  */
 export declare type SuspensionPolicy = Message<"acyclic.machines.v1.SuspensionPolicy"> & {
@@ -190,12 +238,16 @@ export declare type SuspensionPolicy = Message<"acyclic.machines.v1.SuspensionPo
    */
   policy: {
     /**
+     * The manual value carried by SuspensionPolicy.
+     *
      * @generated from field: bool manual = 1;
      */
     value: boolean;
     case: "manual";
   } | {
     /**
+     * The after idle ms value carried by SuspensionPolicy.
+     *
      * @generated from field: uint64 after_idle_ms = 2;
      */
     value: bigint;
@@ -210,15 +262,21 @@ export declare type SuspensionPolicy = Message<"acyclic.machines.v1.SuspensionPo
 export declare const SuspensionPolicySchema: GenMessage<SuspensionPolicy>;
 
 /**
+ * Declares whether and when a machine expires.
+ *
  * @generated from message acyclic.machines.v1.ExpirationPolicy
  */
 export declare type ExpirationPolicy = Message<"acyclic.machines.v1.ExpirationPolicy"> & {
   /**
+   * The kind value carried by ExpirationPolicy.
+   *
    * @generated from field: acyclic.machines.v1.ExpirationKind kind = 1;
    */
   kind: ExpirationKind;
 
   /**
+   * The value ms value carried by ExpirationPolicy.
+   *
    * @generated from field: uint64 value_ms = 2;
    */
   valueMs: bigint;
@@ -231,15 +289,21 @@ export declare type ExpirationPolicy = Message<"acyclic.machines.v1.ExpirationPo
 export declare const ExpirationPolicySchema: GenMessage<ExpirationPolicy>;
 
 /**
+ * Declares spend and concurrency bounds for a machine contract.
+ *
  * @generated from message acyclic.machines.v1.Budgets
  */
 export declare type Budgets = Message<"acyclic.machines.v1.Budgets"> & {
   /**
+   * The spend micros value carried by Budgets.
+   *
    * @generated from field: uint64 spend_micros = 1;
    */
   spendMicros: bigint;
 
   /**
+   * The concurrency value carried by Budgets.
+   *
    * @generated from field: uint32 concurrency = 2;
    */
   concurrency: number;
@@ -252,45 +316,63 @@ export declare type Budgets = Message<"acyclic.machines.v1.Budgets"> & {
 export declare const BudgetsSchema: GenMessage<Budgets>;
 
 /**
+ * Captures image, capability, lifecycle, network, and budget policy.
+ *
  * @generated from message acyclic.machines.v1.MachineContract
  */
 export declare type MachineContract = Message<"acyclic.machines.v1.MachineContract"> & {
   /**
+   * The image value carried by MachineContract.
+   *
    * @generated from field: acyclic.machines.v1.Image image = 1;
    */
   image?: Image | undefined;
 
   /**
+   * The capabilities value carried by MachineContract.
+   *
    * @generated from field: repeated acyclic.machines.v1.Capability capabilities = 2;
    */
   capabilities: Capability[];
 
   /**
+   * The compatibility value carried by MachineContract.
+   *
    * @generated from field: acyclic.machines.v1.CompatibilityPolicy compatibility = 3;
    */
   compatibility?: CompatibilityPolicy | undefined;
 
   /**
+   * The compatibility revision value carried by MachineContract.
+   *
    * @generated from field: bytes compatibility_revision = 4;
    */
   compatibilityRevision: Uint8Array;
 
   /**
+   * The suspension value carried by MachineContract.
+   *
    * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
    */
   suspension?: SuspensionPolicy | undefined;
 
   /**
+   * The expiration value carried by MachineContract.
+   *
    * @generated from field: acyclic.machines.v1.ExpirationPolicy expiration = 7;
    */
   expiration?: ExpirationPolicy | undefined;
 
   /**
+   * The network policy digest value carried by MachineContract.
+   *
    * @generated from field: bytes network_policy_digest = 8;
    */
   networkPolicyDigest: Uint8Array;
 
   /**
+   * The budgets value carried by MachineContract.
+   *
    * @generated from field: acyclic.machines.v1.Budgets budgets = 9;
    */
   budgets?: Budgets | undefined;
@@ -303,15 +385,21 @@ export declare type MachineContract = Message<"acyclic.machines.v1.MachineContra
 export declare const MachineContractSchema: GenMessage<MachineContract>;
 
 /**
+ * Requests qualification of an image against a protocol version.
+ *
  * @generated from message acyclic.machines.v1.QualifyImageRequest
  */
 export declare type QualifyImageRequest = Message<"acyclic.machines.v1.QualifyImageRequest"> & {
   /**
+   * The protocol value carried by QualifyImageRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The image value carried by QualifyImageRequest.
+   *
    * @generated from field: acyclic.machines.v1.Image image = 2;
    */
   image?: Image | undefined;
@@ -324,45 +412,63 @@ export declare type QualifyImageRequest = Message<"acyclic.machines.v1.QualifyIm
 export declare const QualifyImageRequestSchema: GenMessage<QualifyImageRequest>;
 
 /**
+ * Requests admission of a machine with lifecycle and budget policy.
+ *
  * @generated from message acyclic.machines.v1.CreateMachineRequest
  */
 export declare type CreateMachineRequest = Message<"acyclic.machines.v1.CreateMachineRequest"> & {
   /**
+   * The protocol value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The image value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.Image image = 3;
    */
   image?: Image | undefined;
 
   /**
+   * The compatibility value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.CompatibilityPolicy compatibility = 4;
    */
   compatibility?: CompatibilityPolicy | undefined;
 
   /**
+   * The suspension value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.SuspensionPolicy suspension = 6;
    */
   suspension?: SuspensionPolicy | undefined;
 
   /**
+   * The expiration value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.ExpirationPolicy expiration = 7;
    */
   expiration?: ExpirationPolicy | undefined;
 
   /**
+   * The network policy digest value carried by CreateMachineRequest.
+   *
    * @generated from field: bytes network_policy_digest = 8;
    */
   networkPolicyDigest: Uint8Array;
 
   /**
+   * The budgets value carried by CreateMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.Budgets budgets = 9;
    */
   budgets?: Budgets | undefined;
@@ -375,20 +481,28 @@ export declare type CreateMachineRequest = Message<"acyclic.machines.v1.CreateMa
 export declare const CreateMachineRequestSchema: GenMessage<CreateMachineRequest>;
 
 /**
+ * Identifies a machine for a lifecycle mutation.
+ *
  * @generated from message acyclic.machines.v1.MachineMutationRequest
  */
 export declare type MachineMutationRequest = Message<"acyclic.machines.v1.MachineMutationRequest"> & {
   /**
+   * The protocol value carried by MachineMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by MachineMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The machine value carried by MachineMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 3;
    */
   machine?: MachineId | undefined;
@@ -401,20 +515,28 @@ export declare type MachineMutationRequest = Message<"acyclic.machines.v1.Machin
 export declare const MachineMutationRequestSchema: GenMessage<MachineMutationRequest>;
 
 /**
+ * Requests an immutable checkpoint of a machine.
+ *
  * @generated from message acyclic.machines.v1.CheckpointMachineRequest
  */
 export declare type CheckpointMachineRequest = Message<"acyclic.machines.v1.CheckpointMachineRequest"> & {
   /**
+   * The protocol value carried by CheckpointMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by CheckpointMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The machine value carried by CheckpointMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 3;
    */
   machine?: MachineId | undefined;
@@ -427,25 +549,35 @@ export declare type CheckpointMachineRequest = Message<"acyclic.machines.v1.Chec
 export declare const CheckpointMachineRequestSchema: GenMessage<CheckpointMachineRequest>;
 
 /**
+ * Requests fresh machines forked from a checkpoint.
+ *
  * @generated from message acyclic.machines.v1.ForkCheckpointRequest
  */
 export declare type ForkCheckpointRequest = Message<"acyclic.machines.v1.ForkCheckpointRequest"> & {
   /**
+   * The protocol value carried by ForkCheckpointRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by ForkCheckpointRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The checkpoint value carried by ForkCheckpointRequest.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
    */
   checkpoint?: CheckpointId | undefined;
 
   /**
+   * The count value carried by ForkCheckpointRequest.
+   *
    * @generated from field: uint32 count = 4;
    */
   count: number;
@@ -458,33 +590,35 @@ export declare type ForkCheckpointRequest = Message<"acyclic.machines.v1.ForkChe
 export declare const ForkCheckpointRequestSchema: GenMessage<ForkCheckpointRequest>;
 
 /**
- * Forks a running machine, without an intermediate checkpoint, into `count` fresh
- * children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
- * machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
- * callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
- * what the children inherited. Children inherit the source's exact MachineContract and
- * receive fresh MachineIds and endpoints; open network connections are never carried over.
- * See the acyclic-machines crate documentation for the complete semantics.
+ * Requests fresh live-fork children from a machine.
  *
  * @generated from message acyclic.machines.v1.ForkMachineRequest
  */
 export declare type ForkMachineRequest = Message<"acyclic.machines.v1.ForkMachineRequest"> & {
   /**
+   * The protocol value carried by ForkMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by ForkMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The machine value carried by ForkMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 3;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The count value carried by ForkMachineRequest.
+   *
    * @generated from field: uint32 count = 4;
    */
   count: number;
@@ -497,25 +631,35 @@ export declare type ForkMachineRequest = Message<"acyclic.machines.v1.ForkMachin
 export declare const ForkMachineRequestSchema: GenMessage<ForkMachineRequest>;
 
 /**
+ * Requests replacement of a machine suspension policy.
+ *
  * @generated from message acyclic.machines.v1.SetSuspensionPolicyRequest
  */
 export declare type SetSuspensionPolicyRequest = Message<"acyclic.machines.v1.SetSuspensionPolicyRequest"> & {
   /**
+   * The protocol value carried by SetSuspensionPolicyRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by SetSuspensionPolicyRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The machine value carried by SetSuspensionPolicyRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 3;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The policy value carried by SetSuspensionPolicyRequest.
+   *
    * @generated from field: acyclic.machines.v1.SuspensionPolicy policy = 4;
    */
   policy?: SuspensionPolicy | undefined;
@@ -528,20 +672,28 @@ export declare type SetSuspensionPolicyRequest = Message<"acyclic.machines.v1.Se
 export declare const SetSuspensionPolicyRequestSchema: GenMessage<SetSuspensionPolicyRequest>;
 
 /**
+ * Identifies a checkpoint for a mutation.
+ *
  * @generated from message acyclic.machines.v1.CheckpointMutationRequest
  */
 export declare type CheckpointMutationRequest = Message<"acyclic.machines.v1.CheckpointMutationRequest"> & {
   /**
+   * The protocol value carried by CheckpointMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by CheckpointMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
 
   /**
+   * The checkpoint value carried by CheckpointMutationRequest.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
    */
   checkpoint?: CheckpointId | undefined;
@@ -554,15 +706,21 @@ export declare type CheckpointMutationRequest = Message<"acyclic.machines.v1.Che
 export declare const CheckpointMutationRequestSchema: GenMessage<CheckpointMutationRequest>;
 
 /**
+ * Requests recovery of an indeterminate mutation operation.
+ *
  * @generated from message acyclic.machines.v1.RecoverRequest
  */
 export declare type RecoverRequest = Message<"acyclic.machines.v1.RecoverRequest"> & {
   /**
+   * The protocol value carried by RecoverRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The idempotency key value carried by RecoverRequest.
+   *
    * @generated from field: acyclic.machines.v1.IdempotencyKey idempotency_key = 2;
    */
   idempotencyKey?: IdempotencyKey | undefined;
@@ -575,15 +733,21 @@ export declare type RecoverRequest = Message<"acyclic.machines.v1.RecoverRequest
 export declare const RecoverRequestSchema: GenMessage<RecoverRequest>;
 
 /**
+ * Identifies a machine to inspect.
+ *
  * @generated from message acyclic.machines.v1.InspectMachineRequest
  */
 export declare type InspectMachineRequest = Message<"acyclic.machines.v1.InspectMachineRequest"> & {
   /**
+   * The protocol value carried by InspectMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The machine value carried by InspectMachineRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 2;
    */
   machine?: MachineId | undefined;
@@ -596,15 +760,21 @@ export declare type InspectMachineRequest = Message<"acyclic.machines.v1.Inspect
 export declare const InspectMachineRequestSchema: GenMessage<InspectMachineRequest>;
 
 /**
+ * Identifies a checkpoint to inspect.
+ *
  * @generated from message acyclic.machines.v1.InspectCheckpointRequest
  */
 export declare type InspectCheckpointRequest = Message<"acyclic.machines.v1.InspectCheckpointRequest"> & {
   /**
+   * The protocol value carried by InspectCheckpointRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The checkpoint value carried by InspectCheckpointRequest.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 2;
    */
   checkpoint?: CheckpointId | undefined;
@@ -617,20 +787,28 @@ export declare type InspectCheckpointRequest = Message<"acyclic.machines.v1.Insp
 export declare const InspectCheckpointRequestSchema: GenMessage<InspectCheckpointRequest>;
 
 /**
+ * Requests a bounded page of machines.
+ *
  * @generated from message acyclic.machines.v1.ListMachinesRequest
  */
 export declare type ListMachinesRequest = Message<"acyclic.machines.v1.ListMachinesRequest"> & {
   /**
+   * The protocol value carried by ListMachinesRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The after value carried by ListMachinesRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId after = 2;
    */
   after?: MachineId | undefined;
 
   /**
+   * The limit value carried by ListMachinesRequest.
+   *
    * @generated from field: uint32 limit = 3;
    */
   limit: number;
@@ -643,15 +821,21 @@ export declare type ListMachinesRequest = Message<"acyclic.machines.v1.ListMachi
 export declare const ListMachinesRequestSchema: GenMessage<ListMachinesRequest>;
 
 /**
+ * Identifies an operation to inspect, cancel, or watch.
+ *
  * @generated from message acyclic.machines.v1.OperationRequest
  */
 export declare type OperationRequest = Message<"acyclic.machines.v1.OperationRequest"> & {
   /**
+   * The protocol value carried by OperationRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The operation value carried by OperationRequest.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 2;
    */
   operation?: OperationId | undefined;
@@ -664,15 +848,21 @@ export declare type OperationRequest = Message<"acyclic.machines.v1.OperationReq
 export declare const OperationRequestSchema: GenMessage<OperationRequest>;
 
 /**
+ * Reports operation status and its stable identity.
+ *
  * @generated from message acyclic.machines.v1.OperationState
  */
 export declare type OperationState = Message<"acyclic.machines.v1.OperationState"> & {
   /**
+   * The operation value carried by OperationState.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 1;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The status value carried by OperationState.
+   *
    * @generated from field: acyclic.machines.v1.OperationStatus status = 2;
    */
   status: OperationStatus;
@@ -685,15 +875,21 @@ export declare type OperationState = Message<"acyclic.machines.v1.OperationState
 export declare const OperationStateSchema: GenMessage<OperationState>;
 
 /**
+ * Reports a reachable endpoint associated with a machine.
+ *
  * @generated from message acyclic.machines.v1.Endpoint
  */
 export declare type Endpoint = Message<"acyclic.machines.v1.Endpoint"> & {
   /**
+   * The name value carried by Endpoint.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * The uri value carried by Endpoint.
+   *
    * @generated from field: string uri = 2;
    */
   uri: string;
@@ -706,40 +902,56 @@ export declare type Endpoint = Message<"acyclic.machines.v1.Endpoint"> & {
 export declare const EndpointSchema: GenMessage<Endpoint>;
 
 /**
+ * Reports machine lifecycle state, contract, endpoints, and timestamps.
+ *
  * @generated from message acyclic.machines.v1.MachineState
  */
 export declare type MachineState = Message<"acyclic.machines.v1.MachineState"> & {
   /**
+   * The machine value carried by MachineState.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The status value carried by MachineState.
+   *
    * @generated from field: acyclic.machines.v1.MachineStatus status = 2;
    */
   status: MachineStatus;
 
   /**
+   * The contract value carried by MachineState.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
    */
   contract?: MachineContract | undefined;
 
   /**
+   * The endpoints value carried by MachineState.
+   *
    * @generated from field: repeated acyclic.machines.v1.Endpoint endpoints = 4;
    */
   endpoints: Endpoint[];
 
   /**
+   * The last checkpoint value carried by MachineState.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId last_checkpoint = 5;
    */
   lastCheckpoint?: CheckpointId | undefined;
 
   /**
+   * The created at unix ms value carried by MachineState.
+   *
    * @generated from field: uint64 created_at_unix_ms = 6;
    */
   createdAtUnixMs: bigint;
 
   /**
+   * The changed at unix ms value carried by MachineState.
+   *
    * @generated from field: uint64 changed_at_unix_ms = 7;
    */
   changedAtUnixMs: bigint;
@@ -752,15 +964,21 @@ export declare type MachineState = Message<"acyclic.machines.v1.MachineState"> &
 export declare const MachineStateSchema: GenMessage<MachineState>;
 
 /**
+ * Returns a bounded page of machine states and a continuation token.
+ *
  * @generated from message acyclic.machines.v1.MachinePage
  */
 export declare type MachinePage = Message<"acyclic.machines.v1.MachinePage"> & {
   /**
+   * The machines value carried by MachinePage.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineState machines = 1;
    */
   machines: MachineState[];
 
   /**
+   * The next value carried by MachinePage.
+   *
    * @generated from field: acyclic.machines.v1.MachineId next = 2;
    */
   next?: MachineId | undefined;
@@ -773,30 +991,42 @@ export declare type MachinePage = Message<"acyclic.machines.v1.MachinePage"> & {
 export declare const MachinePageSchema: GenMessage<MachinePage>;
 
 /**
+ * Reports checkpoint lineage, contract, and forkability.
+ *
  * @generated from message acyclic.machines.v1.CheckpointState
  */
 export declare type CheckpointState = Message<"acyclic.machines.v1.CheckpointState"> & {
   /**
+   * The checkpoint value carried by CheckpointState.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
    */
   checkpoint?: CheckpointId | undefined;
 
   /**
+   * The source value carried by CheckpointState.
+   *
    * @generated from field: acyclic.machines.v1.MachineId source = 2;
    */
   source?: MachineId | undefined;
 
   /**
+   * The contract value carried by CheckpointState.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
    */
   contract?: MachineContract | undefined;
 
   /**
+   * The forkable value carried by CheckpointState.
+   *
    * @generated from field: bool forkable = 4;
    */
   forkable: boolean;
 
   /**
+   * The created at unix ms value carried by CheckpointState.
+   *
    * @generated from field: uint64 created_at_unix_ms = 5;
    */
   createdAtUnixMs: bigint;
@@ -809,20 +1039,28 @@ export declare type CheckpointState = Message<"acyclic.machines.v1.CheckpointSta
 export declare const CheckpointStateSchema: GenMessage<CheckpointState>;
 
 /**
+ * Confirms machine creation and its admitted operation and contract.
+ *
  * @generated from message acyclic.machines.v1.MachineAdmission
  */
 export declare type MachineAdmission = Message<"acyclic.machines.v1.MachineAdmission"> & {
   /**
+   * The machine value carried by MachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The operation value carried by MachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 2;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The contract value carried by MachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 3;
    */
   contract?: MachineContract | undefined;
@@ -835,25 +1073,35 @@ export declare type MachineAdmission = Message<"acyclic.machines.v1.MachineAdmis
 export declare const MachineAdmissionSchema: GenMessage<MachineAdmission>;
 
 /**
+ * Confirms checkpoint creation and its source and operation.
+ *
  * @generated from message acyclic.machines.v1.CheckpointAdmission
  */
 export declare type CheckpointAdmission = Message<"acyclic.machines.v1.CheckpointAdmission"> & {
   /**
+   * The checkpoint value carried by CheckpointAdmission.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
    */
   checkpoint?: CheckpointId | undefined;
 
   /**
+   * The source value carried by CheckpointAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineId source = 2;
    */
   source?: MachineId | undefined;
 
   /**
+   * The operation value carried by CheckpointAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 3;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The contract value carried by CheckpointAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
    */
   contract?: MachineContract | undefined;
@@ -866,25 +1114,35 @@ export declare type CheckpointAdmission = Message<"acyclic.machines.v1.Checkpoin
 export declare const CheckpointAdmissionSchema: GenMessage<CheckpointAdmission>;
 
 /**
+ * Confirms checkpoint fork children and the admitted operation.
+ *
  * @generated from message acyclic.machines.v1.ForkAdmission
  */
 export declare type ForkAdmission = Message<"acyclic.machines.v1.ForkAdmission"> & {
   /**
+   * The checkpoint value carried by ForkAdmission.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 1;
    */
   checkpoint?: CheckpointId | undefined;
 
   /**
+   * The children value carried by ForkAdmission.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineId children = 2;
    */
   children: MachineId[];
 
   /**
+   * The operation value carried by ForkAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 3;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The contract value carried by ForkAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
    */
   contract?: MachineContract | undefined;
@@ -897,30 +1155,42 @@ export declare type ForkAdmission = Message<"acyclic.machines.v1.ForkAdmission">
 export declare const ForkAdmissionSchema: GenMessage<ForkAdmission>;
 
 /**
+ * Confirms live fork children and declared fork fidelity.
+ *
  * @generated from message acyclic.machines.v1.ForkMachineAdmission
  */
 export declare type ForkMachineAdmission = Message<"acyclic.machines.v1.ForkMachineAdmission"> & {
   /**
+   * The source value carried by ForkMachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineId source = 1;
    */
   source?: MachineId | undefined;
 
   /**
+   * The children value carried by ForkMachineAdmission.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineId children = 2;
    */
   children: MachineId[];
 
   /**
+   * The operation value carried by ForkMachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 3;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The contract value carried by ForkMachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineContract contract = 4;
    */
   contract?: MachineContract | undefined;
 
   /**
+   * The fidelity value carried by ForkMachineAdmission.
+   *
    * @generated from field: acyclic.machines.v1.ForkFidelity fidelity = 5;
    */
   fidelity: ForkFidelity;
@@ -933,20 +1203,28 @@ export declare type ForkMachineAdmission = Message<"acyclic.machines.v1.ForkMach
 export declare const ForkMachineAdmissionSchema: GenMessage<ForkMachineAdmission>;
 
 /**
+ * Confirms a suspension policy mutation.
+ *
  * @generated from message acyclic.machines.v1.PolicyAdmission
  */
 export declare type PolicyAdmission = Message<"acyclic.machines.v1.PolicyAdmission"> & {
   /**
+   * The machine value carried by PolicyAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The operation value carried by PolicyAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 2;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The policy value carried by PolicyAdmission.
+   *
    * @generated from field: acyclic.machines.v1.SuspensionPolicy policy = 3;
    */
   policy?: SuspensionPolicy | undefined;
@@ -959,20 +1237,28 @@ export declare type PolicyAdmission = Message<"acyclic.machines.v1.PolicyAdmissi
 export declare const PolicyAdmissionSchema: GenMessage<PolicyAdmission>;
 
 /**
+ * Confirms a machine or checkpoint mutation and resulting identities.
+ *
  * @generated from message acyclic.machines.v1.MutationAdmission
  */
 export declare type MutationAdmission = Message<"acyclic.machines.v1.MutationAdmission"> & {
   /**
+   * The operation value carried by MutationAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 1;
    */
   operation?: OperationId | undefined;
 
   /**
+   * The machine value carried by MutationAdmission.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 2;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The checkpoint value carried by MutationAdmission.
+   *
    * @generated from field: acyclic.machines.v1.CheckpointId checkpoint = 3;
    */
   checkpoint?: CheckpointId | undefined;
@@ -985,10 +1271,14 @@ export declare type MutationAdmission = Message<"acyclic.machines.v1.MutationAdm
 export declare const MutationAdmissionSchema: GenMessage<MutationAdmission>;
 
 /**
+ * Reports recovered mutation outcomes associated with an operation.
+ *
  * @generated from message acyclic.machines.v1.RecoveredAdmission
  */
 export declare type RecoveredAdmission = Message<"acyclic.machines.v1.RecoveredAdmission"> & {
   /**
+   * The operation value carried by RecoveredAdmission.
+   *
    * @generated from field: acyclic.machines.v1.OperationId operation = 1;
    */
   operation?: OperationId | undefined;
@@ -998,54 +1288,72 @@ export declare type RecoveredAdmission = Message<"acyclic.machines.v1.RecoveredA
    */
   result: {
     /**
+     * The create value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.MachineAdmission create = 2;
      */
     value: MachineAdmission;
     case: "create";
   } | {
     /**
+     * The checkpoint value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.CheckpointAdmission checkpoint = 3;
      */
     value: CheckpointAdmission;
     case: "checkpoint";
   } | {
     /**
+     * The fork value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.ForkAdmission fork = 4;
      */
     value: ForkAdmission;
     case: "fork";
   } | {
     /**
+     * The suspend value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.MutationAdmission suspend = 5;
      */
     value: MutationAdmission;
     case: "suspend";
   } | {
     /**
+     * The wake value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.MutationAdmission wake = 6;
      */
     value: MutationAdmission;
     case: "wake";
   } | {
     /**
+     * The destroy machine value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.MutationAdmission destroy_machine = 7;
      */
     value: MutationAdmission;
     case: "destroyMachine";
   } | {
     /**
+     * The set suspension policy value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.PolicyAdmission set_suspension_policy = 8;
      */
     value: PolicyAdmission;
     case: "setSuspensionPolicy";
   } | {
     /**
+     * The destroy checkpoint value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.MutationAdmission destroy_checkpoint = 9;
      */
     value: MutationAdmission;
     case: "destroyCheckpoint";
   } | {
     /**
+     * The fork machine value carried by RecoveredAdmission.
+     *
      * @generated from field: acyclic.machines.v1.ForkMachineAdmission fork_machine = 10;
      */
     value: ForkMachineAdmission;
@@ -1060,13 +1368,14 @@ export declare type RecoveredAdmission = Message<"acyclic.machines.v1.RecoveredA
 export declare const RecoveredAdmissionSchema: GenMessage<RecoveredAdmission>;
 
 /**
- * Terminal simulator result. Unlike an admission, this contains the checked
- * observations produced after the operation has completed.
+ * Returns machine identities created by a checkpoint fork.
  *
  * @generated from message acyclic.machines.v1.ForkedMachines
  */
 export declare type ForkedMachines = Message<"acyclic.machines.v1.ForkedMachines"> & {
   /**
+   * The machines value carried by ForkedMachines.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineState machines = 1;
    */
   machines: MachineState[];
@@ -1079,20 +1388,28 @@ export declare type ForkedMachines = Message<"acyclic.machines.v1.ForkedMachines
 export declare const ForkedMachinesSchema: GenMessage<ForkedMachines>;
 
 /**
+ * Returns live-fork children and the declared fidelity.
+ *
  * @generated from message acyclic.machines.v1.ForkedLiveMachines
  */
 export declare type ForkedLiveMachines = Message<"acyclic.machines.v1.ForkedLiveMachines"> & {
   /**
+   * The source value carried by ForkedLiveMachines.
+   *
    * @generated from field: acyclic.machines.v1.MachineId source = 1;
    */
   source?: MachineId | undefined;
 
   /**
+   * The fidelity value carried by ForkedLiveMachines.
+   *
    * @generated from field: acyclic.machines.v1.ForkFidelity fidelity = 2;
    */
   fidelity: ForkFidelity;
 
   /**
+   * The children value carried by ForkedLiveMachines.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineState children = 3;
    */
   children: MachineState[];
@@ -1105,15 +1422,21 @@ export declare type ForkedLiveMachines = Message<"acyclic.machines.v1.ForkedLive
 export declare const ForkedLiveMachinesSchema: GenMessage<ForkedLiveMachines>;
 
 /**
+ * Reports the machine and policy after a successful policy mutation.
+ *
  * @generated from message acyclic.machines.v1.PolicySet
  */
 export declare type PolicySet = Message<"acyclic.machines.v1.PolicySet"> & {
   /**
+   * The machine value carried by PolicySet.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The policy value carried by PolicySet.
+   *
    * @generated from field: acyclic.machines.v1.SuspensionPolicy policy = 2;
    */
   policy?: SuspensionPolicy | undefined;
@@ -1126,6 +1449,8 @@ export declare type PolicySet = Message<"acyclic.machines.v1.PolicySet"> & {
 export declare const PolicySetSchema: GenMessage<PolicySet>;
 
 /**
+ * Reports which machine lifecycle outcomes were admitted.
+ *
  * @generated from message acyclic.machines.v1.MutationOutcome
  */
 export declare type MutationOutcome = Message<"acyclic.machines.v1.MutationOutcome"> & {
@@ -1134,54 +1459,72 @@ export declare type MutationOutcome = Message<"acyclic.machines.v1.MutationOutco
    */
   result: {
     /**
+     * The created value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.MachineState created = 1;
      */
     value: MachineState;
     case: "created";
   } | {
     /**
+     * The checkpointed value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.CheckpointState checkpointed = 2;
      */
     value: CheckpointState;
     case: "checkpointed";
   } | {
     /**
+     * The forked value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.ForkedMachines forked = 3;
      */
     value: ForkedMachines;
     case: "forked";
   } | {
     /**
+     * The suspended value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.MachineId suspended = 4;
      */
     value: MachineId;
     case: "suspended";
   } | {
     /**
+     * The woken value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.MachineId woken = 5;
      */
     value: MachineId;
     case: "woken";
   } | {
     /**
+     * The suspension policy set value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.PolicySet suspension_policy_set = 6;
      */
     value: PolicySet;
     case: "suspensionPolicySet";
   } | {
     /**
+     * The machine destroyed value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.MachineId machine_destroyed = 7;
      */
     value: MachineId;
     case: "machineDestroyed";
   } | {
     /**
+     * The checkpoint destroyed value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.CheckpointId checkpoint_destroyed = 8;
      */
     value: CheckpointId;
     case: "checkpointDestroyed";
   } | {
     /**
+     * The machine forked value carried by MutationOutcome.
+     *
      * @generated from field: acyclic.machines.v1.ForkedLiveMachines machine_forked = 9;
      */
     value: ForkedLiveMachines;
@@ -1196,10 +1539,14 @@ export declare type MutationOutcome = Message<"acyclic.machines.v1.MutationOutco
 export declare const MutationOutcomeSchema: GenMessage<MutationOutcome>;
 
 /**
+ * Returns a bounded page of operation observations.
+ *
  * @generated from message acyclic.machines.v1.OperationPage
  */
 export declare type OperationPage = Message<"acyclic.machines.v1.OperationPage"> & {
   /**
+   * The operations value carried by OperationPage.
+   *
    * @generated from field: repeated acyclic.machines.v1.OperationState operations = 1;
    */
   operations: OperationState[];
@@ -1212,35 +1559,49 @@ export declare type OperationPage = Message<"acyclic.machines.v1.OperationPage">
 export declare const OperationPageSchema: GenMessage<OperationPage>;
 
 /**
+ * Reports one ordered machine lifecycle or pressure event.
+ *
  * @generated from message acyclic.machines.v1.MachineEvent
  */
 export declare type MachineEvent = Message<"acyclic.machines.v1.MachineEvent"> & {
   /**
+   * The machine value carried by MachineEvent.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The sequence value carried by MachineEvent.
+   *
    * @generated from field: uint64 sequence = 2;
    */
   sequence: bigint;
 
   /**
+   * The observed at unix ms value carried by MachineEvent.
+   *
    * @generated from field: uint64 observed_at_unix_ms = 3;
    */
   observedAtUnixMs: bigint;
 
   /**
+   * The kind value carried by MachineEvent.
+   *
    * @generated from field: acyclic.machines.v1.EventKind kind = 4;
    */
   kind: EventKind;
 
   /**
+   * The state value carried by MachineEvent.
+   *
    * @generated from field: acyclic.machines.v1.MachineStatus state = 5;
    */
   state: MachineStatus;
 
   /**
+   * The pressure value carried by MachineEvent.
+   *
    * @generated from field: acyclic.machines.v1.PressureKind pressure = 6;
    */
   pressure: PressureKind;
@@ -1253,25 +1614,35 @@ export declare type MachineEvent = Message<"acyclic.machines.v1.MachineEvent"> &
 export declare const MachineEventSchema: GenMessage<MachineEvent>;
 
 /**
+ * Requests a bounded machine event page from a sequence cursor.
+ *
  * @generated from message acyclic.machines.v1.EventsRequest
  */
 export declare type EventsRequest = Message<"acyclic.machines.v1.EventsRequest"> & {
   /**
+   * The protocol value carried by EventsRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The machine value carried by EventsRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 2;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The after sequence value carried by EventsRequest.
+   *
    * @generated from field: uint64 after_sequence = 3;
    */
   afterSequence: bigint;
 
   /**
+   * The limit value carried by EventsRequest.
+   *
    * @generated from field: uint32 limit = 4;
    */
   limit: number;
@@ -1284,15 +1655,21 @@ export declare type EventsRequest = Message<"acyclic.machines.v1.EventsRequest">
 export declare const EventsRequestSchema: GenMessage<EventsRequest>;
 
 /**
+ * Returns machine events and the next sequence cursor.
+ *
  * @generated from message acyclic.machines.v1.EventPage
  */
 export declare type EventPage = Message<"acyclic.machines.v1.EventPage"> & {
   /**
+   * The events value carried by EventPage.
+   *
    * @generated from field: repeated acyclic.machines.v1.MachineEvent events = 1;
    */
   events: MachineEvent[];
 
   /**
+   * The next sequence value carried by EventPage.
+   *
    * @generated from field: uint64 next_sequence = 2;
    */
   nextSequence: bigint;
@@ -1305,25 +1682,35 @@ export declare type EventPage = Message<"acyclic.machines.v1.EventPage"> & {
 export declare const EventPageSchema: GenMessage<EventPage>;
 
 /**
+ * Requests usage for a machine and half-open time interval.
+ *
  * @generated from message acyclic.machines.v1.UsageRequest
  */
 export declare type UsageRequest = Message<"acyclic.machines.v1.UsageRequest"> & {
   /**
+   * The protocol value carried by UsageRequest.
+   *
    * @generated from field: acyclic.machines.v1.ProtocolVersion protocol = 1;
    */
   protocol?: ProtocolVersion | undefined;
 
   /**
+   * The machine value carried by UsageRequest.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 2;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The start unix ms value carried by UsageRequest.
+   *
    * @generated from field: uint64 start_unix_ms = 3;
    */
   startUnixMs: bigint;
 
   /**
+   * The end unix ms value carried by UsageRequest.
+   *
    * @generated from field: uint64 end_unix_ms = 4;
    */
   endUnixMs: bigint;
@@ -1336,55 +1723,77 @@ export declare type UsageRequest = Message<"acyclic.machines.v1.UsageRequest"> &
 export declare const UsageRequestSchema: GenMessage<UsageRequest>;
 
 /**
+ * Reports machine usage counters and the provider receipt.
+ *
  * @generated from message acyclic.machines.v1.UsageReceipt
  */
 export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> & {
   /**
+   * The machine value carried by UsageReceipt.
+   *
    * @generated from field: acyclic.machines.v1.MachineId machine = 1;
    */
   machine?: MachineId | undefined;
 
   /**
+   * The start unix ms value carried by UsageReceipt.
+   *
    * @generated from field: uint64 start_unix_ms = 2;
    */
   startUnixMs: bigint;
 
   /**
+   * The end unix ms value carried by UsageReceipt.
+   *
    * @generated from field: uint64 end_unix_ms = 3;
    */
   endUnixMs: bigint;
 
   /**
+   * The elastic cpu ns value carried by UsageReceipt.
+   *
    * @generated from field: uint64 elastic_cpu_ns = 4;
    */
   elasticCpuNs: bigint;
 
   /**
+   * The dedicated cpu ns value carried by UsageReceipt.
+   *
    * @generated from field: uint64 dedicated_cpu_ns = 5;
    */
   dedicatedCpuNs: bigint;
 
   /**
+   * The private resident byte seconds value carried by UsageReceipt.
+   *
    * @generated from field: uint64 private_resident_byte_seconds = 6;
    */
   privateResidentByteSeconds: bigint;
 
   /**
+   * The durable private bytes value carried by UsageReceipt.
+   *
    * @generated from field: uint64 durable_private_bytes = 7;
    */
   durablePrivateBytes: bigint;
 
   /**
+   * The lineage receipt sha256 value carried by UsageReceipt.
+   *
    * @generated from field: bytes lineage_receipt_sha256 = 11;
    */
   lineageReceiptSha256: Uint8Array;
 
   /**
+   * The egress bytes value carried by UsageReceipt.
+   *
    * @generated from field: uint64 egress_bytes = 9;
    */
   egressBytes: bigint;
 
   /**
+   * The receipt value carried by UsageReceipt.
+   *
    * @generated from field: bytes receipt = 10;
    */
   receipt: Uint8Array;
@@ -1397,6 +1806,8 @@ export declare type UsageReceipt = Message<"acyclic.machines.v1.UsageReceipt"> &
 export declare const UsageReceiptSchema: GenMessage<UsageReceipt>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ImageKind
  */
 export enum ImageKind {
@@ -1427,6 +1838,8 @@ export enum ImageKind {
 export declare const ImageKindSchema: GenEnum<ImageKind>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.Capability
  */
 export enum Capability {
@@ -1466,11 +1879,6 @@ export enum Capability {
   LIVE_MOVEMENT = 6,
 
   /**
-   * ForkMachine copies a running machine's persistent disk, but not its memory or processes,
-   * into fresh children. Which paths are persistent is provider-defined: a provider whose
-   * machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
-   * when both are declared.
-   *
    * @generated from enum value: CAPABILITY_DISK_FORK = 7;
    */
   DISK_FORK = 7,
@@ -1482,6 +1890,8 @@ export enum Capability {
 export declare const CapabilitySchema: GenEnum<Capability>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.CompatibilityMode
  */
 export enum CompatibilityMode {
@@ -1507,6 +1917,8 @@ export enum CompatibilityMode {
 export declare const CompatibilityModeSchema: GenEnum<CompatibilityMode>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ExpirationKind
  */
 export enum ExpirationKind {
@@ -1542,6 +1954,8 @@ export enum ExpirationKind {
 export declare const ExpirationKindSchema: GenEnum<ExpirationKind>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.OperationStatus
  */
 export enum OperationStatus {
@@ -1582,6 +1996,8 @@ export enum OperationStatus {
 export declare const OperationStatusSchema: GenEnum<OperationStatus>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.MachineStatus
  */
 export enum MachineStatus {
@@ -1642,6 +2058,8 @@ export enum MachineStatus {
 export declare const MachineStatusSchema: GenEnum<MachineStatus>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ForkFidelity
  */
 export enum ForkFidelity {
@@ -1651,16 +2069,11 @@ export enum ForkFidelity {
   UNSPECIFIED = 0,
 
   /**
-   * Children resume from the source's memory, processes, and disk at the fork instant.
-   *
    * @generated from enum value: FORK_FIDELITY_MEMORY_AND_DISK = 1;
    */
   MEMORY_AND_DISK = 1,
 
   /**
-   * Children boot fresh over a copy of the source's persistent disk (provider-defined; see
-   * CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
-   *
    * @generated from enum value: FORK_FIDELITY_DISK_ONLY = 2;
    */
   DISK_ONLY = 2,
@@ -1672,6 +2085,8 @@ export enum ForkFidelity {
 export declare const ForkFidelitySchema: GenEnum<ForkFidelity>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.PressureKind
  */
 export enum PressureKind {
@@ -1702,6 +2117,8 @@ export enum PressureKind {
 export declare const PressureKindSchema: GenEnum<PressureKind>;
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.EventKind
  */
 export enum EventKind {
@@ -1732,10 +2149,14 @@ export enum EventKind {
 export declare const EventKindSchema: GenEnum<EventKind>;
 
 /**
+ * Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
+ *
  * @generated from service acyclic.machines.v1.MachinesService
  */
 export declare const MachinesService: GenService<{
   /**
+   * Qualifies an image against the protocol and capability contract.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.QualifyImage
    */
   qualifyImage: {
@@ -1744,6 +2165,8 @@ export declare const MachinesService: GenService<{
     output: typeof ImageQualificationSchema;
   },
   /**
+   * Admits a machine with lifecycle and budget policy.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Create
    */
   create: {
@@ -1752,6 +2175,8 @@ export declare const MachinesService: GenService<{
     output: typeof MachineAdmissionSchema;
   },
   /**
+   * Creates an immutable checkpoint for a machine.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Checkpoint
    */
   checkpoint: {
@@ -1760,6 +2185,8 @@ export declare const MachinesService: GenService<{
     output: typeof CheckpointAdmissionSchema;
   },
   /**
+   * Forks a checkpoint into fresh machines.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Fork
    */
   fork: {
@@ -1768,6 +2195,8 @@ export declare const MachinesService: GenService<{
     output: typeof ForkAdmissionSchema;
   },
   /**
+   * Forks a running machine into fresh children, preserving the declared fidelity.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.ForkMachine
    */
   forkMachine: {
@@ -1776,6 +2205,8 @@ export declare const MachinesService: GenService<{
     output: typeof ForkMachineAdmissionSchema;
   },
   /**
+   * Requests suspension of a machine.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Suspend
    */
   suspend: {
@@ -1784,6 +2215,8 @@ export declare const MachinesService: GenService<{
     output: typeof MutationAdmissionSchema;
   },
   /**
+   * Requests wake of a suspended machine.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Wake
    */
   wake: {
@@ -1792,6 +2225,8 @@ export declare const MachinesService: GenService<{
     output: typeof MutationAdmissionSchema;
   },
   /**
+   * Replaces a machine suspension policy.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.SetSuspensionPolicy
    */
   setSuspensionPolicy: {
@@ -1800,6 +2235,8 @@ export declare const MachinesService: GenService<{
     output: typeof PolicyAdmissionSchema;
   },
   /**
+   * Destroys a machine and records the mutation outcome.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.DestroyMachine
    */
   destroyMachine: {
@@ -1808,6 +2245,8 @@ export declare const MachinesService: GenService<{
     output: typeof MutationAdmissionSchema;
   },
   /**
+   * Destroys a checkpoint and records the mutation outcome.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.DestroyCheckpoint
    */
   destroyCheckpoint: {
@@ -1816,6 +2255,8 @@ export declare const MachinesService: GenService<{
     output: typeof MutationAdmissionSchema;
   },
   /**
+   * Recovers the outcome of an indeterminate operation.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Recover
    */
   recover: {
@@ -1824,6 +2265,8 @@ export declare const MachinesService: GenService<{
     output: typeof RecoveredAdmissionSchema;
   },
   /**
+   * Reads the current machine state.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.InspectMachine
    */
   inspectMachine: {
@@ -1832,6 +2275,8 @@ export declare const MachinesService: GenService<{
     output: typeof MachineStateSchema;
   },
   /**
+   * Reads the current checkpoint state.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.InspectCheckpoint
    */
   inspectCheckpoint: {
@@ -1840,6 +2285,8 @@ export declare const MachinesService: GenService<{
     output: typeof CheckpointStateSchema;
   },
   /**
+   * Lists a bounded page of machines.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.ListMachines
    */
   listMachines: {
@@ -1848,6 +2295,8 @@ export declare const MachinesService: GenService<{
     output: typeof MachinePageSchema;
   },
   /**
+   * Reads a bounded machine event page.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Events
    */
   events: {
@@ -1856,6 +2305,8 @@ export declare const MachinesService: GenService<{
     output: typeof EventPageSchema;
   },
   /**
+   * Reads usage for a bounded machine time interval.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Usage
    */
   usage: {
@@ -1864,6 +2315,8 @@ export declare const MachinesService: GenService<{
     output: typeof UsageReceiptSchema;
   },
   /**
+   * Requests cancellation of an admitted operation.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.Cancel
    */
   cancel: {
@@ -1872,6 +2325,8 @@ export declare const MachinesService: GenService<{
     output: typeof OperationStateSchema;
   },
   /**
+   * Reads the current operation state.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.InspectOperation
    */
   inspectOperation: {
@@ -1880,6 +2335,8 @@ export declare const MachinesService: GenService<{
     output: typeof OperationStateSchema;
   },
   /**
+   * Streams ordered operation state from a sequence cursor.
+   *
    * @generated from rpc acyclic.machines.v1.MachinesService.WatchOperation
    */
   watchOperation: {
@@ -1888,3 +2345,4 @@ export declare const MachinesService: GenService<{
     output: typeof OperationStateSchema;
   },
 }>;
+

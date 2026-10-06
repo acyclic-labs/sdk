@@ -10,7 +10,7 @@ pub mod actors_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    ///
+    /// Remote operations for creating, observing, and invoking actors.
     #[derive(Debug, Clone)]
     pub struct ActorsServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -91,7 +91,7 @@ pub mod actors_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        ///
+        /// Creates an actor.
         pub async fn create_actor(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateActorRequest>,
@@ -118,7 +118,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Replaces actor configuration with compare-and-swap semantics.
         pub async fn update_actor(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdateActorRequest>,
@@ -145,7 +145,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Returns the current actor observation.
         pub async fn inspect_actor(
             &mut self,
             request: impl tonic::IntoRequest<super::InspectActorRequest>,
@@ -172,7 +172,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Adds a subscription to an actor.
         pub async fn add_subscription(
             &mut self,
             request: impl tonic::IntoRequest<super::AddSubscriptionRequest>,
@@ -199,7 +199,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Removes a subscription from an actor.
         pub async fn remove_subscription(
             &mut self,
             request: impl tonic::IntoRequest<super::RemoveSubscriptionRequest>,
@@ -229,7 +229,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Resumes a paused subscription.
         pub async fn resume_subscription(
             &mut self,
             request: impl tonic::IntoRequest<super::ResumeSubscriptionRequest>,
@@ -259,7 +259,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Requests an actor checkpoint.
         pub async fn checkpoint_actor(
             &mut self,
             request: impl tonic::IntoRequest<super::CheckpointActorRequest>,
@@ -286,7 +286,7 @@ pub mod actors_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /// Invokes an actor method.
         pub async fn invoke_actor(
             &mut self,
             request: impl tonic::IntoRequest<super::InvokeActorRequest>,
@@ -328,7 +328,7 @@ pub mod actors_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ActorsServiceServer.
     #[async_trait]
     pub trait ActorsService: std::marker::Send + std::marker::Sync + 'static {
-        ///
+        /// Creates an actor.
         async fn create_actor(
             &self,
             request: tonic::Request<super::CreateActorRequest>,
@@ -336,7 +336,7 @@ pub mod actors_service_server {
             tonic::Response<super::CreateActorResponse>,
             tonic::Status,
         >;
-        ///
+        /// Replaces actor configuration with compare-and-swap semantics.
         async fn update_actor(
             &self,
             request: tonic::Request<super::UpdateActorRequest>,
@@ -344,7 +344,7 @@ pub mod actors_service_server {
             tonic::Response<super::UpdateActorResponse>,
             tonic::Status,
         >;
-        ///
+        /// Returns the current actor observation.
         async fn inspect_actor(
             &self,
             request: tonic::Request<super::InspectActorRequest>,
@@ -352,7 +352,7 @@ pub mod actors_service_server {
             tonic::Response<super::InspectActorResponse>,
             tonic::Status,
         >;
-        ///
+        /// Adds a subscription to an actor.
         async fn add_subscription(
             &self,
             request: tonic::Request<super::AddSubscriptionRequest>,
@@ -360,7 +360,7 @@ pub mod actors_service_server {
             tonic::Response<super::AddSubscriptionResponse>,
             tonic::Status,
         >;
-        ///
+        /// Removes a subscription from an actor.
         async fn remove_subscription(
             &self,
             request: tonic::Request<super::RemoveSubscriptionRequest>,
@@ -368,7 +368,7 @@ pub mod actors_service_server {
             tonic::Response<super::RemoveSubscriptionResponse>,
             tonic::Status,
         >;
-        ///
+        /// Resumes a paused subscription.
         async fn resume_subscription(
             &self,
             request: tonic::Request<super::ResumeSubscriptionRequest>,
@@ -376,7 +376,7 @@ pub mod actors_service_server {
             tonic::Response<super::ResumeSubscriptionResponse>,
             tonic::Status,
         >;
-        ///
+        /// Requests an actor checkpoint.
         async fn checkpoint_actor(
             &self,
             request: tonic::Request<super::CheckpointActorRequest>,
@@ -384,7 +384,7 @@ pub mod actors_service_server {
             tonic::Response<super::CheckpointActorResponse>,
             tonic::Status,
         >;
-        ///
+        /// Invokes an actor method.
         async fn invoke_actor(
             &self,
             request: tonic::Request<super::InvokeActorRequest>,
@@ -393,7 +393,7 @@ pub mod actors_service_server {
             tonic::Status,
         >;
     }
-    ///
+    /// Remote operations for creating, observing, and invoking actors.
     #[derive(Debug)]
     pub struct ActorsServiceServer<T> {
         inner: Arc<T>,

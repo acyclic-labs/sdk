@@ -4,6 +4,68 @@ use serde_json::{Map, Value};
 
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
+/// Validates the endpoint policy shared by native and browser HTTP clients.
+/// HTTPS is allowed for hosted endpoints; HTTP is limited to loopback fixture
+/// servers. Credentials, queries, and fragments are never accepted.
+pub fn validate_endpoint(endpoint: &str) -> Result {
+    if endpoint
+        .chars()
+        .any(|character| character.is_ascii_control() || character.is_ascii_whitespace())
+    {
+        return Err("invalid_endpoint");
+    }
+    let Some((scheme, remainder)) = endpoint.split_once("://") else {
+        return Err("invalid_endpoint");
+    };
+    if scheme != "https" && scheme != "http" {
+        return Err("invalid_endpoint");
+    }
+    let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
+    let authority = remainder
+        .get(..authority_end)
+        .ok_or("invalid_endpoint")?;
+    if authority.is_empty()
+        || authority.contains('@')
+        || remainder
+            .get(authority_end..)
+            .ok_or("invalid_endpoint")?
+            .bytes()
+            .any(|character| character == b'?' || character == b'#')
+    {
+        return Err("invalid_endpoint");
+    }
+    let (host, port) = if let Some(host) = authority.strip_prefix('[') {
+        let Some(end) = host.find(']') else {
+            return Err("invalid_endpoint");
+        };
+        let port = host.get(end + 1..).ok_or("invalid_endpoint")?;
+        if !port.is_empty() && !port.starts_with(':') {
+            return Err("invalid_endpoint");
+        }
+        (host.get(..end).ok_or("invalid_endpoint")?, port.strip_prefix(':'))
+    } else {
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => (host, Some(port)),
+            None => (authority, None),
+        };
+        if host.contains(':') {
+            return Err("invalid_endpoint");
+        }
+        (host, port)
+    };
+    if host.is_empty() || port.is_some_and(|port| port.is_empty() || port.parse::<u16>().is_err()) {
+        return Err("invalid_endpoint");
+    }
+    let loopback = host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    if scheme == "http" && !loopback {
+        return Err("invalid_endpoint");
+    }
+    Ok(())
+}
+
 fn object(value: &Value) -> Result<&Map<String, Value>> {
     value.as_object().ok_or("expected object")
 }
@@ -343,9 +405,74 @@ pub fn validate(route: &str, value: &Value) -> Result {
     }
 }
 
+/// Returns the validated tail from a hosted tail response. Keeping the
+/// decimal uint64 conversion here lets follow cursors compare positions in
+/// Rust without reopening the JSON scalar contract in a language adapter.
+pub fn tail_value(value: &Value) -> Result<u64> {
+    validate("tail", value)?;
+    u64_string(value)
+}
+
+/// Validates a hosted read page against the cursor captured by its caller.
+/// The response schema alone cannot prove contiguity because the starting
+/// sequence is request state, so this is kept as an explicit Rust boundary.
+pub fn validate_read_from(value: &Value, from: u64) -> Result {
+    validate("read", value)?;
+    let mut expected = from;
+    for item in array(value)? {
+        let sequence = u64_string(field(object(item)?, "sequence")?)?;
+        if sequence != expected {
+            return Err("non-contiguous cursor");
+        }
+        expected = expected.checked_add(1).ok_or("non-contiguous cursor")?;
+    }
+    Ok(())
+}
+
+/// Validates a hosted read page and returns the next cursor for follow.
+pub fn next_follow_cursor(value: &Value, from: u64) -> Result<u64> {
+    validate_read_from(value, from)?;
+    let Some(item) = array(value)?.last() else {
+        return Ok(from);
+    };
+    let sequence = u64_string(field(object(item)?, "sequence")?)?;
+    sequence.checked_add(1).ok_or("non-contiguous cursor")
+}
+
+/// Advances the cumulative response byte count while enforcing one canonical
+/// bound for streamed hosted responses.
+pub(crate) fn consume_response_bytes(total: u64, chunk: u64, maximum: u64) -> Result<u64> {
+    let next = total.checked_add(chunk).ok_or("response_too_large")?;
+    if next > maximum {
+        return Err("response_too_large");
+    }
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
+
+    #[test]
+    fn endpoint_policy_is_shared_with_native_and_wasm_clients() {
+        for endpoint in [
+            "https://stream.example",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            assert!(super::validate_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "http://stream.example",
+            "https://user@stream.example",
+            "https://stream.example/?query=1",
+            "https://stream.example/#fragment",
+            "http://127.0.0.1:",
+        ] {
+            assert!(super::validate_endpoint(endpoint).is_err(), "{endpoint}");
+        }
+    }
 
     #[test]
     fn base64_padding_only_terminates_the_last_quartet() {
@@ -397,6 +524,53 @@ mod tests {
         let missing_time = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
         assert!(super::validate("read", &json_fixture(&missing_time)?).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn hosted_http_read_validation_checks_request_cursor_contiguity() -> serde_json::Result<()> {
+        let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let response = format!(
+            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000"}},{{"sequence":"1","value":"","commitId":"{commit_id}","committedAtMicros":"1001"}}]"#
+        );
+        let value = json_fixture(&response)?;
+        assert!(super::validate_read_from(&value, 0).is_ok());
+        assert!(super::validate_read_from(&value, 1).is_err());
+        let gap = format!(
+            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000"}},{{"sequence":"2","value":"","commitId":"{commit_id}","committedAtMicros":"1002"}}]"#
+        );
+        assert!(super::validate_read_from(&json_fixture(&gap)?, 0).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn follow_cursor_projection_is_request_relative() -> serde_json::Result<()> {
+        let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let response = format!(
+            r#"[{{"sequence":"9","value":"","commitId":"{commit_id}","committedAtMicros":"1000"}},{{"sequence":"10","value":"","commitId":"{commit_id}","committedAtMicros":"1001"}}]"#
+        );
+        assert_eq!(
+            super::next_follow_cursor(&json_fixture(&response)?, 9),
+            Ok(11)
+        );
+        assert_eq!(
+            super::next_follow_cursor(&serde_json::json!([]), 27),
+            Ok(27)
+        );
+        assert!(super::next_follow_cursor(&json_fixture(&response)?, 8).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cumulative_response_bytes_are_checked_in_rust() {
+        assert_eq!(super::consume_response_bytes(4, 3, 8), Ok(7));
+        assert_eq!(
+            super::consume_response_bytes(7, 2, 8),
+            Err("response_too_large")
+        );
+        assert_eq!(
+            super::consume_response_bytes(u64::MAX, 1, u64::MAX),
+            Err("response_too_large")
+        );
     }
 
     #[test]

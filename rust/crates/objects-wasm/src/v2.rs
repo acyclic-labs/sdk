@@ -45,6 +45,19 @@ pub fn decode_objects_v2_json(
 ) -> Result<Vec<u8>, JsValue> {
     json::decode_binary(name, bytes, maximum).map_err(error)
 }
+
+/// Returns the canonical encoded JSON/NDJSON record limit used by Objects
+/// native HTTP and browser framing.
+#[wasm_bindgen]
+pub fn objects_v2_http_json_frame_bytes() -> u32 {
+    acyclic_objects::v2::HTTP_JSON_FRAME_BYTES as u32
+}
+
+/// Returns the canonical decoded body bytes carried by one streaming frame.
+#[wasm_bindgen]
+pub fn objects_v2_http_body_frame_bytes() -> u32 {
+    acyclic_objects::v2::HTTP_BODY_FRAME_BYTES as u32
+}
 #[wasm_bindgen]
 pub fn objects_v2_http_type(route: &str, output: bool) -> Result<String, JsValue> {
     let (_, input, response) = acyclic_objects::v2::HTTP_ROUTES
@@ -71,13 +84,61 @@ pub fn validate_objects_v2_get_header(
     acyclic_objects::v2::response::validate_get_header(query, bytes, maximum).map_err(error)
 }
 
+/// Validates one bounded download body frame and returns its remaining range.
 #[wasm_bindgen]
+pub fn validate_objects_v2_get_body(body_length: u64, remaining: u64) -> Result<u64, JsValue> {
+    acyclic_objects::v2::response::validate_get_body(body_length, remaining).map_err(error)
+}
+
+/// Maps hosted HTTP status/detail values through the canonical Objects error
+/// vocabulary before they cross the browser boundary.
+#[wasm_bindgen]
+pub fn objects_v2_http_error_code(status: u16, detail: Option<i32>) -> i32 {
+    acyclic_objects::v2::response::http_error_code(status, detail) as i32
+}
+
+/// Maps Connect/tonic status/detail values through the canonical Objects
+/// error vocabulary before they cross the browser boundary.
+#[wasm_bindgen]
+pub fn objects_v2_grpc_error_code(status: u32, detail: Option<i32>) -> i32 {
+    acyclic_objects::v2::response::grpc_error_code(status, detail) as i32
+}
+
+/// Validates the HTTPS or loopback HTTP endpoint policy used by native and
+/// browser Objects clients.
+#[wasm_bindgen]
+pub fn validate_objects_v2_http_endpoint(endpoint: &str) -> Result<(), JsValue> {
+    acyclic_objects::v2::response::validate_http_endpoint(endpoint).map_err(error)
+}
+
+/// Validates the bearer credential shared by the native and browser Objects
+/// clients. The empty string means success; failures use the same stable
+/// invalid-argument boundary as the request validators.
+#[wasm_bindgen]
+pub fn validate_objects_v2_bearer_token(token: &str) -> String {
+    if token.trim().is_empty()
+        || token.len() > 8192
+        || token.contains(['\r', '\n', '\0'])
+    {
+        "invalid_argument".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+#[wasm_bindgen]
+/// In-memory Objects v2 provider exposed through the browser ABI.
+///
+/// The provider applies the same request validation, quota limits, and
+/// response framing as the native memory implementation while exposing a
+/// single route-based invocation boundary to JavaScript.
 pub struct ObjectsV2Memory {
     inner: MemoryObjects,
 }
 #[wasm_bindgen]
 impl ObjectsV2Memory {
     #[wasm_bindgen(constructor)]
+    /// Creates an in-memory provider with byte and entry quotas.
     pub fn new(maximum_bytes: u64, maximum_entries: usize) -> Result<Self, JsValue> {
         Ok(Self {
             inner: MemoryObjects::new(MemoryOptions {
@@ -89,6 +150,10 @@ impl ObjectsV2Memory {
         })
     }
     #[allow(clippy::too_many_lines)]
+    /// Executes one validated Objects v2 route and returns protocol frames.
+    ///
+    /// `bytes` carries the encoded request, `body` carries streaming payload
+    /// bytes for upload operations, and `maximum` bounds returned object data.
     pub async fn invoke(
         &self,
         route: String,
@@ -136,7 +201,10 @@ impl ObjectsV2Memory {
                 let result = frames(&wire::GetObjectResponse {
                     frame: Some(wire::get_object_response::Frame::Header(object.header)),
                 });
-                for chunk in object.body.chunks(65_536) {
+                for chunk in object
+                    .body
+                    .chunks(acyclic_objects::v2::HTTP_BODY_FRAME_BYTES)
+                {
                     let value = wire::GetObjectResponse {
                         frame: Some(wire::get_object_response::Frame::Body(chunk.to_vec())),
                     };

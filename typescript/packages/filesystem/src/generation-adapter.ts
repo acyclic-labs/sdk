@@ -8,6 +8,7 @@ export function createGenerationAdapter(
   decodePage: (value: WorkspaceDirectoryPage) => WorkspaceDirectoryPage,
   decodePlan: (value: WorkspaceExtentPlan) => WorkspaceExtentPlan,
   ownerLabel = "filesystem runtime",
+  validatePositiveBound: (value: number, label: string) => void = requirePositiveInteger,
 ) {
   const handles = new WeakMap<FsGeneration, WasmRawGeneration>();
   function adaptGeneration(raw: WasmRawGeneration): FsGeneration {
@@ -21,10 +22,12 @@ export function createGenerationAdapter(
       async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
       async stat(path) { return decodeStat(await raw.stat(path)); },
       async listDirectory(path, after, maximumEntries) {
+        validatePositiveBound(maximumEntries, "maximum directory entries");
         return decodePage(await raw.listDirectory(path, after, maximumEntries));
       },
       async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
       async planExtents(path, offset, length, maximumSpans) {
+        validatePositiveBound(maximumSpans, "maximum extent spans");
         return decodePlan(await raw.planExtents(path, offset, length, maximumSpans));
       },
       async pin(identity) {
@@ -41,4 +44,10 @@ export function createGenerationAdapter(
     return raw;
   }
   return { adaptGeneration, rawGeneration };
+}
+
+function requirePositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive safe integer`);
+  }
 }

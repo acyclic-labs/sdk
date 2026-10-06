@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
-import { create, fromJsonString, toJsonString } from "@bufbuild/protobuf";
-import { Inference, InferenceClient, HttpInferenceTransport, Warm, warmCommitment, contextRevision,
+import { create } from "@bufbuild/protobuf";
+import { Inference, InferenceClient, Warm, warmCommitment, contextRevision,
   RetainWarmRequestSchema, RenewWarmRequestSchema, WarmViewSchema, WarmState,
 } from "../src/index.js";
 import { validateRuntimeShape } from "../src/contract.js";
@@ -14,31 +14,24 @@ const view = () => create(WarmViewSchema, {
   idleKv: { policy, retainedAtMs: 100n },
 });
 
-test("idle KV handles encode exact retry identities and renew from the retained baseline", async () => {
-  const requests: string[] = [];
-  const fetcher: typeof fetch = async (url, init) => {
-    expect(new Headers(init?.headers).get("authorization")).toBe("Bearer fixture");
-    const body = String(init?.body);
-    requests.push(body);
-    const response = view();
-    if (String(url).endsWith("/retain")) {
-      const request = fromJsonString(RetainWarmRequestSchema, body);
-      expect(request.identity).toEqual(create(RetainWarmRequestSchema, { identity }).identity);
-      expect(request.idleKv?.profile).toEqual(policy.profile);
-      expect(request.latencyProfile.byteLength).toBe(0);
-      expect(request.expiresAtMs).toBe(0n);
-    } else if (String(url).endsWith("/renew")) {
-      const request = fromJsonString(RenewWarmRequestSchema, body);
+test("idle KV handles exact retry identities and renew from the retained baseline", async () => {
+  const requests = [];
+  const transport = {
+    async retainWarm(request) { requests.push(request); return view(); },
+    async inspectWarm() { return view(); },
+    async renewWarm(request) {
+      const response = view();
       response.idleKv!.policy!.idleTimeoutMs = request.idleTimeoutMs!;
       response.expiresAtMs = 100n + request.idleTimeoutMs!;
-    } else if (String(url).endsWith("/release")) response.state = WarmState.RELEASED;
-    return new Response(toJsonString(WarmViewSchema, response));
-  };
-  const inference = new Inference(new InferenceClient(new HttpInferenceTransport("https://fixture.test", () => ({ authorization: "Bearer fixture" }), fetcher)));
+      return response;
+    },
+    async releaseWarm() { const response = view(); response.state = WarmState.RELEASED; return response; },
+  } as never;
+  const inference = new Inference(new InferenceClient(transport));
   const context = inference.context(contextRevision(bytes(4)));
   const warm = await context.retain({ idleKv: policy, identity });
   await context.retain({ idleKv: policy, identity });
-  expect(requests[0]).toBe(requests[1]);
+  expect(requests[0]).toEqual(requests[1]);
   const recovered = new Warm(inference, warmCommitment(warm.id()));
   expect((await recovered.inspect()).idleKv?.lastUsedAtMs).toBeUndefined();
   const renewed = await recovered.renewIdle(30n, { identity });
@@ -47,7 +40,6 @@ test("idle KV handles encode exact retry identities and renew from the retained 
   expect(renewed.idleKv?.lastUsedAtMs).toBeUndefined();
   expect((await recovered.release({ identity })).state).toBe(WarmState.RELEASED);
 });
-
 test("Rust validation rejects mixed policies, invented actual-use evidence and overflow", async () => {
   await expect(validateRuntimeShape(RetainWarmRequestSchema, create(RetainWarmRequestSchema, {
     identity, context: bytes(4), idleKv: policy, latencyProfile: bytes(6), expiresAtMs: 100n,

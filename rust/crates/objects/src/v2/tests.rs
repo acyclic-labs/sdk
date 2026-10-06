@@ -178,7 +178,7 @@ pub(super) async fn exercise_streaming<'a>(
     let mut chunks = 0;
     while let Some(chunk) = selected.body.next().await {
         let chunk = chunk?;
-        assert!(chunk.len() <= 65_536);
+        assert!(chunk.len() <= super::HTTP_BODY_FRAME_BYTES);
         result.extend_from_slice(&chunk);
         chunks += 1;
     }

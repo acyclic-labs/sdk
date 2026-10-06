@@ -9,7 +9,14 @@ describe("Actors v1 generated transport", () => {
       endpoint: "https://actors.example.test/",
       token: "secret",
       fetcher: async (input, init) => {
-        expect(String(input)).toBe("https://actors.example.test/v1/actors/create");
+        const url = String(input);
+        if (url.endsWith("/v1/sdk/actors/handshake")) {
+          return new Response(JSON.stringify({
+            protocol: { version: "acyclic.actors.v1", descriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c" },
+            supported: { capabilities: [{ name: "actors", version: "acyclic.actors.v1" }] },
+          }));
+        }
+        expect(url).toBe("https://actors.example.test/v1/actors/create");
         posted = String(init?.body);
         return new Response(JSON.stringify({ actor: { actorId: "a", codeSha256: "AQ==", homeRegion: "eu" } }));
       },

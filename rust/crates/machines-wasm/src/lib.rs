@@ -6,15 +6,16 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::SimulatedMachines;
+use acyclic_machines::{Machines, SimulatedMachines};
 use sha2::{Digest as _, Sha256};
+use std::sync::Arc;
 use tsify_next::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod http;
-mod public;
+pub(crate) use sdk_machines_public as public;
 
 // Keep the hosted transport route/output relationship in one Rust declaration.
 // The macro emits the runtime route table and the TypeScript declarations from
@@ -161,6 +162,41 @@ pub struct WasmSimulatedMachines {
     inner: SimulatedMachines,
 }
 
+/// A browser remote client backed by the canonical Rust Machines provider.
+///
+/// The connection performs endpoint validation, authentication, and protocol
+/// negotiation inside `acyclic-machines`.  JavaScript only supplies typed DTO
+/// values to the Rust-owned operation dispatcher; it never implements a
+/// second transport or handshake policy.
+#[wasm_bindgen]
+pub struct WasmRemoteMachines {
+    inner: Machines,
+}
+
+#[wasm_bindgen]
+#[allow(missing_docs)]
+impl WasmRemoteMachines {
+    /// Connects to the endpoint using the same authenticated Rust provider as
+    /// native clients.  The returned object is usable only after the Rust
+    /// protocol handshake has succeeded.
+    #[wasm_bindgen(js_name = connect)]
+    pub async fn connect(endpoint: String, token: String) -> Result<WasmRemoteMachines, JsValue> {
+        let inner = Machines::connect(&endpoint, token.as_str())
+            .await
+            .map_err(|error| JsValue::from_str(&error.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Dispatches one Rust-owned public operation using its generated DTO
+    /// contract.  `public::dispatch` performs the operation-specific decoding,
+    /// validation, provider call, and response projection in Rust.
+    #[wasm_bindgen(js_name = call)]
+    pub async fn call(&self, operation_name: String, payload: JsValue) -> Result<JsValue, JsValue> {
+        let provider: Arc<dyn acyclic_machines::MachinesProvider> = self.inner.provider();
+        public::dispatch(provider.as_ref(), &operation_name, payload).await
+    }
+}
+
 #[wasm_bindgen]
 #[allow(missing_docs)]
 impl WasmSimulatedMachines {
@@ -187,6 +223,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Creates a machine from the Rust-owned creation DTO and returns its mutation outcome.
     pub async fn create(
         &self,
         #[wasm_bindgen(unchecked_param_type = "CreateIn")] request: JsValue,
@@ -196,6 +233,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = inspectMachine)]
+    /// Reads one machine observation after Rust validates the machine identity.
     pub async fn inspect_machine(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] machine_id: JsValue,
@@ -205,6 +243,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = listMachines)]
+    /// Returns a bounded page of machines using the Rust provider's cursor.
     pub async fn list_machines(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ListIn")] request: JsValue,
@@ -214,6 +253,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Creates an immutable checkpoint for a machine using the supplied idempotency key.
     pub async fn checkpoint(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MachineKey")] request: JsValue,
@@ -223,6 +263,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = inspectCheckpoint)]
+    /// Reads one immutable checkpoint observation.
     pub async fn inspect_checkpoint(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] checkpoint_id: JsValue,
@@ -232,6 +273,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Forks a checkpoint into fresh machines with Rust-owned admission and validation.
     pub async fn fork(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ForkIn")] request: JsValue,
@@ -241,6 +283,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = forkMachine)]
+    /// Forks a running machine when its declared provider capability permits live fork.
     pub async fn fork_machine(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MachineForkIn")] request: JsValue,
@@ -250,6 +293,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Requests an idempotent suspension transition for one machine.
     pub async fn suspend(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MachineKey")] request: JsValue,
@@ -259,6 +303,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Requests an idempotent wake transition for one machine.
     pub async fn wake(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MachineKey")] request: JsValue,
@@ -268,6 +313,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = setSuspensionPolicy)]
+    /// Replaces a machine's automatic suspension policy after Rust validation.
     pub async fn set_suspension_policy(
         &self,
         #[wasm_bindgen(unchecked_param_type = "PolicyIn")] request: JsValue,
@@ -277,6 +323,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = destroyMachine)]
+    /// Requests irreversible machine destruction with the caller's idempotency key.
     pub async fn destroy_machine(
         &self,
         #[wasm_bindgen(unchecked_param_type = "MachineKey")] request: JsValue,
@@ -286,6 +333,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = destroyCheckpoint)]
+    /// Requests irreversible destruction of an immutable checkpoint.
     pub async fn destroy_checkpoint(
         &self,
         #[wasm_bindgen(unchecked_param_type = "CheckpointKey")] request: JsValue,
@@ -295,6 +343,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Reads an ordered event page after the exclusive sequence cursor in the request.
     pub async fn events(
         &self,
         #[wasm_bindgen(unchecked_param_type = "EventsIn")] request: JsValue,
@@ -304,6 +353,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Reads an authoritative usage receipt for the requested half-open interval.
     pub async fn usage(
         &self,
         #[wasm_bindgen(unchecked_param_type = "UsageIn")] request: JsValue,
@@ -313,6 +363,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Replays a mutation by its caller-retained idempotency identity.
     pub async fn recover(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] idempotency_key: JsValue,
@@ -322,6 +373,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = recoverOperation)]
+    /// Resolves the admitted operation identity for an idempotency key.
     pub async fn recover_operation(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] idempotency_key: JsValue,
@@ -331,6 +383,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = inspectOperation)]
+    /// Reads the latest phase for an admitted operation.
     pub async fn inspect_operation(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] operation_id: JsValue,
@@ -340,6 +393,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen]
+    /// Requests cancellation of an admitted operation and returns its latest phase.
     pub async fn cancel(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] operation_id: JsValue,
@@ -349,6 +403,7 @@ impl WasmSimulatedMachines {
     }
 
     #[wasm_bindgen(js_name = watchOperation, unchecked_return_type = "readonly OperationOut[]")]
+    /// Collects correlated operation observations until the Rust stream completes.
     pub async fn watch_operation(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] operation_id: JsValue,

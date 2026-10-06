@@ -992,6 +992,7 @@ type GeneratedWasmFactories = Pick<
   | "decodeMultiRootCandidateJson"
   | "encodePublicationJson"
   | "decodePublicationJson"
+  | "validateHostedPageBound"
 >;
 
 export type WasmBindings = GeneratedWasmFactories & {

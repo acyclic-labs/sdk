@@ -1,9 +1,44 @@
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/guide.md")]
 
 use sha2::{Digest, Sha256};
 
+/// Generated independent negotiation bindings for native transports.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod control_wire {
+    #![allow(
+        missing_docs,
+        clippy::all,
+        clippy::pedantic,
+        reason = "generated control bindings"
+    )]
+    pub mod protocol {
+        /// Version-one protocol identity and capability messages.
+        pub mod v1 {
+            include!("generated/acyclic.protocol.v1.rs");
+        }
+    }
+    /// Generated transport service used for capability handshakes.
+    pub mod transport {
+        /// Version-one handshake service bindings.
+        pub mod v1 {
+            include!("generated/acyclic.transport.v1.rs");
+        }
+    }
+}
+
+/// Transport-neutral Workers client and best-transport connection helper.
+pub mod client;
+#[cfg(not(target_arch = "wasm32"))]
+/// Native gRPC Workers transport.
 pub mod grpc;
+/// HTTP Workers transport shared by native and browser consumers.
 pub mod http;
+
+pub use client::{
+    Client, ConnectError, Error, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect,
+    connect_with_ca_certificate,
+};
 
 /// Generated Workers v1 wire types. The documented schema is `proto/workers/v1/workers.proto`.
 pub mod wire {

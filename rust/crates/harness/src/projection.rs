@@ -10,7 +10,7 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -40,7 +40,7 @@ struct ProjectedToolInvocation {
 }
 
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
-pub trait AttachmentListResolver: Send + Sync {
+pub trait AttachmentListResolver: crate::PlatformServiceBounds {
     /// Verifies the pinned manifest bytes and returns its complete ordered list.
     fn resolve<'a>(
         &'a self,

@@ -1,0 +1,61 @@
+{
+  "schema": "acyclic.sdk.root-integration-observation.v1",
+  "status": "failed",
+  "source": {
+    "digest": "sha256:cc2d958d443e8f773b10f8f730613b2c873bbb3b4fad057b034db42b384c0a93",
+    "dirty": false,
+    "revision": "eb43d66603161b177b577e898be0a72b180a70e3"
+  },
+  "observed_manifest": "Q:/sdk/work/rust-generation-output-ae53-registry/sdk-generation-manifest.json",
+  "observed_manifest_sha256": "a90103c53a316664e1134d175dc4ce7414d07964d412af9f0e4d8feb347545e4",
+  "observed_at_utc": "2026-10-03T21:43:47.5608740Z",
+  "tools": {
+    "sdk-product-artifacts": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-contract-wire": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-contract-validation": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-openapi-prototype": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-examples": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-docs-rustdoc": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-docs": {
+      "status": "failed",
+      "exit_code": 1,
+      "message": "Finished `dev` profile [unoptimized] target(s) in 1.71s\n     Running `Q:\\sdk\\work\\rust-generation-target-verification\\debug\\sdk-docs.exe --repo-root Q:\\sdk\\work\\rust-sdk-generation-sourceonly-ae53 --output Q:\\sdk\\work\\rust-generation-output-ae53-registry\\docs.json --website-output Q:\\sdk\\work\\rust-generation-output-ae53-registry\\website.json --source-revision eb43d66603161b177b577e898be0a72b180a70e3 --rustdoc-json Q:\\sdk\\work\\rust-generation-output-ae53-registry\\rustdoc-json --strict-rustdoc-json --profile-manifest Q:\\sdk\\work\\rust-sdk-generation-sourceonly-ae53\\docs/rustdoc-profiles.json --examples-bundle Q:\\sdk\\work\\rust-generation-output-ae53-registry --source-authority Q:\\sdk\\work\\rust-generation-output-ae53-registry\\source-authority.json --source-authority-sha256 sha256:c999818370e3fdc9524b4e7dda51f798130daa97fe0b06fe63d7e51ad0fc1f18`\nError: Strict(\"SDK examples source sha256 mismatch: expected sha256:efe7ffd5ddc01bd0fff6f2d9330f5f6138af90fb73a56b0f932b8d8eebb05045, got sha256:5f69c203d1074f5ea3cbbbaf510c241ec74722146ee2ae1cd83657cd94ffc731\")\nerror: process didn't exit successfully: `Q:\\sdk\\work\\rust-generation-target-verification\\debug\\sdk-docs.exe --repo-root Q:\\sdk\\work\\rust-sdk-generation-sourceonly-ae53 --output Q:\\sdk\\work\\rust-generation-output-ae53-registry\\docs.json --website-output Q:\\sdk\\work\\rust-generation-output-ae53-registry\\website.json --source-revision eb43d66603161b177b577e898be0a72b180a70e3 --rustdoc-json Q:\\sdk\\work\\rust-generation-output-ae53-registry\\rustdoc-json --strict-rustdoc-json --profile-manifest Q:\\sdk\\work\\rust-sdk-generation-sourceonly-ae53\\docs/rustdoc-profiles.json --examples-bundle Q:\\sdk\\work\\rust-generation-output-ae53-registry --source-authority Q:\\sdk\\work\\rust-generation-output-ae53-registry\\source-authority.json --source-authority-sha256 sha256:c999818370e3fdc9524b4e7dda51f798130daa97fe0b06fe63d7e51ad0fc1f18` (exit code: 1)"
+    },
+    "sdk-python": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    },
+    "sdk-typescript": {
+      "status": "passed",
+      "exit_code": 0,
+      "message": null
+    }
+  },
+  "completion": "incomplete",
+  "next_action": "Resolve examples producer and docs consumer source-closure hash mismatch, then rerun generation and drift checks from a frozen current source snapshot."
+}

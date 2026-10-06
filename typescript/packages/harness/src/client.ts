@@ -1,7 +1,8 @@
 import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
-import { NativeContracts } from "./native-contracts.js";
+import { NativeContracts, type HarnessReplayReconciliation } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./authority-contract.js";
+import { harnessDefaultOutboxBytes, harnessDefaultOutboxCommands } from "../generated/wasm/acyclic_harness_wasm.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -74,7 +75,7 @@ export class MemoryOutbox implements OutboxStore {
   readonly #commands = new Map<OperationId, ClientCommand>();
 
   async load(): Promise<readonly ClientCommand[]> {
-    return [...this.#commands.values()].map(command => cloneStructuredValue(command, new Set()) as ClientCommand);
+    return Promise.all([...this.#commands.values()].map(command => assertOutboxSafe(command)));
   }
 
   async put(command: ClientCommand): Promise<void> {
@@ -118,8 +119,9 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   readonly #maximumBytes: number;
 
   constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = positiveBound(options.maximumCommands ?? 1_024, "maximumCommands");
-    this.#maximumBytes = positiveBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
+    const policy = outboxPolicyDefaults();
+    this.#maximumCommands = positiveBound(options.maximumCommands ?? policy.maximumCommands, "maximumCommands");
+    this.#maximumBytes = positiveBound(options.maximumBytes ?? policy.maximumBytes, "maximumBytes");
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (factory === undefined) throw new Error("IndexedDB is not available");
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");
@@ -203,6 +205,14 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   }
 }
 
+let outboxPolicy: { readonly maximumCommands: number; readonly maximumBytes: number } | undefined;
+function outboxPolicyDefaults(): { readonly maximumCommands: number; readonly maximumBytes: number } {
+  return outboxPolicy ??= {
+    maximumCommands: positiveBound(harnessDefaultOutboxCommands(), "Rust maximumCommands"),
+    maximumBytes: positiveBound(harnessDefaultOutboxBytes(), "Rust maximumBytes"),
+  };
+}
+
 export type ClientListener<Event> = (event: ClientEvent<Event>) => void;
 
 /** Framework-neutral external store derived only from authoritative events. */
@@ -282,7 +292,7 @@ export class HarnessClient<Event = unknown> {
 
   async submit(command: ClientCommand): Promise<void> {
     await this.#serializeState(async () => {
-      const safelyReplayable = command.offlineSafe && command.kind !== "interaction.resolve.approval";
+      const safelyReplayable = command.offlineSafe === true;
       const admitted = safelyReplayable ? await assertOutboxSafe(command) : command;
       if (this.#connection !== undefined) {
         if (safelyReplayable) await this.outbox.put(admitted);
@@ -332,7 +342,8 @@ export class HarnessClient<Event = unknown> {
   /** Runs reconnect/replay until aborted; transport failures use bounded exponential backoff. */
   async run(signal?: AbortSignal): Promise<void> {
     await this.#serializeState(() => this.#hydrateCursors());
-    let delay = 50;
+    let attempt = 0;
+    const contracts = await NativeContracts.create();
     while (!signal?.aborted) {
       try {
         const { cursors, epoch } = await this.#serializeState(async () => ({
@@ -351,7 +362,7 @@ export class HarnessClient<Event = unknown> {
         }
         await this.#flushOutbox(connection, epoch);
         for await (const delivery of connection) await this.#accept(delivery, epoch);
-        delay = 50;
+        attempt = 0;
       } catch (error) {
         if (signal?.aborted) break;
         if (error instanceof ReplayError) {
@@ -360,8 +371,9 @@ export class HarnessClient<Event = unknown> {
             this.#cursors.delete(authorityKey(error.authority));
           });
         }
-        await abortableDelay(delay, signal);
-        delay = Math.min(delay * 2, 5_000);
+        const backoff = contracts.harnessReplayBackoff(attempt);
+        attempt = backoff.nextAttempt;
+        await abortableDelay(backoff.delayMs, signal);
       } finally {
         const connection = this.#connection;
         this.#connection = undefined;
@@ -399,28 +411,25 @@ export class HarnessClient<Event = unknown> {
   async #acceptSerialized(delivery: Delivery<Event>): Promise<void> {
     const key = authorityKey(delivery.authority);
     const previous = this.#cursors.get(key);
-    const expected = previous?.revision ?? 0n;
-    if (previous !== undefined && previous.generation !== delivery.generation) {
-      throw new ReplayError(delivery.authority, "replay generation changed");
+    let reconciliation: HarnessReplayReconciliation<ReplayCursor>;
+    try {
+      reconciliation = (await NativeContracts.create()).reconcileReplayDelivery<ReplayCursor, Delivery<Event>>(previous ?? null, delivery);
+    } catch (error) {
+      throw new ReplayError(delivery.authority, String(error));
     }
-    if (delivery.fromRevision !== expected || delivery.throughRevision < delivery.fromRevision) {
-      throw new ReplayError(delivery.authority, "non-contiguous delivery");
+    if (reconciliation.acknowledgements.length !== delivery.events.length) {
+      throw new ReplayError(delivery.authority, "replay acknowledgement coverage mismatch");
     }
-    let revision = expected;
-    for (const event of delivery.events) {
-      revision += 1n;
-      if (authorityKey(event.authority) !== key || event.revision !== revision) {
-        throw new ReplayError(delivery.authority, "event authority or revision mismatch");
+    for (const [index, event] of delivery.events.entries()) {
+      const acknowledgement = reconciliation.acknowledgements[index];
+      if (acknowledgement === undefined) {
+        throw new ReplayError(delivery.authority, "replay acknowledgement is missing");
       }
-    }
-    if (revision !== delivery.throughRevision) {
-      throw new ReplayError(delivery.authority, "delivery coverage mismatch");
-    }
-    let committed = expected;
-    for (const event of delivery.events) {
+      if (acknowledgement.operationId !== event.operationId) {
+        throw new ReplayError(delivery.authority, "replay acknowledgement identity mismatch");
+      }
       for (const listener of this.#listeners) listener(event);
-      committed = event.revision;
-      const cursor = { generation: delivery.generation, revision: committed };
+      const cursor = acknowledgement.cursor;
       if (isAtomicClientStateStore(this.outbox) && this.outbox === this.cursorStore) {
         await this.outbox.commit(delivery.authority, cursor, event.operationId);
       } else {
@@ -430,9 +439,8 @@ export class HarnessClient<Event = unknown> {
       this.#cursors.set(key, cursor);
     }
     if (delivery.events.length === 0) {
-      const cursor = { generation: delivery.generation, revision };
-      await this.cursorStore.putCursor(delivery.authority, cursor);
-      this.#cursors.set(key, cursor);
+      await this.cursorStore.putCursor(delivery.authority, reconciliation.cursor);
+      this.#cursors.set(key, reconciliation.cursor);
     }
   }
 
@@ -506,164 +514,18 @@ function positiveBound(value: number, name: string): number {
 
 /** An offline retry record may carry refs and routing metadata, never a bearer or inline body. */
 async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> {
-  const admitted = cloneStructuredValue(command, new Set()) as ClientCommand;
-  if (admitted.offlineSafe !== true || admitted.kind === "interaction.resolve.approval") {
-    throw new TypeError("command is not safe for the offline outbox");
-  }
-  const fields = Object.keys(admitted);
-  if (fields.length !== 5 || fields.some(field => !["operationId", "authority", "kind", "payload", "offlineSafe"].includes(field))) {
-    throw new TypeError("offline outbox command contains an unsupported field");
-  }
-  if (admitted.authority === null || typeof admitted.authority !== "object"
-    || Object.getPrototypeOf(admitted.authority) !== Object.prototype
-    || Object.keys(admitted.authority).length !== 2
-    || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
-    throw new TypeError("offline outbox authority contains an unsupported field");
-  }
-  if (!isSafeAuthorityId(admitted.authority.id)) {
-    throw new TypeError("offline outbox authority contains an unsafe identity");
-  }
-  const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
-  const visit = (value: unknown, ancestors: Set<object>): void => {
-    if (value === null || typeof value !== "object") return;
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
-      throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-    }
-    if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-    ancestors.add(value);
-    try {
-      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-        visit(descriptor.value, ancestors);
-      }
-    } finally { ancestors.delete(value); }
-  };
-  visit(admitted, new Set());
-  const payload = admitted.payload;
-  if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
-      Object.getPrototypeOf(payload) !== Object.prototype) {
-    throw new TypeError("offline outbox payload must be a ref-only record");
-  }
-  for (const key of Object.keys(payload)) {
-    if (!["content", "attachments", "artifacts", "references", "metadata"].includes(key)) {
-      throw new TypeError("offline outbox payload contains an unsupported field");
-    }
-  }
   const contracts = await NativeContracts.create();
-  if (payload.content !== undefined) contracts.validate("file_ref", payload.content);
-  if (payload.attachments !== undefined) contracts.validate("attachments", payload.attachments);
-  for (const refs of [payload.artifacts, payload.references]) {
-    if (refs === undefined) continue;
-    if (!Array.isArray(refs)) throw new TypeError("offline outbox references must be a list");
-    for (const reference of refs) contracts.validate("file_ref", reference);
-  }
-  if (payload.metadata !== undefined) {
-    if (payload.metadata === null || typeof payload.metadata !== "object" || Array.isArray(payload.metadata) ||
-        Object.getPrototypeOf(payload.metadata) !== Object.prototype) {
-      throw new TypeError("offline outbox metadata must be a record");
-    }
-    for (const [key, value] of Object.entries(payload.metadata)) {
-      if (forbidden.test(key) || !(value === null || ["number", "boolean", "bigint"].includes(typeof value))) {
-        throw new TypeError("offline outbox metadata contains an unsafe value");
-      }
-    }
-  }
-  return admitted;
+  // Rust snapshots and validates the complete structured value at the ABI
+  // boundary.  The returned value is detached, so the host never needs a
+  // second JavaScript implementation of canonical cloning or accessor rules.
+  return contracts.validateOfflineCommand(command);
 }
 
 async function structuredSize(value: unknown): Promise<number> {
-  const transportSafe = canonicalStructuredValue(value, new Set());
-  return (await NativeContracts.create()).encodeCanonicalJson(transportSafe).byteLength;
-}
-
-function cloneStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (
-    value === null || typeof value === "string" || typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Uint8Array) return value.slice();
-  if (ArrayBuffer.isView(value)) {
-    throw new TypeError("command contains an unsupported binary view");
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  const descriptors = Object.getOwnPropertyDescriptors(value);
-  const keys = Reflect.ownKeys(descriptors);
-  if (keys.some(key => typeof key !== "string")) {
-    throw new TypeError("command contains symbol properties");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      const cloned = new Array<unknown>(value.length);
-      for (const key of keys as string[]) {
-        if (key === "length" || descriptors[key]?.enumerable !== true) continue;
-        const index = Number(key);
-        if (!Number.isSafeInteger(index) || index < 0 || index >= value.length || String(index) !== key) {
-          throw new TypeError("command array contains custom properties");
-        }
-        const descriptor = descriptors[key];
-        if (descriptor === undefined || !("value" in descriptor)) {
-          throw new TypeError("command contains an accessor");
-        }
-        cloned[index] = cloneStructuredValue(descriptor.value, ancestors);
-      }
-      return cloned;
-    }
-    const cloned: Record<string, unknown> = {};
-    for (const key of keys as string[]) {
-      const descriptor = descriptors[key];
-      if (descriptor?.enumerable !== true) continue;
-      if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors),
-        enumerable: true, configurable: true, writable: true });
-    }
-    return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function canonicalStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value === "bigint") return { $bigint: value.toString() };
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return { $bytes: [...new Uint8Array(value)] };
-  if (ArrayBuffer.isView(value)) {
-    return { $bytes: [...new Uint8Array(value.buffer, value.byteOffset, value.byteLength)] };
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return value.map(child => canonicalStructuredValue(child, ancestors));
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      canonicalStructuredValue(child, ancestors),
-    ]));
-  } finally {
-    ancestors.delete(value);
-  }
+  // Measure the exact canonical bytes emitted by Rust.  This keeps IndexedDB
+  // capacity accounting aligned with the wire representation, including
+  // BigInt and binary values.
+  return (await NativeContracts.create()).encodeCanonicalJson(value).byteLength;
 }
 
 function openClientDatabase(

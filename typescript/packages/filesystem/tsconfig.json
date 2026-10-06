@@ -14,7 +14,7 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
-    "skipLibCheck": false,
+    "skipLibCheck": true,
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"]

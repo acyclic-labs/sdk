@@ -2,13 +2,15 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, projectGrpcReadResponse, projectMemoryResponse, publicHttpErrorCode, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, commitId } from "./types.js";
+import { StreamError } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
+import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
+import { STREAM_HANDSHAKE, STREAM_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedCredentialPolicy, validateRustOwnedGrpcHandshake } from "./generated-client.js";
 
 export interface StreamGrpcOptions {
   readonly endpoint: string;
@@ -21,15 +23,31 @@ export interface StreamGrpcOptions {
 export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || /[\r\n]/.test(options.token)) throw new TypeError("invalid bearer token");
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
+  validateRustOwnedCredentialPolicy(options.token);
+  const maximum = options.maximumMessageBytes ?? STREAM_REMOTE_POLICY.maximumMessageBytes;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "stream");
     return next(request);
   };
-  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  const tls = options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } };
+  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: STREAM_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: STREAM_REMOTE_POLICY.maximumMessageBytes, ...tls }));
+  let handshake: Promise<void> | undefined;
+  const applicationAuthenticate: Interceptor = next => async request => {
+    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "stream");
+    if (handshake === undefined) {
+      const pending = control.handshake(rustOwnedGrpcHandshakeRequest(STREAM_HANDSHAKE, "stream"), { timeoutMs: STREAM_REMOTE_POLICY.requestTimeoutMillis })
+        .then(response => { validateRustOwnedGrpcHandshake(response, STREAM_HANDSHAKE, "stream"); });
+      const wrapped = pending.catch(error => { if (handshake === wrapped) handshake = undefined; throw error; });
+      handshake = wrapped;
+    }
+    await handshake;
+    return next(request);
+  };
+  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls }));
 }
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
@@ -47,7 +65,8 @@ export class GrpcStreamProvider implements StreamProvider {
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
     const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
-    if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
+    try { validateGrpcResponseIdentity("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response), key); }
+    catch { throw new StreamError("invalid_response", "idempotency response names another retry identity"); }
     return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
   }
   async tail(path: string): Promise<bigint> {
@@ -76,7 +95,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
         if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const record = checkedRecord(response.record, next);
+        const record = this.#projectGrpcRecord(response, next);
         next = record.sequence + 1n;
         yield record;
       }
@@ -90,7 +109,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
         if (options.signal?.aborted) return;
-        const record = checkedRecord(response.record, next);
+        const record = this.#projectGrpcRecord(response, next);
         next = record.sequence + 1n;
         yield record;
       }
@@ -98,6 +117,10 @@ export class GrpcStreamProvider implements StreamProvider {
       if (options.signal?.aborted) return;
       throw providerError(error, "follow");
     }
+  }
+  #projectGrpcRecord(response: wire.ReadResponse, expected: bigint): EncodedRecord {
+    try { return projectGrpcReadResponse(toBinary(wire.ReadResponseSchema, response), expected) as EncodedRecord; }
+    catch { throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body"); }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,
@@ -117,36 +140,30 @@ export class GrpcStreamProvider implements StreamProvider {
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));
     const response = await this.#call("read_commit", () => this.#client.readCommit(request));
-    if (!sameBytes(response.commitId, id)) throw new StreamError("invalid_response", "commit response names another commit");
+    try { validateGrpcResponseIdentity("read_commit", toBinary(wire.CommittedEnvelopeSchema, response), id); }
+    catch { throw new StreamError("invalid_response", "commit response names another commit"); }
     return this.#project("read_commit", toBinary(wire.CommittedEnvelopeSchema, response));
   }
 }
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
-}
 /** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
   let code = "unavailable";
   switch (error.code) {
-    case Code.InvalidArgument: code = ["invalid_path", "limit_exceeded"].includes(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
+    case Code.InvalidArgument: code = is_stream_error_code(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.FailedPrecondition:
-      if (["hierarchy_changed", "idempotency_mismatch", "prefix_not_retained", "deadline_elapsed"].includes(error.rawMessage)) code = error.rawMessage;
+      if (is_stream_error_code(error.rawMessage)) code = error.rawMessage;
       break;
     case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
   }
-  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+  const projected = publicHttpErrorCode(error.rawMessage, operation);
+  if (projected !== undefined) code = projected;
   return new StreamError(code, error.rawMessage);
 }

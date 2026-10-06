@@ -11,20 +11,28 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_actors_v1_actors: GenFile;
 
 /**
+ * A capability binding made available to an actor.
+ *
  * @generated from message acyclic.actors.v1.Binding
  */
 export declare type Binding = Message<"acyclic.actors.v1.Binding"> & {
   /**
+   * The stable name of the binding or header.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * The capability granted by the binding.
+   *
    * @generated from field: string capability = 2;
    */
   capability: string;
 
   /**
+   * The resource selected by the binding.
+   *
    * @generated from field: string resource = 3;
    */
   resource: string;
@@ -37,20 +45,28 @@ export declare type Binding = Message<"acyclic.actors.v1.Binding"> & {
 export declare const BindingSchema: GenMessage<Binding>;
 
 /**
+ * Resource and checkpoint limits for an actor.
+ *
  * @generated from message acyclic.actors.v1.ActorLimits
  */
 export declare type ActorLimits = Message<"acyclic.actors.v1.ActorLimits"> & {
   /**
+   * Maximum handler execution time in milliseconds.
+   *
    * @generated from field: uint64 handler_timeout_millis = 1;
    */
   handlerTimeoutMillis: bigint;
 
   /**
+   * Maximum actor memory in bytes.
+   *
    * @generated from field: uint64 memory_bytes = 2;
    */
   memoryBytes: bigint;
 
   /**
+   * Maximum checkpoint size in bytes.
+   *
    * @generated from field: uint64 checkpoint_bytes = 3;
    */
   checkpointBytes: bigint;
@@ -63,6 +79,8 @@ export declare type ActorLimits = Message<"acyclic.actors.v1.ActorLimits"> & {
 export declare const ActorLimitsSchema: GenMessage<ActorLimits>;
 
 /**
+ * The cursor or head position from which a subscription starts.
+ *
  * @generated from message acyclic.actors.v1.SubscriptionStart
  */
 export declare type SubscriptionStart = Message<"acyclic.actors.v1.SubscriptionStart"> & {
@@ -71,12 +89,16 @@ export declare type SubscriptionStart = Message<"acyclic.actors.v1.SubscriptionS
    */
   start: {
     /**
+     * A previously observed stream cursor.
+     *
      * @generated from field: uint64 cursor = 1;
      */
     value: bigint;
     case: "cursor";
   } | {
     /**
+     * Start at the current stream head.
+     *
      * @generated from field: bool current_head = 2;
      */
     value: boolean;
@@ -91,25 +113,35 @@ export declare type SubscriptionStart = Message<"acyclic.actors.v1.SubscriptionS
 export declare const SubscriptionStartSchema: GenMessage<SubscriptionStart>;
 
 /**
+ * A stream subscription attached to an actor.
+ *
  * @generated from message acyclic.actors.v1.SubscriptionSpec
  */
 export declare type SubscriptionSpec = Message<"acyclic.actors.v1.SubscriptionSpec"> & {
   /**
+   * The stable subscription identifier.
+   *
    * @generated from field: string subscription_id = 1;
    */
   subscriptionId: string;
 
   /**
+   * The stream path consumed by the subscription.
+   *
    * @generated from field: string stream_path = 2;
    */
   streamPath: string;
 
   /**
+   * The subscription's starting position.
+   *
    * @generated from field: acyclic.actors.v1.SubscriptionStart start = 3;
    */
   start?: SubscriptionStart | undefined;
 
   /**
+   * Whether placement is anchored to the selected resource.
+   *
    * @generated from field: bool placement_anchor = 4;
    */
   placementAnchor: boolean;
@@ -122,55 +154,77 @@ export declare type SubscriptionSpec = Message<"acyclic.actors.v1.SubscriptionSp
 export declare const SubscriptionSpecSchema: GenMessage<SubscriptionSpec>;
 
 /**
+ * The current delivery and recovery state of a subscription.
+ *
  * @generated from message acyclic.actors.v1.SubscriptionObservation
  */
 export declare type SubscriptionObservation = Message<"acyclic.actors.v1.SubscriptionObservation"> & {
   /**
+   * The stable subscription identifier.
+   *
    * @generated from field: string subscription_id = 1;
    */
   subscriptionId: string;
 
   /**
+   * The stream path consumed by the subscription.
+   *
    * @generated from field: string stream_path = 2;
    */
   streamPath: string;
 
   /**
+   * The current subscription or actor state.
+   *
    * @generated from field: acyclic.actors.v1.SubscriptionState state = 3;
    */
   state: SubscriptionState;
 
   /**
+   * The latest cursor delivered to the actor.
+   *
    * @generated from field: uint64 delivered_cursor = 4;
    */
   deliveredCursor: bigint;
 
   /**
+   * The latest cursor fully completed by the actor.
+   *
    * @generated from field: uint64 completed_cursor = 5;
    */
   completedCursor: bigint;
 
   /**
+   * The earliest cursor from which recovery is possible.
+   *
    * @generated from field: uint64 recoverable_cursor = 6;
    */
   recoverableCursor: bigint;
 
   /**
+   * Whether placement is anchored to the selected resource.
+   *
    * @generated from field: bool placement_anchor = 7;
    */
   placementAnchor: boolean;
 
   /**
+   * The number of delivery retries.
+   *
    * @generated from field: uint32 retry_count = 8;
    */
   retryCount: number;
 
   /**
+   * The stable code for the latest delivery failure.
+   *
    * @generated from field: string failure_code = 9;
    */
   failureCode: string;
 
   /**
+   * The cursor whose delivery most recently failed.
+   *
    * @generated from field: optional uint64 failed_cursor = 10;
    */
   failedCursor?: bigint | undefined;
@@ -183,45 +237,63 @@ export declare type SubscriptionObservation = Message<"acyclic.actors.v1.Subscri
 export declare const SubscriptionObservationSchema: GenMessage<SubscriptionObservation>;
 
 /**
+ * The observable state and configuration revision of an actor.
+ *
  * @generated from message acyclic.actors.v1.ActorObservation
  */
 export declare type ActorObservation = Message<"acyclic.actors.v1.ActorObservation"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * SHA-256 digest of the actor code.
+   *
    * @generated from field: bytes code_sha256 = 2;
    */
   codeSha256: Uint8Array;
 
   /**
+   * The actor's home region.
+   *
    * @generated from field: string home_region = 3;
    */
   homeRegion: string;
 
   /**
+   * The current subscription or actor state.
+   *
    * @generated from field: acyclic.actors.v1.ActorState state = 4;
    */
   state: ActorState;
 
   /**
+   * Subscriptions associated with the actor.
+   *
    * @generated from field: repeated acyclic.actors.v1.SubscriptionObservation subscriptions = 5;
    */
   subscriptions: SubscriptionObservation[];
 
   /**
+   * Time of the latest checkpoint in Unix milliseconds.
+   *
    * @generated from field: optional uint64 checkpoint_unix_millis = 6;
    */
   checkpointUnixMillis?: bigint | undefined;
 
   /**
+   * Monotonic checkpoint epoch.
+   *
    * @generated from field: uint64 checkpoint_epoch = 7;
    */
   checkpointEpoch: bigint;
 
   /**
+   * Revision used for configuration compare-and-swap.
+   *
    * @generated from field: uint64 configuration_revision = 8;
    */
   configurationRevision: bigint;
@@ -234,35 +306,49 @@ export declare type ActorObservation = Message<"acyclic.actors.v1.ActorObservati
 export declare const ActorObservationSchema: GenMessage<ActorObservation>;
 
 /**
+ * Creates an actor and its initial subscriptions.
+ *
  * @generated from message acyclic.actors.v1.CreateActorRequest
  */
 export declare type CreateActorRequest = Message<"acyclic.actors.v1.CreateActorRequest"> & {
   /**
+   * SHA-256 digest of the actor code.
+   *
    * @generated from field: bytes code_sha256 = 1;
    */
   codeSha256: Uint8Array;
 
   /**
+   * The actor's home region.
+   *
    * @generated from field: string home_region = 2;
    */
   homeRegion: string;
 
   /**
+   * Capability bindings supplied to the actor.
+   *
    * @generated from field: repeated acyclic.actors.v1.Binding bindings = 3;
    */
   bindings: Binding[];
 
   /**
+   * Resource and checkpoint limits supplied to the actor.
+   *
    * @generated from field: acyclic.actors.v1.ActorLimits limits = 4;
    */
   limits?: ActorLimits | undefined;
 
   /**
+   * Subscriptions associated with the actor.
+   *
    * @generated from field: repeated acyclic.actors.v1.SubscriptionSpec subscriptions = 5;
    */
   subscriptions: SubscriptionSpec[];
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 6;
    */
   idempotencyKey: string;
@@ -275,10 +361,14 @@ export declare type CreateActorRequest = Message<"acyclic.actors.v1.CreateActorR
 export declare const CreateActorRequestSchema: GenMessage<CreateActorRequest>;
 
 /**
+ * The actor created by the request.
+ *
  * @generated from message acyclic.actors.v1.CreateActorResponse
  */
 export declare type CreateActorResponse = Message<"acyclic.actors.v1.CreateActorResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -291,39 +381,49 @@ export declare type CreateActorResponse = Message<"acyclic.actors.v1.CreateActor
 export declare const CreateActorResponseSchema: GenMessage<CreateActorResponse>;
 
 /**
- * Full configuration replacement with CAS. The new code's checkpoint schema
- * must be compatible or explicitly migrated before activation; failure keeps
- * the previous version active. Paused subscriptions stay paused until resumed.
+ * Replaces actor configuration with compare-and-swap semantics.
  *
  * @generated from message acyclic.actors.v1.UpdateActorRequest
  */
 export declare type UpdateActorRequest = Message<"acyclic.actors.v1.UpdateActorRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * SHA-256 digest of the actor code.
+   *
    * @generated from field: bytes code_sha256 = 2;
    */
   codeSha256: Uint8Array;
 
   /**
+   * Capability bindings supplied to the actor.
+   *
    * @generated from field: repeated acyclic.actors.v1.Binding bindings = 3;
    */
   bindings: Binding[];
 
   /**
+   * Resource and checkpoint limits supplied to the actor.
+   *
    * @generated from field: acyclic.actors.v1.ActorLimits limits = 4;
    */
   limits?: ActorLimits | undefined;
 
   /**
+   * Required current configuration revision.
+   *
    * @generated from field: uint64 expected_configuration_revision = 5;
    */
   expectedConfigurationRevision: bigint;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 6;
    */
   idempotencyKey: string;
@@ -336,10 +436,14 @@ export declare type UpdateActorRequest = Message<"acyclic.actors.v1.UpdateActorR
 export declare const UpdateActorRequestSchema: GenMessage<UpdateActorRequest>;
 
 /**
+ * The actor after configuration replacement.
+ *
  * @generated from message acyclic.actors.v1.UpdateActorResponse
  */
 export declare type UpdateActorResponse = Message<"acyclic.actors.v1.UpdateActorResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -352,10 +456,14 @@ export declare type UpdateActorResponse = Message<"acyclic.actors.v1.UpdateActor
 export declare const UpdateActorResponseSchema: GenMessage<UpdateActorResponse>;
 
 /**
+ * Identifies an actor to inspect.
+ *
  * @generated from message acyclic.actors.v1.InspectActorRequest
  */
 export declare type InspectActorRequest = Message<"acyclic.actors.v1.InspectActorRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
@@ -368,10 +476,14 @@ export declare type InspectActorRequest = Message<"acyclic.actors.v1.InspectActo
 export declare const InspectActorRequestSchema: GenMessage<InspectActorRequest>;
 
 /**
+ * The inspected actor.
+ *
  * @generated from message acyclic.actors.v1.InspectActorResponse
  */
 export declare type InspectActorResponse = Message<"acyclic.actors.v1.InspectActorResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -384,20 +496,28 @@ export declare type InspectActorResponse = Message<"acyclic.actors.v1.InspectAct
 export declare const InspectActorResponseSchema: GenMessage<InspectActorResponse>;
 
 /**
+ * Adds a subscription to an actor.
+ *
  * @generated from message acyclic.actors.v1.AddSubscriptionRequest
  */
 export declare type AddSubscriptionRequest = Message<"acyclic.actors.v1.AddSubscriptionRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * Subscription to add.
+   *
    * @generated from field: acyclic.actors.v1.SubscriptionSpec subscription = 2;
    */
   subscription?: SubscriptionSpec | undefined;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 3;
    */
   idempotencyKey: string;
@@ -410,10 +530,14 @@ export declare type AddSubscriptionRequest = Message<"acyclic.actors.v1.AddSubsc
 export declare const AddSubscriptionRequestSchema: GenMessage<AddSubscriptionRequest>;
 
 /**
+ * The actor after adding a subscription.
+ *
  * @generated from message acyclic.actors.v1.AddSubscriptionResponse
  */
 export declare type AddSubscriptionResponse = Message<"acyclic.actors.v1.AddSubscriptionResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -426,20 +550,28 @@ export declare type AddSubscriptionResponse = Message<"acyclic.actors.v1.AddSubs
 export declare const AddSubscriptionResponseSchema: GenMessage<AddSubscriptionResponse>;
 
 /**
+ * Removes a subscription from an actor.
+ *
  * @generated from message acyclic.actors.v1.RemoveSubscriptionRequest
  */
 export declare type RemoveSubscriptionRequest = Message<"acyclic.actors.v1.RemoveSubscriptionRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * The stable subscription identifier.
+   *
    * @generated from field: string subscription_id = 2;
    */
   subscriptionId: string;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 3;
    */
   idempotencyKey: string;
@@ -452,10 +584,14 @@ export declare type RemoveSubscriptionRequest = Message<"acyclic.actors.v1.Remov
 export declare const RemoveSubscriptionRequestSchema: GenMessage<RemoveSubscriptionRequest>;
 
 /**
+ * The actor after removing a subscription.
+ *
  * @generated from message acyclic.actors.v1.RemoveSubscriptionResponse
  */
 export declare type RemoveSubscriptionResponse = Message<"acyclic.actors.v1.RemoveSubscriptionResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -468,22 +604,28 @@ export declare type RemoveSubscriptionResponse = Message<"acyclic.actors.v1.Remo
 export declare const RemoveSubscriptionResponseSchema: GenMessage<RemoveSubscriptionResponse>;
 
 /**
- * Resumption may replay a previously delivered record and duplicate external effects.
+ * Resumes delivery for an actor subscription.
  *
  * @generated from message acyclic.actors.v1.ResumeSubscriptionRequest
  */
 export declare type ResumeSubscriptionRequest = Message<"acyclic.actors.v1.ResumeSubscriptionRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * The stable subscription identifier.
+   *
    * @generated from field: string subscription_id = 2;
    */
   subscriptionId: string;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 3;
    */
   idempotencyKey: string;
@@ -496,10 +638,14 @@ export declare type ResumeSubscriptionRequest = Message<"acyclic.actors.v1.Resum
 export declare const ResumeSubscriptionRequestSchema: GenMessage<ResumeSubscriptionRequest>;
 
 /**
+ * The actor after resuming a subscription.
+ *
  * @generated from message acyclic.actors.v1.ResumeSubscriptionResponse
  */
 export declare type ResumeSubscriptionResponse = Message<"acyclic.actors.v1.ResumeSubscriptionResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -512,15 +658,21 @@ export declare type ResumeSubscriptionResponse = Message<"acyclic.actors.v1.Resu
 export declare const ResumeSubscriptionResponseSchema: GenMessage<ResumeSubscriptionResponse>;
 
 /**
+ * Requests a durable actor checkpoint.
+ *
  * @generated from message acyclic.actors.v1.CheckpointActorRequest
  */
 export declare type CheckpointActorRequest = Message<"acyclic.actors.v1.CheckpointActorRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 2;
    */
   idempotencyKey: string;
@@ -533,10 +685,14 @@ export declare type CheckpointActorRequest = Message<"acyclic.actors.v1.Checkpoi
 export declare const CheckpointActorRequestSchema: GenMessage<CheckpointActorRequest>;
 
 /**
+ * The actor after checkpointing.
+ *
  * @generated from message acyclic.actors.v1.CheckpointActorResponse
  */
 export declare type CheckpointActorResponse = Message<"acyclic.actors.v1.CheckpointActorResponse"> & {
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: acyclic.actors.v1.ActorObservation actor = 1;
    */
   actor?: ActorObservation | undefined;
@@ -549,15 +705,21 @@ export declare type CheckpointActorResponse = Message<"acyclic.actors.v1.Checkpo
 export declare const CheckpointActorResponseSchema: GenMessage<CheckpointActorResponse>;
 
 /**
+ * An HTTP-style invocation header.
+ *
  * @generated from message acyclic.actors.v1.Header
  */
 export declare type Header = Message<"acyclic.actors.v1.Header"> & {
   /**
+   * The stable name of the binding or header.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * A field in the Actors v1 wire contract.
+   *
    * @generated from field: string value = 2;
    */
   value: string;
@@ -570,32 +732,42 @@ export declare type Header = Message<"acyclic.actors.v1.Header"> & {
 export declare const HeaderSchema: GenMessage<Header>;
 
 /**
- * Invocation is not an implicit Stream append or persistence guarantee.
+ * Invokes an actor method with an HTTP-style request.
  *
  * @generated from message acyclic.actors.v1.InvokeActorRequest
  */
 export declare type InvokeActorRequest = Message<"acyclic.actors.v1.InvokeActorRequest"> & {
   /**
+   * The stable actor identifier.
+   *
    * @generated from field: string actor_id = 1;
    */
   actorId: string;
 
   /**
+   * The method name or HTTP method to invoke.
+   *
    * @generated from field: string method = 2;
    */
   method: string;
 
   /**
+   * The URL passed to the actor invocation.
+   *
    * @generated from field: string url = 3;
    */
   url: string;
 
   /**
+   * The invocation request or response body.
+   *
    * @generated from field: bytes body = 4;
    */
   body: Uint8Array;
 
   /**
+   * Headers passed to or returned from the invocation.
+   *
    * @generated from field: repeated acyclic.actors.v1.Header headers = 5;
    */
   headers: Header[];
@@ -608,20 +780,28 @@ export declare type InvokeActorRequest = Message<"acyclic.actors.v1.InvokeActorR
 export declare const InvokeActorRequestSchema: GenMessage<InvokeActorRequest>;
 
 /**
+ * The status, body, and headers returned by an invocation.
+ *
  * @generated from message acyclic.actors.v1.InvokeActorResponse
  */
 export declare type InvokeActorResponse = Message<"acyclic.actors.v1.InvokeActorResponse"> & {
   /**
+   * The invocation status code.
+   *
    * @generated from field: uint32 status = 1;
    */
   status: number;
 
   /**
+   * The invocation request or response body.
+   *
    * @generated from field: bytes body = 2;
    */
   body: Uint8Array;
 
   /**
+   * Headers passed to or returned from the invocation.
+   *
    * @generated from field: repeated acyclic.actors.v1.Header headers = 3;
    */
   headers: Header[];
@@ -634,15 +814,21 @@ export declare type InvokeActorResponse = Message<"acyclic.actors.v1.InvokeActor
 export declare const InvokeActorResponseSchema: GenMessage<InvokeActorResponse>;
 
 /**
+ * A typed actor service error.
+ *
  * @generated from message acyclic.actors.v1.Error
  */
 export declare type Error = Message<"acyclic.actors.v1.Error"> & {
   /**
+   * The typed error code.
+   *
    * @generated from field: acyclic.actors.v1.ErrorCode code = 1;
    */
   code: ErrorCode;
 
   /**
+   * Human-readable error detail.
+   *
    * @generated from field: string message = 2;
    */
   message: string;
@@ -655,6 +841,8 @@ export declare type Error = Message<"acyclic.actors.v1.Error"> & {
 export declare const ErrorSchema: GenMessage<Error>;
 
 /**
+ * Lifecycle state of a stream subscription.
+ *
  * @generated from enum acyclic.actors.v1.SubscriptionState
  */
 export enum SubscriptionState {
@@ -680,6 +868,8 @@ export enum SubscriptionState {
 export declare const SubscriptionStateSchema: GenEnum<SubscriptionState>;
 
 /**
+ * Lifecycle state of an actor.
+ *
  * @generated from enum acyclic.actors.v1.ActorState
  */
 export enum ActorState {
@@ -710,6 +900,8 @@ export enum ActorState {
 export declare const ActorStateSchema: GenEnum<ActorState>;
 
 /**
+ * Stable error categories returned by the Actors service.
+ *
  * @generated from enum acyclic.actors.v1.ErrorCode
  */
 export enum ErrorCode {
@@ -775,10 +967,14 @@ export enum ErrorCode {
 export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
 
 /**
+ * Remote operations for creating, observing, and invoking actors.
+ *
  * @generated from service acyclic.actors.v1.ActorsService
  */
 export declare const ActorsService: GenService<{
   /**
+   * Creates an actor.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.CreateActor
    */
   createActor: {
@@ -787,6 +983,8 @@ export declare const ActorsService: GenService<{
     output: typeof CreateActorResponseSchema;
   },
   /**
+   * Replaces actor configuration with compare-and-swap semantics.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.UpdateActor
    */
   updateActor: {
@@ -795,6 +993,8 @@ export declare const ActorsService: GenService<{
     output: typeof UpdateActorResponseSchema;
   },
   /**
+   * Returns the current actor observation.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.InspectActor
    */
   inspectActor: {
@@ -803,6 +1003,8 @@ export declare const ActorsService: GenService<{
     output: typeof InspectActorResponseSchema;
   },
   /**
+   * Adds a subscription to an actor.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.AddSubscription
    */
   addSubscription: {
@@ -811,6 +1013,8 @@ export declare const ActorsService: GenService<{
     output: typeof AddSubscriptionResponseSchema;
   },
   /**
+   * Removes a subscription from an actor.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.RemoveSubscription
    */
   removeSubscription: {
@@ -819,6 +1023,8 @@ export declare const ActorsService: GenService<{
     output: typeof RemoveSubscriptionResponseSchema;
   },
   /**
+   * Resumes a paused subscription.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.ResumeSubscription
    */
   resumeSubscription: {
@@ -827,6 +1033,8 @@ export declare const ActorsService: GenService<{
     output: typeof ResumeSubscriptionResponseSchema;
   },
   /**
+   * Requests an actor checkpoint.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.CheckpointActor
    */
   checkpointActor: {
@@ -835,6 +1043,8 @@ export declare const ActorsService: GenService<{
     output: typeof CheckpointActorResponseSchema;
   },
   /**
+   * Invokes an actor method.
+   *
    * @generated from rpc acyclic.actors.v1.ActorsService.InvokeActor
    */
   invokeActor: {
@@ -843,3 +1053,4 @@ export declare const ActorsService: GenService<{
     output: typeof InvokeActorResponseSchema;
   },
 }>;
+

@@ -3,36 +3,50 @@
 // Version negotiation shared by every Acyclic service family. Each family
 // names its own contract in ProtocolIdentity; nothing here depends on one.
 
+/// Identifies a service family's versioned wire contract and descriptor digest. The accepting service defines its identity matching policy.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ProtocolIdentity {
+    /// The version identifier of the service family's wire contract.
     #[prost(string, tag = "1")]
     pub version: ::prost::alloc::string::String,
+    /// The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
     #[prost(string, tag = "2")]
     pub descriptor_digest: ::prost::alloc::string::String,
 }
+/// Identifies a named, versioned capability offered or requested during a handshake.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Capability {
+    /// The capability name recognized by the service family.
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
+    /// The version associated with this named capability.
     #[prost(string, tag = "2")]
     pub version: ::prost::alloc::string::String,
 }
+/// Groups the named, versioned capabilities exchanged during protocol negotiation.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct CapabilitySet {
+    /// The capabilities in this set, each identified by its name and version.
     #[prost(message, repeated, tag = "1")]
     pub capabilities: ::prost::alloc::vec::Vec<Capability>,
 }
+/// Requests protocol negotiation with a service family's identity and required capabilities. The family defines which omissions and capabilities it accepts.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeRequest {
+    /// The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
     #[prost(message, optional, tag = "1")]
     pub protocol: ::core::option::Option<ProtocolIdentity>,
+    /// The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
     #[prost(message, optional, tag = "2")]
     pub required: ::core::option::Option<CapabilitySet>,
 }
+/// Reports the service family's protocol identity and supported capabilities after negotiation.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct HandshakeResponse {
+    /// The protocol identity reported by the accepting service.
     #[prost(message, optional, tag = "1")]
     pub protocol: ::core::option::Option<ProtocolIdentity>,
+    /// The capabilities advertised by the accepting service.
     #[prost(message, optional, tag = "2")]
     pub supported: ::core::option::Option<CapabilitySet>,
 }

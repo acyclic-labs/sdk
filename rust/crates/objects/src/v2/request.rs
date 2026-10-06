@@ -11,7 +11,7 @@ pub struct UploadFraming {
 impl UploadFraming {
     /// Accepts a bounded decoded body frame before completion.
     pub fn body(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        if self.complete || bytes.len() > 65_536 {
+        if self.complete || bytes.len() > super::HTTP_BODY_FRAME_BYTES {
             return Err(InvalidArgument.into());
         }
         self.size = self

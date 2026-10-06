@@ -1,0 +1,45 @@
+{
+  "schema": "acyclic.generation.observation.v1",
+  "checked_at": "2026-10-04",
+  "status": "failed",
+  "source_snapshot": "Q:/sdk/work/rust-sdk-generation-sourceonly-current",
+  "source_revision": "64484b5930e0029de16730a55e4144bd37c6553f",
+  "output": "Q:/sdk/work/rust-generation-output-64484b",
+  "observed_handle": 44948,
+  "handle_state": "missing",
+  "qualification_manifest_emitted": false,
+  "failures": [
+    {
+      "stage": "sdk-product-artifacts",
+      "log": "logs/sdk-product-artifacts.stderr",
+      "reason": "Cargo.lock cannot update under --locked"
+    },
+    {
+      "stage": "sdk-contract-wire",
+      "log": "logs/sdk-contract-wire.stderr",
+      "reason": "Cargo.lock cannot update under --locked"
+    },
+    {
+      "stage": "sdk-docs-rustdoc",
+      "log": "logs/sdk-docs-rustdoc.stderr",
+      "reason": "host-default actors rustdoc fails because frozen Cargo.lock needs update"
+    },
+    {
+      "stage": "sdk-python",
+      "log": "logs/sdk-python.stderr",
+      "reason": "wire stage output unavailable"
+    },
+    {
+      "stage": "sdk-examples-provenance",
+      "artifact": "qualification/packages/actors-create-roundtrip-sdk-package.tgz",
+      "sha256": "8c3bf97dc0ff96496ff32707613736384f25728e1d835772369ffedfa21532b4",
+      "prefix_hex": "4D5A900003000000",
+      "reason": "Package artifact is a PE executable, matches compile artifact bytes, not the declared tgz archive"
+    }
+  ],
+  "next_steps": [
+    "Commit coherent resolved frozen Cargo.lock before full generation",
+    "Produce genuine Rust installable package and matching consumer provenance",
+    "Fresh complete generation followed by real drift/mutation/reproducibility checks"
+  ]
+}

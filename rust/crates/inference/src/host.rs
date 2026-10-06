@@ -74,7 +74,7 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
+    /// Connect the default remote client over tonic gRPC on authenticated HTTPS, using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
     ///
     /// # Errors
     /// Rejects non-HTTPS endpoints, invalid credentials and failed TLS setup.
@@ -1059,6 +1059,198 @@ fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
 mod tests {
     use super::*;
     use prost::Message;
+    use rcgen::generate_simple_self_signed;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::{Identity, Server, ServerTlsConfig};
+    use tonic::{Request, Response, Status};
+
+    #[derive(Default)]
+    struct ModelsService;
+
+    #[tonic::async_trait]
+    impl wire::models_service_server::ModelsService for ModelsService {
+        async fn list(
+            &self,
+            _request: Request<wire::ListModelsRequest>,
+        ) -> Result<Response<wire::ListModelsResponse>, Status> {
+            Ok(Response::new(wire::ListModelsResponse {
+                models: vec![wire::ModelCapability {
+                    model: "fixture-model".to_owned(),
+                    execution_profile: vec![1; 32],
+                    maximum_context: 1,
+                    maximum_output: 1,
+                    features: vec!["generate".to_owned()],
+                    ..Default::default()
+                }],
+            }))
+        }
+    }
+
+    #[derive(Default)]
+    struct ContextsService;
+
+    #[tonic::async_trait]
+    impl wire::contexts_service_server::ContextsService for ContextsService {
+        async fn create(
+            &self,
+            request: Request<wire::CreateContextRequest>,
+        ) -> Result<Response<wire::MutationReceipt>, Status> {
+            assert_eq!(request.into_inner().model, "fixture-model");
+            Ok(Response::new(wire::MutationReceipt {
+                revision: vec![1; 32],
+                command_digest: vec![2; 32],
+                sequence: 1,
+                retained: true,
+            }))
+        }
+
+        async fn inspect(
+            &self,
+            request: Request<wire::InspectContextRequest>,
+        ) -> Result<Response<wire::ContextView>, Status> {
+            assert_eq!(request.into_inner().revision, vec![1; 32]);
+            Ok(Response::new(wire::ContextView {
+                revision: vec![1; 32],
+                lineage: vec![3; 32],
+                execution_profile: vec![4; 32],
+                content_digest: vec![5; 32],
+                model: "fixture-model".to_owned(),
+                provenance: Some(wire::ContextProvenance {
+                    origin: Some(wire::context_provenance::Origin::Created(wire::Empty {})),
+                }),
+                ..Default::default()
+            }))
+        }
+
+        async fn mutate(
+            &self,
+            _request: Request<wire::MutateContextRequest>,
+        ) -> Result<Response<wire::MutationReceipt>, Status> {
+            Ok(Response::new(wire::MutationReceipt {
+                revision: vec![6; 32],
+                command_digest: vec![7; 32],
+                sequence: 2,
+                retained: false,
+            }))
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct RunsService {
+        state: Arc<std::sync::Mutex<RunFixtureState>>,
+    }
+
+    #[derive(Default)]
+    struct RunFixtureState {
+        run_id: Vec<u8>,
+        context: Vec<u8>,
+        cancelled: bool,
+    }
+
+    fn run_view(state: &RunFixtureState) -> wire::RunView {
+        wire::RunView {
+            run_id: state.run_id.clone(),
+            input: state.context.clone(),
+            model: "fixture-model".to_owned(),
+            last_sequence: if state.cancelled { 1 } else { 0 },
+            cancellation_requested: state.cancelled,
+            result: state.cancelled.then(|| wire::RunResult {
+                output: Vec::new(),
+                context: None,
+                terminal: wire::RunTerminal::Cancelled.into(),
+                receipt: None,
+            }),
+        }
+    }
+
+    #[tonic::async_trait]
+    impl wire::runs_service_server::RunsService for RunsService {
+        async fn generate(
+            &self,
+            request: Request<wire::GenerateRunRequest>,
+        ) -> Result<Response<wire::GenerateRunResponse>, Status> {
+            let request = request.into_inner();
+            let identity = request
+                .identity
+                .ok_or_else(|| Status::invalid_argument("missing request identity"))?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            state.run_id = identity.request_id;
+            state.context = request.context;
+            state.cancelled = false;
+            Ok(Response::new(wire::GenerateRunResponse {
+                run: Some(run_view(&state)),
+            }))
+        }
+
+        async fn inspect(
+            &self,
+            request: Request<wire::InspectRunRequest>,
+        ) -> Result<Response<wire::RunView>, Status> {
+            let request = request.into_inner();
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id {
+                return Err(Status::not_found("unknown run"));
+            }
+            Ok(Response::new(run_view(&state)))
+        }
+
+        type WatchStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<wire::RunEvent, Status>> + Send>,
+        >;
+
+        async fn watch(
+            &self,
+            request: Request<wire::WatchRunRequest>,
+        ) -> Result<Response<Self::WatchStream>, Status> {
+            let request = request.into_inner();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id || request.from_sequence != 0 {
+                return Err(Status::invalid_argument("unexpected run cursor"));
+            }
+            state.cancelled = true;
+            let events = [
+                Ok(wire::RunEvent {
+                    sequence: 0,
+                    event: Some(wire::run_event::Event::Progress(wire::RunProgress {
+                        kind: "cancellation-requested".to_owned(),
+                    })),
+                }),
+                Ok(wire::RunEvent {
+                    sequence: 1,
+                    event: Some(wire::run_event::Event::Terminal(
+                        wire::RunTerminal::Cancelled.into(),
+                    )),
+                }),
+            ];
+            Ok(Response::new(Box::pin(tokio_stream::iter(events))))
+        }
+
+        async fn cancel(
+            &self,
+            request: Request<wire::InspectRunRequest>,
+        ) -> Result<Response<wire::RunView>, Status> {
+            let request = request.into_inner();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id {
+                return Err(Status::not_found("unknown run"));
+            }
+            state.cancelled = true;
+            Ok(Response::new(run_view(&state)))
+        }
+    }
 
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {
@@ -1432,6 +1624,155 @@ mod tests {
             Inference::connect("https://localhost", "secret", &oversized).await,
             Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
         ));
+    }
+
+    #[tokio::test]
+    async fn default_remote_transport_completes_authenticated_tls_grpc_handshake()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::models_service_server::ModelsServiceServer::new(
+                    ModelsService,
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        assert_eq!(client.models().await?.len(), 1);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_context_create_and_inspect_preserve_server_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::contexts_service_server::ContextsServiceServer::new(
+                    ContextsService,
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        let context = client
+            .context("fixture-model")
+            .instructions("bounded fixture input")
+            .create()
+            .await?;
+        let view = context.inspect().await?;
+        assert_eq!(view.revision, vec![1; 32]);
+        assert_eq!(view.model, "fixture-model");
+        assert_eq!(view.lineage, vec![3; 32]);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_run_watch_cancel_and_resume_preserve_terminal_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::runs_service_server::RunsServiceServer::new(
+                    RunsService::default(),
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        let revision = [9; 32];
+        let context = Context {
+            client: client.clone(),
+            revision,
+        };
+        let run = context
+            .generate("bounded watch input", 64)
+            .seed(7)
+            .send()
+            .await?;
+        let mut events = run.watch(0).await?;
+        assert_eq!(
+            events.next().await?.and_then(|event| event.event.clone()),
+            Some(wire::run_event::Event::Progress(wire::RunProgress {
+                kind: "cancellation-requested".to_owned(),
+            }))
+        );
+        assert_eq!(
+            events.next().await?.and_then(|event| event.event.clone()),
+            Some(wire::run_event::Event::Terminal(
+                wire::RunTerminal::Cancelled.into(),
+            ))
+        );
+        assert!(events.next().await?.is_none());
+
+        let cancelled = run.cancel().await?;
+        assert_eq!(cancelled.run_id, run.id().to_vec());
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(
+            wire::RunTerminal::try_from(
+                cancelled
+                    .result
+                    .as_ref()
+                    .ok_or("missing run result")?
+                    .terminal,
+            )?,
+            wire::RunTerminal::Cancelled
+        );
+        let mut resumed = run.watch(2).await?;
+        assert!(resumed.next().await?.is_none());
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
     }
 
     #[test]

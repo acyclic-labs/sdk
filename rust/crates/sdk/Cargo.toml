@@ -1,0 +1,26 @@
+[package]
+name = "acyclic-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Unified Rust SDK facade for the Acyclic service families"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-sdk"
+keywords = ["acyclic", "sdk", "grpc", "http"]
+categories = ["api-bindings"]
+
+[dependencies]
+acyclic-actors = { version = "=0.2.0", path = "../actors" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
+acyclic-harness = { version = "=0.2.0", path = "../harness" }
+acyclic-inference = { version = "=0.2.0", path = "../inference" }
+acyclic-machines = { version = "=0.2.0", path = "../machines" }
+acyclic-objects = { version = "=0.2.0", path = "../objects" }
+acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-workers = { version = "=0.2.0", path = "../workers" }
+
+[lints]
+workspace = true

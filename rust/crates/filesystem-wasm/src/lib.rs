@@ -15,6 +15,14 @@ pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpe
 #[cfg(target_arch = "wasm32")]
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
+/// Rust-owned authenticated remote Filesystem client. The browser transport
+/// is selected inside the generated Rust binding, so consumers do not carry
+/// transport feature flags.
+#[cfg(target_arch = "wasm32")]
+pub use acyclic_sdk_remote_web::BrowserFilesystemClient as BrowserRemoteFilesystemClient;
+
+mod hosted_policy;
+
 #[cfg(target_arch = "wasm32")]
 mod bindings {
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
@@ -64,6 +72,24 @@ mod bindings {
 
     fn wire_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
+    }
+
+    /// Validate one remote endpoint using the shared Rust policy.
+    #[wasm_bindgen(js_name = validateRemoteWebEndpoint)]
+    pub fn validate_remote_web_endpoint(endpoint: &str) -> Result<(), JsValue> {
+        acyclic_sdk_remote_web::validate_remote_web_endpoint(endpoint)
+    }
+
+    /// Validate one remote gRPC endpoint using the shared Rust policy.
+    #[wasm_bindgen(js_name = validateRemoteWebGrpcEndpoint)]
+    pub fn validate_remote_web_grpc_endpoint(endpoint: &str) -> Result<(), JsValue> {
+        acyclic_sdk_remote_web::validate_remote_web_grpc_endpoint(endpoint)
+    }
+
+    /// Validate one remote bearer credential using the shared Rust policy.
+    #[wasm_bindgen(js_name = validateRemoteWebCredential)]
+    pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
+        acyclic_sdk_remote_web::validate_remote_web_credential(token)
     }
 
     fn browser_work(value: acyclic_fs::WorkCounters) -> BrowserWorkCounters {
@@ -7917,6 +7943,9 @@ mod bindings {
         }
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub use acyclic_sdk_remote_web::validate_remote_web_filesystem_handshake;
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{

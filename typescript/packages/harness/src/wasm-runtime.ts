@@ -1,7 +1,25 @@
 import initWasm, { type InitInput } from "../generated/wasm/acyclic_harness_wasm.js";
 
+type HarnessWasm = typeof import("../generated/wasm/acyclic_harness_wasm.js");
+
 let initialization: Promise<void> | undefined;
 let loadedInput: InitInput | undefined;
+let binding: Promise<HarnessWasm> | undefined;
+
+/** Returns the generated Rust/WASM module used by all Harness host adapters. */
+export async function loadHarnessWasm(): Promise<HarnessWasm> {
+  binding ??= (async () => {
+    const module = await import("../generated/wasm/acyclic_harness_wasm.js");
+    await ensureHarnessWasm();
+    return module;
+  })();
+  return binding;
+}
+
+/** Rust-owned authenticated browser transport with generated protobuf bytes. */
+export type RustHarnessRemoteClient = Awaited<
+  ReturnType<HarnessWasm["BrowserHarnessRemoteClient"]["connect"]>
+>;
 
 /** Every JS function used by either Harness initialization path. */
 export const REQUIRED_HARNESS_WASM_EXPORTS = [
@@ -20,6 +38,11 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateTaskChildrenPage",
   "fileDescriptor", "uuidFromDigestHalf", "decodeCanonicalJson", "decodeJson",
   "encodeCanonicalJson", "digestCanonicalJson",
+  "validateOfflineCommand", "validateReplayDelivery", "reconcileReplayDelivery",
+  "harnessReplayBackoff",
+  "harnessDefaultResidentBytes", "harnessDefaultResidentFiles",
+  "harnessDefaultOutboxCommands", "harnessDefaultOutboxBytes",
+  "harnessMaxInlineAttachments", "harnessAttachmentManifestMediaType",
 ] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
 
 // `initWasm()` resolves to the raw instance exports. The generated JS module
@@ -28,6 +51,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
 const REQUIRED_WASM_CONTENT_EXPORTS = [
   "__wbg_wasmcontentstore_free", "wasmcontentstore_generation",
   "wasmcontentstore_has", "wasmcontentstore_list", "wasmcontentstore_new",
+  "wasmcontentstore_newDefault",
   "wasmcontentstore_pathConflicts", "wasmcontentstore_read",
   "wasmcontentstore_read_path", "wasmcontentstore_stage",
 ] as const;

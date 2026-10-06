@@ -410,6 +410,8 @@ export const WarmStateSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 0);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.WarmState
  */
 export const WarmState = /*@__PURE__*/
@@ -422,6 +424,8 @@ export const EvaluationAggregationSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 1);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationAggregation
  */
 export const EvaluationAggregation = /*@__PURE__*/
@@ -434,6 +438,8 @@ export const EvaluationCaseOutcomeSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 2);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationCaseOutcome
  */
 export const EvaluationCaseOutcome = /*@__PURE__*/
@@ -446,6 +452,8 @@ export const EvaluationStateSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 3);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationState
  */
 export const EvaluationState = /*@__PURE__*/
@@ -458,6 +466,8 @@ export const ItemKindSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 4);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.ItemKind
  */
 export const ItemKind = /*@__PURE__*/
@@ -470,20 +480,23 @@ export const RunTerminalSchema = /*@__PURE__*/
   enumDesc(file_inference_v1_inference, 5);
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.RunTerminal
  */
 export const RunTerminal = /*@__PURE__*/
   tsEnum(RunTerminalSchema);
 
 /**
+ * Lists model capabilities and retention profiles.
+ *
  * @generated from service inference.customer.v1.ModelsService
  */
 export const ModelsService = /*@__PURE__*/
   serviceDesc(file_inference_v1_inference, 0);
 
 /**
- * Immutable canonical content operations. Execution/retention guarantees are
- * advertised separately; these methods do not admit a Run or a warm promise.
+ * Creates, inspects, and mutates immutable context revisions.
  *
  * @generated from service inference.customer.v1.ContextsService
  */
@@ -491,8 +504,7 @@ export const ContextsService = /*@__PURE__*/
   serviceDesc(file_inference_v1_inference, 1);
 
 /**
- * Customer warm-retention commitments. Placement, workers, allocations,
- * migration, rebalancing, and cleanup mechanics remain private.
+ * Admits and manages explicit warm-retention commitments.
  *
  * @generated from service inference.customer.v1.WarmContextsService
  */
@@ -500,8 +512,7 @@ export const WarmContextsService = /*@__PURE__*/
   serviceDesc(file_inference_v1_inference, 2);
 
 /**
- * Recoverable logical generation. Distribution, placement, migration, cache,
- * and worker identities are intentionally absent.
+ * Admits, inspects, watches, and cancels recoverable generation runs.
  *
  * @generated from service inference.customer.v1.RunsService
  */
@@ -509,11 +520,10 @@ export const RunsService = /*@__PURE__*/
   serviceDesc(file_inference_v1_inference, 3);
 
 /**
- * Immutable, recoverable evaluation admissions. Candidate execution and grader
- * placement remain private; the customer contract contains only exact artifacts,
- * bounded suite inputs, metric semantics, and content-addressed observations.
+ * Admits and inspects immutable evaluation results.
  *
  * @generated from service inference.customer.v1.EvaluationsService
  */
 export const EvaluationsService = /*@__PURE__*/
   serviceDesc(file_inference_v1_inference, 4);
+

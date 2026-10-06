@@ -1,0 +1,2483 @@
+{
+  "catalogued_at": "2026-10-03",
+  "qualification_gates": [
+    "Generate from the Rust-owned descriptor revision and record generator/runtime versions, source revision and artifact hashes.",
+    "Compile and install a package from a local artifact; no registry publication is part of this loop.",
+    "Round-trip optional fields, oneof, maps, bytes, timestamps, enum values, reserved names and custom options against Rust golden vectors.",
+    "Exercise all active RPC shapes: unary, client streaming and server streaming; retain bidi support where the runtime provides it.",
+    "Verify metadata, TLS, deadlines, cancellation, retry/recovery and idempotency behavior against the Rust conformance server.",
+    "Report remote-client and embedded capability separately; Filesystem and Harness embedded behavior stays in Rust native/WASM bindings.",
+    "Reject a target as full SDK coverage when it only consumes the derived JSON/OpenAPI projection."
+  ],
+  "schema_version": 1,
+  "source_of_truth": {
+    "contract": "rust",
+    "descriptor": "Rust contract model -> deterministic protobuf descriptor; buf/protoc descriptor is a compatibility oracle",
+    "wire_semantics": [
+      "proto3 optional presence",
+      "oneof and required_oneof",
+      "maps, repeated fields, bytes, timestamps and reserved ranges",
+      "custom validation options 51001-51012",
+      "unary, client-streaming and server-streaming RPC direction",
+      "descriptor digest and capability handshake",
+      "canonical errors, cancellation, idempotency and recovery"
+    ]
+  },
+  "targets": [
+    {
+      "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-prototype",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "stream",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-filesystem",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "filesystem",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "rust/crates/sdk-filesystem-native/npm",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-filesystem (harness feature)",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "harness",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/harness/src/wasm.rs",
+              "scripts/build-harness-wasm.mjs",
+              "typescript/packages/harness/package.json"
+            ]
+          }
+        ],
+        "level": "rust-native",
+        "qualification": "prototype"
+      },
+      "evidence": [
+        {
+          "claim": "Rust is the canonical implementation and source-of-truth boundary for this migration.",
+          "url": "https://www.rust-lang.org/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "workspace Rust descriptor/codegen",
+        "pin": "Lock Rust generator, descriptor digest and artifact hashes.",
+        "source": "https://buf.build/docs/generate/",
+        "version": "workspace-locked"
+      },
+      "id": "rust",
+      "kind": "language",
+      "language_family": "Rust",
+      "maturity": "stable",
+      "outstanding": [
+        "Retain a clean-checkout Cargo package receipt for the umbrella and each public family at every release.",
+        "Run the full active RPC, descriptor digest, cancellation, recovery and embedded conformance suites before calling the new pipeline qualified."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "crates.io/Cargo",
+        "installable": true,
+        "notes": "The acyclic-sdk facade installs one dependency and exposes actors, filesystem, harness, inference, machines, objects, stream and workers namespaces; family crates remain independently publishable."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Canonical workspace provider and descriptor baseline; the installable acyclic-sdk facade groups the public family crates without re-exporting internal generators or prototypes.",
+        "qualification": "prototype",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "baseline-supported"
+    },
+    {
+      "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/stream",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/stream",
+              "installable": true,
+              "kind": "typescript-native-package",
+              "target_identities": [
+                "@acyclic-labs/stream-darwin-arm64",
+                "@acyclic-labs/stream-darwin-x64",
+                "@acyclic-labs/stream-linux-arm64-gnu",
+                "@acyclic-labs/stream-linux-arm64-musl",
+                "@acyclic-labs/stream-linux-x64-gnu",
+                "@acyclic-labs/stream-linux-x64-musl",
+                "@acyclic-labs/stream-win32-arm64",
+                "@acyclic-labs/stream-win32-x64"
+              ]
+            },
+            "binding": "typescript-native",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/fs",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "filesystem",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "rust/crates/sdk-filesystem-native/npm",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/fs",
+              "installable": true,
+              "kind": "n-api-package",
+              "target_identities": [
+                "@acyclic-labs/fs-darwin-arm64",
+                "@acyclic-labs/fs-darwin-x64",
+                "@acyclic-labs/fs-linux-arm64",
+                "@acyclic-labs/fs-linux-x64",
+                "@acyclic-labs/fs-win32-arm64",
+                "@acyclic-labs/fs-win32-x64"
+              ]
+            },
+            "binding": "n-api",
+            "coverage": "native-boundary",
+            "family": "filesystem",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "rust/crates/sdk-filesystem-native/npm",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/harness",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "harness",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/harness/src/wasm.rs",
+              "scripts/build-harness-wasm.mjs",
+              "typescript/packages/harness/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/objects",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "objects",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/objects-wasm/Cargo.toml",
+              "typescript/packages/objects/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/inference",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "inference",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/inference-wasm/Cargo.toml",
+              "typescript/packages/inference/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/machines",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "machines",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/machines-wasm/Cargo.toml",
+              "typescript/packages/machines/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/actors remote-web WASM",
+              "installable": true,
+              "kind": "remote-web-wasm-package",
+              "target_identities": []
+            },
+            "binding": "remote-web-wasm",
+            "coverage": "package-surface",
+            "family": "actors",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "typescript/packages/actors/package.json",
+              "typescript/packages/workers/package.json",
+              "scripts/build-remote-web-wasm.mjs"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/workers remote-web WASM",
+              "installable": true,
+              "kind": "remote-web-wasm-package",
+              "target_identities": []
+            },
+            "binding": "remote-web-wasm",
+            "coverage": "package-surface",
+            "family": "workers",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "typescript/packages/actors/package.json",
+              "typescript/packages/workers/package.json",
+              "scripts/build-remote-web-wasm.mjs"
+            ]
+          }
+        ],
+        "level": "ffi-or-wasm",
+        "qualification": "prototype"
+      },
+      "evidence": [
+        {
+          "claim": "Buf protobuf-es provides TypeScript protobuf generation from descriptors.",
+          "url": "https://github.com/bufbuild/protobuf-es"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "protobuf-es + grpc-web/native adapter",
+        "pin": "Pin protoc-gen-es and transport adapter versions.",
+        "source": "https://github.com/bufbuild/protobuf-es",
+        "version": "workspace-locked"
+      },
+      "id": "typescript",
+      "kind": "language",
+      "language_family": "TypeScript",
+      "maturity": "unknown",
+      "outstanding": [
+        "Replace handwritten shared contracts only after conformance and drift checks pass."
+      ],
+      "package": {
+        "artifact": "@acyclic-labs/sdk",
+        "ecosystem": "npm",
+        "installable": true,
+        "notes": "Thin generated transport and UI adapters only; shared handwritten behavior is being removed."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Generated transport and UI adapters only; shared handwritten behavior remains Rust-owned.",
+        "qualification": "prototype",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "acyclic_embedded_prototype shared library (ctypes C ABI)",
+              "installable": false,
+              "kind": "native-library",
+              "target_identities": []
+            },
+            "binding": "c-abi",
+            "coverage": "native-boundary",
+            "family": "stream",
+            "installable": false,
+            "language": "python",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          }
+        ],
+        "level": "ffi-or-wasm",
+        "qualification": "prototype"
+      },
+      "evidence": [
+        {
+          "claim": "Official Python gRPC runtime and generated stubs.",
+          "url": "https://grpc.io/docs/languages/python/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpcio-tools",
+        "pin": "Pin grpcio-tools/protobuf and wheel hashes.",
+        "source": "https://grpc.io/docs/languages/python/",
+        "version": "1.83.0"
+      },
+      "id": "python",
+      "kind": "language",
+      "language_family": "Python",
+      "maturity": "unknown",
+      "outstanding": [
+        "Run full Objects/Stream/Filesystem/Harness conformance and package install checks."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk-transport",
+        "ecosystem": "PyPI",
+        "installable": true,
+        "notes": "Generated transport wheel plus Rust-owned facade."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Python remote clients are generated from the Rust-owned protobuf contract; embedded behavior remains behind the Rust FFI/WASM boundary.",
+        "qualification": "prototype",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official Go gRPC language support and package workflow.",
+          "url": "https://grpc.io/docs/languages/go/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "protoc-gen-go + protoc-gen-go-grpc",
+        "pin": "Pin Go 1.27.1, protoc 36.2, plugin versions and SHA-256s, the Rust authority manifest, and every source/descriptor digest.",
+        "source": "https://grpc.io/docs/languages/go/",
+        "version": "Go 1.27.1; protoc 36.2; protoc-gen-go v1.36.10; protoc-gen-go-grpc 1.5.1"
+      },
+      "id": "go",
+      "kind": "language",
+      "language_family": "Go",
+      "maturity": "unknown",
+      "outstanding": [
+        "Keep the producer PATH bound to the pinned Go/protoc/plugin toolchain in CI, then retain the installed transport, TLS, cancellation and recovery receipts alongside each generated package."
+      ],
+      "package": {
+        "artifact": "github.com/acyclic-labs/sdk/go",
+        "ecosystem": "Go modules",
+        "installable": true,
+        "notes": "Install test must use the generated module and common vectors."
+      },
+      "producer": {
+        "args": [
+          "-C",
+          "{source_root}/go",
+          "run",
+          "./cmd/sdk-go-producer",
+          "--source-root",
+          "{source_root}",
+          "--authority",
+          "{wire_root}",
+          "--request",
+          "{request}",
+          "--output",
+          "{target_output}",
+          "--protoc",
+          "protoc",
+          "--protoc-gen-go",
+          "protoc-gen-go",
+          "--protoc-gen-go-grpc",
+          "protoc-gen-go-grpc",
+          "--go-version",
+          "go1.27.1",
+          "--protoc-version",
+          "libprotoc 36.2",
+          "--protoc-gen-go-version",
+          "v1.36.10",
+          "--protoc-gen-go-grpc-version",
+          "1.5.1"
+        ],
+        "output": "package",
+        "program": "go"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Rust-authority-bound Go producer emits an installable module for all nine families plus validation options; transport qualification remains separately evidenced.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "aliases": [
+        "jvm"
+      ],
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official Java gRPC runtime and code generation.",
+          "url": "https://grpc.io/docs/languages/java/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "protoc + grpc-java",
+        "pin": "Pin Maven artifacts and protoc; source-bound adapter jvm/producer-adapter.ps1.",
+        "source": "https://grpc.io/docs/languages/java/",
+        "version": "protobuf 4.31.1; grpc-java 1.75.0; protobuf-maven-plugin 0.6.1"
+      },
+      "id": "java",
+      "kind": "language",
+      "language_family": "JVM",
+      "maturity": "unknown",
+      "outstanding": [
+        "Qualify custom options, presence, streaming and Rust facade generation."
+      ],
+      "package": {
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
+        "ecosystem": "Maven Central",
+        "installable": true,
+        "notes": "Unified JVM transport artifact with generated Java, Kotlin and Scala facades."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/jvm/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package",
+        "program": "powershell.exe"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "aliases": [
+        "dotnet"
+      ],
+      "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "Acyclic.Sdk.Embedded",
+              "installable": true,
+              "kind": "dotnet-nuget",
+              "target_identities": []
+            },
+            "binding": "dotnet-nuget",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "csharp",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          }
+        ],
+        "level": "ffi-or-wasm",
+        "qualification": "prototype"
+      },
+      "evidence": [
+        {
+          "claim": "Official .NET gRPC language support.",
+          "url": "https://grpc.io/docs/languages/csharp/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "Grpc.Tools + Grpc.Net.Client",
+        "pin": "Pin NuGet packages and protoc plugin; source-bound adapter dotnet/producer-adapter.ps1.",
+        "source": "https://grpc.io/docs/languages/csharp/",
+        "version": "Google.Protobuf 3.31.1; Grpc.Tools 2.71.0; Grpc.Net.Client 2.71.0"
+      },
+      "id": "csharp",
+      "kind": "language",
+      "language_family": "C#/.NET",
+      "maturity": "unknown",
+      "outstanding": [
+        "Run Windows/Linux package and cancellation/recovery tests."
+      ],
+      "package": {
+        "artifact": "Acyclic.Sdk",
+        "ecosystem": "NuGet",
+        "installable": true,
+        "notes": "Remote package only; embedded behavior remains Rust."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/dotnet/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package",
+        "program": "powershell.exe"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official gRPC Swift 2 implementation with GRPCCore and code generation.",
+          "url": "https://github.com/grpc/grpc-swift-2"
+        },
+        {
+          "claim": "Swift.org documents native Windows installation with MSVC, Windows SDK, Python and Git.",
+          "url": "https://www.swift.org/install/windows/manual/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpc-swift-2 + grpc-swift-protobuf + SwiftProtobuf",
+        "pin": "Pin SwiftProtobuf and grpc-swift releases to one toolchain.",
+        "source": "https://github.com/grpc/grpc-swift-2",
+        "version": "grpc-swift-2 2.4.1; grpc-swift-protobuf 2.4.1; SwiftProtobuf 1.38.1"
+      },
+      "id": "swift",
+      "kind": "language",
+      "language_family": "Swift",
+      "maturity": "unknown",
+      "outstanding": [
+        "Build generated package on Windows or Linux with SwiftPM; on Windows record the pinned NIO transport guard failure or use a maintained Windows transport, then run custom options, metadata, streaming and clean install vectors."
+      ],
+      "package": {
+        "artifact": "AcyclicSDK generated package",
+        "ecosystem": "Swift Package Manager",
+        "installable": false,
+        "notes": "Generated package is source-bound at Q:/sdk/build/sdk-swift-generated-241 and builds with the official Swift 6.4 Windows toolchain. The pinned gRPC NIO POSIX transport reaches swift-nio-ssl and fails its unsupported-Windows guard; Transport Services is Apple-only, so the Windows fixture consumer remains outstanding pending a maintained Windows transport or Linux/macOS CI consumer."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "swift",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official C++ gRPC runtime and plugin.",
+          "url": "https://grpc.io/docs/languages/cpp/"
+        },
+        {
+          "claim": "Pinned gRPC C++ 1.80.0 source release; cached 1.56.2 source is not accepted as qualification evidence.",
+          "url": "https://github.com/grpc/grpc/releases/tag/v1.80.0"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "protoc + gRPC C++",
+        "pin": "Pin gRPC/Protobuf CMake dependencies.",
+        "source": "https://grpc.io/docs/languages/cpp/",
+        "version": "Protobuf 36.2; gRPC C++ 1.80.0"
+      },
+      "id": "cpp",
+      "kind": "language",
+      "language_family": "C++",
+      "maturity": "unknown",
+      "outstanding": [
+        "Run pinned remote generator/runtime build, ABI, cancellation, recovery and clean package installation; retain generation-receipt.json hashes."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk-cpp source package",
+        "ecosystem": "vcpkg/Conan/CMake",
+        "installable": false,
+        "notes": "Remote C++ package install remains pending against gRPC C++ 1.80.0; the cached 1.56.2 source is rejected. Embedded C++ has a separate source-bound local CMake receipt."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "cpp",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Pinned Generate.ps1 emits source-bound receipt; remote CMake requires matching Protobuf 36.2 and gRPC C++ 1.80.0.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official Ruby gRPC language support.",
+          "url": "https://grpc.io/docs/languages/ruby/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpc-tools + grpc Ruby",
+        "pin": "Pin grpc-tools and grpc gem releases.",
+        "source": "https://grpc.io/docs/languages/ruby/",
+        "version": "pending qualification"
+      },
+      "id": "ruby",
+      "kind": "language",
+      "language_family": "Ruby",
+      "maturity": "unknown",
+      "outstanding": [
+        "Qualify gem installation and stream recovery vectors."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "RubyGems",
+        "installable": true,
+        "notes": "Generated Ruby transport and Rust-owned facade."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "ruby",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official PHP gRPC runtime and package guidance.",
+          "url": "https://grpc.io/docs/languages/php/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpc_php_plugin + protobuf PHP",
+        "pin": "Pin PECL gRPC and Composer protobuf packages.",
+        "source": "https://grpc.io/docs/languages/php/",
+        "version": "pending qualification"
+      },
+      "id": "php",
+      "kind": "language",
+      "language_family": "PHP",
+      "maturity": "unknown",
+      "outstanding": [
+        "Qualify PECL availability, TLS/metadata and streaming behavior."
+      ],
+      "package": {
+        "artifact": "acyclic/sdk",
+        "ecosystem": "Packagist/PECL",
+        "installable": true,
+        "notes": "PHP package requires PECL runtime qualification."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "php",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official Dart gRPC package and generated stubs.",
+          "url": "https://grpc.io/docs/languages/dart/"
+        }
+      ],
+      "generator": {
+        "license": "BSD-3-Clause/Apache-2.0",
+        "name": "protoc_plugin + grpc Dart",
+        "pin": "Pin Dart protobuf and grpc package versions.",
+        "source": "https://grpc.io/docs/languages/dart/",
+        "version": "pending qualification"
+      },
+      "id": "dart",
+      "kind": "language",
+      "language_family": "Dart",
+      "maturity": "unknown",
+      "outstanding": [
+        "Qualify Flutter/Dart package installation and cancellation/recovery."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "pub.dev",
+        "installable": true,
+        "notes": "Dart package; Flutter integration is a consumer adapter."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "dart",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official Kotlin gRPC compiler plugin and runtime with unary and streaming stubs.",
+          "url": "https://github.com/grpc/grpc-kotlin"
+        },
+        {
+          "claim": "Official language support and package guidance.",
+          "url": "https://grpc.io/docs/languages/kotlin/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpc-kotlin protoc plugin",
+        "pin": "Maven Central release; pin plugin and grpc-kotlin-stub checksums together",
+        "source": "https://github.com/grpc/grpc-kotlin",
+        "version": "1.4.3"
+      },
+      "id": "kotlin",
+      "kind": "language",
+      "language_family": "JVM",
+      "maturity": "stable",
+      "outstanding": [
+        "Run Actors plus Stream and Objects vectors with proto3 presence and custom options."
+      ],
+      "package": {
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
+        "ecosystem": "Maven Central",
+        "installable": true,
+        "notes": "Unified JVM transport artifact; the Kotlin facade is generated from Rust operation metadata."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/jvm/kotlin-producer-adapter.ps1",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package",
+        "program": "powershell.exe"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Distinct Kotlin coroutine/stub artifact over Java protobuf messages.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "strong-candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Protobuf compiler and Scala gRPC integration supporting streaming services.",
+          "url": "https://github.com/scalapb/ScalaPB"
+        },
+        {
+          "claim": "Pinned stable release used for the candidate.",
+          "url": "https://github.com/scalapb/ScalaPB/releases/tag/v0.11.17"
+        },
+        {
+          "claim": "Pinned OAG Scala HTTP projection generator used for the compile smoke.",
+          "url": "https://github.com/OpenAPITools/openapi-generator/blob/v7.25.0/modules/openapi-generator/src/main/java/org/openapitools/codegen/languages/ScalaSttpClientCodegen.java"
+        },
+        {
+          "claim": "Rust-owned loopback fixture exposes the generated Actors and Stream tonic services for bounded ScalaPB gRPC consumption.",
+          "url": "https://github.com/acyclic-labs/sdk/blob/main/rust/crates/sdk-examples/src/bin/fixture-server.rs"
+        },
+        {
+          "claim": "ScalaPB package was consumed from an isolated local Ivy resolver against the Rust fixture with auth, bytes, uint64 and Stream append/read vectors.",
+          "url": "research/additional-languages/scala-receipt.json"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "Rust JVM facades + protoc + grpc-java",
+        "pin": "Pinned unified jvm/pom.xml transport dependencies and source-bound jvm/producer-adapter.ps1; ScalaPB 0.11.17 remains a separate research prototype.",
+        "source": "https://grpc.io/docs/languages/java/",
+        "version": "protobuf 4.31.1; grpc-java 1.75.0; protobuf-maven-plugin 0.6.1"
+      },
+      "id": "scala",
+      "kind": "language",
+      "language_family": "JVM",
+      "maturity": "stable",
+      "outstanding": [
+        "Run generated transport against Objects and remaining Stream service vectors, including client/server streaming.",
+        "Verify custom validation options, descriptor digest handshake, metadata, cancellation and recovery before promotion."
+      ],
+      "package": {
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
+        "ecosystem": "Maven Central/SBT",
+        "installable": true,
+        "notes": "Unified JVM transport artifact with generated Scala sources; the separately pinned ScalaPB prototype is retained as research evidence."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/jvm/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package",
+        "program": "powershell.exe"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "The unified JVM producer compiles Rust-generated Scala facades over the generated Java gRPC transport. The separately pinned ScalaPB prototype provides native Scala protobuf/gRPC research evidence. Installed full-RPC cancellation and recovery qualification remains pending.",
+        "qualification": "prototype",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "strong-candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Elixir gRPC implementation with generated clients and unary/client/server/bidi streaming.",
+          "url": "https://github.com/elixir-grpc/grpc"
+        },
+        {
+          "claim": "Hex package distribution and release metadata.",
+          "url": "https://hex.pm/packages/grpc"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "elixir-grpc + protobuf_generate",
+        "pin": "Hex release 1.0.3 and matching protobuf package lock.",
+        "source": "https://github.com/elixir-grpc/grpc",
+        "version": "1.0.3"
+      },
+      "id": "elixir",
+      "kind": "language",
+      "language_family": "BEAM",
+      "maturity": "stable",
+      "outstanding": [
+        "No Elixir toolchain is installed on this host; run the same generated descriptor and package smoke in an OTP image.",
+        "Verify unknown/custom option retention and descriptor digest handshake."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Hex",
+        "installable": true,
+        "notes": "mix package; test OTP/Elixir matrix explicitly."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "grpc and protobuf Hex packages; custom Rust facade still required for recovery policy.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "gRPC service/client generation and all four streaming directions.",
+          "url": "https://ballerina.io/spec/grpc/"
+        },
+        {
+          "claim": "Apache-2.0 Ballerina Central runtime package.",
+          "url": "https://central.ballerina.io/ballerina/grpc/latest"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "bal grpc",
+        "pin": "Ballerina Central 1.15.1; pin Ballerina distribution and Java 21.",
+        "source": "https://central.ballerina.io/ballerina/grpc/latest",
+        "version": "1.15.1"
+      },
+      "id": "ballerina",
+      "kind": "language",
+      "language_family": "Ballerina",
+      "maturity": "stable",
+      "outstanding": [
+        "Validate proto2 custom option imports, proto3 optional presence and Ballerina Central artifact reproducibility."
+      ],
+      "package": {
+        "artifact": "acyclic/sdk",
+        "ecosystem": "Ballerina Central",
+        "installable": true,
+        "notes": "bal package; requires Ballerina 2201.13.6-compatible toolchain."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Built-in bal grpc generator/runtime; toolchain is tied to Ballerina/JVM releases.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official generated Objective-C gRPC package example using gRPC-ProtoRPC and Protobuf.",
+          "url": "https://github.com/grpc/grpc/blob/master/examples/objective-c/route_guide/RouteGuide.podspec"
+        },
+        {
+          "claim": "Official Objective-C gRPC language support.",
+          "url": "https://grpc.io/docs/languages/objective-c/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpc Objective-C protoc plugin",
+        "pin": "Pin the plugin, gRPC-ProtoRPC pod and Protobuf pod to one released gRPC tag.",
+        "source": "https://github.com/grpc/grpc/tree/master/src/objective-c",
+        "version": "1.62.2"
+      },
+      "id": "objective-c",
+      "kind": "language",
+      "language_family": "Apple",
+      "maturity": "stable",
+      "outstanding": [
+        "Run macOS/iOS build and cancellation tests; verify custom option extensions are retained by the chosen protobuf runtime."
+      ],
+      "package": {
+        "artifact": "AcyclicSDK",
+        "ecosystem": "CocoaPods",
+        "installable": true,
+        "notes": "Apple platform package; requires Xcode and platform matrix qualification."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Official gRPC Objective-C plugin and Protobuf CocoaPods runtime.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Erlang gRPC client/server with generated service behavior and four streaming forms.",
+          "url": "https://github.com/tsloughter/grpcbox"
+        },
+        {
+          "claim": "Erlang protobuf compiler/runtime used by grpcbox.",
+          "url": "https://github.com/tomas-abrahamsson/gpb"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "grpcbox + gpb",
+        "pin": "Pin grpcbox and gpb commits together; release cadence must be checked before promotion.",
+        "source": "https://github.com/tsloughter/grpcbox",
+        "version": "0.15.0"
+      },
+      "id": "erlang",
+      "kind": "language",
+      "language_family": "BEAM",
+      "maturity": "experimental",
+      "outstanding": [
+        "Confirm current release and maintainer activity; run descriptor, custom option, metadata and recovery vectors."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Hex/rebar3",
+        "installable": true,
+        "notes": "OTP package; no release claim before an OTP matrix passes."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "grpcbox advertises generated services, reflection and all streaming shapes, but needs maintenance qualification.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "experimental"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "OCaml gRPC over HTTP/2 with unary and streaming support.",
+          "url": "https://github.com/dialohq/ocaml-grpc"
+        },
+        {
+          "claim": "opam distribution for the gRPC runtime.",
+          "url": "https://opam.ocaml.org/packages/grpc/"
+        }
+      ],
+      "generator": {
+        "license": "BSD-3-Clause",
+        "name": "ocaml-protoc-plugin + ocaml-grpc",
+        "pin": "Pin opam package versions and OCaml compiler version.",
+        "source": "https://github.com/dialohq/ocaml-grpc",
+        "version": "0.2.0"
+      },
+      "id": "ocaml",
+      "kind": "language",
+      "language_family": "OCaml",
+      "maturity": "experimental",
+      "outstanding": [
+        "No OCaml toolchain is installed on this host; run package install and full conformance in an opam container.",
+        "Verify custom option and descriptor handshake support."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "opam",
+        "installable": true,
+        "notes": "opam package; qualify compiler/runtime combinations."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "ocaml-grpc supports Eio/Lwt/Async and all streaming forms; ecosystem maturity is lower.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "experimental"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Repository demonstrates Common Lisp protobuf/gRPC stubs and streaming examples.",
+          "url": "https://github.com/atgreen/ag-gRPC"
+        }
+      ],
+      "generator": {
+        "license": "unverified",
+        "name": "ag-gRPC",
+        "pin": "Must pin a reviewed commit and verify license before any package claim.",
+        "source": "https://github.com/atgreen/ag-gRPC",
+        "version": "unverified"
+      },
+      "id": "common-lisp",
+      "kind": "language",
+      "language_family": "Common Lisp",
+      "maturity": "unknown",
+      "outstanding": [
+        "Verify license, release provenance, package index, TLS, cancellation and descriptor compatibility."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "Quicklisp",
+        "installable": false,
+        "notes": "Inventory only until a reproducible Quicklisp/Ultralisp source is qualified."
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "ag-gRPC demonstrates generated stubs but package/license provenance is not yet release-grade.",
+        "qualification": "unqualified",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "experimental"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Ada is listed as an OpenAPI client generator.",
+          "url": "https://openapi-generator.tech/docs/generators/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator ada",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/",
+        "version": "7.25.0"
+      },
+      "id": "ada",
+      "kind": "language",
+      "language_family": "Ada",
+      "maturity": "stable",
+      "outstanding": [
+        "Qualify package installation and generated JSON models; cannot claim gRPC parity."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Alire/source",
+        "installable": false,
+        "notes": "Generated package install needs an Alire qualification environment."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "ada",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OpenAPI Generator Ada client; no qualifying protobuf/gRPC generator in the selected stack.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "acyclic_embedded_prototype.h + native library",
+              "installable": false,
+              "kind": "native-library",
+              "target_identities": []
+            },
+            "binding": "c-abi",
+            "coverage": "native-boundary",
+            "family": "stream",
+            "installable": false,
+            "language": "c",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          }
+        ],
+        "level": "ffi-or-wasm",
+        "qualification": "prototype"
+      },
+      "evidence": [
+        {
+          "claim": "C client generator uses libcurl and is marked beta in its help metadata.",
+          "url": "https://openapi-generator.tech/docs/generators/c/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator c",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/c/",
+        "version": "7.25.0"
+      },
+      "id": "c",
+      "kind": "language",
+      "language_family": "C",
+      "maturity": "beta",
+      "outstanding": [
+        "Keep C ABI generation separate from HTTP client generation; test ABI ownership and cancellation."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "CMake/source",
+        "installable": false,
+        "notes": "Compile smoke requires libcurl and a native C toolchain."
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OpenAPI Generator C/libcurl output is HTTP-only and documented as beta.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Clojure client generator and Maven/Leiningen-oriented output.",
+          "url": "https://openapi-generator.tech/docs/generators/clojure/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator clojure",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/",
+        "version": "7.25.0"
+      },
+      "id": "clojure",
+      "kind": "language",
+      "language_family": "JVM",
+      "maturity": "stable",
+      "outstanding": [
+        "Do not promote to full SDK without a Clojure-native facade and streaming/recovery tests."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "Maven/Leiningen",
+        "installable": true,
+        "notes": "HTTP-only generated package; classify separately from JVM gRPC transport."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "clojure",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OAG Clojure client is an HTTP projection; Java gRPC stubs are a possible adapter but not independent Clojure generation.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Crystal generator is listed and marked beta.",
+          "url": "https://openapi-generator.tech/docs/generators/crystal/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator crystal",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/",
+        "version": "7.25.0"
+      },
+      "id": "crystal",
+      "kind": "language",
+      "language_family": "Crystal",
+      "maturity": "beta",
+      "outstanding": [
+        "Qualify Shards packaging and JSON semantics; streaming remains unsupported."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Shards",
+        "installable": false,
+        "notes": "Requires Crystal toolchain for package smoke."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "crystal",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OAG Crystal client is beta; no maintained gRPC target selected.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Elm client generator is listed.",
+          "url": "https://openapi-generator.tech/docs/generators/elm/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator elm",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/",
+        "version": "7.25.0"
+      },
+      "id": "elm",
+      "kind": "language",
+      "language_family": "Elm",
+      "maturity": "stable",
+      "outstanding": [
+        "Document browser-only transport limits and test generated decoders against Rust JSON vectors."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "Elm package",
+        "installable": false,
+        "notes": "Needs Elm package build and browser smoke."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "elm",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OpenAPI Generator output is browser/HTTP oriented; no native gRPC runtime.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "GDScript client generator targets Godot.",
+          "url": "https://openapi-generator.tech/docs/generators/gdscript/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator gdscript",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/gdscript/",
+        "version": "7.25.0"
+      },
+      "id": "gdscript",
+      "kind": "language",
+      "language_family": "Godot",
+      "maturity": "stable",
+      "outstanding": [
+        "Keep as a presentation/game integration target; no gRPC parity claim."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Godot asset/project",
+        "installable": false,
+        "notes": "Validate Godot 4 import and HTTP behavior."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "gdscript",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "Godot 4 HTTP client target; platform/library variant rather than a general SDK runtime.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Julia client generator is listed as beta.",
+          "url": "https://openapi-generator.tech/docs/generators/julia-client/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator julia-client",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/julia-client/",
+        "version": "7.25.0"
+      },
+      "id": "julia",
+      "kind": "language",
+      "language_family": "Julia",
+      "maturity": "beta",
+      "outstanding": [
+        "Native Julia gRPC remains unqualified; keep this target scoped to the recorded five-family HTTP projection."
+      ],
+      "package": {
+        "artifact": "AcyclicSDK",
+        "ecosystem": "Julia General registry",
+        "installable": true,
+        "notes": "Rust-produced local package installs with official Julia 1.13.1; registry publication is not claimed."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/research/additional-languages/openapi-targets/produce-julia.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "Rust-owned five-family HTTP projection is qualified by the Julia receipt; no maintained Julia gRPC generator is selected.",
+        "qualification": "qualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Nim client generator is listed.",
+          "url": "https://openapi-generator.tech/docs/generators/nim/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator nim",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/nim/",
+        "version": "7.25.0"
+      },
+      "id": "nim",
+      "kind": "language",
+      "language_family": "Nim",
+      "maturity": "stable",
+      "outstanding": [
+        "Qualify Nimble metadata and HTTP behavior before any package promise."
+      ],
+      "package": {
+        "artifact": "acyclic_sdk",
+        "ecosystem": "Nimble",
+        "installable": false,
+        "notes": "Requires Nimble package smoke."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "nim",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OAG Nim client; no selected maintained gRPC runtime.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Perl generator documents JSON/XML support and protobuf unsupported.",
+          "url": "https://openapi-generator.tech/docs/generators/perl/"
+        },
+        {
+          "claim": "Rust-derived five-family package installed and passed bounded bytes, uint64, bearer, stream recovery and HTTP error vectors.",
+          "url": "research/additional-languages/openapi-targets/perl-manifest.json"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator perl",
+        "pin": "OpenAPI Generator 7.25.0 jar SHA-256 41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE",
+        "source": "https://openapi-generator.tech/docs/generators/perl/",
+        "version": "7.25.0"
+      },
+      "id": "perl",
+      "kind": "language",
+      "language_family": "Perl",
+      "maturity": "stable",
+      "outstanding": [
+        "Extend qualification to every operation and model vector before making broader target claims.",
+        "Review the 70 installed CPAN distribution license records before any redistribution claim; the closure receipt is separate from the HTTP package.",
+        "The generated Perl HTTP client has no operation cancellation primitive; native cancellation and endpoint-pool recovery remain unqualified."
+      ],
+      "package": {
+        "artifact": "acyclic-http-perl-0.1.0.zip",
+        "ecosystem": "CPAN",
+        "installable": true,
+        "notes": "Five-family HTTP package installs into an isolated local-lib-contained CPAN tree; receipt: research/additional-languages/openapi-targets/perl-manifest.json."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "perl",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "Rust-derived OpenAPI projections for Actors, Workers, Stream, Objects and Inference have installed Perl HTTP consumers; OAG remains JSON/HTTP-only and does not provide protobuf support.",
+        "qualification": "prototype",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "PowerShell generator is listed with HTTP client output.",
+          "url": "https://openapi-generator.tech/docs/generators/powershell/"
+        },
+        {
+          "claim": "Rust-derived five-family module packages were extracted and imported under PowerShell 7.6.5; representative bytes, uint64, authentication and 503 error vectors passed.",
+          "url": "research/additional-languages/openapi-targets/powershell-manifest.json"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator powershell",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/powershell/",
+        "version": "7.25.0"
+      },
+      "id": "powershell",
+      "kind": "language",
+      "language_family": "PowerShell",
+      "maturity": "stable",
+      "outstanding": [
+        "Extend qualification to every operation and model vector in each Rust HTTP family projection.",
+        "Review generated module and PowerShell/runtime dependency licenses before redistribution; keep the package local-only.",
+        "PowerShell generated client has no native gRPC, endpoint-pool recovery or operation cancellation qualification."
+      ],
+      "package": {
+        "artifact": "Acyclic.SDK",
+        "ecosystem": "PowerShell Gallery/module",
+        "installable": true,
+        "notes": "Five local Acyclic<Family>Http module packages import under PowerShell 7.6.5; receipt: research/additional-languages/openapi-targets/powershell-manifest.json."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "powershell",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "Rust-owned adapted PowerShell HTTP modules are installed and loopback-qualified for one route in each of the five HTTP family projections; no protobuf/gRPC package target.",
+        "qualification": "prototype",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "R client generator and CRAN-style output; protobuf unsupported in feature table.",
+          "url": "https://openapi-generator.tech/docs/generators/r/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator r",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/r/",
+        "version": "7.25.0"
+      },
+      "id": "r",
+      "kind": "language",
+      "language_family": "R",
+      "maturity": "stable",
+      "outstanding": [
+        "Qualify CRAN metadata, R serialization and HTTP error behavior."
+      ],
+      "package": {
+        "artifact": "acyclicSDK",
+        "ecosystem": "CRAN",
+        "installable": false,
+        "notes": "Requires R package build/check smoke."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "r",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OAG R feature table is JSON/XML and does not provide protobuf/gRPC parity.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Bash/curl client generator is listed.",
+          "url": "https://openapi-generator.tech/docs/generators/bash/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator bash",
+        "pin": "OpenAPI Generator 7.25.0 jar SHA-256 41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE",
+        "source": "https://openapi-generator.tech/docs/generators/bash/",
+        "version": "7.25.0"
+      },
+      "id": "bash",
+      "kind": "tooling",
+      "language_family": "POSIX shell",
+      "maturity": "stable",
+      "outstanding": [
+        "Extend qualification to a Rust-derived streaming-capable family before making broader transport claims; current Stream evidence is polling plus an explicit recovery error.",
+        "Keep protobuf/gRPC and embedded behavior unqualified."
+      ],
+      "package": {
+        "artifact": "acyclic-http-bash-0.1.0.zip",
+        "ecosystem": "shell script",
+        "installable": true,
+        "notes": "Five-family HTTP projection bundle is installable locally; Stream evidence is polling plus explicit recovery error handling, with no automatic retry or gRPC/embedded claim."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/scripts/run-language-producer.ps1",
+          "-TargetId",
+          "bash",
+          "-SourceRoot",
+          "{source_root}",
+          "-WireRoot",
+          "{wire_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package",
+        "program": "pwsh"
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "Rust-derived OpenAPI projections generate an installable Bash/curl bundle for all five explicit HTTP families; receipt: research/additional-languages/openapi-targets/bash-manifest.json.",
+        "qualification": "prototype",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "http-only"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Maintained protobuf Haskell generator; pinned 0.9.0.1 source declares BSD-3-Clause.",
+          "url": "https://github.com/google/proto-lens"
+        },
+        {
+          "claim": "Maintained HTTP/2 gRPC client/server supports unary and all streaming shapes; upstream publishes interoperability results.",
+          "url": "https://github.com/well-typed/grapesy"
+        },
+        {
+          "claim": "Pinned toolchain archives and compiled Rust-derived 106 RPC / 18 service surface; descriptor-specific known oneof payloads use a closed GADT.",
+          "url": "research/additional-languages/haskell-grapesy-prototype/provenance.json"
+        }
+      ],
+      "generator": {
+        "license": "BSD-3-Clause",
+        "name": "proto-lens-protoc + grapesy",
+        "pin": "GHC 9.2.8; Cabal 3.10.2.1; proto-lens-protoc 0.9.0.1 sha256:513e4338ca74b06929251f78e1c0cd1cc6b26d5e32e80cbcbcc23848ac16e446; grapesy 1.2.1 sha256:be40dda86d9a08d042504d9b94b4f8377ed08a9ce45fee413b8d0637a50951ca; research/additional-languages/haskell-grapesy-prototype/cabal.project.freeze",
+        "source": "https://github.com/google/proto-lens",
+        "version": "0.9.0.1 + 1.2.1"
+      },
+      "id": "haskell",
+      "kind": "language",
+      "language_family": "Haskell",
+      "maturity": "stable",
+      "outstanding": [
+        "Complete source-bound installed 111-step conformance, streaming, cancellation, recovery and TLS qualification."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk-haskell",
+        "ecosystem": "Hackage",
+        "installable": true,
+        "notes": "Rust-owned generation-only producer emits an installable Cabal package with generated proto-lens bindings and descriptor-specific semantic types; the grapesy transport facade remains thin and Rust-authority-bound."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/research/additional-languages/haskell-grapesy-prototype/generate.ps1",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "generated",
+        "program": "powershell.exe"
+      },
+      "remote": {
+        "level": "full-grpc",
+        "notes": "Rust-generated protobuf services and descriptor-specific semantic GADTs compile with proto-lens and use grapesy HTTP/2 transport.",
+        "qualification": "prototype",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc"
+      },
+      "status": "candidate"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Lua 5.1-5.4/LuaJIT protobuf encoding/decoding through LuaRocks.",
+          "url": "https://github.com/starwing/lua-protobuf"
+        },
+        {
+          "claim": "Lua OpenAPI client is listed as beta.",
+          "url": "https://openapi-generator.tech/docs/generators/lua/"
+        }
+      ],
+      "generator": {
+        "license": "MIT/Apache-2.0",
+        "name": "lua-protobuf / OpenAPI Generator lua",
+        "pin": "Separate pins; neither supplies full remote parity.",
+        "source": "https://github.com/starwing/lua-protobuf",
+        "version": "lua-protobuf 0.5.3; OAG 7.25.0"
+      },
+      "id": "lua",
+      "kind": "language",
+      "language_family": "Lua",
+      "maturity": "experimental",
+      "outstanding": [
+        "Do not qualify until a maintained Lua gRPC runtime and generated service plugin exist."
+      ],
+      "package": {
+        "artifact": "acyclic-sdk",
+        "ecosystem": "LuaRocks",
+        "installable": false,
+        "notes": "Serialization-only and HTTP projection inventory."
+      },
+      "remote": {
+        "level": "none",
+        "notes": "lua-protobuf provides serialization but no maintained gRPC runtime; OAG Lua output is beta HTTP-only.",
+        "qualification": "blocked",
+        "streaming": [],
+        "wire": "none"
+      },
+      "status": "not-qualifiable"
+    },
+    {
+      "embedded": {
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
+      },
+      "evidence": [
+        {
+          "claim": "Official matrix distinguishes client, server, documentation and non-language generators.",
+          "url": "https://openapi-generator.tech/docs/generators/"
+        }
+      ],
+      "generator": {
+        "license": "Apache-2.0",
+        "name": "OpenAPI Generator docs/tooling templates",
+        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+        "source": "https://openapi-generator.tech/docs/generators/",
+        "version": "7.25.0"
+      },
+      "id": "docs-and-execution-targets",
+      "kind": "tooling",
+      "language_family": "multi-language",
+      "maturity": "stable",
+      "outstanding": [
+        "Compile/execute snippets only against matching generated package artifacts and mark HTTP projection limits."
+      ],
+      "package": {
+        "artifact": "docs/snippets",
+        "ecosystem": "generated artifact",
+        "installable": false,
+        "notes": "Keep separate from language package inventory."
+      },
+      "remote": {
+        "level": "http-projection",
+        "notes": "OpenAPI Generator also lists k6, JMeter, Terraform provider and documentation targets; these are not SDK languages.",
+        "qualification": "unqualified",
+        "streaming": [],
+        "wire": "json-http"
+      },
+      "status": "adapter-only"
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
+use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
@@ -55,8 +56,7 @@ impl Client {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.contains(['\r', '\n'])
+            || !credential::validate(BEARER_NO_CRLF, token)
             || maximum_response_bytes == 0
         {
             return Err(Error::InvalidArgument);
@@ -76,6 +76,91 @@ impl Client {
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
         })
+    }
+
+    /// Verify the authenticated Rust-owned Workers identity using the HTTP control route.
+    ///
+    /// A missing route reports `false`, allowing the platform facade to reject
+    /// the endpoint without sending an application operation. Authentication
+    /// failures and identity mismatches remain terminal errors.
+    pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let family = BindingFamily::Workers;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name()).ok_or(Error::InvalidArgument)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| Error::InvalidArgument)?;
+        let response = self
+            .transport
+            .get(url.clone())
+            .bearer_auth(&self.token)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+        if response.url() != &url {
+            return Err(Error::MalformedResponse);
+        }
+        let status = response.status();
+        if matches!(status.as_u16(), 404 | 405) {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            return Err(Error::Service {
+                status: status.as_u16(),
+                detail: None,
+            });
+        }
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(';').next())
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"));
+        if !content_type {
+            return Err(Error::MalformedResponse);
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES) as u64)
+        {
+            return Err(Error::ResponseTooLarge);
+        }
+        let mut bytes = Vec::new();
+        let mut response = response;
+        while let Some(chunk) = response.chunk().await? {
+            if chunk.len()
+                > self
+                    .maximum
+                    .min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES)
+                    .saturating_sub(bytes.len())
+            {
+                return Err(Error::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let pool = DescriptorPool::decode(control::control_descriptor().as_slice())
+            .map_err(|_| Error::MalformedResponse)?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or(Error::MalformedResponse)?;
+        let mut json = serde_json::Deserializer::from_slice(&bytes);
+        let decoded = DynamicMessage::deserialize(descriptor, &mut json)
+            .map_err(|_| Error::MalformedResponse)?;
+        json.end().map_err(|_| Error::MalformedResponse)?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES.min(self.maximum),
+        )
+        .map_err(|_| Error::MalformedResponse)?;
+        Ok(true)
     }
 
     async fn call<I: Message, O: Message + Default>(

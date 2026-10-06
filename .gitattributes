@@ -12,3 +12,9 @@
 *.bin binary
 *.wasm binary
 *.node binary
+
+# Preserve canonical protoc output while checking all other whitespace.
+generated/typescript/**/*.js whitespace=-blank-at-eof
+generated/typescript/**/*.d.ts whitespace=-blank-at-eof
+typescript/packages/*/generated/**/*.js whitespace=-blank-at-eof
+typescript/packages/*/generated/**/*.d.ts whitespace=-blank-at-eof

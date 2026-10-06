@@ -1,7 +1,10 @@
 import { rootCertificates } from "node:tls";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
+import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
+import { WORKERS_HANDSHAKE, WORKERS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake, type RustOwnedWorkersPublicClient } from "./generated-client.js";
+import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersMessageLimit } from "./wasm-runtime.js";
 
 export interface WorkersGrpcOptions {
   readonly endpoint: string;
@@ -13,14 +16,30 @@ export interface WorkersGrpcOptions {
 /** Complete Workers v1 gRPC client for Node and Bun over authenticated HTTP/2. */
 export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
   const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || /[\r\n]/.test(options.token)) throw new TypeError("invalid bearer token");
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  validateWorkersGrpcEndpoint(options.endpoint);
+  validateWorkersCredential(options.token);
+  const maximum = options.maximumMessageBytes ?? WORKERS_REMOTE_POLICY.maximumMessageBytes;
+  validateWorkersMessageLimit(maximum);
+  if (options.caCertificate !== undefined) validateWorkersCaCertificate(options.caCertificate);
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "workers");
     return next(request);
   };
-  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  const tls = options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } };
+  const control = createClient(ProtocolService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: WORKERS_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: WORKERS_REMOTE_POLICY.maximumMessageBytes, ...tls }));
+  let handshake: Promise<void> | undefined;
+  const applicationAuthenticate: Interceptor = next => async request => {
+    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "workers");
+    if (handshake === undefined) {
+      const pending = control.handshake(rustOwnedGrpcHandshakeRequest(WORKERS_HANDSHAKE, "workers"), { timeoutMs: WORKERS_REMOTE_POLICY.requestTimeoutMillis })
+        .then(response => { validateRustOwnedGrpcHandshake(response, WORKERS_HANDSHAKE, "workers"); });
+      const wrapped = pending.catch(error => { if (handshake === wrapped) handshake = undefined; throw error; });
+      handshake = wrapped;
+    }
+    await handshake;
+    return next(request);
+  };
+  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedWorkersPublicClient;
 }

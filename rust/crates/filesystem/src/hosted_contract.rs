@@ -347,6 +347,59 @@ pub const fn join_history_from_wire(value: wire::JoinHistory) -> Option<JoinHist
     }
 }
 
+/// Validates one positive page-sized request bound against the negotiated
+/// hosted service limit.
+pub const fn validate_page_bound(value: u32, maximum: u32) -> Result<(), &'static str> {
+    if value == 0 || value > maximum {
+        Err("page bound is invalid")
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates the shared transaction mutation and conflict bounds.
+///
+/// Transaction staging, rebasing, and commit requests all use this same
+/// policy. Keeping it in the Rust contract prevents a client facade from
+/// accepting a request that the canonical service must reject.
+pub const fn validate_transaction_bounds(
+    mutation_count: usize,
+    maximum_mutations: u32,
+    maximum_conflicts: u32,
+    maximum_page_items: u32,
+) -> Result<(), &'static str> {
+    if mutation_count == 0
+        || mutation_count > maximum_mutations as usize
+        || maximum_conflicts == 0
+        || maximum_conflicts > maximum_page_items
+    {
+        Err("transaction bounds are invalid")
+    } else {
+        Ok(())
+    }
+}
+
+/// Validates the shared generation, diff, and conflict bounds used by live
+/// rebase and join planning/application.
+pub const fn validate_generation_bounds(
+    maximum_generations: u32,
+    maximum_changes: u32,
+    maximum_conflicts: u32,
+    maximum_page_items: u32,
+) -> Result<(), &'static str> {
+    if maximum_generations == 0
+        || maximum_generations > maximum_page_items
+        || maximum_changes == 0
+        || maximum_changes > maximum_page_items
+        || maximum_conflicts == 0
+        || maximum_conflicts > maximum_page_items
+    {
+        Err("generation bounds are invalid")
+    } else {
+        Ok(())
+    }
+}
+
 fn map<E: HostedWireEnum>(entries: &[HostedEnumEntry<E>]) -> Vec<Value> {
     entries
         .iter()
@@ -414,6 +467,20 @@ mod tests {
             EXTENT_KIND[2].wire
         );
         assert_eq!(join_history(JoinHistory::CherryPick), JOIN_HISTORY[4].wire);
+    }
+
+    #[test]
+    fn shared_bounds_are_positive_and_negotiated() {
+        assert!(validate_page_bound(1, 2).is_ok());
+        assert!(validate_page_bound(0, 2).is_err());
+        assert!(validate_page_bound(3, 2).is_err());
+        assert!(validate_transaction_bounds(1, 2, 1, 2).is_ok());
+        assert!(validate_transaction_bounds(0, 2, 1, 2).is_err());
+        assert!(validate_transaction_bounds(3, 2, 1, 2).is_err());
+        assert!(validate_transaction_bounds(1, 2, 3, 2).is_err());
+        assert!(validate_generation_bounds(1, 1, 1, 1).is_ok());
+        assert!(validate_generation_bounds(0, 1, 1, 1).is_err());
+        assert!(validate_generation_bounds(1, 2, 1, 1).is_err());
     }
 
     #[test]

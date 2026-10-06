@@ -1,4 +1,8 @@
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "grpc_service.rs"]
+pub mod service;
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
@@ -8,15 +12,156 @@ use tonic::{
     service::{Interceptor, interceptor::InterceptedService},
 };
 
+/// Browser transport deadlines use the same Rust policy as native calls.
+/// Maintained gRPC-Web fetch cancellation owns request and stream lifetime.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone)]
+struct Channel {
+    endpoint: String,
+}
+#[cfg(target_arch = "wasm32")]
+impl Channel {
+    fn new(endpoint: String) -> Self {
+        Self { endpoint }
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> for Channel {
+    type Response = tonic::codegen::http::Response<tonic_web_wasm_client::ResponseBody>;
+    type Error = tonic_web_wasm_client::Error;
+    type Future =
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn call(&mut self, request: tonic::codegen::http::Request<tonic::body::Body>) -> Self::Future {
+        use futures::future::{Either, select};
+        let method = request.uri().path().rsplit('/').next().unwrap_or_default();
+        let streaming = acyclic_sdk_contract_wire::machines::MACHINESSERVICE
+            .methods
+            .iter()
+            .any(|policy| policy.name == method && policy.server_streaming);
+        // A unary body has a total deadline. A stream retains its own checked
+        // operation deadline; receiving headers must still be bounded.
+        let mut transport = if streaming {
+            tonic_web_wasm_client::Client::new(self.endpoint.clone())
+        } else {
+            tonic_web_wasm_client::Client::new_with_options(
+                self.endpoint.clone(),
+                tonic_web_wasm_client::options::FetchOptions::new().timeout(RPC_TIMEOUT),
+            )
+        };
+        let pending = transport.call(request);
+        Box::pin(async move {
+            let deadline = gloo_timers::future::TimeoutFuture::new(RPC_TIMEOUT.as_millis() as u32);
+            match select(pending, Box::pin(deadline)).await {
+                Either::Left((response, _)) => response,
+                Either::Right(_) => Err(tonic_web_wasm_client::Error::TonicStatusError(
+                    tonic::Status::deadline_exceeded("Machines transport deadline exceeded"),
+                )),
+            }
+        })
+    }
+}
+
+mod control_wire {
+    pub mod protocol {
+        pub mod v1 {
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/wire/control/acyclic.protocol.v1.rs"
+            ));
+        }
+    }
+    pub mod transport {
+        pub mod v1 {
+            include!(concat!(
+                env!("OUT_DIR"),
+                "/wire/control/acyclic.transport.v1.rs"
+            ));
+        }
+    }
+}
+
+/// Verify the Rust-owned protocol identity before sending any Machines operation.
+#[cfg(not(target_arch = "wasm32"))]
+async fn verify_protocol(channel: Channel) -> Result<(), ProviderError> {
+    verify_protocol_authenticated(channel, None).await
+}
+async fn verify_protocol_authenticated(
+    channel: Channel,
+    authorization: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+) -> Result<(), ProviderError> {
+    use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+    use control_wire::protocol::v1::{
+        Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
+    };
+    use prost::Message as _;
+    let family = BindingFamily::Machines;
+    let version = control::control_protocol_version(family);
+    let mut client =
+        control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel)
+            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES)
+            .max_encoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+    let mut request = tonic::Request::new(HandshakeRequest {
+        protocol: Some(ProtocolIdentity {
+            version: version.into(),
+            descriptor_digest: control::archived_descriptor_digest(family),
+        }),
+        required: Some(CapabilitySet {
+            capabilities: vec![Capability {
+                name: family.name().into(),
+                version: version.into(),
+            }],
+        }),
+    });
+    request.metadata_mut().insert(
+        control::FAMILY_METADATA_KEY,
+        tonic::metadata::MetadataValue::from_static(family.name()),
+    );
+    if let Some(value) = authorization {
+        request.metadata_mut().insert("authorization", value);
+    }
+    request.set_timeout(RPC_TIMEOUT);
+    let response = client
+        .handshake(request)
+        .await
+        .map_err(|error| read_error(&error))?
+        .into_inner();
+    control::validate_handshake_response(
+        family,
+        version,
+        &[control::RequiredCapability {
+            name: family.name(),
+            version,
+        }],
+        &response.encode_to_vec(),
+        control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+    )
+    .map_err(|error| {
+        ProviderError::Rejected(format!("Machines protocol negotiation failed: {error:?}"))
+    })?;
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCH_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Tls<'a> {
+    /// PEM-encoded certificate authority used to verify the service.
     pub ca: &'a [u8],
+    /// PEM-encoded client certificate presented to the service.
     pub certificate: &'a [u8],
+    /// PEM-encoded private key corresponding to `certificate`.
     pub private_key: &'a [u8],
 }
 
@@ -50,12 +195,75 @@ impl Interceptor for BearerAuth {
     }
 }
 
-type Client =
+type GeneratedClient =
     wire::machines_service_client::MachinesServiceClient<InterceptedService<Channel, BearerAuth>>;
+
+/// Account-bound authentication for a remote Machines connection.
+/// Bearer credentials work with the automatically selected transport on every platform.
+/// Native mutual-TLS identities can be supplied when the endpoint requires them.
+pub enum Authentication<'a> {
+    /// Account-bound opaque bearer credential; validation precedes network access.
+    Bearer(&'a str),
+    /// Borrowed native mutual-TLS identity, verified before application admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    MutualTls(Tls<'a>),
+}
+impl<'a> From<&'a str> for Authentication<'a> {
+    fn from(value: &'a str) -> Self {
+        Self::Bearer(value)
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl<'a> From<Tls<'a>> for Authentication<'a> {
+    fn from(value: Tls<'a>) -> Self {
+        Self::MutualTls(value)
+    }
+}
+
+fn authorization(
+    token: &str,
+) -> Result<tonic::metadata::MetadataValue<tonic::metadata::Ascii>, ProviderError> {
+    if !acyclic_sdk_contract_wire::credential::validate(
+        acyclic_sdk_contract_wire::BEARER_NO_CRLF,
+        token,
+    ) {
+        return Err(ProviderError::Invalid(
+            "invalid Machines bearer credential".into(),
+        ));
+    }
+    format!("Bearer {token}")
+        .parse()
+        .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))
+}
+fn remote_endpoint(uri: &str) -> Result<(), ProviderError> {
+    let url = url::Url::parse(uri)
+        .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?;
+    #[cfg(target_arch = "wasm32")]
+    let local = url.scheme() == "http"
+        && matches!(
+            url.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]" | "::1")
+        );
+    #[cfg(not(target_arch = "wasm32"))]
+    let local = false;
+    if !(url.scheme() == "https" || local)
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(ProviderError::Invalid(
+            "Machines endpoint must be a secure origin without embedded credentials".into(),
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 struct GrpcProvider {
-    client: Client,
+    client: GeneratedClient,
 }
 
 #[cfg(target_os = "linux")]
@@ -79,19 +287,74 @@ fn owner_private_socket(
 }
 
 impl Machines {
-    /// Connects to the endpoint and credentials named by `ACYCLIC_MACHINES_ENDPOINT`,
-    /// `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
+    /// Connects with account authentication and automatically selects native gRPC or browser gRPC-Web.
+    /// Rust verifies protocol identity and capabilities before admitting any operation.
+    pub async fn connect<'a>(
+        uri: &str,
+        authentication: impl Into<Authentication<'a>>,
+    ) -> Result<Self, ProviderError> {
+        match authentication.into() {
+            Authentication::Bearer(token) => Self::remote(uri, token).await,
+            #[cfg(not(target_arch = "wasm32"))]
+            Authentication::MutualTls(identity) => Self::connect_mutual_tls(uri, identity).await,
+        }
+    }
+    /// Connects using the same endpoint and account credential on native and browser platforms.
+    pub async fn remote(uri: &str, token: &str) -> Result<Self, ProviderError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            Self::remote_with_ca(uri, token, None).await
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            remote_endpoint(uri)?;
+            let authorization = authorization(token)?;
+            let channel = Channel::new(uri.to_owned());
+            verify_protocol_authenticated(channel.clone(), Some(authorization.clone())).await?;
+            Ok(Self::grpc_authenticated(channel, Some(authorization)))
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn remote_with_ca(
+        uri: &str,
+        token: &str,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ProviderError> {
+        remote_endpoint(uri)?;
+        let authorization = authorization(token)?;
+        let mut tls = ClientTlsConfig::new().with_webpki_roots();
+        if let Some(ca) = ca {
+            tls = tls.ca_certificate(Certificate::from_pem(ca));
+        }
+        let channel = TonicEndpoint::from_shared(uri.to_owned())
+            .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(RPC_TIMEOUT)
+            .tls_config(tls)
+            .map_err(|_| ProviderError::Invalid("invalid Machines TLS trust".into()))?
+            .connect()
+            .await
+            .map_err(|_| ProviderError::Unavailable)?;
+        verify_protocol_authenticated(channel.clone(), Some(authorization.clone())).await?;
+        Ok(Self::grpc_authenticated(channel, Some(authorization)))
+    }
+    /// Selects the default remote gRPC-over-HTTPS client for an HTTPS endpoint, or the
+    /// explicit local Unix-socket override when the endpoint begins with `unix:`. Remote
+    /// HTTPS connections use `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
     /// `ACYCLIC_MACHINES_KEY_FILE`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn from_env() -> Result<Self, ProviderError> {
         Self::from_env_auth(BearerAuth::default()).await
     }
 
     /// Connects using the endpoint/TLS files from the environment and an explicitly
     /// supplied opaque account bearer. The credential is forwarded, never verified here.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn from_env_with_bearer(token: &str) -> Result<Self, ProviderError> {
         Self::from_env_auth(BearerAuth::new(token)?).await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     async fn from_env_auth(auth: BearerAuth) -> Result<Self, ProviderError> {
         let endpoint = std::env::var("ACYCLIC_MACHINES_ENDPOINT")
             .map_err(|_| ProviderError::Invalid("ACYCLIC_MACHINES_ENDPOINT is required".into()))?;
@@ -122,13 +385,9 @@ impl Machines {
         .await
     }
 
-    /// Connects to an HTTPS Machines endpoint with mandatory mutual TLS.
-    pub async fn connect(uri: &str, tls: Tls<'_>) -> Result<Self, ProviderError> {
-        Self::connect_auth(uri, tls, BearerAuth::default()).await
-    }
-
     /// Connects with mandatory mutual TLS and an explicit opaque account bearer
     /// applied to every unary, watch, inspection, and operation polling request.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn connect_with_bearer(
         uri: &str,
         tls: Tls<'_>,
@@ -137,16 +396,19 @@ impl Machines {
         Self::connect_auth(uri, tls, BearerAuth::new(token)?).await
     }
 
+    /// Connects over mutual TLS and verifies the Rust protocol identity before any operation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn connect_mutual_tls(uri: &str, tls: Tls<'_>) -> Result<Self, ProviderError> {
+        Self::connect_auth(uri, tls, BearerAuth::default()).await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     async fn connect_auth(
         uri: &str,
         tls: Tls<'_>,
         auth: BearerAuth,
     ) -> Result<Self, ProviderError> {
-        if !uri.starts_with("https://") {
-            return Err(ProviderError::Invalid(
-                "remote Machines endpoint must use https".into(),
-            ));
-        }
+        remote_endpoint(uri)?;
         let endpoint = TonicEndpoint::from_shared(uri.to_owned())
             .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
             .connect_timeout(CONNECT_TIMEOUT)
@@ -161,6 +423,7 @@ impl Machines {
             .connect()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
+        verify_protocol_authenticated(channel.clone(), auth.0.clone()).await?;
         Ok(Self::grpc_with_auth(channel, auth))
     }
 
@@ -223,21 +486,26 @@ impl Machines {
     }
 
     /// Reports that Unix sockets are unavailable on this platform.
-    #[cfg(not(target_os = "linux"))]
-    pub async fn connect_local(path: &std::path::Path) -> Result<Self, ProviderError> {
-        Self::connect_local_auth(path, BearerAuth::default()).await
+    #[cfg(all(not(target_os = "linux"), not(target_arch = "wasm32")))]
+    pub async fn connect_local(_path: &std::path::Path) -> Result<Self, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "local Machines sockets require Linux".into(),
+        ))
     }
 
     /// Reports that Unix sockets are unavailable on this platform.
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_arch = "wasm32")))]
     pub async fn connect_local_with_bearer(
-        path: &std::path::Path,
+        _path: &std::path::Path,
         token: &str,
     ) -> Result<Self, ProviderError> {
-        Self::connect_local_auth(path, BearerAuth::new(token)?).await
+        let _ = BearerAuth::new(token)?;
+        Err(ProviderError::Unsupported(
+            "local Machines sockets require Linux".into(),
+        ))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(all(not(target_os = "linux"), not(target_arch = "wasm32")))]
     async fn connect_local_auth(
         _path: &std::path::Path,
         _auth: BearerAuth,
@@ -248,15 +516,28 @@ impl Machines {
     }
 
     fn grpc_with_auth(channel: Channel, auth: BearerAuth) -> Self {
-        let client =
-            wire::machines_service_client::MachinesServiceClient::with_interceptor(channel, auth)
-                .max_decoding_message_size(MAX_MESSAGE_BYTES)
-                .max_encoding_message_size(MAX_MESSAGE_BYTES);
+        Self::grpc_authenticated(channel, auth.0)
+    }
+
+    fn grpc(channel: Channel) -> Self {
+        Self::grpc_authenticated(channel, None)
+    }
+    fn grpc_authenticated(
+        channel: Channel,
+        authorization: Option<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>,
+    ) -> Self {
+        let client = wire::machines_service_client::MachinesServiceClient::with_interceptor(
+            channel,
+            BearerAuth(authorization),
+        )
+        .max_decoding_message_size(MAX_MESSAGE_BYTES)
+        .max_encoding_message_size(MAX_MESSAGE_BYTES);
         Self::new(Arc::new(GrpcProvider { client }))
     }
 }
 
-#[async_trait]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 impl MachinesProvider for GrpcProvider {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::CustomerHosted
@@ -692,6 +973,28 @@ impl MachinesProvider for GrpcProvider {
     }
 }
 
+async fn next_operation(
+    stream: &mut tonic::Streaming<wire::OperationState>,
+    key: IdempotencyKey,
+) -> Result<Option<wire::OperationState>, ProviderError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        tokio::time::timeout(WATCH_TIMEOUT, stream.message())
+            .await
+            .map_err(|_| ProviderError::Indeterminate(key))?
+            .map_err(|_| ProviderError::Indeterminate(key))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        use futures::future::{Either, select};
+        let deadline = gloo_timers::future::TimeoutFuture::new(60_000);
+        match select(Box::pin(stream.message()), Box::pin(deadline)).await {
+            Either::Left((value, _)) => value.map_err(|_| ProviderError::Indeterminate(key)),
+            Either::Right(_) => Err(ProviderError::Indeterminate(key)),
+        }
+    }
+}
+
 enum MachineMutation {
     Suspend,
     Wake,
@@ -699,7 +1002,7 @@ enum MachineMutation {
 }
 
 impl GrpcProvider {
-    fn client(&self) -> Client {
+    fn client(&self) -> GeneratedClient {
         self.client.clone()
     }
     async fn recovered_admission(
@@ -726,10 +1029,7 @@ impl GrpcProvider {
             .map_err(|error| watch_error(key, error))?
             .into_inner();
         loop {
-            let next = tokio::time::timeout(WATCH_TIMEOUT, stream.message())
-                .await
-                .map_err(|_| ProviderError::Indeterminate(key))?
-                .map_err(|_| ProviderError::Indeterminate(key))?;
+            let next = next_operation(&mut stream, key).await?;
             let Some(value) = next else {
                 return Err(ProviderError::Indeterminate(key));
             };
@@ -1522,13 +1822,13 @@ fn decode_usage_receipt(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use futures::stream;
+    use rcgen::generate_simple_self_signed;
     use tokio::net::TcpListener;
-    use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::Server;
+    use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
     use tonic::{Code, Request, Response, Status};
     use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 
@@ -1729,6 +2029,16 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
         let server = tokio::spawn(async move {
             Server::builder()
                 .add_service(MachinesServiceServer::with_interceptor(
@@ -1746,16 +2056,59 @@ mod tests {
                         Ok(request)
                     },
                 ))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await?;
         let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?;
         Ok((
             Machines::grpc_with_auth(channel, BearerAuth::new("opaque.account+/=")?),
+            shutdown_tx,
+            server,
+        ))
+    }
+
+    async fn serve_wire_operation_service(
+        service: OperationService,
+    ) -> Result<
+        (
+            wire::machines_service_client::MachinesServiceClient<tonic::transport::Channel>,
+            tokio::sync::oneshot::Sender<()>,
+            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(MachinesServiceServer::new(service))
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        ready_receiver.await?;
+        let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        Ok((
+            wire::machines_service_client::MachinesServiceClient::new(channel),
             shutdown_tx,
             server,
         ))
@@ -1771,6 +2124,81 @@ mod tests {
             }),
             status: status as i32,
         }
+    }
+
+    #[tokio::test]
+    async fn every_machines_rpc_crosses_the_generated_grpc_boundary()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let (mut client, shutdown, server) = serve_wire_operation_service(service).await?;
+
+        macro_rules! assert_unimplemented {
+            ($call:expr) => {
+                assert_eq!($call.await.unwrap_err().code(), Code::Unimplemented)
+            };
+        }
+        assert_unimplemented!(client.qualify_image(wire::QualifyImageRequest::default()));
+        assert_unimplemented!(client.create(wire::CreateMachineRequest::default()));
+        assert_unimplemented!(client.checkpoint(wire::CheckpointMachineRequest::default()));
+        assert_unimplemented!(client.fork(wire::ForkCheckpointRequest::default()));
+        assert_unimplemented!(client.fork_machine(wire::ForkMachineRequest::default()));
+        assert_unimplemented!(client.suspend(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(client.wake(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(
+            client.set_suspension_policy(wire::SetSuspensionPolicyRequest::default())
+        );
+        assert_unimplemented!(client.destroy_machine(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(
+            client.destroy_checkpoint(wire::CheckpointMutationRequest::default())
+        );
+        let recovered = client
+            .recover(wire::RecoverRequest {
+                idempotency_key: Some(wire::IdempotencyKey {
+                    value: key.as_bytes().to_vec(),
+                }),
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+        assert!(recovered.result.is_some());
+        assert_unimplemented!(client.inspect_machine(wire::InspectMachineRequest::default()));
+        assert_unimplemented!(client.inspect_checkpoint(wire::InspectCheckpointRequest::default()));
+        assert_unimplemented!(client.list_machines(wire::ListMachinesRequest::default()));
+        assert_unimplemented!(client.events(wire::EventsRequest::default()));
+        assert_unimplemented!(client.usage(wire::UsageRequest::default()));
+
+        let operation_request = wire::OperationRequest {
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            ..Default::default()
+        };
+        let cancelled = client.cancel(operation_request.clone()).await?.into_inner();
+        assert_eq!(cancelled.status, wire::OperationStatus::Cancelled as i32);
+        let inspected = client
+            .inspect_operation(operation_request.clone())
+            .await?
+            .into_inner();
+        assert_eq!(inspected.status, wire::OperationStatus::Pending as i32);
+        let mut watch = client
+            .watch_operation(operation_request)
+            .await?
+            .into_inner();
+        assert!(watch.message().await?.is_none());
+
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
     }
 
     fn recovered_suspend(
@@ -1815,6 +2243,16 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
         let server = tokio::spawn(async move {
             Server::builder()
                 .add_service(MachinesServiceServer::with_interceptor(
@@ -1833,11 +2271,12 @@ mod tests {
                         Ok(request)
                     },
                 ))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await?;
         let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?;
@@ -1938,6 +2377,19 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((
+                    listener.accept().await.map(|(stream, _)| stream),
+                    (listener, None),
+                ))
+            },
+        );
         let mut builder = Server::builder().tls_config(
             ServerTlsConfig::new()
                 .identity(Identity::from_pem(&server_pem, &server_key))
@@ -1945,6 +2397,11 @@ mod tests {
         )?;
         let server = tokio::spawn(async move {
             builder
+                .add_service(
+                    control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(
+                        MachineControl(ControlMode::Valid),
+                    ),
+                )
                 .add_service(MachinesServiceServer::with_interceptor(
                     service,
                     move |request: Request<()>| {
@@ -1961,11 +2418,12 @@ mod tests {
                         Ok(request)
                     },
                 ))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
+        ready_receiver.await.unwrap();
         let tls = || Tls {
             ca: server_pem.as_bytes(),
             certificate: client_pem.as_bytes(),
@@ -2134,6 +2592,279 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(ProviderError::Invalid(_))));
+    }
+
+    #[derive(Clone, Copy)]
+    enum ControlMode {
+        Valid,
+        BearerValid,
+        WrongIdentity,
+        Unauthorized,
+    }
+    struct MachineControl(ControlMode);
+    #[tonic::async_trait]
+    impl control_wire::transport::v1::protocol_service_server::ProtocolService for MachineControl {
+        async fn handshake(
+            &self,
+            request: tonic::Request<control_wire::protocol::v1::HandshakeRequest>,
+        ) -> Result<tonic::Response<control_wire::protocol::v1::HandshakeResponse>, tonic::Status>
+        {
+            use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+            use control_wire::protocol::v1 as model;
+            let family = BindingFamily::Machines;
+            let version = control::control_protocol_version(family);
+            if matches!(self.0, ControlMode::BearerValid) {
+                assert_eq!(
+                    request.metadata().get("authorization").unwrap(),
+                    "Bearer machine-token"
+                );
+            }
+            assert_eq!(
+                request
+                    .metadata()
+                    .get(control::FAMILY_METADATA_KEY)
+                    .unwrap(),
+                family.name()
+            );
+            let presented = request.get_ref().protocol.as_ref().unwrap();
+            assert_eq!(presented.version, version);
+            assert_eq!(
+                presented.descriptor_digest,
+                control::archived_descriptor_digest(family)
+            );
+            let required = &request.get_ref().required.as_ref().unwrap().capabilities;
+            assert_eq!(required.len(), 1);
+            assert_eq!(required[0].name, family.name());
+            assert_eq!(required[0].version, version);
+            if matches!(self.0, ControlMode::Unauthorized) {
+                return Err(tonic::Status::unauthenticated("identity rejected"));
+            }
+            Ok(tonic::Response::new(model::HandshakeResponse {
+                protocol: Some(model::ProtocolIdentity {
+                    version: version.into(),
+                    descriptor_digest: if matches!(self.0, ControlMode::WrongIdentity) {
+                        "wrong-archive".into()
+                    } else {
+                        control::archived_descriptor_digest(family)
+                    },
+                }),
+                supported: Some(model::CapabilitySet {
+                    capabilities: vec![model::Capability {
+                        name: family.name().into(),
+                        version: version.into(),
+                    }],
+                }),
+            }))
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_control_rejects_auth_and_protocol_mismatch_before_client_admission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for mode in [ControlMode::WrongIdentity, ControlMode::Unauthorized] {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+            let incoming = futures::stream::unfold(
+                (listener, Some(ready)),
+                |(listener, ready)| async move {
+                    if let Some(ready) = ready {
+                        let _ = ready.send(());
+                    }
+                    Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+                },
+            );
+            let server = tokio::spawn(async move {
+                Server::builder().add_service(
+                    control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(MachineControl(mode)))
+                    .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }).await
+            });
+            ready_receiver.await?;
+            let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+                .connect()
+                .await?;
+            assert!(matches!(
+                verify_protocol(channel).await,
+                Err(ProviderError::Rejected(_))
+            ));
+            let _ = shutdown.send(());
+            server.await??;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_remote_transport_completes_authenticated_mtls_grpc_handshake()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000021")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000022")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000023")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+            },
+        );
+        let server_certificate_pem = certificate_pem.clone();
+        let server_key_pem = private_key_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(
+                            server_certificate_pem.clone(),
+                            server_key_pem,
+                        ))
+                        .client_ca_root(Certificate::from_pem(server_certificate_pem)),
+                )?
+                .add_service(control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(
+                    MachineControl(ControlMode::Valid)))
+                .add_service(MachinesServiceServer::new(service))
+                .serve_with_incoming_shutdown(incoming, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        ready_receiver.await?;
+
+        let machines = Machines::connect(
+            &endpoint,
+            Tls {
+                ca: certificate_pem.as_bytes(),
+                certificate: certificate_pem.as_bytes(),
+                private_key: private_key_pem.as_bytes(),
+            },
+        )
+        .await?;
+        assert_eq!(machines.assurance(), ProviderAssurance::CustomerHosted);
+        assert_eq!(machines.operation_for(key).await?, operation);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn account_authenticated_tls_client_shares_checked_state_and_blocks_rejected_negotiation()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for mode in [
+            ControlMode::BearerValid,
+            ControlMode::WrongIdentity,
+            ControlMode::Unauthorized,
+        ] {
+            let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+            let certificate = certified.cert.pem();
+            let private_key = certified.signing_key.serialize_pem();
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+            let (shutdown, stopped) = tokio::sync::oneshot::channel();
+            let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+            let incoming = futures::stream::unfold(
+                (listener, Some(ready)),
+                |(listener, ready)| async move {
+                    if let Some(ready) = ready {
+                        let _ = ready.send(());
+                    }
+                    Some((listener.accept().await.map(|(stream, _)| stream), (listener, None)))
+                },
+            );
+            let calls = Arc::new(AtomicUsize::new(0));
+            let observed = calls.clone();
+            let server_certificate = certificate.clone();
+            let server = tokio::spawn(async move {
+                let authenticate = |request: Request<()>| {
+                    if request
+                        .metadata()
+                        .get("authorization")
+                        .is_none_or(|value| value != "Bearer machine-token")
+                    {
+                        return Err(Status::unauthenticated("account credential required"));
+                    }
+                    Ok(request)
+                };
+                Server::builder()
+                    .tls_config(ServerTlsConfig::new().identity(Identity::from_pem(server_certificate, private_key)))?
+                    .add_service(control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::with_interceptor(
+                        MachineControl(mode), authenticate))
+                    .add_service(MachinesServiceServer::with_interceptor(service::Service::new(Arc::new(SimulatedMachines::default())),
+                        move |request: Request<()>| {
+                            let request = authenticate(request)?;
+                            observed.fetch_add(1, Ordering::SeqCst);
+                            Ok(request)
+                        }))
+                    .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }).await
+            });
+            ready_receiver.await?;
+            let admitted =
+                Machines::remote_with_ca(&endpoint, "machine-token", Some(certificate.as_bytes()))
+                    .await;
+            if matches!(mode, ControlMode::BearerValid) {
+                let client = admitted?;
+                let image = Image::custom([7; 32])?;
+                assert_eq!(client.qualify_image(image.clone()).await?.image, image);
+                let key = IdempotencyKey::new();
+                let request = CreateMachine::new(key, image, [8; 32]);
+                let machine = client.create(request.clone()).await?;
+                assert_eq!(client.create(request).await?.id(), machine.id());
+                let operation = client.operation_for(key).await?;
+                let mut watch = client.watch_operation(operation).await?;
+                assert_eq!(
+                    watch.next().await.transpose()?.map(|value| value.phase),
+                    Some(OperationPhase::Succeeded)
+                );
+                assert!(watch.next().await.is_none());
+                assert_eq!(machine.inspect().await?.state, MachineState::Running);
+                machine.destroy(IdempotencyKey::new()).await?;
+                assert!(calls.load(Ordering::SeqCst) >= 7);
+            } else {
+                assert!(matches!(admitted, Err(ProviderError::Rejected(_))));
+                assert_eq!(calls.load(Ordering::SeqCst), 0);
+            }
+            let _ = shutdown.send(());
+            server.await??;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn platform_connection_rejects_credentials_and_origins_before_network_access() {
+        for token in ["", "broken\r\ncredential"] {
+            assert!(matches!(
+                Machines::connect("https://localhost:1", token).await,
+                Err(ProviderError::Invalid(_))
+            ));
+        }
+        for uri in [
+            "http://remote.example",
+            "https://user:password@remote.example",
+            "https://remote.example?token=secret",
+            "https://remote.example/path",
+        ] {
+            assert!(matches!(
+                Machines::connect(uri, "machine-token").await,
+                Err(ProviderError::Invalid(_))
+            ));
+        }
     }
 
     #[tokio::test]

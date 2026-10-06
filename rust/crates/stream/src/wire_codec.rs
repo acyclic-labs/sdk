@@ -211,6 +211,9 @@ pub(crate) fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
 }
 
 pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
+    if value.value.len() > crate::MAX_RECORD_BYTES {
+        return Err(StreamError::Unavailable);
+    }
     Ok(Record {
         sequence: value.sequence,
         value: value.value,

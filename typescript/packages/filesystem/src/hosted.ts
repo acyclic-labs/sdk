@@ -1,4 +1,4 @@
-import { create, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Client, type Interceptor } from "@connectrpc/connect";
 import { createGrpcWebTransport } from "@connectrpc/connect-web";
 
@@ -12,8 +12,6 @@ import {
   CONFLICT_USE_TO_USAGE,
   JOIN_HISTORY_FROM_PUBLIC,
   EXTENT_KIND_TO_KIND,
-  SOURCE_INVALIDATION_REASON_TO_REASON,
-  SOURCE_STATE_TO_STATUS,
   REBASE_STATUS_TO_STATUS,
   JOIN_STATUS_TO_STATUS,
   SPARSE_TARGET_TO_TARGET,
@@ -26,6 +24,8 @@ import {
   FileKind,
   FilesystemProfile,
   FilesystemService,
+  CapabilitiesSchema,
+  HandshakeResponseSchema,
   JoinHistory,
   JoinStatus as WireJoinStatus,
   MutationSchema,
@@ -33,7 +33,6 @@ import {
   NameEncoding,
   OperationOptionsSchema,
   RebaseStatus,
-  SourceInvalidationReason as WireSourceInvalidationReason,
   type Conflict as WireConflict,
   type DiffResponse,
   type FileRecordSnapshot as WireFileRecordSnapshot,
@@ -82,11 +81,48 @@ import type {
   WorkspaceFileKind,
   WorkspaceMetadata,
   WorkspaceName,
-  WorkspaceRebaseOptions,
   WorkspaceRebaseResult,
   WorkspaceStat,
 } from "./contracts.js";
-import { secureServiceEndpoint } from "./endpoint.js";
+import { rustOwnedServiceEndpoint } from "./endpoint.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { validateFilesystemHandshake } from "./remote-web.js";
+
+/**
+ * Rust-owned hosted request policy exported by the generated WASM package.
+ * Keep this boundary structural so a clean source checkout can typecheck
+ * before the generated WASM declaration is refreshed.
+ */
+type HostedRustPolicy = {
+  validateHostedPageBound(value: number, maximum: number): void;
+  validateHostedTransactionBounds(
+    mutationCount: number,
+    maximumMutations: number,
+    maximumConflicts: number,
+    maximumPageItems: number,
+  ): void;
+  validateHostedGenerationBounds(
+    maximumGenerations: number,
+    maximumChanges: number,
+    maximumConflicts: number,
+    maximumPageItems: number,
+  ): void;
+  validateHostedSourceState(state: number, reason: number, hasGeneration: boolean): void;
+  projectHostedSourceState(
+    state: number,
+    reason: number,
+    hasGeneration: boolean,
+  ): { readonly status: SourceResult["status"]; readonly reason: SourceResult["reason"] };
+  validateHostedAdvertisedLimits(maximumTransactionMutations: number, maximumPageItems: number): void;
+  validateHostedResponseBytes(maximumResponseBytes: number, minimumHandshakeResponseBytes: number): void;
+  validateHostedGenerationIdentity(
+    generationId: Uint8Array,
+    ownerWorkspaceId: Uint8Array,
+    expectedWorkspaceId: Uint8Array,
+  ): void;
+  validateHostedCredentialExpiry(expiresAtUnixSeconds: string, nowUnixSeconds: bigint): void;
+  validateHostedGenerationContinuity(leftGenerationId: Uint8Array, rightGenerationId: Uint8Array): void;
+};
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
@@ -100,6 +136,7 @@ export class HostedFsError extends Error {
 
 interface HostedClient {
   readonly rpc: Client<typeof FilesystemService>;
+  readonly rustPolicy: HostedRustPolicy;
   readonly maximumResponseBytes: number;
   readonly maximumTransactionMutations: number;
   readonly maximumPageItems: number;
@@ -109,11 +146,34 @@ interface HostedClient {
 }
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
-  const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
+  const endpoint = await rustOwnedServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
+  try {
+    await validateRustOwnedCredentialPolicy(options.bearerToken);
+  } catch {
+    throw new RangeError("invalid bearer token");
+  }
+  // The credential validator initializes the shared Rust/WASM module. Reuse
+  // that initialized module for every hosted request policy decision.
+  const rustWasm = await import("../generated/wasm/acyclic_fs_wasm.js") as unknown as HostedRustPolicy;
+  const rustPolicy: HostedRustPolicy = {
+    validateHostedPageBound: rustWasm.validateHostedPageBound,
+    validateHostedTransactionBounds: rustWasm.validateHostedTransactionBounds,
+    validateHostedGenerationBounds: rustWasm.validateHostedGenerationBounds,
+    validateHostedSourceState: rustWasm.validateHostedSourceState,
+    projectHostedSourceState: rustWasm.projectHostedSourceState,
+    validateHostedAdvertisedLimits: rustWasm.validateHostedAdvertisedLimits,
+    validateHostedResponseBytes: rustWasm.validateHostedResponseBytes,
+    validateHostedGenerationIdentity: rustWasm.validateHostedGenerationIdentity,
+    validateHostedCredentialExpiry: rustWasm.validateHostedCredentialExpiry,
+    validateHostedGenerationContinuity: rustWasm.validateHostedGenerationContinuity,
+  };
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
-  positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
-  if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
+  try {
+    rustPolicy.validateHostedResponseBytes(
+      maximumResponseBytes,
+      DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes,
+    );
+  } catch {
     throw new RangeError(
       `maximum response bytes must be at least ${DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes}`,
     );
@@ -146,28 +206,38 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
       required: { capabilities: [{ name: "filesystem", version: DEFAULT_HOSTED_OPTIONS.protocolVersion }] },
     },
   }));
-  const negotiated = required(handshake.protocol, "handshake response");
-  const protocol = required(negotiated.protocol, "handshake protocol");
-  if (protocol.version !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem protocol version is unsupported");
-  if (protocol.descriptorDigest !== FILESYSTEM_DESCRIPTOR_DIGEST) throw new HostedFsError("protocol", "filesystem descriptor digest does not match");
-  const supported = required(negotiated.supported, "supported capabilities");
-  if (!supported.capabilities.some(capability => capability.name === "filesystem" && capability.version === DEFAULT_HOSTED_OPTIONS.protocolVersion)) {
-    throw new HostedFsError("protocol", "filesystem capability version is unsupported");
-  }
-  const advertised = required(handshake.capabilities, "filesystem capabilities");
-  if (advertised.contractVersion !== DEFAULT_HOSTED_OPTIONS.protocolVersion) throw new HostedFsError("protocol", "filesystem contract version is unsupported");
-  if (advertised.maximumRequestBytes <= 0n || advertised.maximumResponseBytes <= 0n) {
-    throw new HostedFsError("protocol", "filesystem capabilities contain an unbounded byte limit");
+  let advertised: NonNullable<typeof handshake.capabilities>;
+  try {
+    const encoded = await validateFilesystemHandshake(
+      toBinary(HandshakeResponseSchema, handshake),
+    );
+    advertised = fromBinary(CapabilitiesSchema, encoded);
+  } catch (error) {
+    const raw = String(error);
+    const statusMessage = raw.match(/message: "([^"]*)"/)?.[1];
+    const message = statusMessage
+      ?? (error instanceof Error && error.name !== "Internal error" ? error.message : raw.replace(/^Error: /, ""));
+    const internalPrefix = "Internal error: ";
+    if (raw.includes("code: 'Internal error'") || message.startsWith(internalPrefix)) {
+      const normalized = message.replace(internalPrefix, "") === "response is absent"
+        ? "handshake response is absent"
+        : message.replace(internalPrefix, "");
+      throw new HostedFsError("invalid_response", normalized);
+    }
+    throw new HostedFsError("protocol", message);
   }
   negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
-  positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
-  positiveSafeInteger(advertised.maximumPageItems, "maximum page items");
+  rustPolicy.validateHostedAdvertisedLimits(
+    advertised.maximumTransactionMutations,
+    advertised.maximumPageItems,
+  );
   const profiles = advertised.profiles.map(profileFromWire);
   const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumPayloadResponseBytes)
     ? advertised.maximumResponseBytes
     : BigInt(maximumPayloadResponseBytes);
   const client: HostedClient = {
     rpc: rpcClient,
+    rustPolicy,
     maximumResponseBytes: Number(negotiatedResponseBytes),
     maximumTransactionMutations: advertised.maximumTransactionMutations,
     maximumPageItems: advertised.maximumPageItems,
@@ -201,7 +271,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     capabilities,
     async createWorkspace(name) {
       assertOpen(client);
-      requireName(name);
       const response = await call(client.rpc.createWorkspace({
         name,
         profile: FilesystemProfile.PORTABLE,
@@ -211,7 +280,6 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     },
     async openWorkspace(name) {
       assertOpen(client);
-      requireName(name);
       const response = await call(client.rpc.openWorkspace({
         selector: { case: "name", value: name },
       }));
@@ -242,7 +310,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async head() { return Uint8Array.from((await currentGeneration(client, reference)).generationId); },
     async sync() { return generation(client, await currentGeneration(client, reference)); },
     async checkpoint(label) {
-      requireName(label);
       const response = await call(client.rpc.checkpoint({
         generation: await currentGeneration(client, reference),
         identity: label,
@@ -251,7 +318,6 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return generation(client, required(response.generation, "checkpoint generation"));
     },
     async pin(identity) {
-      requireName(identity);
       const response = await call(client.rpc.pin({
         generation: await currentGeneration(client, reference),
         identity,
@@ -271,18 +337,18 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     },
     async sourceState() {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.getSourceState({ workspace: reference })));
+      return sourceResult(client, reference, await call(client.rpc.getSourceState({ workspace: reference })));
     },
     async reconcileSource(idempotencyKey) {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.reconcileSource({
+      return sourceResult(client, reference, await call(client.rpc.reconcileSource({
         workspace: reference,
         operation: operation(idempotencyKey),
       })));
     },
     async rescanSource(idempotencyKey) {
       requireSourceReconciliation(client);
-      return sourceResult(reference, await call(client.rpc.rescanSource({
+      return sourceResult(client, reference, await call(client.rpc.rescanSource({
         workspace: reference,
         operation: operation(idempotencyKey),
       })));
@@ -293,7 +359,7 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
         workspace: reference,
         operation: operation(idempotencyKey),
       }));
-      const result = sourceResult(reference, response);
+      const result = sourceResult(client, reference, response);
       if (result.status !== "sealed" || response.generation === undefined) {
         throw new HostedFsError("invalid_response", "seal did not return a sealed generation");
       }
@@ -332,10 +398,12 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return transaction(client, await currentGeneration(client, reference), idempotencyKey);
     },
     async liveRebase(options, idempotencyKey) {
-      validateRebase(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
+      await client.rustPolicy.validateHostedGenerationBounds(
+        options.maximumGenerations,
+        options.maximumChanges,
+        options.maximumConflicts,
+        client.maximumPageItems,
+      );
       const response = await call(client.rpc.rebase({
         workspace: reference,
         maximumGenerations: options.maximumGenerations,
@@ -346,8 +414,15 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       return workspaceRebase(response.status, response.generation, response.conflicts, response.truncated);
     },
     async diff(from, to, maximumChanges) {
-      positiveU32(maximumChanges, "maximum changes");
-      requirePageBound(client, maximumChanges, "maximum changes");
+      try {
+        await client.rustPolicy.validateHostedPageBound(maximumChanges, client.maximumPageItems);
+      } catch {
+        throw new RangeError(
+          maximumChanges > client.maximumPageItems
+            ? "maximum changes exceeds the negotiated page limit"
+            : "page bound is invalid",
+        );
+      }
       return diff(
         client,
         reference.workspaceId,
@@ -357,10 +432,12 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       );
     },
     async joinInto(target, options) {
-      validateJoin(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
-      requirePageBound(client, options.maximumChanges, "maximum changes");
-      requirePageBound(client, options.maximumConflicts, "maximum conflicts");
+      await client.rustPolicy.validateHostedGenerationBounds(
+        options.maximumGenerations,
+        options.maximumChanges,
+        options.maximumConflicts,
+        client.maximumPageItems,
+      );
       const destination = requireWorkspace(target, client);
       const plan = await call(client.rpc.planJoin({
         source: await currentGeneration(client, reference),
@@ -385,30 +462,30 @@ function requireSourceReconciliation(client: HostedClient): void {
 }
 
 function sourceResult(
+  client: HostedClient,
   workspace: WireWorkspaceRef,
   response: WireSourceResponse,
 ): SourceResult {
-  const status = SOURCE_STATE_TO_STATUS[response.state];
-  if (status === undefined) throw new HostedFsError("invalid_response", "source state is invalid");
-  const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED
-    ? undefined
-    : SOURCE_INVALIDATION_REASON_TO_REASON[response.reason];
-  if (response.reason !== WireSourceInvalidationReason.UNSPECIFIED && reason === undefined) {
-    throw new HostedFsError("invalid_response", "source invalidation reason is invalid");
+  let projection: ReturnType<HostedRustPolicy["projectHostedSourceState"]>;
+  try {
+    projection = client.rustPolicy.projectHostedSourceState(
+      response.state,
+      response.reason,
+      response.generation !== undefined,
+    );
+  } catch (error) {
+    throw new HostedFsError("invalid_response", error instanceof Error ? error.message : String(error));
   }
-  if ((status === "needs-rescan") !== (reason !== undefined)) {
-    throw new HostedFsError("invalid_response", "source state and invalidation reason do not match");
-  }
+  const { status, reason } = projection;
   const selected = response.generation;
-  if ((status === "clean" || status === "sealed") !== (selected !== undefined)) {
-    throw new HostedFsError("invalid_response", "source generation does not match its state");
-  }
   if (selected !== undefined) {
     const owner = required(selected.workspace, "source generation workspace");
-    requireBytes(selected.generationId, 32, "source generation identity");
-    if (!equalBytes(owner.workspaceId, workspace.workspaceId) || owner.name !== workspace.name) {
-      throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
-    }
+    client.rustPolicy.validateHostedGenerationIdentity(
+      selected.generationId,
+      owner.workspaceId,
+      workspace.workspaceId,
+    );
+    if (owner.name !== workspace.name) throw new HostedFsError("invalid_response", "source generation belongs to another workspace");
   }
   return { status, reason, generationId: copyOptionalBytes(selected?.generationId) };
 }
@@ -424,7 +501,6 @@ async function s3Access(
   if (!client.s3Credentials) {
     throw new HostedFsError("unsupported", "hosted filesystem does not issue S3 credentials");
   }
-  positiveU64(expiresAfterSeconds, "S3 credential lifetime");
   const response = await call(client.rpc.issueS3Credential({
     workspace: reference,
     generation: await currentGeneration(client, reference),
@@ -435,14 +511,22 @@ async function s3Access(
   if (response.credential.case !== "s3") {
     throw new HostedFsError("protocol", "missing S3 credential");
   }
-  secureServiceEndpoint(response.endpoint, message => new HostedFsError("invalid_response", `S3 credential ${message}`));
+  await rustOwnedServiceEndpoint(response.endpoint, message => new HostedFsError("invalid_response", `S3 credential ${message}`));
   const credential = response.credential.value;
   requireName(credential.bucket);
   requireName(credential.region);
   requireName(credential.accessKeyId);
   requireName(credential.secretAccessKey);
-  if (response.expiresAtUnixSeconds <= BigInt(Math.floor(Date.now() / 1_000))) {
-    throw new HostedFsError("invalid_response", "S3 credential expiry must be in the future");
+  try {
+    client.rustPolicy.validateHostedCredentialExpiry(
+      response.expiresAtUnixSeconds.toString(),
+      BigInt(Math.floor(Date.now() / 1_000)),
+    );
+  } catch (error) {
+    throw new HostedFsError(
+      "invalid_response",
+      `S3 ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
   return {
     endpoint: response.endpoint,
@@ -469,7 +553,6 @@ function generation(client: HostedClient, reference: WireGenerationRef): FsGener
     planExtents: (path, offset, length, maximumSpans) =>
       extents(client, reference, path, offset, length, maximumSpans),
     async pin(identity) {
-      requireName(identity);
       const response = await call(client.rpc.pin({
         generation: reference,
         identity,
@@ -493,7 +576,6 @@ async function fork(
   source: WireGenerationRef,
   destinationName: string,
 ): Promise<HostedFsWorkspace> {
-  requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({
     source,
     destinationName,
@@ -510,13 +592,6 @@ async function read(
   maximumBytes: bigint,
 ): Promise<Uint8Array> {
   assertOpen(client);
-  if (range === undefined) positiveU64(maximumBytes, "maximum read bytes");
-  else nonnegativeU64(maximumBytes, "maximum read bytes");
-  requireResponseBound(client, maximumBytes, "maximum read bytes");
-  if (range !== undefined) {
-    nonnegativeU64(range.offset, "read offset");
-    nonnegativeU64(range.length, "read length");
-  }
   const response = await call(client.rpc.read({
     generation: selected,
     path,
@@ -546,8 +621,7 @@ async function list(
   maximumEntries: number,
 ): Promise<WorkspaceDirectoryPage> {
   assertOpen(client);
-  positiveU32(maximumEntries, "maximum entries");
-  requirePageBound(client, maximumEntries, "maximum entries");
+  await client.rustPolicy.validateHostedPageBound(maximumEntries, client.maximumPageItems);
   const page = required((await call(client.rpc.listDirectory({
     generation: selected,
     path,
@@ -585,10 +659,7 @@ async function extents(
   maximumSpans: number,
 ): Promise<WorkspaceExtentPlan> {
   assertOpen(client);
-  nonnegativeU64(offset, "extent offset");
-  nonnegativeU64(length, "extent length");
-  positiveU32(maximumSpans, "maximum spans");
-  requirePageBound(client, maximumSpans, "maximum spans");
+  await client.rustPolicy.validateHostedPageBound(maximumSpans, client.maximumPageItems);
   const response = await call(client.rpc.planExtents({
     generation: selected,
     path,
@@ -615,14 +686,16 @@ function transaction(
   const operationOptions = operation(suppliedIdempotencyKey);
   const mutations: WireMutation[] = [];
   let closed = false;
-  const stage = (value: WireMutation): Promise<void> => {
+  const stage = async (value: WireMutation): Promise<void> => {
     assertOpen(client);
     if (closed) throw new HostedFsError("closed", "transaction is closed");
-    if (mutations.length >= client.maximumTransactionMutations) {
-      throw new RangeError("transaction exceeds the advertised mutation bound");
-    }
+    await client.rustPolicy.validateHostedTransactionBounds(
+      mutations.length + 1,
+      client.maximumTransactionMutations,
+      client.maximumPageItems,
+      client.maximumPageItems,
+    );
     mutations.push(value);
-    return Promise.resolve();
   };
   return {
     createDirAll: (path) => stage(mutation("createDirectories", { path })),
@@ -634,32 +707,27 @@ function transaction(
     rename: (source, destination) => stage(mutation("rename", { source, destination, replace: false })),
     hardLink: (source, destination) => stage(mutation("hardLink", { source, destination })),
     writeRange(path, offset, bytes) {
-      nonnegativeU64(offset, "write offset");
       return stage(mutation("write", { path, offset, contents: bytes }));
     },
     resize(path, logicalBytes) {
-      nonnegativeU64(logicalBytes, "logical bytes");
       return stage(mutation("resize", { path, logicalBytes }));
     },
     zeroRange(path, offset, length, allocated, extend) {
-      nonnegativeU64(offset, "zero offset");
-      nonnegativeU64(length, "zero length");
       return stage(mutation("zeroRange", { path, range: { offset, length }, allocated, extend }));
     },
     preallocate(path, offset, length, keepSize) {
-      nonnegativeU64(offset, "preallocation offset");
-      nonnegativeU64(length, "preallocation length");
       return stage(mutation("preallocate", { path, range: { offset, length }, keepSize }));
     },
     cloneRange(source, sourceOffset, destination, destinationOffset, length) {
-      nonnegativeU64(sourceOffset, "source offset");
-      nonnegativeU64(destinationOffset, "destination offset");
-      nonnegativeU64(length, "clone length");
       return stage(mutation("cloneRange", { source, sourceOffset, destination, destinationOffset, length }));
     },
     async rebase(maximumConflicts): Promise<TransactionRebaseResult> {
-      positiveU32(maximumConflicts, "maximum conflicts");
-      requirePageBound(client, maximumConflicts, "maximum conflicts");
+      await client.rustPolicy.validateHostedTransactionBounds(
+        mutations.length,
+        client.maximumTransactionMutations,
+        maximumConflicts,
+        client.maximumPageItems,
+      );
       const response = await call(client.rpc.rebaseTransaction({
         base,
         mutations,
@@ -679,12 +747,18 @@ function transaction(
     },
     async commit() {
       if (closed) throw new HostedFsError("closed", "transaction is closed");
+      await client.rustPolicy.validateHostedTransactionBounds(
+        mutations.length,
+        client.maximumTransactionMutations,
+        client.maximumPageItems,
+        client.maximumPageItems,
+      );
       const response = await call(client.rpc.applyTransaction({
         base,
         mutations,
         operation: operationOptions,
         // Generated from Rust's DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS.
-        maximumConflicts: Math.min(DEFAULT_HOSTED_OPTIONS.maximumPageItems, client.maximumPageItems),
+        maximumConflicts: client.maximumPageItems,
       }));
       return commit(response.status, response.generation);
     },
@@ -708,7 +782,7 @@ async function diff(
   to: WireGenerationRef,
   maximumChanges: number,
 ): Promise<FsChangeSet> {
-  requirePageBound(client, maximumChanges, "maximum changes");
+  await client.rustPolicy.validateHostedPageBound(maximumChanges, client.maximumPageItems);
   const response = await call(client.rpc.diff({ from, to, maximumChanges }));
   const semantic = generationDiff(response);
   const result: FsChangeSet = {
@@ -716,10 +790,18 @@ async function diff(
     to: generation(client, required(response.to, "diff result")),
     changes: () => semantic,
     async compose(next, bound) {
-      positiveU32(bound, "maximum changes");
       const owner = changeSetOwners.get(next);
-      if (owner === undefined || owner.client !== client || !equalBytes(owner.workspaceId, workspaceId)
-        || !equalBytes(owner.from.generationId, to.generationId)) {
+      if (owner === undefined || owner.client !== client) {
+        throw new TypeError("change sets are not contiguous in this hosted workspace");
+      }
+      try {
+        client.rustPolicy.validateHostedGenerationContinuity(owner.from.generationId, to.generationId);
+        client.rustPolicy.validateHostedGenerationIdentity(
+          owner.from.generationId,
+          owner.workspaceId,
+          workspaceId,
+        );
+      } catch {
         throw new TypeError("change sets are not contiguous in this hosted workspace");
       }
       return diff(client, workspaceId, from, owner.to, bound);
@@ -1013,43 +1095,10 @@ function conflictUse(value: ConflictUse): TransactionConflict["usage"] {
   if (translated === undefined) throw new HostedFsError("invalid_response", "invalid conflict use");
   return translated;
 }
-function validateJoin(value: JoinOptions): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
-  positiveU32(value.maximumChanges, "maximum changes");
-  positiveU32(value.maximumConflicts, "maximum conflicts");
-}
-function validateRebase(value: WorkspaceRebaseOptions): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
-  positiveU32(value.maximumChanges, "maximum changes");
-  positiveU32(value.maximumConflicts, "maximum conflicts");
-}
-
 function assertOpen(client: HostedClient): void {
   if (client.closed) throw new HostedFsError("closed", "hosted filesystem is closed");
 }
-function requirePageBound(client: HostedClient, value: number, name: string): void {
-  if (value > client.maximumPageItems) {
-    throw new HostedFsError("limit", `${name} exceeds the negotiated page limit`);
-  }
-}
-function requireResponseBound(client: HostedClient, value: bigint, name: string): void {
-  if (value <= 0n || value > BigInt(client.maximumResponseBytes)) {
-    throw new HostedFsError("limit", `${name} exceeds the negotiated response limit`);
-  }
-}
 function requireName(value: string): void { if (value.length === 0) throw new RangeError("name must be non-empty"); }
-function positiveSafeInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be positive`);
-}
-function positiveU32(value: number, name: string): void {
-  if (!Number.isInteger(value) || value <= 0 || value > 0xffff_ffff) throw new RangeError(`${name} must be a positive u32`);
-}
-function positiveU64(value: bigint, name: string): void {
-  if (value <= 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a positive u64`);
-}
-function nonnegativeU64(value: bigint, name: string): void {
-  if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new RangeError(`${name} must be a u64`);
-}
 function required<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new HostedFsError("invalid_response", `${name} is absent`);
   return value;

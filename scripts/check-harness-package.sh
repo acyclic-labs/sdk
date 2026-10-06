@@ -91,19 +91,17 @@ closure_output="$(bun scripts/harness-package-closure.mjs)"
 mapfile -t closure <<< "$closure_output"
 harness_version=""
 dependency_names=()
+dependency_versions=()
 for entry in "${closure[@]}"; do
   IFS=$'\t' read -r name version <<< "$entry"
   if [[ "$name" == "acyclic-harness" ]]; then
     harness_version="$version"
   else
     dependency_names+=("$name")
+    dependency_versions+=("$version")
   fi
 done
 [[ -n "$harness_version" ]]
-for entry in "${closure[@]}"; do
-  IFS=$'\t' read -r name version <<< "$entry"
-  [[ "$version" == "$harness_version" ]] || { echo "Harness dependency version mismatch: $name" >&2; exit 1; }
-done
 package_target="$work/package-target"
 cargo_package_target="$package_target"
 if [[ "$cargo_bin" == "cargo.exe" ]]; then
@@ -113,20 +111,71 @@ package_arguments=()
 for name in "${dependency_names[@]}" acyclic-harness; do
   package_arguments+=(-p "$name")
 done
+package_config=()
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  case "$name" in
+    acyclic-sdk-contract-options|acyclic-sdk-contract-wire)
+      contract_source="$root/rust/crates/${name#acyclic-}"
+      if [[ "$cargo_bin" == "cargo.exe" ]]; then
+        contract_source="$(bash "$root/scripts/native-tool-path.sh" "$contract_source")"
+      fi
+      package_config+=(--config "patch.crates-io.$name.path=\"$contract_source\"")
+      ;;
+  esac
+done
 "$cargo_bin" package --locked --no-verify --allow-dirty --target-dir "$cargo_package_target" \
+  "${package_config[@]}" \
   "${package_arguments[@]}"
 harness_crate="$package_target/package/acyclic-harness-$harness_version.crate"
 
 mkdir "$work/crates"
-for name in "${dependency_names[@]}"; do
-  tar -xf "$package_target/package/$name-$harness_version.crate" -C "$work/crates"
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  version="${dependency_versions[$index]}"
+  tar -xf "$package_target/package/$name-$version.crate" -C "$work/crates"
 done
 tar -xf "$harness_crate" -C "$work/crates"
+# The wire build crate records the canonical family model inputs with
+# source-relative include_bytes! paths. Preserve those exact Rust-owned bytes
+# in the extracted consumer layout so the packaged build uses the same inputs
+# as the producer tree, including the private contract source snapshots.
+wire_version=""
+for index in "${!dependency_names[@]}"; do
+  if [[ "${dependency_names[$index]}" == "acyclic-sdk-contract-wire" ]]; then
+    wire_version="${dependency_versions[$index]}"
+  fi
+done
+if [[ -n "$wire_version" ]]; then
+  stage_wire_input() {
+    source="$root/$1"
+    destination="$work/crates/$2"
+    [[ -f "$source" ]] || { echo "missing canonical wire input: $source" >&2; exit 1; }
+    mkdir -p "$(dirname "$destination")"
+    install -m 0644 "$source" "$destination"
+  }
+  stage_wire_input rust/crates/actors/src/generated/acyclic-actors-v1.bin actors/src/generated/acyclic-actors-v1.bin
+  stage_wire_input rust/crates/workers/src/generated/acyclic-workers-v1.bin workers/src/generated/acyclic-workers-v1.bin
+  stage_wire_input rust/crates/objects/src/generated/acyclic-objects-v2.bin objects/src/generated/acyclic-objects-v2.bin
+  stage_wire_input rust/crates/stream/proto/stream/v2/stream_descriptor.bin stream/proto/stream/v2/stream_descriptor.bin
+  stage_wire_input rust/crates/inference/inference_descriptor.bin inference/inference_descriptor.bin
+  stage_wire_input rust/crates/machines/src/generated/acyclic-machines-v1.bin machines/src/generated/acyclic-machines-v1.bin
+  stage_wire_input rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin filesystem/src/generated/acyclic-filesystem-v2.bin
+  stage_wire_input rust/crates/harness/src/generated/harness-archived-v2.bin harness/src/generated/harness-archived-v2.bin
+  stage_wire_input rust/crates/sdk-contract-options/src/lib.rs sdk-contract-options/src/lib.rs
+  stage_wire_input rust/crates/sdk-contract-options/Cargo.toml sdk-contract-options/Cargo.toml
+  stage_wire_input rust/crates/sdk-contract-options/Cargo.lock sdk-contract-options/Cargo.lock
+  stage_wire_input rust/crates/sdk-contract-validation/src/lib.rs sdk-contract-validation/src/lib.rs
+  stage_wire_input rust/crates/sdk-contract-validation/Cargo.toml sdk-contract-validation/Cargo.toml
+  stage_wire_input rust/crates/sdk-contract-validation/Cargo.lock sdk-contract-validation/Cargo.lock
+fi
 mkdir -p "$work/crates/.cargo"
 install -m 0644 "$root/rust-toolchain.toml" "$work/crates/rust-toolchain.toml"
 printf '[patch.crates-io]\n' >"$work/crates/.cargo/config.toml"
-for name in "${dependency_names[@]}"; do
-  patch_path="$work/crates/$name-$harness_version"
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  version="${dependency_versions[$index]}"
+  patch_path="$work/crates/$name-$version"
   if [[ "$bun_platform" == "win32" ]]; then
     patch_path="$(bash "$root/scripts/native-tool-path.sh" "$patch_path")"
   fi
@@ -138,13 +187,17 @@ cd "$work/crates"
 
 mkdir -p "$output"
 install -m 0644 "$archive" "$output/"
-for name in "${dependency_names[@]}"; do
-  install -m 0644 "$package_target/package/$name-$harness_version.crate" "$output/"
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  version="${dependency_versions[$index]}"
+  install -m 0644 "$package_target/package/$name-$version.crate" "$output/"
 done
 install -m 0644 "$harness_crate" "$output/"
 cmp --silent "$archive" "$output/acyclic-harness.tgz"
-for name in "${dependency_names[@]}"; do
-  cmp --silent "$package_target/package/$name-$harness_version.crate" "$output/$name-$harness_version.crate"
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  version="${dependency_versions[$index]}"
+  cmp --silent "$package_target/package/$name-$version.crate" "$output/$name-$version.crate"
 done
 cmp --silent "$harness_crate" "$output/acyclic-harness-$harness_version.crate"
 normalizer="$root/scripts/normalize-harness-evidence.mjs"
@@ -155,8 +208,10 @@ evidence_artifacts=(
   "$output/acyclic-harness.tgz"
   "$output/acyclic-harness-$harness_version.crate"
 )
-for name in "${dependency_names[@]}"; do
-  evidence_artifacts+=("$output/$name-$harness_version.crate")
+for index in "${!dependency_names[@]}"; do
+  name="${dependency_names[$index]}"
+  version="${dependency_versions[$index]}"
+  evidence_artifacts+=("$output/$name-$version.crate")
 done
 if [[ "$bun_platform" == "win32" ]]; then
   normalizer="$(bash "$root/scripts/native-tool-path.sh" "$normalizer")"

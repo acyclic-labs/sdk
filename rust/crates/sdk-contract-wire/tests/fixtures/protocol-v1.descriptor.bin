@@ -1,0 +1,18 @@
+
+–
+protocol/v1/protocol.protoacyclic.protocol.v1"Y
+ProtocolIdentity
+version (	Rversion+
+descriptor_digest (	RdescriptorDigest":
+
+Capability
+name (	Rname
+version (	Rversion"T
+CapabilitySetC
+capabilities (2.acyclic.protocol.v1.CapabilityRcapabilities"•
+HandshakeRequestA
+protocol (2%.acyclic.protocol.v1.ProtocolIdentityRprotocol>
+required (2".acyclic.protocol.v1.CapabilitySetRrequired"˜
+HandshakeResponseA
+protocol (2%.acyclic.protocol.v1.ProtocolIdentityRprotocol@
+	supported (2".acyclic.protocol.v1.CapabilitySetR	supportedB;Z9github.com/acyclic-labs/sdk/go/gen/protocol/v1;protocolv1bproto3

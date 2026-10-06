@@ -104,6 +104,37 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn streaming_record_vectors_match_the_objects_http_envelope() -> Result<(), Error> {
+        let body = wire::PutObjectRequest {
+            frame: Some(wire::put_object_request::Frame::Body(vec![0, 255])),
+        };
+        let body_bytes = encode("PutObjectRequest", &body)?;
+        assert_eq!(body_bytes, br#"{"body":"AP8="}"#);
+        assert!(body_bytes.len() < super::super::HTTP_JSON_FRAME_BYTES);
+
+        let complete = wire::PutObjectRequest {
+            frame: Some(wire::put_object_request::Frame::Complete(true)),
+        };
+        assert_eq!(
+            encode("PutObjectRequest", &complete)?,
+            br#"{"complete":true}"#
+        );
+
+        let error = wire::GetObjectResponse {
+            frame: Some(wire::get_object_response::Frame::Error(wire::ErrorDetail {
+                code: wire::ErrorCode::NotFound as i32,
+                request_id: "fixture-request".into(),
+            })),
+        };
+        let error_bytes = encode("GetObjectResponse", &error)?;
+        let error_json: serde_json::Value = serde_json::from_slice(&error_bytes)
+            .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+        assert_eq!(error_json["error"]["requestId"], "fixture-request");
+        assert!(error_json["error"]["code"].is_string());
+        assert!(error_bytes.len() < super::super::HTTP_JSON_FRAME_BYTES);
+        Ok(())
+    }
+    #[test]
     fn malformed_unknown_trailing_and_oversized_json_are_rejected() {
         for bytes in [
             br#"{"name":"customer.inputs","unknown":true}"#.as_slice(),

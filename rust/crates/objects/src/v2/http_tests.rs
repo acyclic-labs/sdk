@@ -31,12 +31,12 @@ fn framed(name: &str, value: &impl Message) -> Result<Vec<u8>, Error> {
 fn frames<T: Message + Default>(name: &str, bytes: &[u8]) -> Result<Vec<T>, Error> {
     let mut frames = Vec::new();
     for line in bytes.split_inclusive(|byte| *byte == b'\n') {
-        if line.len() > 128 * 1024 {
+        if line.len() > super::HTTP_JSON_FRAME_BYTES {
             return Err(invalid());
         }
         let line = line.strip_suffix(b"\n").ok_or_else(invalid)?;
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        frames.push(json::decode(name, line, 128 * 1024)?);
+        frames.push(json::decode(name, line, super::HTTP_JSON_FRAME_BYTES)?);
     }
     Ok(frames)
 }
@@ -121,7 +121,8 @@ async fn operation(
             Ok(("application/json", json::encode(output, &result)?))
         }
         "objects/get" => {
-            let query: wire::GetObjectRequest = json::decode(input, bytes, 128 * 1024)?;
+            let query: wire::GetObjectRequest =
+                json::decode(input, bytes, super::HTTP_JSON_FRAME_BYTES)?;
             let mode = query.object_key.clone();
             let mut selected = fixture.objects.get(query, 8 * 1024 * 1024).await?;
             if mode == "huge-header"
@@ -162,9 +163,9 @@ async fn operation(
                         .truncate(selected.body.len().saturating_sub(1));
                 }
                 let size = if mode == "oversized-frame" {
-                    65537
+                    super::HTTP_BODY_FRAME_BYTES + 1
                 } else {
-                    65536
+                    super::HTTP_BODY_FRAME_BYTES
                 };
                 for bytes in selected.body.chunks(size) {
                     result.extend(framed(

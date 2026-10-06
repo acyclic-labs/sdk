@@ -3,7 +3,7 @@
 //! Reads and listings may lag mutations. Single-object publication and its conditions are
 //! atomic. Service-owned retained bytes are a private service contract, not public history.
 pub mod conformance;
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+#[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "json")]
 pub mod json;
@@ -12,7 +12,7 @@ pub mod local;
 mod memory;
 pub mod request;
 pub mod response;
-#[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "grpc", feature = "http"))]
 mod upload;
 
 /// Canonical HTTP route, input message, and output message inventory, relative to `/v2/objects/`.
@@ -56,7 +56,7 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
         "AbortMultipartResponse",
     ),
 ];
-pub use memory::{MemoryObjects, MemoryOptions};
+pub use memory::{Clock, FixedClock, MemoryObjects, MemoryOptions, SystemClock};
 
 /// Native composition capability for filesystem storage over logical Objects.
 ///
@@ -80,7 +80,7 @@ pub trait NativeBatchObjects: ObjectsProvider {
         requests: Vec<(wire::GetObjectRequest, u64)>,
     ) -> Vec<Result<Object, Error>>;
 }
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(all(test, feature = "grpc"))]
 mod grpc_tests;
@@ -94,6 +94,13 @@ mod tests;
 pub mod wire {
     include!("../generated/acyclic.objects.v2.rs");
 }
+
+/// Maximum encoded JSON/NDJSON record size accepted by Objects HTTP framing,
+/// including its line terminator.
+pub const HTTP_JSON_FRAME_BYTES: usize = 128 * 1024;
+
+/// Maximum decoded body bytes carried by one streaming frame.
+pub const HTTP_BODY_FRAME_BYTES: usize = wire::ObjectsLimit::MaxBodyFrameBytes as usize;
 
 /// Canonical Objects v2 descriptor, including streaming service definitions.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../generated/acyclic-objects-v2.bin");
@@ -126,10 +133,18 @@ pub struct Download {
     /// Metadata for the complete selected representation.
     pub header: wire::GetObjectHeader,
     /// Decoded body chunks; a truncated body or terminal service error is an error item.
+    #[cfg(not(target_arch = "wasm32"))]
     pub body: futures::stream::BoxStream<'static, Result<bytes::Bytes, Error>>,
+    /// Decoded body chunks; a truncated body or terminal service error is an error item.
+    #[cfg(target_arch = "wasm32")]
+    pub body: futures::stream::LocalBoxStream<'static, Result<bytes::Bytes, Error>>,
 }
 /// Caller-owned upload chunks. A source failure aborts publication, preserving its category.
+#[cfg(not(target_arch = "wasm32"))]
 pub type UploadBody = futures::stream::BoxStream<'static, Result<bytes::Bytes, Error>>;
+/// Caller-owned upload chunks. A source failure aborts publication, preserving its category.
+#[cfg(target_arch = "wasm32")]
+pub type UploadBody = futures::stream::LocalBoxStream<'static, Result<bytes::Bytes, Error>>;
 impl Download {
     /// Collects chunks within an explicit allocation bound, preserving terminal failures.
     pub async fn collect(self, maximum_bytes: u64) -> Result<Object, Error> {
@@ -154,7 +169,8 @@ impl Download {
 }
 
 /// Transport-independent logical Objects interface.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ObjectsProvider: Send + Sync {
     /// Creates a tenant-scoped logical bucket.
     async fn create_bucket(

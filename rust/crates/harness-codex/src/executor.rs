@@ -51,7 +51,7 @@ pub struct Upstream {
 /// Everything one Codex turn needs besides tools.
 #[derive(Clone, Debug)]
 pub struct CodexConfig {
-    /// The `codex` binary; must report [`crate::CODEX_VERSION`].
+    /// The `codex` binary; must report [`CODEX_VERSION`](crate::CODEX_VERSION).
     pub binary: PathBuf,
     /// Upstream model id, e.g. `gpt-5.5`.
     pub model: String,

@@ -11,17 +11,21 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_workers_v1_workers: GenFile;
 
 /**
- * A digest identifies exact immutable JavaScript module bytes.
+ * An immutable JavaScript module identified by its SHA-256 digest.
  *
  * @generated from message acyclic.workers.v1.CodeVersion
  */
 export declare type CodeVersion = Message<"acyclic.workers.v1.CodeVersion"> & {
   /**
+   * SHA-256 digest of immutable module bytes.
+   *
    * @generated from field: bytes sha256 = 1;
    */
   sha256: Uint8Array;
 
   /**
+   * Size of the immutable module in bytes.
+   *
    * @generated from field: uint64 size_bytes = 2;
    */
   sizeBytes: bigint;
@@ -34,22 +38,28 @@ export declare type CodeVersion = Message<"acyclic.workers.v1.CodeVersion"> & {
 export declare const CodeVersionSchema: GenMessage<CodeVersion>;
 
 /**
- * A deployment alias may change; revision increases on every selection.
+ * A mutable alias selection with a monotonic revision.
  *
  * @generated from message acyclic.workers.v1.Deployment
  */
 export declare type Deployment = Message<"acyclic.workers.v1.Deployment"> & {
   /**
+   * Mutable deployment alias.
+   *
    * @generated from field: string alias = 1;
    */
   alias: string;
 
   /**
+   * Immutable version selected by the deployment.
+   *
    * @generated from field: acyclic.workers.v1.CodeVersion version = 2;
    */
   version?: CodeVersion | undefined;
 
   /**
+   * Monotonic deployment selection revision.
+   *
    * @generated from field: uint64 revision = 3;
    */
   revision: bigint;
@@ -62,20 +72,28 @@ export declare type Deployment = Message<"acyclic.workers.v1.Deployment"> & {
 export declare const DeploymentSchema: GenMessage<Deployment>;
 
 /**
+ * Publishes exact JavaScript module bytes after optional digest validation.
+ *
  * @generated from message acyclic.workers.v1.PublishVersionRequest
  */
 export declare type PublishVersionRequest = Message<"acyclic.workers.v1.PublishVersionRequest"> & {
   /**
+   * Exact JavaScript module bytes to publish.
+   *
    * @generated from field: bytes javascript_module = 1;
    */
   javascriptModule: Uint8Array;
 
   /**
+   * Optional digest that must match the published bytes.
+   *
    * @generated from field: bytes expected_sha256 = 2;
    */
   expectedSha256: Uint8Array;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 3;
    */
   idempotencyKey: string;
@@ -88,10 +106,14 @@ export declare type PublishVersionRequest = Message<"acyclic.workers.v1.PublishV
 export declare const PublishVersionRequestSchema: GenMessage<PublishVersionRequest>;
 
 /**
+ * The immutable version identity created by publication.
+ *
  * @generated from message acyclic.workers.v1.PublishVersionResponse
  */
 export declare type PublishVersionResponse = Message<"acyclic.workers.v1.PublishVersionResponse"> & {
   /**
+   * Immutable version selected by the deployment.
+   *
    * @generated from field: acyclic.workers.v1.CodeVersion version = 1;
    */
   version?: CodeVersion | undefined;
@@ -104,28 +126,35 @@ export declare type PublishVersionResponse = Message<"acyclic.workers.v1.Publish
 export declare const PublishVersionResponseSchema: GenMessage<PublishVersionResponse>;
 
 /**
+ * Selects an immutable version for an alias with optional compare-and-swap revision.
+ *
  * @generated from message acyclic.workers.v1.SelectDeploymentRequest
  */
 export declare type SelectDeploymentRequest = Message<"acyclic.workers.v1.SelectDeploymentRequest"> & {
   /**
+   * Mutable deployment alias.
+   *
    * @generated from field: string alias = 1;
    */
   alias: string;
 
   /**
+   * Immutable version digest.
+   *
    * @generated from field: bytes version_sha256 = 2;
    */
   versionSha256: Uint8Array;
 
   /**
-   * Omitted means create only if absent. A present positive value selects only
-   * when it matches the current revision; every successful selection advances it.
+   * Optional current deployment revision required for selection.
    *
    * @generated from field: optional uint64 expected_revision = 3;
    */
   expectedRevision?: bigint | undefined;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 4;
    */
   idempotencyKey: string;
@@ -138,10 +167,14 @@ export declare type SelectDeploymentRequest = Message<"acyclic.workers.v1.Select
 export declare const SelectDeploymentRequestSchema: GenMessage<SelectDeploymentRequest>;
 
 /**
+ * The deployment alias and selected version after a successful selection.
+ *
  * @generated from message acyclic.workers.v1.SelectDeploymentResponse
  */
 export declare type SelectDeploymentResponse = Message<"acyclic.workers.v1.SelectDeploymentResponse"> & {
   /**
+   * Deployment alias and selected version after a successful selection.
+   *
    * @generated from field: acyclic.workers.v1.Deployment deployment = 1;
    */
   deployment?: Deployment | undefined;
@@ -154,18 +187,21 @@ export declare type SelectDeploymentResponse = Message<"acyclic.workers.v1.Selec
 export declare const SelectDeploymentResponseSchema: GenMessage<SelectDeploymentResponse>;
 
 /**
- * Logical S3 object selected and privately retained at durable job acceptance.
- * Retries read the same retained bytes even if this public key is replaced.
+ * A logical S3 object retained privately as durable job input.
  *
  * @generated from message acyclic.workers.v1.ObjectRef
  */
 export declare type ObjectRef = Message<"acyclic.workers.v1.ObjectRef"> & {
   /**
+   * Private object-store bucket for retained input.
+   *
    * @generated from field: string bucket = 1;
    */
   bucket: string;
 
   /**
+   * Private object-store key for retained input.
+   *
    * @generated from field: string key = 2;
    */
   key: string;
@@ -178,6 +214,8 @@ export declare type ObjectRef = Message<"acyclic.workers.v1.ObjectRef"> & {
 export declare const ObjectRefSchema: GenMessage<ObjectRef>;
 
 /**
+ * Job input supplied inline or by a retained object reference.
+ *
  * @generated from message acyclic.workers.v1.Payload
  */
 export declare type Payload = Message<"acyclic.workers.v1.Payload"> & {
@@ -186,12 +224,16 @@ export declare type Payload = Message<"acyclic.workers.v1.Payload"> & {
    */
   source: {
     /**
+     * Input bytes retained directly with the job.
+     *
      * @generated from field: bytes inline_bytes = 1;
      */
     value: Uint8Array;
     case: "inlineBytes";
   } | {
     /**
+     * Input object retained at durable job acceptance.
+     *
      * @generated from field: acyclic.workers.v1.ObjectRef object = 2;
      */
     value: ObjectRef;
@@ -206,13 +248,14 @@ export declare type Payload = Message<"acyclic.workers.v1.Payload"> & {
 export declare const PayloadSchema: GenMessage<Payload>;
 
 /**
- * Exact accepted job output, bounded by JobLimits.output_bytes. Storage and
- * retention are service-owned; no replaceable public Object pointer is exposed.
+ * The exact accepted job output, bounded by the job limits.
  *
  * @generated from message acyclic.workers.v1.JobResult
  */
 export declare type JobResult = Message<"acyclic.workers.v1.JobResult"> & {
   /**
+   * Exact job output or ordinary invocation body.
+   *
    * @generated from field: bytes body = 1;
    */
   body: Uint8Array;
@@ -225,20 +268,28 @@ export declare type JobResult = Message<"acyclic.workers.v1.JobResult"> & {
 export declare const JobResultSchema: GenMessage<JobResult>;
 
 /**
+ * Execution and output bounds applied to a durable job.
+ *
  * @generated from message acyclic.workers.v1.JobLimits
  */
 export declare type JobLimits = Message<"acyclic.workers.v1.JobLimits"> & {
   /**
+   * Maximum Worker execution time.
+   *
    * @generated from field: uint64 timeout_millis = 1;
    */
   timeoutMillis: bigint;
 
   /**
+   * Maximum Worker memory use.
+   *
    * @generated from field: uint64 memory_bytes = 2;
    */
   memoryBytes: bigint;
 
   /**
+   * Maximum durable job output size.
+   *
    * @generated from field: uint64 output_bytes = 3;
    */
   outputBytes: bigint;
@@ -251,15 +302,21 @@ export declare type JobLimits = Message<"acyclic.workers.v1.JobLimits"> & {
 export declare const JobLimitsSchema: GenMessage<JobLimits>;
 
 /**
+ * The bounded retry schedule for a durable job.
+ *
  * @generated from message acyclic.workers.v1.RetryPolicy
  */
 export declare type RetryPolicy = Message<"acyclic.workers.v1.RetryPolicy"> & {
   /**
+   * Maximum number of delivery attempts.
+   *
    * @generated from field: uint32 max_attempts = 1;
    */
   maxAttempts: number;
 
   /**
+   * Delay between retry attempts.
+   *
    * @generated from field: uint64 backoff_millis = 2;
    */
   backoffMillis: bigint;
@@ -272,6 +329,8 @@ export declare type RetryPolicy = Message<"acyclic.workers.v1.RetryPolicy"> & {
 export declare const RetryPolicySchema: GenMessage<RetryPolicy>;
 
 /**
+ * The deployment alias or immutable version that receives a job.
+ *
  * @generated from message acyclic.workers.v1.JobTarget
  */
 export declare type JobTarget = Message<"acyclic.workers.v1.JobTarget"> & {
@@ -280,12 +339,16 @@ export declare type JobTarget = Message<"acyclic.workers.v1.JobTarget"> & {
    */
   target: {
     /**
+     * Deployment alias selected for execution.
+     *
      * @generated from field: string deployment_alias = 1;
      */
     value: string;
     case: "deploymentAlias";
   } | {
     /**
+     * Immutable version digest.
+     *
      * @generated from field: bytes version_sha256 = 2;
      */
     value: Uint8Array;
@@ -300,33 +363,42 @@ export declare type JobTarget = Message<"acyclic.workers.v1.JobTarget"> & {
 export declare const JobTargetSchema: GenMessage<JobTarget>;
 
 /**
- * Accepted input is delivered to default.run, never to default.fetch.
- * The same job ID and input recur on retry; attempt numbering starts at one.
+ * Accepts durable input for execution by the selected Worker version.
  *
  * @generated from message acyclic.workers.v1.SubmitJobRequest
  */
 export declare type SubmitJobRequest = Message<"acyclic.workers.v1.SubmitJobRequest"> & {
   /**
+   * Version or deployment target for the job.
+   *
    * @generated from field: acyclic.workers.v1.JobTarget target = 1;
    */
   target?: JobTarget | undefined;
 
   /**
+   * Input retained for the durable job.
+   *
    * @generated from field: acyclic.workers.v1.Payload input = 2;
    */
   input?: Payload | undefined;
 
   /**
+   * Execution and output limits.
+   *
    * @generated from field: acyclic.workers.v1.JobLimits limits = 3;
    */
   limits?: JobLimits | undefined;
 
   /**
+   * Retry policy applied to the job.
+   *
    * @generated from field: acyclic.workers.v1.RetryPolicy retry = 4;
    */
   retry?: RetryPolicy | undefined;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 5;
    */
   idempotencyKey: string;
@@ -339,10 +411,14 @@ export declare type SubmitJobRequest = Message<"acyclic.workers.v1.SubmitJobRequ
 export declare const SubmitJobRequestSchema: GenMessage<SubmitJobRequest>;
 
 /**
+ * The accepted job observation.
+ *
  * @generated from message acyclic.workers.v1.SubmitJobResponse
  */
 export declare type SubmitJobResponse = Message<"acyclic.workers.v1.SubmitJobResponse"> & {
   /**
+   * Accepted durable job observation.
+   *
    * @generated from field: acyclic.workers.v1.JobObservation job = 1;
    */
   job?: JobObservation | undefined;
@@ -355,40 +431,56 @@ export declare type SubmitJobResponse = Message<"acyclic.workers.v1.SubmitJobRes
 export declare const SubmitJobResponseSchema: GenMessage<SubmitJobResponse>;
 
 /**
+ * The current durable job state, attempt, output, and failure details.
+ *
  * @generated from message acyclic.workers.v1.JobObservation
  */
 export declare type JobObservation = Message<"acyclic.workers.v1.JobObservation"> & {
   /**
+   * Stable durable job identifier.
+   *
    * @generated from field: string job_id = 1;
    */
   jobId: string;
 
   /**
+   * Current durable job state.
+   *
    * @generated from field: acyclic.workers.v1.JobState state = 2;
    */
   state: JobState;
 
   /**
+   * Digest of the version resolved for execution.
+   *
    * @generated from field: bytes resolved_sha256 = 3;
    */
   resolvedSha256: Uint8Array;
 
   /**
+   * Current delivery attempt, starting at one.
+   *
    * @generated from field: uint32 attempt = 4;
    */
   attempt: number;
 
   /**
+   * Exact accepted job output after success.
+   *
    * @generated from field: acyclic.workers.v1.JobResult result = 5;
    */
   result?: JobResult | undefined;
 
   /**
+   * Stable terminal failure code.
+   *
    * @generated from field: string failure_code = 6;
    */
   failureCode: string;
 
   /**
+   * Whether cancellation has been requested.
+   *
    * @generated from field: bool cancellation_requested = 7;
    */
   cancellationRequested: boolean;
@@ -401,10 +493,14 @@ export declare type JobObservation = Message<"acyclic.workers.v1.JobObservation"
 export declare const JobObservationSchema: GenMessage<JobObservation>;
 
 /**
+ * Identifies a durable job to inspect.
+ *
  * @generated from message acyclic.workers.v1.InspectJobRequest
  */
 export declare type InspectJobRequest = Message<"acyclic.workers.v1.InspectJobRequest"> & {
   /**
+   * Stable durable job identifier.
+   *
    * @generated from field: string job_id = 1;
    */
   jobId: string;
@@ -417,10 +513,14 @@ export declare type InspectJobRequest = Message<"acyclic.workers.v1.InspectJobRe
 export declare const InspectJobRequestSchema: GenMessage<InspectJobRequest>;
 
 /**
+ * The current observation for a durable job.
+ *
  * @generated from message acyclic.workers.v1.InspectJobResponse
  */
 export declare type InspectJobResponse = Message<"acyclic.workers.v1.InspectJobResponse"> & {
   /**
+   * Accepted durable job observation.
+   *
    * @generated from field: acyclic.workers.v1.JobObservation job = 1;
    */
   job?: JobObservation | undefined;
@@ -433,15 +533,21 @@ export declare type InspectJobResponse = Message<"acyclic.workers.v1.InspectJobR
 export declare const InspectJobResponseSchema: GenMessage<InspectJobResponse>;
 
 /**
+ * Requests cancellation of a durable job.
+ *
  * @generated from message acyclic.workers.v1.CancelJobRequest
  */
 export declare type CancelJobRequest = Message<"acyclic.workers.v1.CancelJobRequest"> & {
   /**
+   * Stable durable job identifier.
+   *
    * @generated from field: string job_id = 1;
    */
   jobId: string;
 
   /**
+   * Client key used to make a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 2;
    */
   idempotencyKey: string;
@@ -454,10 +560,14 @@ export declare type CancelJobRequest = Message<"acyclic.workers.v1.CancelJobRequ
 export declare const CancelJobRequestSchema: GenMessage<CancelJobRequest>;
 
 /**
+ * The job observation after a cancellation request.
+ *
  * @generated from message acyclic.workers.v1.CancelJobResponse
  */
 export declare type CancelJobResponse = Message<"acyclic.workers.v1.CancelJobResponse"> & {
   /**
+   * Accepted durable job observation.
+   *
    * @generated from field: acyclic.workers.v1.JobObservation job = 1;
    */
   job?: JobObservation | undefined;
@@ -470,15 +580,21 @@ export declare type CancelJobResponse = Message<"acyclic.workers.v1.CancelJobRes
 export declare const CancelJobResponseSchema: GenMessage<CancelJobResponse>;
 
 /**
+ * An HTTP header forwarded to or returned from a Worker invocation.
+ *
  * @generated from message acyclic.workers.v1.Header
  */
 export declare type Header = Message<"acyclic.workers.v1.Header"> & {
   /**
+   * HTTP header name.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * HTTP header value.
+   *
    * @generated from field: string value = 2;
    */
   value: string;
@@ -491,32 +607,42 @@ export declare type Header = Message<"acyclic.workers.v1.Header"> & {
 export declare const HeaderSchema: GenMessage<Header>;
 
 /**
- * Invocation is ordinary HTTP work, not durable job acceptance.
+ * Invokes an immutable Worker version as ordinary HTTP work.
  *
  * @generated from message acyclic.workers.v1.InvokeVersionRequest
  */
 export declare type InvokeVersionRequest = Message<"acyclic.workers.v1.InvokeVersionRequest"> & {
   /**
+   * Immutable version digest.
+   *
    * @generated from field: bytes version_sha256 = 1;
    */
   versionSha256: Uint8Array;
 
   /**
+   * HTTP method passed to the Worker.
+   *
    * @generated from field: string method = 2;
    */
   method: string;
 
   /**
+   * URL passed to the Worker.
+   *
    * @generated from field: string url = 3;
    */
   url: string;
 
   /**
+   * Headers forwarded to or returned from the Worker.
+   *
    * @generated from field: repeated acyclic.workers.v1.Header headers = 4;
    */
   headers: Header[];
 
   /**
+   * Exact job output or ordinary invocation body.
+   *
    * @generated from field: bytes body = 5;
    */
   body: Uint8Array;
@@ -529,30 +655,42 @@ export declare type InvokeVersionRequest = Message<"acyclic.workers.v1.InvokeVer
 export declare const InvokeVersionRequestSchema: GenMessage<InvokeVersionRequest>;
 
 /**
+ * Invokes the version currently selected by a deployment alias.
+ *
  * @generated from message acyclic.workers.v1.InvokeDeploymentRequest
  */
 export declare type InvokeDeploymentRequest = Message<"acyclic.workers.v1.InvokeDeploymentRequest"> & {
   /**
+   * Mutable deployment alias.
+   *
    * @generated from field: string alias = 1;
    */
   alias: string;
 
   /**
+   * HTTP method passed to the Worker.
+   *
    * @generated from field: string method = 2;
    */
   method: string;
 
   /**
+   * URL passed to the Worker.
+   *
    * @generated from field: string url = 3;
    */
   url: string;
 
   /**
+   * Headers forwarded to or returned from the Worker.
+   *
    * @generated from field: repeated acyclic.workers.v1.Header headers = 4;
    */
   headers: Header[];
 
   /**
+   * Exact job output or ordinary invocation body.
+   *
    * @generated from field: bytes body = 5;
    */
   body: Uint8Array;
@@ -565,30 +703,42 @@ export declare type InvokeDeploymentRequest = Message<"acyclic.workers.v1.Invoke
 export declare const InvokeDeploymentRequestSchema: GenMessage<InvokeDeploymentRequest>;
 
 /**
+ * The ordinary HTTP response and the resolved Worker identity.
+ *
  * @generated from message acyclic.workers.v1.InvokeResponse
  */
 export declare type InvokeResponse = Message<"acyclic.workers.v1.InvokeResponse"> & {
   /**
+   * HTTP status returned by the Worker.
+   *
    * @generated from field: uint32 status = 1;
    */
   status: number;
 
   /**
+   * Headers forwarded to or returned from the Worker.
+   *
    * @generated from field: repeated acyclic.workers.v1.Header headers = 2;
    */
   headers: Header[];
 
   /**
+   * Exact job output or ordinary invocation body.
+   *
    * @generated from field: bytes body = 3;
    */
   body: Uint8Array;
 
   /**
+   * Digest of the version resolved for execution.
+   *
    * @generated from field: bytes resolved_sha256 = 4;
    */
   resolvedSha256: Uint8Array;
 
   /**
+   * Optional deployment revision resolved for invocation.
+   *
    * @generated from field: optional uint64 resolved_revision = 5;
    */
   resolvedRevision?: bigint | undefined;
@@ -601,15 +751,21 @@ export declare type InvokeResponse = Message<"acyclic.workers.v1.InvokeResponse"
 export declare const InvokeResponseSchema: GenMessage<InvokeResponse>;
 
 /**
+ * A typed Workers service error.
+ *
  * @generated from message acyclic.workers.v1.Error
  */
 export declare type Error = Message<"acyclic.workers.v1.Error"> & {
   /**
+   * Typed Workers error code.
+   *
    * @generated from field: acyclic.workers.v1.ErrorCode code = 1;
    */
   code: ErrorCode;
 
   /**
+   * Human-readable error detail.
+   *
    * @generated from field: string message = 2;
    */
   message: string;
@@ -622,6 +778,8 @@ export declare type Error = Message<"acyclic.workers.v1.Error"> & {
 export declare const ErrorSchema: GenMessage<Error>;
 
 /**
+ * Lifecycle state of a durable Worker job.
+ *
  * @generated from enum acyclic.workers.v1.JobState
  */
 export enum JobState {
@@ -662,6 +820,8 @@ export enum JobState {
 export declare const JobStateSchema: GenEnum<JobState>;
 
 /**
+ * Stable error categories returned by the Workers service.
+ *
  * @generated from enum acyclic.workers.v1.ErrorCode
  */
 export enum ErrorCode {
@@ -727,10 +887,14 @@ export enum ErrorCode {
 export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
 
 /**
+ * Publishes immutable Worker versions, selects deployments, and executes jobs.
+ *
  * @generated from service acyclic.workers.v1.WorkersService
  */
 export declare const WorkersService: GenService<{
   /**
+   * Publishes an immutable JavaScript module version.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.PublishVersion
    */
   publishVersion: {
@@ -739,6 +903,8 @@ export declare const WorkersService: GenService<{
     output: typeof PublishVersionResponseSchema;
   },
   /**
+   * Selects a version for a deployment alias with revision compare-and-swap.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.SelectDeployment
    */
   selectDeployment: {
@@ -747,6 +913,8 @@ export declare const WorkersService: GenService<{
     output: typeof SelectDeploymentResponseSchema;
   },
   /**
+   * Accepts durable input and returns the accepted job.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.SubmitJob
    */
   submitJob: {
@@ -755,6 +923,8 @@ export declare const WorkersService: GenService<{
     output: typeof SubmitJobResponseSchema;
   },
   /**
+   * Returns the current durable job observation.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.InspectJob
    */
   inspectJob: {
@@ -763,6 +933,8 @@ export declare const WorkersService: GenService<{
     output: typeof InspectJobResponseSchema;
   },
   /**
+   * Requests cancellation of a durable job.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.CancelJob
    */
   cancelJob: {
@@ -771,6 +943,8 @@ export declare const WorkersService: GenService<{
     output: typeof CancelJobResponseSchema;
   },
   /**
+   * Invokes an immutable Worker version as ordinary HTTP work.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.InvokeVersion
    */
   invokeVersion: {
@@ -779,6 +953,8 @@ export declare const WorkersService: GenService<{
     output: typeof InvokeResponseSchema;
   },
   /**
+   * Invokes the version selected by a deployment alias.
+   *
    * @generated from rpc acyclic.workers.v1.WorkersService.InvokeDeployment
    */
   invokeDeployment: {
@@ -787,3 +963,4 @@ export declare const WorkersService: GenService<{
     output: typeof InvokeResponseSchema;
   },
 }>;
+

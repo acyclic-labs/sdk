@@ -185,6 +185,8 @@ export const SubscriptionStateSchema = /*@__PURE__*/
   enumDesc(file_actors_v1_actors, 0);
 
 /**
+ * Lifecycle state of a stream subscription.
+ *
  * @generated from enum acyclic.actors.v1.SubscriptionState
  */
 export const SubscriptionState = /*@__PURE__*/
@@ -197,6 +199,8 @@ export const ActorStateSchema = /*@__PURE__*/
   enumDesc(file_actors_v1_actors, 1);
 
 /**
+ * Lifecycle state of an actor.
+ *
  * @generated from enum acyclic.actors.v1.ActorState
  */
 export const ActorState = /*@__PURE__*/
@@ -209,13 +213,18 @@ export const ErrorCodeSchema = /*@__PURE__*/
   enumDesc(file_actors_v1_actors, 2);
 
 /**
+ * Stable error categories returned by the Actors service.
+ *
  * @generated from enum acyclic.actors.v1.ErrorCode
  */
 export const ErrorCode = /*@__PURE__*/
   tsEnum(ErrorCodeSchema);
 
 /**
+ * Remote operations for creating, observing, and invoking actors.
+ *
  * @generated from service acyclic.actors.v1.ActorsService
  */
 export const ActorsService = /*@__PURE__*/
   serviceDesc(file_actors_v1_actors, 0);
+

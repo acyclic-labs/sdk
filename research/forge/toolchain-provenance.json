@@ -1,0 +1,197 @@
+{
+  "schema_version": 1,
+  "generated_on": "2026-10-03",
+  "purpose": "Pinned provenance and license facts for the optional OpenAPI/Forge downstream comparison.",
+  "policy": {
+    "source_of_truth": "Rust-owned contract and descriptors",
+    "downstream_only": true,
+    "unknowns_are_not_success": true,
+    "image_digests_required_before_execution": true,
+    "sbom_required_before_distribution": true
+  },
+  "entries": [
+    {
+      "id": "cloudflare-forge",
+      "role": "OpenAPI resolver, overlays, and downstream surface host",
+      "source": "https://github.com/cloudflare/forge",
+      "source_revision": "86cb1ef3047abc7441d96c894e8cd35e826fa8e5",
+      "version": "@cloudflare/forge 0.1.0",
+      "evidence_hashes": {
+        "packages/forge/package.json_sha256": "03949d326623d875cd9f93def44f9edd03e43f64be798647ea73b503e1d45938",
+        "pnpm-lock.yaml_sha256": "a53b7904f81461aa0772fe24434c36985d3537a57a1be45afb5cda39d539f91b"
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "evidence": "https://raw.githubusercontent.com/cloudflare/forge/86cb1ef3047abc7441d96c894e8cd35e826fa8e5/LICENSE",
+        "confidence": "verified-source"
+      },
+      "lockfile": "target/forge-upstream/pnpm-lock.yaml",
+      "execution": {
+        "resolver_tests": "passed: 36",
+        "sdk_generation": "not_run",
+        "docs_generation": "not_run",
+        "reason": "Docker Linux daemon unavailable; Fern images were not executed"
+      },
+      "dependencies": [
+        {
+          "package": "openapi-format",
+          "version": "1.33.6",
+          "license": "MIT",
+          "evidence": "target/forge-upstream/pnpm-lock.yaml and installed package metadata",
+          "confidence": "verified-lock-and-package"
+        },
+        {
+          "package": "openapi-types",
+          "version": "12.1.3",
+          "license": "MIT",
+          "evidence": "target/forge-upstream/pnpm-lock.yaml and installed package metadata",
+          "confidence": "verified-lock-and-package"
+        },
+        {
+          "package": "yaml",
+          "version": "2.9.0",
+          "license": "ISC",
+          "evidence": "target/forge-upstream/pnpm-lock.yaml and installed package metadata",
+          "confidence": "verified-lock-and-package"
+        },
+        {
+          "package": "api-ref-bundler",
+          "version": "0.5.1",
+          "license": "MIT",
+          "evidence": "installed package metadata in the pinned Forge checkout",
+          "confidence": "verified-installed-metadata"
+        },
+        {
+          "package": "case-anything",
+          "version": "2.1.10",
+          "license": "MIT",
+          "evidence": "installed package metadata in the pinned Forge checkout",
+          "confidence": "verified-installed-metadata"
+        },
+        {
+          "package": "json-crawl",
+          "version": "0.4.2",
+          "license": "MIT",
+          "evidence": "installed package metadata in the pinned Forge checkout",
+          "confidence": "verified-installed-metadata"
+        },
+        {
+          "package": "jsonpathly",
+          "version": "3.0.0",
+          "license": "MIT",
+          "evidence": "installed package metadata in the pinned Forge checkout",
+          "confidence": "verified-installed-metadata"
+        },
+        {
+          "package": "neotraverse",
+          "version": "0.6.18",
+          "license": "MIT",
+          "evidence": "installed package metadata in the pinned Forge checkout",
+          "confidence": "verified-installed-metadata"
+        }
+      ],
+      "limitations": [
+        "This entry does not license or certify Fern generator images, Docker base layers, or package restore dependencies.",
+        "The Forge package license does not extend to generated SDK dependencies."
+      ]
+    },
+    {
+      "id": "astro-fern",
+      "role": "Optional OpenAPI-derived Astro docs content integration",
+      "source": "https://github.com/cloudflare/forge/tree/86cb1ef3047abc7441d96c894e8cd35e826fa8e5/packages/astro-fern",
+      "source_revision": "86cb1ef3047abc7441d96c894e8cd35e826fa8e5",
+      "version": "0.1.0 private package",
+      "license": {
+        "spdx": "Apache-2.0",
+        "evidence": "https://raw.githubusercontent.com/cloudflare/forge/86cb1ef3047abc7441d96c894e8cd35e826fa8e5/LICENSE",
+        "confidence": "verified-repository-license"
+      },
+      "execution": {
+        "resolver_or_content_tests": "not_run",
+        "reason": "Only the core Forge package was installed; no website build was claimed"
+      },
+      "limitations": [
+        "Astro, Starlight, Playwright, and host snippet renderers require a separate lockfile/SBOM review.",
+        "It consumes generated OpenAPI and does not author Rust descriptions or examples."
+      ]
+    },
+    {
+      "id": "fern-cli-and-generators",
+      "role": "Optional Docker-backed OpenAPI SDK generation invoked by Forge",
+      "source": "https://github.com/fern-api/fern",
+      "source_revision": "68f0bc168c7f167734feddcfffb67eeeb982eccd",
+      "version": "fern-api 5.112.0; generator image tags pinned by Forge",
+      "evidence_hashes": {
+        "packages/cloudflare-fern-config/fern/generators.yml_sha256": "d742ed73653e9a3e2068298aa45655914c8e769f2df2e1d7357db9f2d9d6272c",
+        "packages/cloudflare-fern-config/scripts/generate-sdk.ts_sha256": "a7ae51f31b16399943d60460033751f8b9fc8fbd21d4bd05733f99c4473c4e8b",
+        "fern-api/fern/generators/rust/sdk/Dockerfile_sha256": "981892acc2ef5aa152c8b87340c2e97f5ad41e1937ae0f6f72749a4cc54ec052"
+      },
+      "license": {
+        "spdx": "Apache-2.0",
+        "evidence": "https://raw.githubusercontent.com/fern-api/fern/68f0bc168c7f167734feddcfffb67eeeb982eccd/LICENSE",
+        "confidence": "verified-repository-license-source-head"
+      },
+      "images": [
+        {"target": "typescript", "tag": "3.80.1", "digest": null},
+        {"target": "python", "tag": "5.18.1", "digest": null},
+        {"target": "go", "tag": "1.47.2", "digest": null},
+        {"target": "java", "tag": "4.13.2", "digest": null},
+        {"target": "php", "tag": "2.11.1", "digest": null},
+        {"target": "csharp", "tag": "2.73.1", "digest": null},
+        {"target": "ruby", "tag": "1.15.0", "digest": null},
+        {"target": "swift", "tag": "0.35.16", "digest": null},
+        {"target": "rust", "tag": "0.42.1", "digest": null}
+      ],
+      "execution": {
+        "status": "not_run",
+        "docker_client": "29.7.2",
+        "docker_daemon": "unavailable",
+        "reason": "docker info could not connect to dockerDesktopLinuxEngine"
+      },
+      "unknowns": [
+        "No image digest was resolved in this loop.",
+        "The Fern source HEAD is not evidence that it byte-for-byte reproduces the older 0.42.1 Rust image or any other pinned image.",
+        "Base image, system package, npm/cargo restore, and generated package transitive licenses require image extraction and SBOM scanning."
+      ]
+    },
+    {
+      "id": "openapi-generator",
+      "role": "Comparison HTTP SDK generator for derived OpenAPI only",
+      "source": "https://github.com/OpenAPITools/openapi-generator",
+      "source_revision": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+      "version": "v7.25.0",
+      "license": {
+        "spdx": "Apache-2.0",
+        "evidence": "https://github.com/OpenAPITools/openapi-generator/blob/v7.25.0/LICENSE",
+        "confidence": "verified-release-source"
+      },
+      "execution": {
+        "status": "not_run",
+        "reason": "No generator JAR or language artifact was downloaded in this Forge-specific loop"
+      },
+      "unknowns": [
+        "Release artifact hash and Java runtime image were not pinned here.",
+        "Language template output, package dependencies, and stream/recovery behavior remain unqualified."
+      ]
+    },
+    {
+      "id": "probe-runtime",
+      "role": "Research-only Forge preflight and resolver test runtime",
+      "source": "https://nodejs.org/",
+      "version": "Node v24.4.1; pnpm 10.13.1; TypeScript 6.0.3; tsx 4.22.4; esbuild 0.28.2",
+      "license": {
+        "spdx": "mixed",
+        "evidence": "individual upstream package metadata",
+        "confidence": "partial-package-metadata"
+      },
+      "execution": {
+        "status": "used",
+        "scope": "isolated target/forge-upstream only"
+      },
+      "limitations": [
+        "The tracked Python preflight intentionally avoids this runtime and is not product generation tooling.",
+        "A complete transitive notice set was not generated because unrelated workspace packages were not installed."
+      ]
+    }
+  ]
+}

@@ -30,6 +30,8 @@ import type {
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { ensureMachinesWasm, normalizeIdentity } from "./wasm-runtime.js";
 
+export * from "./generated-client.js";
+
 // The root package is self-initializing so synchronous identity constructors
 // are ready after an ordinary package import in browsers as well as Node/Bun.
 await ensureMachinesWasm();
@@ -178,3 +180,4 @@ export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
 export * from "./http.js";
+export * from "./generated-client.js";

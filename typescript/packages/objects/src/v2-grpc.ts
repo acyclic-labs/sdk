@@ -1,8 +1,12 @@
 import { rootCertificates } from "node:tls";
-import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/connect";
+import { validate_objects_v2_http_endpoint } from "../generated/wasm/acyclic_objects_wasm.js";
+import { OBJECTS_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { createClient, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v2/objects_pb.js";
+import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
+import { OBJECTS_HANDSHAKE, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake } from "./generated-client.js";
 /** Node/Bun transport configuration for the logical Objects service. */
 export interface ObjectsV2GrpcOptions {
   readonly endpoint: string;
@@ -12,40 +16,58 @@ export interface ObjectsV2GrpcOptions {
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
-import { validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { objects_v2_grpc_error_code, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
 function grpcError(error: unknown): ObjectsV2Error {
   if (!(error instanceof ConnectError)) return objectsV2Error(error);
   const detail = error.findDetails(wire.ErrorDetailSchema).find(value => value.code >= wire.ErrorCode.INVALID_ARGUMENT && value.code <= wire.ErrorCode.NOT_MODIFIED);
-  if (detail !== undefined) return new ObjectsV2Error(detail.code);
-  const code = error.code === Code.InvalidArgument ? wire.ErrorCode.INVALID_ARGUMENT : error.code === Code.NotFound ? wire.ErrorCode.NOT_FOUND : error.code === Code.AlreadyExists ? wire.ErrorCode.ALREADY_EXISTS : error.code === Code.FailedPrecondition ? wire.ErrorCode.PRECONDITION_FAILED : error.code === Code.ResourceExhausted ? wire.ErrorCode.QUOTA_EXCEEDED : error.code === Code.PermissionDenied || error.code === Code.Unauthenticated ? wire.ErrorCode.ACCESS_DENIED : error.code === Code.Unimplemented ? wire.ErrorCode.UNSUPPORTED : wire.ErrorCode.UNAVAILABLE;
-  return new ObjectsV2Error(code);
+  return new ObjectsV2Error(objects_v2_grpc_error_code(error.code, detail?.code) as wire.ErrorCode);
 }
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */
 export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
-  const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
-  if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
-  const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
+  let endpoint: URL;
+  try {
+    validate_objects_v2_http_endpoint(options.endpoint);
+    endpoint = new URL(options.endpoint);
+  } catch {
+    throw new TypeError("invalid Objects gRPC endpoint");
+  }
+  validateRustOwnedCredentialPolicy(options.token);
+  const maximum = options.maximumMessageBytes ?? OBJECTS_REMOTE_POLICY.maximumMessageBytes;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "objects");
     return next(request);
   };
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   // Identity encoding preserves gRPC streaming in both supported runtimes.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: 30000, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
+  const control = createClient(ProtocolService, createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: OBJECTS_REMOTE_POLICY.maximumMessageBytes, writeMaxBytes: OBJECTS_REMOTE_POLICY.maximumMessageBytes }));
+  let handshake: Promise<void> | undefined;
+  const applicationAuthenticate: Interceptor = next => async request => {
+    request.header.set("authorization", `Bearer ${options.token}`);
+    request.header.set("acyclic-family", "objects");
+    if (handshake === undefined) {
+      const pending = control.handshake(rustOwnedGrpcHandshakeRequest(OBJECTS_HANDSHAKE, "objects"), { timeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis })
+        .then(response => { validateRustOwnedGrpcHandshake(response, OBJECTS_HANDSHAKE, "objects"); });
+      const wrapped = pending.catch(error => { if (handshake === wrapped) handshake = undefined; throw error; });
+      handshake = wrapped;
+    }
+    await handshake;
+    return next(request);
+  };
+  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: OBJECTS_REMOTE_POLICY.requestTimeoutMillis, acceptCompression: [], baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
   return { buckets: createClient(BucketsService, transport), objects: createClient(ObjectsService, transport), multipart: createClient(MultipartService, transport), close: () => session.abort() };
 }
 
 /** Rust-validated provider with buffered operations and bounded streamed uploads. */
 export class GrpcObjectsV2 extends ObjectsV2Provider {
   private readonly clients: ReturnType<typeof createObjectsV2GrpcClients>;
-  constructor(options: ObjectsV2GrpcOptions, private readonly maximumResponseBytes = 64 * 1024 * 1024) {
+  constructor(options: ObjectsV2GrpcOptions, private readonly maximumResponseBytes = OBJECTS_REMOTE_POLICY.maximumMessageBytes) {
     super();
     if (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1) throw new RangeError("invalid response bound");
     this.clients = createObjectsV2GrpcClients(options);
@@ -172,8 +194,8 @@ export class GrpcObjectsV2 extends ObjectsV2Provider {
                   if (frame.frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.frame.value), maximum);
                 } else {
-                  if (frame.frame.case !== "body" || frame.frame.value.byteLength > 65536 || BigInt(frame.frame.value.byteLength) > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-                  remaining -= BigInt(frame.frame.value.byteLength);
+                  if (frame.frame.case !== "body") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+                  remaining = validate_objects_v2_get_body(BigInt(frame.frame.value.byteLength), remaining);
                 }
               } catch (error) { rejected = objectsV2Error(error); }
             }

@@ -1,0 +1,2955 @@
+//! Rust-owned typed request manifest for cross-language fixture consumers.
+//!
+//! The manifest is derived directly from the descriptor sets exported by each
+//! Rust contract crate. It therefore records the exact RPC and input message
+//! identity that the generated clients must use. The encoded payload is made
+//! with the same `prost-reflect` implementation used by the Rust transport
+//! adapters; no language-specific request inventory is an authoring input.
+
+use prost::Message;
+use futures::StreamExt;
+use bytes::Bytes;
+use prost_reflect::{DescriptorPool, DynamicMessage};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::{env, fs};
+use tonic::{Code, Request};
+use acyclic_sdk_contract_wire::bindings::BindingFamily;
+use acyclic_sdk_contract_wire::{
+    resolved_enum_fields, resolved_oneof_members, resolved_rpc_methods, ResolvedOneofMember, SEMANTIC_TYPES, WIRE_UNION_VARIANTS,
+    WireValueKind,
+};
+
+/// One encoded protobuf response frame observed from a Rust fixture stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResponseFrameRecord {
+    /// Monotonic zero-based position in the response stream.
+    pub sequence: usize,
+    /// Fully-qualified protobuf response message identity.
+    pub response_type: String,
+    /// Canonically encoded response bytes as base64.
+    pub response_base64: String,
+    /// SHA-256 of the canonical response bytes.
+    pub response_sha256: String,
+}
+
+/// One encoded protobuf request frame emitted by a Rust fixture stream.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestFrameRecord {
+    /// Monotonic zero-based position in the request stream.
+    pub sequence: usize,
+    /// Fully-qualified protobuf request message identity.
+    pub request_type: String,
+    /// Canonically encoded request bytes as base64.
+    pub request_base64: String,
+    /// SHA-256 of the canonical request bytes.
+    pub request_sha256: String,
+}
+
+/// One deterministic request record emitted for a Rust contract RPC.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypedRequestRecord {
+    /// Contract family owning the RPC.
+    pub family: String,
+    /// Fully-qualified protobuf service method identity.
+    pub rpc: String,
+    /// Rust scenario identity for qualification-only steps. This is omitted
+    /// for ordinary wire operations and never replaces `rpc`.
+    pub scenario_id: Option<String>,
+    /// Fully-qualified protobuf input message identity.
+    pub request_type: String,
+    /// Canonically encoded protobuf request bytes as base64.
+    pub request_base64: String,
+    /// SHA-256 of the canonical request bytes, lower-case hexadecimal.
+    pub request_sha256: String,
+    /// All request frames for client-streaming RPCs, in wire order.
+    pub request_frames: Vec<RequestFrameRecord>,
+    /// Wire expectation shared by all generated consumers.
+    pub expected_wire: String,
+    /// Exact protobuf response bytes observed from a Rust fixture, when present.
+    pub response_type: Option<String>,
+    pub response_base64: Option<String>,
+    pub response_sha256: Option<String>,
+    /// All response frames for streaming RPCs, in wire order.
+    pub response_frames: Vec<ResponseFrameRecord>,
+    /// Status of this manifest record. This describes encoding evidence only.
+    pub expected_status: &'static str,
+    /// Structured Rust-owned outcome expected from the operation.
+    pub expected_outcome: ExpectedOutcome,
+}
+
+/// The semantic result a generated consumer must observe for one execution
+/// step.  The legacy `expected_status` field remains for compatibility, while
+/// this value distinguishes success, protocol errors, and stream termination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpectedOutcome {
+    pub kind: String,
+    pub grpc_code: Option<String>,
+    pub detail: Option<String>,
+    pub terminal: Option<String>,
+}
+
+impl ExpectedOutcome {
+    fn descriptor() -> Self {
+        Self {
+            kind: "descriptor-only".to_owned(),
+            grpc_code: None,
+            detail: None,
+            terminal: None,
+        }
+    }
+
+    fn success() -> Self {
+        Self {
+            kind: "success".to_owned(),
+            grpc_code: Some("OK".to_owned()),
+            detail: None,
+            terminal: None,
+        }
+    }
+
+    fn stream_terminal(terminal: &str, grpc_code: Option<&str>) -> Self {
+        Self {
+            kind: "stream".to_owned(),
+            grpc_code: grpc_code.map(str::to_owned).or_else(|| Some("OK".to_owned())),
+            detail: None,
+            terminal: Some(terminal.to_owned()),
+        }
+    }
+
+    fn error(code: Option<&str>, detail: Option<&str>, terminal: Option<&str>) -> Self {
+        Self {
+            kind: "error".to_owned(),
+            grpc_code: code.map(str::to_owned),
+            detail: detail.map(str::to_owned),
+            terminal: terminal.map(str::to_owned),
+        }
+    }
+}
+
+const EXPECTED_STATUS: &str = "descriptor-only";
+const EXPECTED_WIRE: &str = "descriptor-input-only";
+
+/// Build all 106 request records from the Rust descriptor authorities.
+///
+/// The function does not claim that a remote service accepted these requests.
+/// It proves that each RPC has a Rust-owned input identity and a reproducible
+/// canonical protobuf payload. The fixture server is responsible for adding
+/// semantic request values and recording actual response observations.
+pub fn records() -> Result<Vec<TypedRequestRecord>, String> {
+    let mut output = Vec::with_capacity(106);
+    append_pool(
+        &mut output,
+        "actors",
+        acyclic_actors::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "workers",
+        acyclic_workers::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "objects",
+        acyclic_objects::v2::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "stream",
+        acyclic_stream::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "filesystem",
+        acyclic_fs::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "harness",
+        acyclic_harness::FILE_DESCRIPTOR_SET,
+    )?;
+    append_pool(
+        &mut output,
+        "inference",
+        &BindingFamily::Inference.model_descriptor(),
+    )?;
+    append_pool(
+        &mut output,
+        "machines",
+        acyclic_machines::FILE_DESCRIPTOR_SET,
+    )?;
+
+    if output.len() != 106 {
+        return Err(format!(
+            "Rust descriptor authorities produced {} RPC records; expected 106",
+            output.len()
+        ));
+    }
+    Ok(output)
+}
+
+/// Serialize the manifest in the stable JSON shape consumed by qualification.
+pub fn manifest_json() -> Result<Value, String> {
+    let records = records()?;
+    Ok(json!({
+        "schema_version": 2,
+        "source": "rust-descriptor-authorities",
+        "record_count": records.len(),
+        "records": records.iter().map(record_json).collect::<Vec<_>>(),
+    }))
+}
+
+/// Serialize the manifest with a trailing newline for checked-in artifacts.
+pub fn manifest_json_pretty() -> Result<String, String> {
+    let value = manifest_json()?;
+    serde_json::to_string_pretty(&value)
+        .map(|json| format!("{json}\n"))
+        .map_err(|error| format!("serialize typed request manifest: {error}"))
+}
+
+/// Convert producer observations into a strict 106-record manifest.
+///
+/// Each value must be an object emitted by a Rust fixture producer with a
+/// nested `request` object containing `type`, `bytes_base64`, and `sha256`.
+/// The response status is copied when the producer returned a status object;
+/// successful responses are recorded as `ok`. This is the only path that may
+/// produce a qualification manifest: descriptor inventory alone cannot be
+/// promoted to execution evidence.
+pub fn records_from_observations(observations: &[Value]) -> Result<Vec<TypedRequestRecord>, String> {
+    let mut output = Vec::with_capacity(observations.len());
+    for observation in observations {
+        let object = observation
+            .as_object()
+            .ok_or_else(|| "fixture observation is not an object".to_owned())?;
+        let family = object
+            .get("family")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "fixture observation family is missing".to_owned())?;
+        let raw_rpc = object
+            .get("rpc")
+            .or_else(|| object.get("operation"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| "fixture observation rpc is missing".to_owned())?;
+        let (rpc, scenario_id) = canonical_rpc(raw_rpc);
+        let request = object
+            .get("request")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("{rpc} request observation is missing"))?;
+        let request_type = request
+            .get("type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} request type is missing"))?;
+        let request_base64 = request
+            .get("bytes_base64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} request bytes_base64 is missing"))?;
+        let request_sha256 = request
+            .get("sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} request sha256 is missing"))?;
+        let expected_status = object
+            .get("response")
+            .and_then(Value::as_object)
+            .and_then(|response| response.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("ok");
+        output.push(TypedRequestRecord {
+            family: family.to_owned(),
+            rpc: rpc.to_owned(),
+            scenario_id,
+            request_type: request_type.to_owned(),
+            request_base64: request_base64.to_owned(),
+            request_sha256: request_sha256.to_owned(),
+            request_frames: parse_request_frames(observation, &rpc)?,
+            expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
+            response_type: descriptor_response_type(&rpc)?,
+            response_base64: None,
+            response_sha256: None,
+            response_frames: Vec::new(),
+            expected_status: if expected_status == "ok" {
+                "observed-ok"
+            } else {
+                "observed-status"
+            },
+            expected_outcome: observation_outcome(object),
+        });
+    }
+    if output.len() != 106 {
+        return Err(format!(
+            "actual fixture observations produced {}; expected 106",
+            output.len()
+        ));
+    }
+    let mut identities = std::collections::BTreeSet::new();
+    for record in &output {
+        if !identities.insert(record.rpc.as_str()) {
+            return Err(format!("duplicate actual fixture RPC {}", record.rpc));
+        }
+    }
+    Ok(output)
+}
+
+fn observation_outcome(object: &serde_json::Map<String, Value>) -> ExpectedOutcome {
+    let response = object.get("response").and_then(Value::as_object);
+    if let Some(response) = response {
+        let status = response.get("status").and_then(Value::as_str);
+        let raw_code = response
+            .get("code")
+            .and_then(Value::as_str)
+            .or(status);
+        let code = raw_code.and_then(observation_grpc_code);
+        if code.as_deref() != Some("OK")
+            && (code.is_some() || status.is_some_and(|status| status != "ok"))
+        {
+            return ExpectedOutcome::error(
+                code.as_deref(),
+                response
+                    .get("details")
+                    .or_else(|| response.get("message"))
+                    .and_then(Value::as_str),
+                Some("error"),
+            );
+        }
+    }
+    if object
+        .get("response_frames")
+        .and_then(Value::as_array)
+        .is_some_and(|frames| !frames.is_empty())
+    {
+        return ExpectedOutcome::stream_terminal("eof", None);
+    }
+    ExpectedOutcome::success()
+}
+
+fn observation_grpc_code(value: &str) -> Option<String> {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_uppercase)
+        .collect::<String>();
+    let code = match normalized.as_str() {
+        "OK" => "OK",
+        "CANCELLED" => "CANCELLED",
+        "UNKNOWN" => "UNKNOWN",
+        "INVALIDARGUMENT" => "INVALID_ARGUMENT",
+        "DEADLINEEXCEEDED" => "DEADLINE_EXCEEDED",
+        "NOTFOUND" => "NOT_FOUND",
+        "ALREADYEXISTS" => "ALREADY_EXISTS",
+        "PERMISSIONDENIED" => "PERMISSION_DENIED",
+        "RESOURCEEXHAUSTED" => "RESOURCE_EXHAUSTED",
+        "FAILEDPRECONDITION" => "FAILED_PRECONDITION",
+        "ABORTED" => "ABORTED",
+        "OUTOFRANGE" => "OUT_OF_RANGE",
+        "UNIMPLEMENTED" => "UNIMPLEMENTED",
+        "INTERNAL" => "INTERNAL",
+        "UNAVAILABLE" => "UNAVAILABLE",
+        "DATALOSS" => "DATA_LOSS",
+        "UNAUTHENTICATED" => "UNAUTHENTICATED",
+        _ => return None,
+    };
+    Some(code.to_owned())
+}
+
+fn canonical_rpc(raw_rpc: &str) -> (String, Option<String>) {
+    const NEGATIVE_SUFFIX: &str = "/after-completion";
+    raw_rpc
+        .strip_suffix(NEGATIVE_SUFFIX)
+        .map(|rpc| (rpc.to_owned(), Some(raw_rpc.to_owned())))
+        .unwrap_or_else(|| (raw_rpc.to_owned(), None))
+}
+
+fn parse_request_frames(
+    observation: &Value,
+    rpc: &str,
+) -> Result<Vec<RequestFrameRecord>, String> {
+    let Some(frames) = observation.get("request_frames").and_then(Value::as_array) else {
+        return Ok(Vec::new());
+    };
+    frames
+        .iter()
+        .enumerate()
+        .map(|(sequence, frame)| {
+            let frame = frame
+                .as_object()
+                .ok_or_else(|| format!("{rpc} request frame is not an object"))?;
+            Ok(RequestFrameRecord {
+                sequence: frame
+                    .get("sequence")
+                    .and_then(Value::as_u64)
+                    .map_or(sequence, |value| value as usize),
+                request_type: frame
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame type is missing"))?
+                    .to_owned(),
+                request_base64: frame
+                    .get("bytes_base64")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame bytes are missing"))?
+                    .to_owned(),
+                request_sha256: frame
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{rpc} request frame digest is missing"))?
+                    .to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Serialize a strict manifest from actual Rust fixture observations.
+pub fn manifest_json_from_observations(observations: &[Value]) -> Result<Value, String> {
+    let records = records_from_observations(observations)?;
+    Ok(json!({
+        "schema_version": 2,
+        "source": "rust-fixture-observations",
+        "record_count": records.len(),
+        "records": records.iter().map(record_json).collect::<Vec<_>>(),
+    }))
+}
+
+/// Collect the complete ordered execution plan produced by the executable Rust
+/// scenario families.
+///
+/// This intentionally retains repeated setup calls and protocol-negative
+/// steps.  A replay client needs those calls in order to obtain the runtime
+/// identities consumed by later requests; the 106-record inventory is only a
+/// projection of this plan.
+pub async fn actual_execution_records() -> Result<Vec<TypedRequestRecord>, String> {
+    let mut output = Vec::new();
+    let inference_transcript = env::var_os("ACYCLIC_INFERENCE_TRANSCRIPT_FILE");
+    output.extend(actor_worker_records().await?);
+    output.extend(stream_records().await?);
+    crate::workers_scenarios::execute()
+        .map_err(|error| format!("execute Workers Rust fixture: {error}"))?;
+    let objects_observations = crate::fixtures::objects_typed_scenarios::collect_network_qualification()
+        .await
+        .map_err(|error| format!("collect Objects Rust fixture: {error}"))?;
+    output.extend(
+        objects_observations
+            .iter()
+            .map(observation_record)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    crate::inference_scenarios::execute()
+        .map_err(|error| format!("execute Inference Rust fixture: {error}"))?;
+    crate::machines_scenarios::execute()
+        .await
+        .map_err(|error| format!("execute Machines Rust fixture: {error}"))?;
+    if inference_transcript.is_none() {
+        output.extend(inference_fixture_records().await?);
+    }
+    output.extend(
+        crate::fixtures::machines::collect()
+            .await?
+            .into_iter()
+            .map(machine_observation_record),
+    );
+    for fixture in crate::transport_fixtures() {
+        if fixture.family == "actors"
+            || fixture.family == "stream"
+            || fixture.family == "inference"
+            || fixture.family == "machines"
+        {
+            continue;
+        }
+        for request in fixture.requests {
+            output.push(record_from_bytes(
+                fixture.family,
+                fixture.operation_id,
+                request.message,
+                &request.bytes,
+                "rust-fixture-defined",
+            ));
+        }
+    }
+    if let Some(path) = inference_transcript {
+        let bytes = fs::read(&path).map_err(|error| {
+            format!(
+                "read Rust Inference transcript {}: {error}",
+                path.to_string_lossy()
+            )
+        })?;
+        let document: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("decode Rust Inference transcript: {error}"))?;
+        output.extend(inference_records_from_transcript(&document)?);
+    }
+    let fs_harness = super::filesystem_harness_scenarios::export().await?;
+    output.extend(fs_harness.iter().map(observation_record).collect::<Result<Vec<_>, _>>()?);
+    Ok(output)
+}
+
+/// Collect the unique 106-record inventory from the ordered Rust execution
+/// plan.  Repeated setup calls and protocol-negative steps remain available
+/// through [`actual_execution_records`].
+pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
+    let execution = actual_execution_records().await?;
+    let mut output = Vec::with_capacity(106);
+    let mut identities = std::collections::BTreeSet::new();
+    for record in execution {
+        // These are executable protocol-validation steps, rather than
+        // descriptor RPC identities, so they belong only to the plan.
+        if record.rpc.ends_with("/after-completion") {
+            continue;
+        }
+        if identities.insert(record.rpc.clone()) {
+            output.push(record);
+        }
+    }
+    ensure_unique(&output)?;
+    if output.len() != 106 {
+        return Err(format!(
+            "Rust executable fixture inventory produced {}; expected 106",
+            output.len()
+        ));
+    }
+    Ok(output)
+}
+
+async fn inference_fixture_records() -> Result<Vec<TypedRequestRecord>, String> {
+    use crate::tls_fixture::{
+        InferenceMetadataFixture, InferenceRunsFixture, new_method_transcript_log,
+    };
+    use acyclic_inference::wire::{
+        contexts_service_server::ContextsService,
+        evaluations_service_server::EvaluationsService,
+        models_service_server::ModelsService,
+        runs_service_server::RunsService,
+        warm_contexts_service_server::WarmContextsService,
+    };
+
+    let transcript = new_method_transcript_log();
+    let metadata = InferenceMetadataFixture::with_transcript(transcript.clone());
+    let runs = InferenceRunsFixture::with_transcript(transcript.clone());
+    metadata.list(Request::new(acyclic_inference::wire::ListModelsRequest::default())).await
+        .map_err(|error| format!("Inference Models/List: {error}"))?;
+    ContextsService::create(&metadata, Request::new(acyclic_inference::wire::CreateContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Create: {error}"))?;
+    ContextsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Inspect: {error}"))?;
+    metadata.mutate(Request::new(acyclic_inference::wire::MutateContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Mutate: {error}"))?;
+    metadata.retain(Request::new(acyclic_inference::wire::RetainWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Retain: {error}"))?;
+    WarmContextsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Inspect: {error}"))?;
+    metadata.renew(Request::new(acyclic_inference::wire::RenewWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Renew: {error}"))?;
+    metadata.release(Request::new(acyclic_inference::wire::ReleaseWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Release: {error}"))?;
+    runs.generate(Request::new(acyclic_inference::wire::GenerateRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Generate: {error}"))?;
+    runs.inspect(Request::new(acyclic_inference::wire::InspectRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Inspect: {error}"))?;
+    let mut watch = runs.watch(Request::new(acyclic_inference::wire::WatchRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Watch: {error}"))?.into_inner();
+    while let Some(event) = watch.next().await {
+        event.map_err(|error| format!("Inference Runs/Watch frame: {error}"))?;
+    }
+    runs.cancel(Request::new(acyclic_inference::wire::InspectRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Cancel: {error}"))?;
+    EvaluationsService::create(&metadata, Request::new(acyclic_inference::wire::CreateEvaluationRequest::default())).await
+        .map_err(|error| format!("Inference Evaluations/Create: {error}"))?;
+    EvaluationsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectEvaluationRequest::default())).await
+        .map_err(|error| format!("Inference Evaluations/Inspect: {error}"))?;
+
+    let methods = transcript.lock().map_err(|_| "Inference fixture transcript mutex poisoned".to_owned())?
+        .iter().map(|entry| json!({
+            "rpc": entry.rpc,
+            "requestBytes": entry.request_bytes,
+            "requestBase64": entry.request_base64,
+            "requestSha256": entry.request_sha256,
+            "responseBytes": entry.response_bytes,
+            "responseBase64": entry.response_base64,
+            "responseSha256": entry.response_sha256,
+            "responseFrames": entry.response_frames.iter().map(|frame| json!({
+                "bytesBase64": frame.response_base64,
+                "sha256": frame.response_sha256,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+    let mut records = inference_records_from_transcript(&json!({
+        "schema": "acyclic.sdk.inference-runs-rsa-fixture-transcript.v1",
+        "complete": true,
+        "methods": methods,
+    }))?;
+    // The fixture transcript stores a concatenated protobuf stream for Watch.
+    // Re-express its frames from the same Rust-owned scenario bytes so the
+    // manifest preserves stream framing and remains byte-identical between
+    // processes. The service was still invoked above; this only makes the
+    // frame boundary explicit in the cross-language artifact.
+    if let Some(record) = records.iter_mut().find(|record| {
+        record.rpc == "inference.customer.v1.RunsService/Watch"
+    }) {
+        let fixture = crate::inference_scenarios::fixture();
+        record.response_type = Some("inference.customer.v1.RunEvent".to_owned());
+        record.response_frames = fixture.events.into_iter().enumerate().map(|(sequence, bytes)| {
+            ResponseFrameRecord {
+                sequence,
+                response_type: "inference.customer.v1.RunEvent".to_owned(),
+                response_base64: base64(&bytes),
+                response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+            }
+        }).collect();
+        if let Some(first) = record.response_frames.first() {
+            record.response_base64 = Some(first.response_base64.clone());
+            record.response_sha256 = Some(first.response_sha256.clone());
+        }
+    }
+    Ok(records)
+}
+
+fn machine_observation_record(
+    observation: crate::fixtures::machines::MachinesRpcObservation,
+) -> TypedRequestRecord {
+    let mut record = record_from_bytes(
+        "machines", observation.rpc, observation.request_type,
+        &observation.request_bytes, "rust-fixture-executed",
+    );
+    let response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| observation.response_type.to_owned());
+    record.response_type = Some(response_type.clone());
+    record.response_frames = observation.response_frames.into_iter().enumerate()
+        .map(|(sequence, bytes)| ResponseFrameRecord {
+            sequence,
+            response_type: response_type.clone(),
+            response_base64: base64(&bytes),
+            response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+        }).collect();
+    if let Some(first) = record.response_frames.first() {
+        record.response_base64 = Some(first.response_base64.clone());
+        record.response_sha256 = Some(first.response_sha256.clone());
+    }
+    record
+}
+
+fn inference_records_from_transcript(
+    document: &Value,
+) -> Result<Vec<TypedRequestRecord>, String> {
+    if document.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.inference-runs-rsa-fixture-transcript.v1")
+    {
+        return Err("Inference transcript schema is not Rust-owned".to_owned());
+    }
+    if document.get("complete").and_then(Value::as_bool) != Some(true) {
+        return Err("Inference transcript is incomplete".to_owned());
+    }
+    let methods = document
+        .get("methods")
+        .and_then(Value::as_array)
+        .ok_or("Inference transcript methods are missing")?;
+    if methods.len() != crate::tls_fixture::INFERENCE_RUNS_RPC_METHODS.len() {
+        return Err(format!(
+            "Inference transcript contains {}; expected {} methods",
+            methods.len(),
+            crate::tls_fixture::INFERENCE_RUNS_RPC_METHODS.len()
+        ));
+    }
+    let descriptor_records = records()?
+        .into_iter()
+        .filter(|record| record.family == "inference")
+        .map(|record| (record.rpc.clone(), record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut output = Vec::with_capacity(methods.len());
+    let pool = DescriptorPool::decode(BindingFamily::Inference.model_descriptor().as_slice())
+        .map_err(|error| format!("decode Inference descriptor set: {error}"))?;
+    for method in methods {
+        let object = method
+            .as_object()
+            .ok_or("Inference transcript method is not an object")?;
+        let rpc = object
+            .get("rpc")
+            .and_then(Value::as_str)
+            .ok_or("Inference transcript RPC is missing")?;
+        let mut record = descriptor_records
+            .get(rpc)
+            .cloned()
+            .ok_or_else(|| format!("Inference transcript RPC is absent from Rust descriptors: {rpc}"))?;
+        let request_base64 = object
+            .get("requestBase64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} requestBase64 is missing"))?;
+        let request_sha256 = object
+            .get("requestSha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} requestSha256 is missing"))?;
+        let response_base64 = object
+            .get("responseBase64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} responseBase64 is missing"))?;
+        let response_sha256 = object
+            .get("responseSha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} responseSha256 is missing"))?;
+        let request_bytes = decode_base64(request_base64)
+            .map_err(|error| format!("{rpc} requestBase64: {error}"))?;
+        let response_bytes = decode_base64(response_base64)
+            .map_err(|error| format!("{rpc} responseBase64: {error}"))?;
+        if request_sha256 != format!("sha256:{}", hex(&Sha256::digest(&request_bytes))) {
+            return Err(format!("{rpc} request digest does not match bytes"));
+        }
+        if response_sha256 != format!("sha256:{}", hex(&Sha256::digest(&response_bytes))) {
+            return Err(format!("{rpc} response digest does not match bytes"));
+        }
+        let (service_name, method_name) = rpc
+            .rsplit_once('/')
+            .ok_or_else(|| format!("Inference transcript RPC has no method separator: {rpc}"))?;
+        let method_descriptor = pool.services().find_map(|service| {
+            (service.full_name() == service_name)
+                .then(|| service.methods().find(|candidate| candidate.name() == method_name))
+                .flatten()
+        })
+            .ok_or_else(|| format!("Inference descriptor method is missing: {rpc}"))?;
+        let response_type = method_descriptor.output().full_name().to_owned();
+        let response_frames = object
+            .get("responseFrames")
+            .or_else(|| object.get("response_frames"))
+            .and_then(Value::as_array)
+            .map(|frames| {
+                frames
+                    .iter()
+                    .enumerate()
+                    .map(|(sequence, frame)| {
+                        let frame = frame
+                            .as_object()
+                            .ok_or_else(|| format!("{rpc} response frame is not an object"))?;
+                        let frame_base64 = frame
+                            .get("bytesBase64")
+                            .or_else(|| frame.get("bytes_base64"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} response frame bytes are missing"))?;
+                        let frame_sha256 = frame
+                            .get("sha256")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} response frame digest is missing"))?;
+                        let frame_bytes = decode_base64(frame_base64)
+                            .map_err(|error| format!("{rpc} response frame {sequence}: {error}"))?;
+                        let expected_sha256 = format!("sha256:{}", hex(&Sha256::digest(&frame_bytes)));
+                        if frame_sha256 != expected_sha256 {
+                            return Err(format!(
+                                "{rpc} response frame {sequence} digest does not match bytes"
+                            ));
+                        }
+                        Ok(ResponseFrameRecord {
+                            sequence,
+                            response_type: response_type.clone(),
+                            response_base64: frame_base64.to_owned(),
+                            response_sha256: frame_sha256.to_owned(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .transpose()?
+            .unwrap_or_else(|| vec![ResponseFrameRecord {
+                sequence: 0,
+                response_type: response_type.clone(),
+                response_base64: response_base64.to_owned(),
+                response_sha256: response_sha256.to_owned(),
+            }]);
+        if response_frames.is_empty() {
+            return Err(format!("{rpc} response frames are empty"));
+        }
+        if response_frames[0].response_base64 != response_base64
+            || response_frames[0].response_sha256 != response_sha256
+        {
+            return Err(format!("{rpc} top-level response does not match frame 0"));
+        }
+        record.request_base64 = request_base64.to_owned();
+        record.request_sha256 = request_sha256.to_owned();
+        record.response_type = Some(response_type);
+        record.response_base64 = Some(response_base64.to_owned());
+        record.response_sha256 = Some(response_sha256.to_owned());
+        record.response_frames = response_frames;
+        record.expected_status = "rust-fixture-executed";
+        record.expected_outcome = if record.response_frames.len() > 1 {
+            ExpectedOutcome::stream_terminal("eof", None)
+        } else {
+            ExpectedOutcome::success()
+        };
+        output.push(record);
+    }
+    ensure_unique(&output)?;
+    Ok(output)
+}
+
+async fn actor_worker_records() -> Result<Vec<TypedRequestRecord>, String> {
+    use acyclic_actors::wire as actors_wire;
+    use acyclic_actors::wire::actors_service_server::ActorsService;
+    use acyclic_workers::wire as workers_wire;
+    use acyclic_workers::wire::workers_service_server::WorkersService;
+    use crate::fixtures::actors_workers::{ActorsFixture, WorkersFixture};
+
+    let actors = ActorsFixture::new();
+    let create = actors_wire::CreateActorRequest {
+        code_sha256: vec![7; 32],
+        home_region: "eu-west".into(),
+        bindings: Vec::new(),
+        limits: Some(actors_wire::ActorLimits {
+            handler_timeout_millis: 1_000,
+            memory_bytes: 1_024,
+            checkpoint_bytes: 4_096,
+        }),
+        subscriptions: vec![actors_wire::SubscriptionSpec {
+            subscription_id: "events".into(),
+            stream_path: "/events".into(),
+            start: Some(actors_wire::SubscriptionStart {
+                start: Some(actors_wire::subscription_start::Start::CurrentHead(true)),
+            }),
+            placement_anchor: true,
+        }],
+        idempotency_key: "create-1".into(),
+    };
+    let create_response = actors
+        .create_actor(Request::new(create.clone()))
+        .await
+        .map_err(|error| format!("Actors CreateActor: {error}"))?
+        .into_inner();
+    let created = create_response.actor.as_ref()
+        .ok_or_else(|| "Actors CreateActor omitted actor".to_owned())?
+        .clone();
+    let update = actors_wire::UpdateActorRequest {
+        actor_id: created.actor_id.clone(),
+        code_sha256: vec![9; 32],
+        bindings: Vec::new(),
+        limits: Some(actors_wire::ActorLimits {
+            handler_timeout_millis: 2_000,
+            memory_bytes: 2_048,
+            checkpoint_bytes: 8_192,
+        }),
+        expected_configuration_revision: created.configuration_revision,
+        idempotency_key: "update-1".into(),
+    };
+    let update_response = actors
+        .update_actor(Request::new(update.clone()))
+        .await
+        .map_err(|error| format!("Actors UpdateActor: {error}"))?
+        .into_inner();
+    let updated = update_response.actor.as_ref()
+        .ok_or_else(|| "Actors UpdateActor omitted actor".to_owned())?
+        .clone();
+    let inspect = actors_wire::InspectActorRequest { actor_id: created.actor_id.clone() };
+    let inspect_response = actors.inspect_actor(Request::new(inspect.clone())).await.map_err(|error| format!("Actors InspectActor: {error}"))?.into_inner();
+    let add = actors_wire::AddSubscriptionRequest {
+        actor_id: created.actor_id.clone(),
+        subscription: Some(actors_wire::SubscriptionSpec {
+            subscription_id: "audit".into(),
+            stream_path: "/audit".into(),
+            // The public Actors contract requires an explicit cursor policy
+            // for newly-created subscriptions.  Keep this request valid in
+            // the Rust producer and every generated consumer.
+            start: Some(actors_wire::SubscriptionStart {
+                start: Some(actors_wire::subscription_start::Start::CurrentHead(true)),
+            }),
+            placement_anchor: false,
+        }),
+        idempotency_key: "add-1".into(),
+    };
+    let add_response = actors.add_subscription(Request::new(add.clone())).await.map_err(|error| format!("Actors AddSubscription: {error}"))?.into_inner();
+    let added = add_response.actor.as_ref().ok_or_else(|| "Actors AddSubscription omitted actor".to_owned())?.clone();
+    let remove = actors_wire::RemoveSubscriptionRequest { actor_id: created.actor_id.clone(), subscription_id: "audit".into(), idempotency_key: "remove-1".into() };
+    let remove_response = actors.remove_subscription(Request::new(remove.clone())).await.map_err(|error| format!("Actors RemoveSubscription: {error}"))?.into_inner();
+    let resume = actors_wire::ResumeSubscriptionRequest { actor_id: created.actor_id.clone(), subscription_id: "events".into(), idempotency_key: "resume-1".into() };
+    let resume_response = actors.resume_subscription(Request::new(resume.clone())).await.map_err(|error| format!("Actors ResumeSubscription: {error}"))?.into_inner();
+    let checkpoint = actors_wire::CheckpointActorRequest { actor_id: created.actor_id.clone(), idempotency_key: "checkpoint-1".into() };
+    let checkpoint_response = actors.checkpoint_actor(Request::new(checkpoint.clone())).await.map_err(|error| format!("Actors CheckpointActor: {error}"))?.into_inner();
+    let invoke = actors_wire::InvokeActorRequest { actor_id: created.actor_id, method: "POST".into(), url: "/echo".into(), body: b"payload".to_vec(), headers: Vec::new() };
+    let invoke_response = actors.invoke_actor(Request::new(invoke.clone())).await.map_err(|error| format!("Actors InvokeActor: {error}"))?.into_inner();
+
+    let mut output = vec![
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/CreateActor", "acyclic.actors.v1.CreateActorRequest", &create.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.CreateActorResponse", &create_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/UpdateActor", "acyclic.actors.v1.UpdateActorRequest", &update.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.UpdateActorResponse", &update_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/InspectActor", "acyclic.actors.v1.InspectActorRequest", &inspect.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.InspectActorResponse", &inspect_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/AddSubscription", "acyclic.actors.v1.AddSubscriptionRequest", &add.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.AddSubscriptionResponse", &add_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/RemoveSubscription", "acyclic.actors.v1.RemoveSubscriptionRequest", &remove.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.RemoveSubscriptionResponse", &remove_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/ResumeSubscription", "acyclic.actors.v1.ResumeSubscriptionRequest", &resume.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.ResumeSubscriptionResponse", &resume_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/CheckpointActor", "acyclic.actors.v1.CheckpointActorRequest", &checkpoint.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.CheckpointActorResponse", &checkpoint_response),
+        with_response(record_from_bytes("actors", "acyclic.actors.v1.ActorsService/InvokeActor", "acyclic.actors.v1.InvokeActorRequest", &invoke.encode_to_vec(), "rust-fixture-executed"), "acyclic.actors.v1.InvokeActorResponse", &invoke_response),
+    ];
+    let workers = WorkersFixture::new();
+    let module = b"export default { fetch() { return new Response('ok') } }".to_vec();
+    let publish = workers_wire::PublishVersionRequest { javascript_module: module.clone(), expected_sha256: Sha256::digest(&module).to_vec(), idempotency_key: "publish-1".into() };
+    let publish_response = workers.publish_version(Request::new(publish.clone())).await.map_err(|error| format!("Workers PublishVersion: {error}"))?.into_inner();
+    let version = publish_response.version.clone().ok_or_else(|| "Workers PublishVersion omitted version".to_owned())?;
+    let select = workers_wire::SelectDeploymentRequest { alias: "production".into(), version_sha256: version.sha256.clone(), expected_revision: None, idempotency_key: "select-1".into() };
+    let select_response = workers.select_deployment(Request::new(select.clone())).await.map_err(|error| format!("Workers SelectDeployment: {error}"))?.into_inner();
+    let deployment = select_response.deployment.clone().ok_or_else(|| "Workers SelectDeployment omitted deployment".to_owned())?;
+    let submit = workers_wire::SubmitJobRequest {
+        target: Some(workers_wire::JobTarget {
+            target: Some(workers_wire::job_target::Target::DeploymentAlias(
+                deployment.alias.clone(),
+            )),
+        }),
+        input: Some(workers_wire::Payload {
+            source: Some(workers_wire::payload::Source::InlineBytes(b"job-input".to_vec())),
+        }),
+        limits: Some(workers_wire::JobLimits {
+            timeout_millis: 1_000,
+            memory_bytes: 1_024,
+            output_bytes: 1_024,
+        }),
+        retry: Some(workers_wire::RetryPolicy {
+            max_attempts: 1,
+            backoff_millis: 0,
+        }),
+        idempotency_key: "job-1".into(),
+    };
+    let submit_response = workers.submit_job(Request::new(submit.clone())).await.map_err(|error| format!("Workers SubmitJob: {error}"))?.into_inner();
+    let job = submit_response.job.clone().ok_or_else(|| "Workers SubmitJob omitted job".to_owned())?;
+    let inspect_job = workers_wire::InspectJobRequest { job_id: job.job_id.clone() };
+    let inspect_job_response = workers.inspect_job(Request::new(inspect_job.clone())).await.map_err(|error| format!("Workers InspectJob: {error}"))?.into_inner();
+    let cancel = workers_wire::CancelJobRequest { job_id: job.job_id, idempotency_key: "cancel-1".into() };
+    let cancel_response = workers.cancel_job(Request::new(cancel.clone())).await.map_err(|error| format!("Workers CancelJob: {error}"))?.into_inner();
+    let invoke_version = workers_wire::InvokeVersionRequest { version_sha256: version.sha256, method: "POST".into(), url: "/run".into(), headers: Vec::new(), body: b"invoke-input".to_vec() };
+    let invoke_version_response = workers.invoke_version(Request::new(invoke_version.clone())).await.map_err(|error| format!("Workers InvokeVersion: {error}"))?.into_inner();
+    let invoke_deployment = workers_wire::InvokeDeploymentRequest { alias: deployment.alias, method: "GET".into(), url: "/".into(), headers: Vec::new(), body: Vec::new() };
+    let invoke_deployment_response = workers.invoke_deployment(Request::new(invoke_deployment.clone())).await.map_err(|error| format!("Workers InvokeDeployment: {error}"))?.into_inner();
+    output.extend([
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/PublishVersion", "acyclic.workers.v1.PublishVersionRequest", &publish.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.PublishVersionResponse", &publish_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/SelectDeployment", "acyclic.workers.v1.SelectDeploymentRequest", &select.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.SelectDeploymentResponse", &select_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/SubmitJob", "acyclic.workers.v1.SubmitJobRequest", &submit.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.SubmitJobResponse", &submit_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/InspectJob", "acyclic.workers.v1.InspectJobRequest", &inspect_job.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.InspectJobResponse", &inspect_job_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/CancelJob", "acyclic.workers.v1.CancelJobRequest", &cancel.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.CancelJobResponse", &cancel_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/InvokeVersion", "acyclic.workers.v1.InvokeVersionRequest", &invoke_version.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.InvokeResponse", &invoke_version_response),
+        with_response(record_from_bytes("workers", "acyclic.workers.v1.WorkersService/InvokeDeployment", "acyclic.workers.v1.InvokeDeploymentRequest", &invoke_deployment.encode_to_vec(), "rust-fixture-executed"), "acyclic.workers.v1.InvokeResponse", &invoke_deployment_response),
+    ]);
+    let _ = updated;
+    let _ = added;
+    Ok(output)
+}
+
+
+async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
+    use acyclic_stream::grpc::Service;
+    use acyclic_stream::wire;
+    use acyclic_stream::wire::stream_service_server::StreamService;
+    use std::sync::Arc;
+
+    let service = Service::new(Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+        acyclic_stream::MemoryLimits::default(),
+        crate::fixtures::fixture_clock::stream_clock(),
+    )));
+    let path = "typed/stream".to_owned();
+    let records: Vec<Bytes> = vec![Bytes::from_static(b"alpha"), Bytes::from_static(b"beta")];
+    let key = Bytes::from_static(b"typed-stream-append");
+
+    let inspect = wire::InspectIdempotencyRequest {
+        idempotency_key: key.clone(),
+    };
+    let inspect_response = service
+        .inspect_idempotency(Request::new(inspect.clone()))
+        .await
+        .map_err(|e| format!("Stream InspectIdempotency: {e}"))?
+        .into_inner();
+
+    let append = wire::AppendRequest {
+        path: path.clone(),
+        records: records.clone(),
+        if_tail: Some(0),
+        idempotency_key: Some(key.clone()),
+    };
+    let append_response = service
+        .append(Request::new(append.clone()))
+        .await
+        .map_err(|e| format!("Stream Append: {e}"))?
+        .into_inner();
+    let _append_commit_id = match append_response.outcome.as_ref() {
+        Some(wire::append_response::Outcome::Committed(receipt)) => receipt.commit_id.clone(),
+        _ => Bytes::new(),
+    };
+
+    let tail = wire::TailRequest { path: path.clone() };
+    let tail_response = service
+        .tail(Request::new(tail.clone()))
+        .await
+        .map_err(|e| format!("Stream Tail: {e}"))?
+        .into_inner();
+
+    let fork = wire::ForkRequest {
+        source: path.clone(),
+        destination: "typed/stream-fork".into(),
+        at_tail: Some(2),
+        idempotency_key: Some(Bytes::from_static(b"typed-stream-fork")),
+    };
+    let fork_response = service
+        .fork(Request::new(fork.clone()))
+        .await
+        .map_err(|e| format!("Stream Fork: {e}"))?
+        .into_inner();
+
+    let read = wire::ReadRequest {
+        path: path.clone(),
+        from: 0,
+        limit: 10,
+    };
+    let mut read_stream = service
+        .read(Request::new(read.clone()))
+        .await
+        .map_err(|e| format!("Stream Read: {e}"))?
+        .into_inner();
+    let mut read_frames = Vec::new();
+    while let Some(frame) = read_stream.next().await {
+        read_frames.push(frame.map_err(|e| format!("Stream Read frame: {e}"))?);
+    }
+
+    let follow = wire::FollowRequest {
+        path: path.clone(),
+        from: 2,
+    };
+    let mut follow_stream = service
+        .follow(Request::new(follow.clone()))
+        .await
+        .map_err(|e| format!("Stream Follow: {e}"))?
+        .into_inner();
+    let follow_outcome =
+        match tokio::time::timeout(std::time::Duration::from_millis(10), follow_stream.next())
+            .await
+        {
+            Ok(Some(Ok(_))) => ExpectedOutcome::stream_terminal("frame", None),
+            Ok(Some(Err(status))) => ExpectedOutcome::error(
+                Some(grpc_code_name(status.code())),
+                Some(status.message()),
+                Some("error"),
+            ),
+            Ok(None) => ExpectedOutcome::stream_terminal("eof", None),
+            Err(_) => ExpectedOutcome::stream_terminal("timeout", Some("DEADLINE_EXCEEDED")),
+        };
+
+    let children = wire::ChildrenRequest {
+        parent: None,
+        limit: 10,
+    };
+    let mut children_stream = service
+        .children(Request::new(children.clone()))
+        .await
+        .map_err(|e| format!("Stream Children: {e}"))?
+        .into_inner();
+    let mut children_frames = Vec::new();
+    while let Some(frame) = children_stream.next().await {
+        children_frames.push(frame.map_err(|e| format!("Stream Children frame: {e}"))?);
+    }
+
+    let children_page = wire::ChildrenPageRequest {
+        parent: None,
+        after: None,
+        hierarchy_version: None,
+        limit: 10,
+    };
+    let children_page_response = service
+        .children_page(Request::new(children_page.clone()))
+        .await
+        .map_err(|e| format!("Stream ChildrenPage: {e}"))?
+        .into_inner();
+
+    let commit = wire::CommitRequest {
+        conditions: vec![wire::CommitCondition {
+            condition: Some(wire::commit_condition::Condition::Absent(
+                wire::AbsentCondition {
+                    path: "typed/commit".into(),
+                },
+            )),
+        }],
+        mutations: vec![wire::CommitMutation {
+            mutation: Some(wire::commit_mutation::Mutation::Append(
+                wire::AppendMutation {
+                    path: "typed/commit".into(),
+                    records: vec![Bytes::from_static(b"commit")],
+                },
+            )),
+        }],
+        idempotency_key: Bytes::from_static(b"typed-stream-commit"),
+        deadline_unix_millis: None,
+    };
+    let commit_response = service
+        .commit(Request::new(commit.clone()))
+        .await
+        .map_err(|e| format!("Stream Commit: {e}"))?
+        .into_inner();
+
+    let commit_id = match commit_response.outcome.as_ref() {
+        Some(wire::commit_response::Outcome::Committed(envelope)) => envelope.commit_id.clone(),
+        _ => Bytes::new(),
+    };
+    let read_commit = wire::ReadCommitRequest {
+        commit_id: commit_id.clone(),
+    };
+    let read_commit_response = service
+        .read_commit(Request::new(read_commit.clone()))
+        .await
+        .map_err(|e| format!("Stream ReadCommit: {e}"))?
+        .into_inner();
+
+    let mut follow_record = record_from_bytes(
+        "stream",
+        "acyclic.stream.v2.StreamService/Follow",
+        "acyclic.stream.v2.FollowRequest",
+        &follow.encode_to_vec(),
+        "rust-fixture-executed",
+    );
+    follow_record.expected_outcome = follow_outcome;
+
+    let output = vec![
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/InspectIdempotency",
+                "acyclic.stream.v2.InspectIdempotencyRequest",
+                &inspect.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.InspectIdempotencyResponse",
+            &inspect_response,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Append",
+                "acyclic.stream.v2.AppendRequest",
+                &append.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.AppendResponse",
+            &append_response,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Tail",
+                "acyclic.stream.v2.TailRequest",
+                &tail.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.TailResponse",
+            &tail_response,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Fork",
+                "acyclic.stream.v2.ForkRequest",
+                &fork.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.ForkReceipt",
+            &fork_response,
+        ),
+        with_frames(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Read",
+                "acyclic.stream.v2.ReadRequest",
+                &read.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.ReadResponse",
+            &read_frames,
+        ),
+        follow_record,
+        with_frames(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Children",
+                "acyclic.stream.v2.ChildrenRequest",
+                &children.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.ChildrenResponse",
+            &children_frames,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/ChildrenPage",
+                "acyclic.stream.v2.ChildrenPageRequest",
+                &children_page.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.ChildrenPageResponse",
+            &children_page_response,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/Commit",
+                "acyclic.stream.v2.CommitRequest",
+                &commit.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.CommitResponse",
+            &commit_response,
+        ),
+        with_response(
+            record_from_bytes(
+                "stream",
+                "acyclic.stream.v2.StreamService/ReadCommit",
+                "acyclic.stream.v2.ReadCommitRequest",
+                &read_commit.encode_to_vec(),
+                "rust-fixture-executed",
+            ),
+            "acyclic.stream.v2.CommittedEnvelope",
+            &read_commit_response,
+        ),
+    ];
+    Ok(output)
+}
+
+/// Serialize executable evidence with an explicit completeness bit.
+pub async fn actual_manifest_json() -> Result<Value, String> {
+    let execution = actual_execution_records().await?;
+    validate_actual_records(&execution)?;
+    let observations = unique_inventory(&execution)?;
+    validate_actual_records(&observations)?;
+    let expected = self::records()?;
+    let observed = observations
+        .iter()
+        .map(|record| record.rpc.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let missing = expected
+        .iter()
+        .filter(|record| !observed.contains(record.rpc.as_str()))
+        .map(|record| record.rpc.clone())
+        .collect::<Vec<_>>();
+    let record_values = observations.iter().map(record_json).collect::<Vec<_>>();
+    let source_revision = env::var("ACYCLIC_RUST_SOURCE_REVISION")
+        .map_err(|_| "ACYCLIC_RUST_SOURCE_REVISION is required for the Rust typed request producer".to_owned())?;
+    if source_revision.len() != 40 || !source_revision.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err("ACYCLIC_RUST_SOURCE_REVISION must be a 40-character git revision".to_owned());
+    }
+    let execution_plan = execution_plan_json(&execution);
+    let execution_plan_bytes = serde_json::to_vec(&execution_plan)
+        .map_err(|error| format!("encode Rust execution plan: {error}"))?;
+    let execution_plan_sha256 = format!("sha256:{:x}", Sha256::digest(&execution_plan_bytes));
+    let authority_bytes = serde_json::to_vec(&json!({
+        "records": record_values,
+        "execution_plan": execution_plan,
+    })).map_err(|error| format!("encode Rust manifest authority: {error}"))?;
+    let authority_sha256 = format!("sha256:{:x}", Sha256::digest(&authority_bytes));
+    Ok(json!({
+        "schema_version": 2,
+        "source": "rust-executable-fixtures",
+        "producer": "acyclic-sdk-examples::typed-request-manifest",
+        "source_revision": source_revision,
+        "authority_sha256": authority_sha256,
+        "execution_plan_sha256": execution_plan_sha256,
+        "record_count": observations.len(),
+        "complete": missing.is_empty() && observations.len() == expected.len(),
+        "missing_rpcs": missing,
+        "records": observations.iter().map(record_json).collect::<Vec<_>>(),
+        "execution_plan_count": execution.len(),
+        "execution_plan": execution_plan_json(&execution),
+    }))
+}
+
+fn unique_inventory(
+    execution: &[TypedRequestRecord],
+) -> Result<Vec<TypedRequestRecord>, String> {
+    let mut output = Vec::with_capacity(execution.len());
+    let mut identities = std::collections::BTreeSet::new();
+    for record in execution {
+        if record.rpc.ends_with("/after-completion") {
+            continue;
+        }
+        if identities.insert(record.rpc.as_str()) {
+            output.push(record.clone());
+        }
+    }
+    ensure_unique(&output)?;
+    Ok(output)
+}
+
+fn execution_plan_json(execution: &[TypedRequestRecord]) -> Vec<Value> {
+    let mut occurrences = std::collections::BTreeMap::<String, usize>::new();
+    execution
+        .iter()
+        .enumerate()
+        .map(|(step, record)| {
+            let occurrence = occurrences.entry(record.rpc.clone()).or_insert(0);
+            let current_occurrence = *occurrence;
+            *occurrence += 1;
+            let mut value = record_json(record);
+            if let Value::Object(object) = &mut value {
+                object.insert("execution_step".to_owned(), json!(step));
+                object.insert("rpc_occurrence".to_owned(), json!(current_occurrence));
+            }
+            value
+        })
+        .collect()
+}
+
+fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String> {
+    let object = observation
+        .as_object()
+        .ok_or_else(|| "fixture observation is not an object".to_owned())?;
+    let family = object
+        .get("family")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fixture observation family is missing".to_owned())?;
+    let raw_rpc = object
+        .get("rpc")
+        .or_else(|| object.get("operation"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "fixture observation rpc is missing".to_owned())?;
+    let (rpc, scenario_id) = canonical_rpc(raw_rpc);
+    let request = object
+        .get("request")
+        .and_then(Value::as_object)
+            .ok_or_else(|| format!("{raw_rpc} request observation is missing"))?;
+    let request_type = request
+        .get("type")
+        .and_then(Value::as_str)
+            .ok_or_else(|| format!("{raw_rpc} request type is missing"))?;
+    let request_base64 = request
+        .get("bytes_base64")
+        .and_then(Value::as_str)
+            .ok_or_else(|| format!("{raw_rpc} request bytes_base64 is missing"))?;
+    let request_sha256 = request
+        .get("sha256")
+        .and_then(Value::as_str)
+            .ok_or_else(|| format!("{raw_rpc} request sha256 is missing"))?;
+    let request_frames = object
+        .get("request_frames")
+        .and_then(Value::as_array)
+        .map(|frames| {
+            frames
+                .iter()
+                .enumerate()
+                .map(|(sequence, frame)| {
+                    let frame = frame
+                        .as_object()
+                        .ok_or_else(|| format!("{rpc} request frame is not an object"))?;
+                    Ok(RequestFrameRecord {
+                        sequence: frame
+                            .get("sequence")
+                            .and_then(Value::as_u64)
+                            .map_or(sequence, |value| value as usize),
+                        request_type: frame
+                            .get("type")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame type is missing"))?
+                            .to_owned(),
+                        request_base64: frame
+                            .get("bytes_base64")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame bytes are missing"))?
+                            .to_owned(),
+                        request_sha256: frame
+                            .get("sha256")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} request frame digest is missing"))?
+                            .to_owned(),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let expected_status = if object
+        .get("response")
+        .and_then(Value::as_object)
+        .and_then(|response| response.get("status"))
+        .is_some()
+    {
+        "observed-status"
+    } else {
+        "observed-ok"
+    };
+    let response_object = object.get("response").and_then(Value::as_object);
+    let observed_response_type = response_object
+        .and_then(|response| response.get("type"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response_type = descriptor_response_type(&rpc)?.or(observed_response_type);
+    let response_base64 = response_object
+        .and_then(|response| response.get("bytes_base64"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response_sha256 = response_object
+        .and_then(|response| response.get("sha256"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let response_frames = if let Some(frames) = object
+        .get("response_frames")
+        .and_then(Value::as_array)
+    {
+        frames
+            .iter()
+            .enumerate()
+            .map(|(sequence, frame)| {
+                let frame = frame
+                    .as_object()
+                    .ok_or_else(|| format!("{rpc} response frame is not an object"))?;
+                let frame_response_type = response_type.clone().or_else(|| {
+                    frame
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                }).ok_or_else(|| format!("{rpc} response frame type is missing"))?;
+                Ok(ResponseFrameRecord {
+                    sequence: frame
+                        .get("sequence")
+                        .and_then(Value::as_u64)
+                        .map_or(sequence, |value| value as usize),
+                    response_type: frame_response_type,
+                    response_base64: frame
+                        .get("bytes_base64")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("{rpc} response frame bytes are missing"))?
+                        .to_owned(),
+                    response_sha256: frame
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("{rpc} response frame digest is missing"))?
+                        .to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        match (&response_type, &response_base64, &response_sha256) {
+            (Some(response_type), Some(response_base64), Some(response_sha256)) => {
+                vec![ResponseFrameRecord {
+                    sequence: 0,
+                    response_type: response_type.clone(),
+                    response_base64: response_base64.clone(),
+                    response_sha256: response_sha256.clone(),
+                }]
+            }
+            _ => Vec::new(),
+        }
+    };
+    Ok(TypedRequestRecord {
+            family: family.to_owned(),
+            rpc: rpc.to_owned(),
+            scenario_id,
+        request_type: request_type.to_owned(),
+        request_base64: request_base64.to_owned(),
+        request_sha256: request_sha256.to_owned(),
+        request_frames,
+        expected_wire: format!("canonical-protobuf-v3;sha256={request_sha256}"),
+        response_type,
+        response_base64,
+        response_sha256,
+        response_frames,
+        expected_status,
+        expected_outcome: observation_outcome(object),
+    })
+}
+
+fn record_from_bytes(
+    family: &str,
+    rpc: &str,
+    request_type: &str,
+    bytes: &[u8],
+    status: &'static str,
+) -> TypedRequestRecord {
+    let request_sha256 = format!("sha256:{}", hex(&Sha256::digest(bytes)));
+    TypedRequestRecord {
+        family: family.to_owned(),
+        rpc: rpc.to_owned(),
+        scenario_id: None,
+        request_type: request_type.to_owned(),
+        request_base64: base64(bytes),
+        request_sha256: request_sha256.clone(),
+        request_frames: Vec::new(),
+        expected_wire: format!("canonical-protobuf-v3;sha256={request_sha256}"),
+        response_type: descriptor_response_type(rpc).ok().flatten(),
+        response_base64: None,
+        response_sha256: None,
+        response_frames: Vec::new(),
+        expected_status: status,
+        expected_outcome: outcome_for_status(status),
+    }
+}
+
+fn descriptor_response_type(rpc: &str) -> Result<Option<String>, String> {
+    let descriptors: Vec<Vec<u8>> = vec![
+        acyclic_actors::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_workers::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_objects::v2::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_stream::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_fs::FILE_DESCRIPTOR_SET.to_vec(),
+        acyclic_harness::FILE_DESCRIPTOR_SET.to_vec(),
+        BindingFamily::Inference.model_descriptor(),
+        acyclic_machines::FILE_DESCRIPTOR_SET.to_vec(),
+    ];
+    for descriptor in &descriptors {
+        let pool = DescriptorPool::decode(descriptor.as_slice())
+            .map_err(|error| format!("decode descriptor set for {rpc}: {error}"))?;
+        for service in pool.services() {
+            for method in service.methods() {
+                if format!("{}/{}", service.full_name(), method.name()) == rpc {
+                    return Ok(Some(method.output().full_name().to_owned()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn outcome_for_status(status: &str) -> ExpectedOutcome {
+    match status {
+        "descriptor-only" => ExpectedOutcome::descriptor(),
+        "observed-status" => ExpectedOutcome::error(None, None, Some("error")),
+        _ => ExpectedOutcome::success(),
+    }
+}
+
+fn grpc_code_name(code: Code) -> &'static str {
+    match code {
+        Code::Ok => "OK",
+        Code::Cancelled => "CANCELLED",
+        Code::Unknown => "UNKNOWN",
+        Code::InvalidArgument => "INVALID_ARGUMENT",
+        Code::DeadlineExceeded => "DEADLINE_EXCEEDED",
+        Code::NotFound => "NOT_FOUND",
+        Code::AlreadyExists => "ALREADY_EXISTS",
+        Code::PermissionDenied => "PERMISSION_DENIED",
+        Code::ResourceExhausted => "RESOURCE_EXHAUSTED",
+        Code::FailedPrecondition => "FAILED_PRECONDITION",
+        Code::Aborted => "ABORTED",
+        Code::OutOfRange => "OUT_OF_RANGE",
+        Code::Unimplemented => "UNIMPLEMENTED",
+        Code::Internal => "INTERNAL",
+        Code::Unavailable => "UNAVAILABLE",
+        Code::DataLoss => "DATA_LOSS",
+        Code::Unauthenticated => "UNAUTHENTICATED",
+    }
+}
+
+fn with_response<M: Message>(
+    mut record: TypedRequestRecord,
+    response_type: &str,
+    response: &M,
+) -> TypedRequestRecord {
+    let bytes = response.encode_to_vec();
+    let resolved_response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| response_type.to_owned());
+    record.response_type = Some(resolved_response_type.clone());
+    record.response_base64 = Some(base64(&bytes));
+    record.response_sha256 = Some(format!("sha256:{}", hex(&Sha256::digest(&bytes))));
+    record.response_frames = vec![ResponseFrameRecord {
+        sequence: 0,
+        response_type: resolved_response_type,
+        response_base64: base64(&bytes),
+        response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+    }];
+    record.expected_outcome = ExpectedOutcome::success();
+    record
+}
+
+fn validate_actual_records(records: &[TypedRequestRecord]) -> Result<(), String> {
+    for record in records {
+        if !matches!(
+            record.expected_status,
+            "rust-fixture-executed"
+                | "rust-fixture-defined"
+                | "observed-ok"
+                | "observed-status"
+        ) {
+            return Err(format!(
+                "{} has an unrecognized observed status {}",
+                record.rpc, record.expected_status
+            ));
+        }
+        match record.expected_outcome.kind.as_str() {
+            "success" => {
+                if record.expected_outcome.grpc_code.as_deref() != Some("OK")
+                    || record.expected_outcome.detail.is_some()
+                    || record.expected_outcome.terminal.is_some()
+                {
+                    return Err(format!("{} has an invalid success outcome", record.rpc));
+                }
+            }
+            "descriptor-only" => {
+                if record.expected_outcome.grpc_code.is_some()
+                    || record.expected_outcome.detail.is_some()
+                    || record.expected_outcome.terminal.is_some()
+                {
+                    return Err(format!("{} has an invalid descriptor outcome", record.rpc));
+                }
+            }
+            "stream" => {
+                let Some(code) = record.expected_outcome.grpc_code.as_deref() else {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                };
+                let Some(terminal) = record.expected_outcome.terminal.as_deref() else {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                };
+                let code_matches_terminal = match terminal {
+                    "frame" | "eof" => code == "OK",
+                    "timeout" | "deadline" => code == "DEADLINE_EXCEEDED",
+                    "cancelled" => code == "CANCELLED",
+                    _ => false,
+                };
+                if !code_matches_terminal {
+                    return Err(format!("{} has an incomplete stream outcome", record.rpc));
+                }
+            }
+            "error" => {
+                if record.expected_outcome.grpc_code.is_none()
+                    || record.expected_outcome.terminal.as_deref() != Some("error")
+                {
+                    return Err(format!("{} has an incomplete error outcome", record.rpc));
+                }
+            }
+            other => {
+                return Err(format!("{} has an unrecognized outcome {other}", record.rpc));
+            }
+        }
+        for (index, frame) in record.request_frames.iter().enumerate() {
+            if frame.sequence != index {
+                return Err(format!(
+                    "{} request frame order is invalid at index {} (sequence {})",
+                    record.rpc, index, frame.sequence
+                ));
+            }
+            let bytes = decode_base64(&frame.request_base64)
+                .map_err(|error| format!("{} request frame {index}: {error}", record.rpc))?;
+            let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+            if frame.request_sha256 != digest || frame.request_type.is_empty() {
+                return Err(format!(
+                    "{} request frame {index} has invalid type or digest",
+                    record.rpc
+                ));
+            }
+        }
+        if let Some(first) = record.request_frames.first() {
+            if first.sequence != 0
+                || first.request_base64 != record.request_base64
+                || first.request_sha256 != record.request_sha256
+            {
+                return Err(format!(
+                    "{} request frame 0 does not match the top-level request",
+                    record.rpc
+                ));
+            }
+        }
+        let Some(response_type) = record.response_type.as_deref() else {
+            // A streaming response has no single top-level protobuf value;
+            // validate its ordered, typed frames directly.
+            for (index, frame) in record.response_frames.iter().enumerate() {
+                if frame.sequence != index {
+                    return Err(format!(
+                        "{} response frame order is invalid at index {} (sequence {})",
+                        record.rpc, index, frame.sequence
+                    ));
+                }
+                let bytes = decode_base64(&frame.response_base64)
+                    .map_err(|error| format!("{} response frame {index}: {error}", record.rpc))?;
+                let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+                if frame.response_sha256 != digest || frame.response_type.is_empty() {
+                    return Err(format!(
+                        "{} response frame {index} has invalid type or digest",
+                        record.rpc
+                    ));
+                }
+            }
+            continue;
+        };
+        let Some(response_base64) = record.response_base64.as_deref() else {
+            if record.expected_outcome.kind == "stream" && !record.response_frames.is_empty() {
+                for (index, frame) in record.response_frames.iter().enumerate() {
+                    if frame.sequence != index {
+                        return Err(format!(
+                            "{} response frame order is invalid at index {} (sequence {})",
+                            record.rpc, index, frame.sequence
+                        ));
+                    }
+                    let bytes = decode_base64(&frame.response_base64)
+                        .map_err(|error| format!("{} response frame {index}: {error}", record.rpc))?;
+                    let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+                    if frame.response_sha256 != digest || frame.response_type.is_empty() {
+                        return Err(format!(
+                            "{} response frame {index} has invalid type or digest",
+                            record.rpc
+                        ));
+                    }
+                }
+                continue;
+            }
+            if record.expected_outcome.kind == "error" && record.response_frames.is_empty() {
+                continue;
+            }
+            if record.expected_outcome.kind == "stream"
+                && record.response_frames.is_empty()
+                && matches!(
+                    record.expected_outcome.terminal.as_deref(),
+                    Some("eof" | "timeout" | "deadline" | "cancelled")
+                )
+            {
+                // A server stream can terminate without a protobuf frame. The
+                // structured outcome carries the exact terminal observation.
+                continue;
+            }
+            return Err(format!("{} has a response type but no response bytes", record.rpc));
+        };
+        let response_sha256 = record.response_sha256.as_deref().ok_or_else(|| {
+            format!("{} has response bytes but no response digest", record.rpc)
+        })?;
+        let response_bytes = decode_base64(response_base64)
+            .map_err(|error| format!("{} response bytes: {error}", record.rpc))?;
+        let actual_digest = format!("sha256:{}", hex(&Sha256::digest(&response_bytes)));
+        if response_sha256 != actual_digest {
+            return Err(format!(
+                "{} response digest {response_sha256} does not match decoded bytes {actual_digest}",
+                record.rpc
+            ));
+        }
+        let first = record.response_frames.first().ok_or_else(|| {
+            format!("{} response is missing its observed response frame", record.rpc)
+        })?;
+        if first.sequence != 0
+            || first.response_type != response_type
+            || first.response_base64 != response_base64
+            || first.response_sha256 != response_sha256
+        {
+            return Err(format!(
+                "{} response frame 0 does not match the decoded response",
+                record.rpc
+            ));
+        }
+        for (index, frame) in record.response_frames.iter().enumerate() {
+            if frame.sequence != index {
+                return Err(format!(
+                    "{} response frame order is invalid at index {} (sequence {})",
+                    record.rpc, index, frame.sequence
+                ));
+            }
+            let bytes = decode_base64(&frame.response_base64)
+                .map_err(|error| format!("{} response frame {index}: {error}", record.rpc))?;
+            let digest = format!("sha256:{}", hex(&Sha256::digest(&bytes)));
+            if frame.response_sha256 != digest {
+                return Err(format!(
+                    "{} response frame {index} digest {} does not match decoded bytes {digest}",
+                    record.rpc, frame.response_sha256
+                ));
+            }
+            if frame.response_type.is_empty() {
+                return Err(format!(
+                    "{} response frame {index} has no response type",
+                    record.rpc
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+
+fn with_frames<M: Message>(
+    mut record: TypedRequestRecord,
+    response_type: &str,
+    responses: &[M],
+) -> TypedRequestRecord {
+    let frames = responses.iter().map(Message::encode_to_vec).collect::<Vec<_>>();
+    let resolved_response_type = descriptor_response_type(&record.rpc)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| response_type.to_owned());
+    record.response_type = Some(resolved_response_type.clone());
+    record.response_base64 = frames.first().map(|bytes| base64(bytes));
+    record.response_sha256 = frames
+        .first()
+        .map(|bytes| format!("sha256:{}", hex(&Sha256::digest(bytes))));
+    record.response_frames = frames
+        .into_iter()
+        .enumerate().map(|(sequence, bytes)| ResponseFrameRecord {
+            sequence,
+            response_type: resolved_response_type.clone(),
+            response_base64: base64(&bytes),
+            response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+        })
+        .collect();
+    record.expected_outcome = ExpectedOutcome::stream_terminal("eof", None);
+    record
+}
+
+fn ensure_unique(records: &[TypedRequestRecord]) -> Result<(), String> {
+    let mut identities = std::collections::BTreeSet::new();
+    for record in records {
+        if !identities.insert(record.rpc.as_str()) {
+            return Err(format!("duplicate actual fixture RPC {}", record.rpc));
+        }
+    }
+    Ok(())
+}
+
+fn append_pool(
+    output: &mut Vec<TypedRequestRecord>,
+    family: &str,
+    descriptor_bytes: &[u8],
+) -> Result<(), String> {
+    let pool = DescriptorPool::decode(descriptor_bytes)
+        .map_err(|error| format!("decode {family} descriptor set: {error}"))?;
+    for file in pool.files() {
+        for service in file.services() {
+            for method in service.methods() {
+                let input = method.input();
+                let request = DynamicMessage::new(input.clone());
+                let bytes = request.encode_to_vec();
+                let digest = Sha256::digest(&bytes);
+                let request_sha256 = hex(&digest);
+                output.push(TypedRequestRecord {
+                    family: family.to_owned(),
+                    rpc: format!("{}/{}", service.full_name(), method.name()),
+                    scenario_id: None,
+                    request_type: input.full_name().to_owned(),
+                    request_base64: base64(&bytes),
+                    request_sha256: request_sha256.clone(),
+                    request_frames: Vec::new(),
+                    expected_wire: format!("{EXPECTED_WIRE};sha256={request_sha256}"),
+                    response_type: None,
+                    response_base64: None,
+                    response_sha256: None,
+            response_frames: Vec::new(),
+                    expected_status: EXPECTED_STATUS,
+                    expected_outcome: ExpectedOutcome::descriptor(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn record_json(record: &TypedRequestRecord) -> Value {
+    json!({
+        "family": record.family,
+        "rpc": record.rpc,
+        "scenario_id": record.scenario_id,
+        "request_type": record.request_type,
+        "request_base64": record.request_base64,
+        "request_sha256": record.request_sha256,
+        "request_frames": record.request_frames.iter().map(|frame| json!({
+            "sequence": frame.sequence,
+            "type": frame.request_type,
+            "bytes_base64": frame.request_base64,
+            "sha256": frame.request_sha256,
+        })).collect::<Vec<_>>(),
+        "expected_wire": record.expected_wire,
+        "response_type": record.response_type,
+        "response_base64": record.response_base64,
+        "response_sha256": record.response_sha256,
+        "response_frames": record.response_frames.iter().map(|frame| json!({
+            "sequence": frame.sequence,
+            "response_type": frame.response_type,
+            "response_base64": frame.response_base64,
+            "response_sha256": frame.response_sha256,
+        })).collect::<Vec<_>>(),
+        "expected_status": record.expected_status,
+        "expected_outcome": {
+            "kind": record.expected_outcome.kind,
+            "grpc_code": record.expected_outcome.grpc_code,
+            "detail": record.expected_outcome.detail,
+            "terminal": record.expected_outcome.terminal,
+            "terminal_kind": record.expected_outcome.terminal,
+        },
+    })
+}
+
+pub fn haskell_replay_source(manifest: &Value) -> Result<String, String> {
+    let steps = manifest
+        .get("execution_plan")
+        .and_then(Value::as_array)
+        .or_else(|| manifest.get("records").and_then(Value::as_array))
+        .ok_or("Rust manifest has no execution plan or records")?;
+    if steps.is_empty() {
+        return Err("Rust manifest execution plan is empty".to_owned());
+    }
+
+    let mut methods = Vec::with_capacity(steps.len());
+    for step in steps {
+        let rpc = step
+            .get("rpc")
+            .and_then(Value::as_str)
+            .ok_or("Rust manifest step has no rpc")?;
+        methods.push((rpc.to_owned(), descriptor_method(rpc)?));
+    }
+
+    let mut imports = std::collections::BTreeMap::<String, String>::new();
+    let mut services = std::collections::BTreeSet::<String>::new();
+    for (_, method) in &methods {
+        let module = haskell_module_for_service(method.0.as_str())?;
+        let alias = haskell_module_alias(&module);
+        imports.insert(module, alias.to_owned());
+        services.insert(format!("{alias}.{}", haskell_last(method.0.as_str())));
+        for message in [method.1.as_str(), method.2.as_str()] {
+            if message.starts_with("acyclic.protocol.v1.") {
+                imports.insert(
+                    "Proto.Protocol.V1.Protocol".to_owned(),
+                    "Protocol".to_owned(),
+                );
+            }
+        }
+    }
+
+    let mut lines = vec![
+        "{-# LANGUAGE DataKinds #-}".to_owned(),
+        "{-# LANGUAGE ImportQualifiedPost #-}".to_owned(),
+        "{-# LANGUAGE OverloadedStrings #-}".to_owned(),
+        "{-# LANGUAGE ScopedTypeVariables #-}".to_owned(),
+        "{-# LANGUAGE TypeApplications #-}".to_owned(),
+        "{-# LANGUAGE TypeFamilies #-}".to_owned(),
+        "{-# LANGUAGE FlexibleInstances #-}".to_owned(),
+        "{-# LANGUAGE MultiParamTypeClasses #-}".to_owned(),
+        "module Main where".to_owned(),
+        String::new(),
+        "-- Generated by the Rust typed-request-manifest authority; do not edit.".to_owned(),
+        format!("-- Rust execution-plan steps: {}", steps.len()),
+        "import qualified Data.ByteString as BS".to_owned(),
+        "import Control.Exception (SomeException, try)".to_owned(),
+        "import Control.Monad (when)".to_owned(),
+        "import Data.Char (isAlphaNum, toUpper)".to_owned(),
+        "import Data.List (isInfixOf)".to_owned(),
+        "import Data.ProtoLens.Encoding (decodeMessage, encodeMessage)".to_owned(),
+        "import Network.GRPC.Client qualified as Client".to_owned(),
+        "import Network.GRPC.Client.StreamType.IO qualified as Typed".to_owned(),
+        "import Network.GRPC.Common".to_owned(),
+        "import Network.GRPC.Common.Protobuf (Proto(..), Protobuf)".to_owned(),
+    ];
+    for (module, alias) in &imports {
+        lines.push(format!("import qualified {module} as {alias}"));
+    }
+    lines.push(String::new());
+    for service in &services {
+        lines.push(format!("type instance RequestMetadata (Protobuf {service} meth) = NoMetadata"));
+        lines.push(format!("type instance ResponseInitialMetadata (Protobuf {service} meth) = NoMetadata"));
+        lines.push(format!("type instance ResponseTrailingMetadata (Protobuf {service} meth) = NoMetadata"));
+    }
+    lines.extend([
+        String::new(),
+        "collect :: Monad m => m (NextElem a) -> [a] -> m [a]".to_owned(),
+        "collect next acc = do".to_owned(),
+        "  item <- next".to_owned(),
+        "  case item of".to_owned(),
+        "    NoNextElem -> pure (reverse acc)".to_owned(),
+        "    NextElem value -> collect next (value : acc)".to_owned(),
+        String::new(),
+        "requireCall :: String -> IO a -> IO a".to_owned(),
+        "requireCall name action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> fail (name ++ \" unexpected RPC failure: \" ++ show errorValue)".to_owned(),
+        "    Right value -> pure value".to_owned(),
+        String::new(),
+        "normalizeCode :: String -> String".to_owned(),
+        "normalizeCode = map toUpper . filter isAlphaNum".to_owned(),
+        String::new(),
+        "containsCode :: String -> String -> Bool".to_owned(),
+        "containsCode expected detail = normalizeCode expected `isInfixOf` normalizeCode detail".to_owned(),
+        String::new(),
+        "expectError :: String -> String -> String -> IO a -> IO ()".to_owned(),
+        "expectError name code terminal action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> do".to_owned(),
+        "      let detail = show errorValue".to_owned(),
+        "      when (not (containsCode code detail) || (not (null terminal) && not (containsCode terminal detail))) (fail (name ++ \" unexpected RPC error: \" ++ detail))".to_owned(),
+        "    Right _ -> fail (name ++ \" unexpectedly succeeded\")".to_owned(),
+        String::new(),
+        "expectDeadline :: String -> IO a -> IO ()".to_owned(),
+        "expectDeadline name action = do".to_owned(),
+        "  result <- try action".to_owned(),
+        "  case result of".to_owned(),
+        "    Left (errorValue :: SomeException) -> do".to_owned(),
+        "      let detail = show errorValue".to_owned(),
+        "      when (not (\"DEADLINE_EXCEEDED\" `isInfixOf` detail) && not (\"GrpcDeadlineExceeded\" `isInfixOf` detail)) (fail (name ++ \" unexpected deadline error: \" ++ detail))".to_owned(),
+        "    Right _ -> fail (name ++ \" unexpectedly completed before deadline\")".to_owned(),
+        String::new(),
+        "expect :: String -> BS.ByteString -> BS.ByteString -> IO ()".to_owned(),
+        "expect name wanted actual = when (wanted /= actual) (fail (name ++ \" response bytes differ\"))".to_owned(),
+        String::new(),
+        "expectFrames :: String -> [BS.ByteString] -> [BS.ByteString] -> IO ()".to_owned(),
+        "expectFrames name wanted actual = when (wanted /= actual) (fail (name ++ \" response frames differ\"))".to_owned(),
+        String::new(),
+        "reconnectWait :: Int -> IO ()".to_owned(),
+        "reconnectWait _ = pure ()".to_owned(),
+    ]);
+    for (index, (_, method)) in methods.iter().enumerate() {
+        let module = haskell_module_for_service(method.0.as_str())?;
+        let alias = haskell_module_alias(&module);
+        let service = format!("{alias}.{}", haskell_last(method.0.as_str()));
+        lines.push(format!("type Rpc{index} = Protobuf {service} \"{}\"", haskell_lower_first(haskell_last(method.3.as_str()))));
+    }
+    lines.extend([
+        String::new(),
+        "main :: IO ()".to_owned(),
+        "main = do".to_owned(),
+        "  let address = Client.Address \"127.0.0.1\" 50055 Nothing".to_owned(),
+        "      server = Client.ServerInsecure address".to_owned(),
+        "      params = def { Client.connReconnectPolicy = Client.exponentialBackoff reconnectWait 1.5 (0.05, 0.1) 3 }".to_owned(),
+        "  Client.withConnection params server $ \\conn -> do".to_owned(),
+    ]);
+
+    for (index, step) in steps.iter().enumerate() {
+        let rpc = step.get("rpc").and_then(Value::as_str).ok_or("Rust manifest step has no rpc")?;
+        let (_, method) = &methods[index];
+        let request_type = step.get("request_type").and_then(Value::as_str).unwrap_or(method.1.as_str());
+        let request_alias = if request_type.starts_with("acyclic.protocol.v1.") { "Protocol" } else { haskell_module_alias(&haskell_module_for_service(method.0.as_str())?) };
+        let request_name = haskell_last(request_type);
+        let bytes = step.get("request_base64").and_then(Value::as_str).unwrap_or("");
+        lines.push(format!("    putStrLn \"CALL:{rpc}\""));
+        lines.push(format!("    request{index} <- either (fail . (\"{rpc} request decode: \" ++)) pure (decodeMessage ({}) :: Either String {request_alias}.{request_name})", haskell_bytes(bytes)?));
+
+        let is_client = method.5;
+        let is_server = method.6;
+        let response_type = step.get("response_type").and_then(Value::as_str).unwrap_or(method.2.as_str());
+        let response_alias = if response_type.starts_with("acyclic.protocol.v1.") { "Protocol" } else { haskell_module_alias(&haskell_module_for_service(method.0.as_str())?) };
+        let expected_frames = step.get("response_frames").and_then(Value::as_array).cloned().unwrap_or_default();
+        let outcome = step.get("expected_outcome").and_then(Value::as_object);
+        let outcome_kind = outcome.and_then(|value| value.get("kind")).and_then(Value::as_str).unwrap_or("success");
+        let outcome_code = outcome.and_then(|value| value.get("grpc_code")).and_then(Value::as_str).unwrap_or("UNKNOWN");
+        let outcome_terminal = outcome.and_then(|value| value.get("terminal")).and_then(Value::as_str).unwrap_or("");
+        if is_client {
+            let frames = step.get("request_frames").and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut sends = Vec::new();
+            if frames.is_empty() {
+                sends.push(format!("send (NextElem (Proto request{index}))"));
+            } else {
+                for (frame_index, frame) in frames.iter().enumerate() {
+                    let frame_bytes = frame.get("bytes_base64").and_then(Value::as_str).unwrap_or("");
+                    let frame_type = frame.get("type").and_then(Value::as_str).unwrap_or(request_type);
+                    if frame_index == 0 {
+                        sends.push(format!("send (NextElem (Proto request{index}))"));
+                    } else {
+                        let frame_name = format!("request{index}f{frame_index}");
+                        lines.push(format!("    {frame_name} <- either (fail . (\"{rpc} frame decode: \" ++)) pure (decodeMessage ({}) :: Either String {request_alias}.{})", haskell_bytes(frame_bytes)?, haskell_last(frame_type)));
+                        sends.push(format!("send (NextElem (Proto {frame_name}))"));
+                    }
+                }
+            }
+            sends.push("send NoNextElem".to_owned());
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> ")));
+                continue;
+            }
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.clientStreaming conn (Client.rpc @Rpc{index}) (\\send -> {} >> pure ()))", sends.join(" >> ")));
+            let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
+            lines.push(format!("    let actual{index} = case response{index} of (Proto value, _) -> encodeMessage value"));
+            lines.push(format!("    expect \"{rpc}\" ({}) actual{index}", haskell_bytes(expected)?));
+        } else if is_server {
+            let expected = expected_frames.iter().map(|frame| frame.get("response_base64").and_then(Value::as_str).unwrap_or("")).map(haskell_bytes).collect::<Result<Vec<_>, _>>()?;
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
+                continue;
+            }
+            if outcome_kind == "stream" && outcome_terminal == "timeout" {
+                lines.push(format!("    expectDeadline \"{rpc}\" (Typed.serverStreaming conn (Client.rpcWith @Rpc{index} (def {{ Client.callTimeout = Just (Client.Timeout Client.Millisecond (Client.TimeoutValue 10)) }})) (Proto request{index}) (\\next -> collect next []))"));
+                continue;
+            }
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.serverStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}) (\\next -> collect next []))"));
+            lines.push(format!("    let actual{index} = map (\\(Proto value) -> encodeMessage value) response{index}"));
+            lines.push(format!("    expectFrames \"{rpc}\" [{}] actual{index}", expected.join(", ")));
+        } else {
+            if outcome_kind == "error" {
+                lines.push(format!("    expectError \"{rpc}\" \"{outcome_code}\" \"{outcome_terminal}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
+                continue;
+            }
+            lines.push(format!("    response{index} <- requireCall \"{rpc}\" (Typed.nonStreaming conn (Client.rpc @Rpc{index}) (Proto request{index}))"));
+            lines.push(format!("    let actual{index} = case response{index} of Proto value -> encodeMessage value"));
+            let expected = expected_frames.first().and_then(|frame| frame.get("response_base64")).and_then(Value::as_str).or_else(|| step.get("response_base64").and_then(Value::as_str)).unwrap_or("");
+            lines.push(format!("    expect \"{rpc}\" ({}) actual{index}", haskell_bytes(expected)?));
+        }
+    }
+    lines.push(format!("    putStrLn \"PASS:rust-canonical-runtime={}\"", steps.len()));
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Render the Rust-owned Haskell remote facade from the canonical RPC
+/// descriptor inventory. The generated wrappers preserve the exact service,
+/// method, message, and streaming identities selected by Rust.
+pub fn haskell_remote_api_source() -> Result<String, String> {
+    let mut methods = resolved_rpc_methods()?;
+    if methods.is_empty() {
+        return Err("Rust RPC descriptor inventory is empty".to_owned());
+    }
+    methods.sort_by(|left, right| left.rpc.cmp(&right.rpc));
+
+    let mut seen_rpcs = std::collections::BTreeSet::new();
+    let mut seen_names = std::collections::BTreeSet::new();
+    let mut imports = std::collections::BTreeMap::<String, String>::new();
+    let mut services = std::collections::BTreeMap::<(String, String), ()>::new();
+    let mut entries = Vec::with_capacity(methods.len());
+    for method in &methods {
+        if !seen_rpcs.insert(method.rpc.clone()) {
+            return Err(format!("Rust RPC descriptor inventory contains duplicate {}", method.rpc));
+        }
+        let service_identity = method
+            .rpc
+            .split_once('/')
+            .map(|(service, _)| service)
+            .ok_or_else(|| format!("Rust RPC identity has no method separator: {}", method.rpc))?;
+        let module = haskell_module_for_service(service_identity)?;
+        let alias = haskell_module_alias(&module).to_owned();
+        let service_name = haskell_identifier(&method.service);
+        let method_name = haskell_lower_first(&method.method);
+        let type_name = format!(
+            "{}{}{}",
+            alias,
+            service_name.trim_end_matches("Service"),
+            haskell_identifier(&method.method)
+        );
+        if !seen_names.insert(type_name.clone()) {
+            return Err(format!("Rust RPC inventory produces duplicate Haskell facade name {type_name}"));
+        }
+        imports.insert(module, alias.clone());
+        if !service_identity.starts_with("acyclic.stream.") {
+            services.insert((alias.clone(), service_name.clone()), ());
+        }
+        entries.push((method, alias, service_name, method_name, type_name));
+    }
+
+    let inventory_identity = methods
+        .iter()
+        .map(|method| {
+            format!(
+                "{}|{}|{}|{}|{}|{}",
+                method.rpc,
+                method.input_message,
+                method.output_message,
+                method.client_streaming,
+                method.server_streaming,
+                method.family
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let inventory_hash = hex(&Sha256::digest(inventory_identity.as_bytes()));
+    let mut lines = vec![
+        "{-# LANGUAGE DataKinds #-}".to_owned(),
+        "{-# LANGUAGE FlexibleInstances #-}".to_owned(),
+        "{-# LANGUAGE MultiParamTypeClasses #-}".to_owned(),
+        "{-# LANGUAGE TypeApplications #-}".to_owned(),
+        "{-# LANGUAGE TypeFamilies #-}".to_owned(),
+        "module Acyclic.Remote.Api".to_owned(),
+        "  ( Rpc".to_owned(),
+    ];
+    for (_, _, _, _, type_name) in &entries {
+        lines.push(format!("  , {type_name}"));
+    }
+    for (_, _, _, _, type_name) in &entries {
+        lines.push(format!("  , {}", haskell_lower_first(type_name)));
+    }
+    lines.extend([
+        "  ) where".to_owned(),
+        String::new(),
+        "import qualified Network.GRPC.Client as Client".to_owned(),
+        "import qualified Network.GRPC.Client.StreamType.IO as Typed".to_owned(),
+        "import Network.GRPC.Common".to_owned(),
+        "  ( NoMetadata".to_owned(),
+        "  , RequestMetadata".to_owned(),
+        "  , ResponseInitialMetadata".to_owned(),
+        "  , ResponseTrailingMetadata".to_owned(),
+        "  )".to_owned(),
+        "import Network.GRPC.Common.Protobuf (Protobuf)".to_owned(),
+    ]);
+    if imports.values().any(|alias| alias == "Stream") {
+        lines.push("import Acyclic.Stream.Api ()".to_owned());
+    }
+    for (module, alias) in &imports {
+        lines.push(format!("import qualified {module} as {alias}"));
+    }
+    lines.extend([
+        String::new(),
+        "-- Generated by the Rust typed-request-manifest authority; do not edit.".to_owned(),
+        format!("-- Rust RPC inventory count: {}", methods.len()),
+        format!("-- Rust RPC inventory sha256: {inventory_hash}"),
+        String::new(),
+        "type Rpc service method = Protobuf service method".to_owned(),
+    ]);
+
+    for (alias, service_name) in services.keys() {
+        lines.extend([
+            String::new(),
+            format!("type instance RequestMetadata (Protobuf {alias}.{service_name} meth) = NoMetadata"),
+            format!("type instance ResponseInitialMetadata (Protobuf {alias}.{service_name} meth) = NoMetadata"),
+            format!("type instance ResponseTrailingMetadata (Protobuf {alias}.{service_name} meth) = NoMetadata"),
+        ]);
+    }
+    for (method, alias, service_name, method_name, type_name) in &entries {
+        lines.extend([
+            String::new(),
+            format!("-- {}: {} -> {}", method.rpc, method.input_message, method.output_message),
+            format!("type {type_name} = Protobuf {alias}.{service_name} \"{method_name}\""),
+        ]);
+    }
+    for (method, _alias, _service_name, _method_name, type_name) in &entries {
+        let function_name = haskell_lower_first(type_name);
+        let (parameters, call) = match (method.client_streaming, method.server_streaming) {
+            (false, false) => (
+                "conn value",
+                format!("Typed.nonStreaming conn (Client.rpc @{type_name}) value"),
+            ),
+            (true, false) => (
+                "conn send",
+                format!("Typed.clientStreaming conn (Client.rpc @{type_name}) send"),
+            ),
+            (false, true) => (
+                "conn value receive",
+                format!("Typed.serverStreaming conn (Client.rpc @{type_name}) value receive"),
+            ),
+            (true, true) => (
+                "conn exchange",
+                format!("Typed.biDiStreaming conn (Client.rpc @{type_name}) exchange"),
+            ),
+        };
+        lines.extend([
+            String::new(),
+            format!("{function_name} {parameters} = {call}"),
+        ]);
+    }
+    Ok(lines.join("\n") + "\n")
+}
+
+/// Render the nominal Haskell semantic wrappers from the Rust semantic type
+/// inventory.  The protobuf modules remain wire DTOs; these wrappers are the
+/// public facade's typed boundary and deliberately prevent accidental
+/// substitution of one identity for another.
+pub fn haskell_semantic_types_source() -> Result<String, String> {
+    // Keep this projection driven by the complete Rust inventory.  The wire
+    // protobuf modules are deliberately still DTOs; this module is the
+    // public Haskell boundary where every constrained scalar gets a nominal
+    // wrapper and every open union keeps an explicit unknown arm.
+    let mut wanted = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for semantic in SEMANTIC_TYPES {
+        if semantic.rust_name != "WireChoice" && seen.insert(semantic.rust_name) {
+            wanted.push(semantic.rust_name);
+        }
+    }
+    let enum_projections = haskell_enum_projections()?;
+    let mut lines = vec![
+        "{-# LANGUAGE DeriveGeneric #-}".to_owned(),
+        "{-# LANGUAGE GADTs #-}".to_owned(),
+        "module Acyclic.Semantics".to_owned(),
+    ];
+
+    // The export list is generated after the inventory is resolved so adding
+    // a Rust semantic type cannot silently produce an unexported facade.
+    let mut exports = vec![
+        "  ( WireChoice(..)".to_owned(),
+        "  , KnownOneofPayload(..)".to_owned(),
+    ];
+    for name in &wanted {
+        exports.push(format!("  , {name}, mk{name}, {}Value", lower_camel(name)));
+    }
+    for (alias, _, _) in &enum_projections {
+        let lower = lower_camel(alias);
+        exports.push(format!("  , {alias}, {lower}FromWire, {lower}Value"));
+    }
+    lines.extend(exports);
+    lines.extend([
+        "  ) where".to_owned(),
+        String::new(),
+        "-- Generated by the Rust semantic type policy; do not edit.".to_owned(),
+        "import qualified Data.ByteString as BS".to_owned(),
+        "import Data.Int (Int32, Int64)".to_owned(),
+        "import Data.Word (Word32, Word64)".to_owned(),
+        String::new(),
+    ]);
+
+    let wire_choice = WIRE_UNION_VARIANTS
+        .iter()
+        .filter(|variant| variant.union == "wire_choice")
+        .collect::<Vec<_>>();
+    if wire_choice.is_empty() {
+        return Err("Rust oneof inventory is missing wire_choice variants".to_owned());
+    }
+    let projection = haskell_oneof_projection()?;
+    for import in &projection.imports {
+        lines.push(import.clone());
+    }
+    lines.push(String::new());
+    lines.push("-- Every known arm is a descriptor-bound DTO or scalar; only future unknown arms are raw bytes.".to_owned());
+    lines.push("data KnownOneofPayload where".to_owned());
+    for arm in &projection.arms {
+        lines.push(format!("  {} :: {} -> KnownOneofPayload", arm.constructor, arm.payload_type));
+    }
+    lines.push("data WireChoice".to_owned());
+    lines.push("  = KnownOneof KnownOneofPayload".to_owned());
+    lines.push("  | UnknownOneof BS.ByteString".to_owned());
+    lines.push(String::new());
+
+    for (alias, constructors, values) in &enum_projections {
+        lines.push(format!("data {alias}"));
+        for (index, constructor) in constructors.iter().enumerate() {
+            let separator = if index == 0 { "  =" } else { "  |" };
+            lines.push(format!("{separator} {constructor}"));
+        }
+        lines.push(format!("  | {alias}Unknown Int"));
+        lines.push("  deriving (Eq, Ord, Show)".to_owned());
+        lines.push(String::new());
+        let lower = lower_camel(&alias);
+        lines.push(format!("{lower}FromWire :: Int -> {alias}"));
+        lines.push(format!("{lower}FromWire value = case value of"));
+        for (number, constructor) in values {
+            lines.push(format!("  {number} -> {constructor}"));
+        }
+        lines.push(format!("  _ -> {alias}Unknown value"));
+        lines.push(format!("{lower}Value :: {alias} -> Int"));
+        lines.push(format!("{lower}Value value = case value of"));
+        for (number, constructor) in values {
+            lines.push(format!("  {constructor} -> {number}"));
+        }
+        lines.push(format!("  {alias}Unknown number -> number"));
+        lines.push(String::new());
+    }
+
+    for name in wanted {
+        let semantic = SEMANTIC_TYPES
+            .iter()
+            .find(|item| item.rust_name == name)
+            .ok_or_else(|| format!("Rust semantic type inventory is missing {name}"))?;
+        let value_type = match semantic.wire_kind {
+            WireValueKind::String => "String",
+            WireValueKind::Bytes | WireValueKind::Message => "BS.ByteString",
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => "Integer",
+            WireValueKind::Enum => "Int",
+            other => return Err(format!("unsupported Haskell nominal semantic wire kind {other:?} for {name}")),
+        };
+        let value_field = format!("un{}", semantic.rust_name);
+        let value_fn = format!("{}Value", lower_camel(semantic.rust_name));
+        let constructor = format!("mk{}", semantic.rust_name);
+        lines.push(format!("newtype {} = {} {{ {} :: {} }} deriving (Eq, Ord, Show)", semantic.rust_name, semantic.rust_name, value_field, value_type));
+        lines.push(format!("{} :: {} -> Either String {}", constructor, value_type, semantic.rust_name));
+        let has_non_empty = semantic.rules.iter().any(|rule| matches!(rule, acyclic_sdk_contract_wire::SemanticRule::NonEmpty));
+        let fixed_length = semantic.rules.iter().find_map(|rule| match rule {
+            acyclic_sdk_contract_wire::SemanticRule::FixedLength(length) => Some(*length),
+            _ => None,
+        });
+        let max_items = semantic.rules.iter().find_map(|rule| match rule {
+            acyclic_sdk_contract_wire::SemanticRule::MaxItems(limit) => Some(*limit),
+            _ => None,
+        });
+        let strictly_positive = semantic.rules.iter().any(|rule| matches!(rule, acyclic_sdk_contract_wire::SemanticRule::StrictlyPositive));
+        let non_negative = semantic.rules.iter().any(|rule| matches!(rule, acyclic_sdk_contract_wire::SemanticRule::NonNegative));
+        let mut checks = Vec::new();
+        if has_non_empty {
+            checks.push(match semantic.wire_kind {
+                WireValueKind::String => "null value".to_owned(),
+                WireValueKind::Bytes | WireValueKind::Message => "BS.null value".to_owned(),
+                _ => return Err(format!("non-empty rule has unsupported Haskell kind for {name}")),
+            });
+        }
+        if let Some(length) = fixed_length {
+            checks.push(format!("BS.length value /= {length}"));
+        }
+        if strictly_positive {
+            checks.push("value <= 0".to_owned());
+        }
+        if non_negative {
+            checks.push("value < 0".to_owned());
+        }
+        if let Some(limit) = max_items {
+            checks.push(format!("value > {limit}"));
+        }
+        if checks.is_empty() {
+            lines.push(format!("{} value = Right ({} value)", constructor, semantic.rust_name));
+        } else {
+            let condition = checks.join(" || ");
+            lines.push(format!("{} value | {} = Left \"{} failed Rust validation\" | otherwise = Right ({} value)", constructor, condition, semantic.rust_name, semantic.rust_name));
+        }
+        lines.push(format!("{} :: {} -> {}", value_fn, semantic.rust_name, value_type));
+        lines.push(format!("{} = {}", value_fn, value_field));
+        lines.push(String::new());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Render the executable Haskell semantic smoke test from the same Rust
+/// inventory.  The test is intentionally a consumer of the generated facade,
+/// so adding or changing a Rust validation rule changes the checked artifact.
+pub fn haskell_semantic_types_test_source() -> String {
+    let projection = haskell_oneof_projection().expect("Rust oneof descriptor inventory must resolve");
+    let first = projection
+        .arms
+        .first()
+        .expect("Rust oneof descriptor inventory must contain a concrete arm");
+    let known_expression = format!(
+        "Semantics.KnownOneof (Semantics.{} ({} :: {}))",
+        first.constructor, first.test_expression, first.payload_type
+    );
+    let known_line = format!("      _known = {known_expression}");
+    let enum_projection = haskell_enum_projections()
+        .expect("Rust enum descriptor inventory must resolve")
+        .into_iter()
+        .next()
+        .expect("Rust enum descriptor inventory must contain an enum");
+    let enum_alias = enum_projection.0;
+    let enum_from_wire = lower_camel(&enum_alias);
+    let mut lines = vec![
+        "module Main where",
+        "",
+        "import qualified Acyclic.Semantics as Semantics",
+        "import Data.ProtoLens (defMessage)",
+        "import qualified Data.ByteString as BS",
+        "import qualified Data.ByteString.Char8 as BS8",
+        "import Data.Int (Int32, Int64)",
+        "import Data.Word (Word32, Word64)",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    lines.extend(projection.imports.iter().cloned());
+    lines.extend([
+        "",
+        "expectRight :: String -> Either String value -> IO value",
+        "expectRight label result = case result of",
+        "  Left errorValue -> fail (label <> \": \" <> errorValue)",
+        "  Right value -> pure value",
+        "",
+        "expectLeft :: String -> Either String value -> IO ()",
+        "expectLeft label result = case result of",
+        "  Left _ -> pure ()",
+        "  Right _ -> fail (label <> \": invalid value was accepted\")",
+        "",
+        "main :: IO ()",
+        "main = do",
+        "  actor <- expectRight \"actor\" (Semantics.mkActorId \"actor-1\")",
+        "  operation <- expectRight \"operation\" (Semantics.mkOperationId (BS8.pack \"0123456789abcdef\"))",
+        "  workspace <- expectRight \"workspace\" (Semantics.mkWorkspaceId (BS8.pack \"fedcba9876543210\"))",
+        "  _ <- expectRight \"idempotency\" (Semantics.mkIdempotencyKey (BS8.pack \"0011223344556677\"))",
+        "  expectLeft \"empty actor\" (Semantics.mkActorId \"\")",
+        "  expectLeft \"short operation\" (Semantics.mkOperationId (BS8.pack \"short\"))",
+        "  expectLeft \"short workspace\" (Semantics.mkWorkspaceId (BS8.pack \"short\"))",
+        "  let _known :: Semantics.WireChoice",
+        "      _unknown :: Semantics.WireChoice",
+        "      _unknown = Semantics.UnknownOneof (Semantics.workspaceIdValue workspace)",
+        "  putStrLn (\"PASS:rust-owned-haskell-semantic-types=\" <> show (Semantics.actorIdValue actor))",
+    ].into_iter().map(str::to_owned));
+    let unknown_index = lines
+        .iter()
+        .position(|line| line == "      _unknown :: Semantics.WireChoice")
+        .expect("generated Haskell unknown union binding must exist");
+    lines.insert(unknown_index, known_line);
+    lines.insert(unknown_index + 2, format!("      _enum :: Semantics.{enum_alias}"));
+    lines.insert(unknown_index + 3, format!("      _enum = Semantics.{enum_from_wire}FromWire 0"));
+    lines.join("\n") + "\n"
+}
+
+fn haskell_enum_projections() -> Result<Vec<(String, Vec<String>, Vec<(i32, String)>)>, String> {
+    let mut entries = std::collections::BTreeMap::<String, std::collections::BTreeMap<i32, String>>::new();
+    for entry in resolved_enum_fields()? {
+        let alias = haskell_enum_alias(&entry.enum_type);
+        let values = entries.entry(alias.clone()).or_default();
+        for value in entry.values {
+            values.entry(value.number).or_insert_with(|| {
+                format!("{}{}", alias.trim_end_matches("Enum"), haskell_identifier(&value.name))
+            });
+        }
+    }
+    Ok(entries
+        .into_iter()
+        .map(|(alias, values)| {
+            let values = values.into_iter().collect::<Vec<_>>();
+            let constructors = values.iter().map(|(_, constructor)| constructor.clone()).collect();
+            (alias, constructors, values)
+        })
+        .collect())
+}
+
+fn haskell_enum_alias(full_name: &str) -> String {
+    let prefix = full_name
+        .trim_start_matches('.')
+        .split('.')
+        .filter(|part| *part != "acyclic" && !(part.starts_with('v') && part[1..].chars().all(|character| character.is_ascii_digit())))
+        .map(haskell_identifier)
+        .collect::<String>();
+    format!("{prefix}Enum")
+}
+
+#[derive(Clone, Debug)]
+struct HaskellOneofArm {
+    constructor: String,
+    payload_type: String,
+    test_expression: String,
+}
+
+#[derive(Clone, Debug)]
+struct HaskellOneofProjection {
+    imports: Vec<String>,
+    arms: Vec<HaskellOneofArm>,
+}
+
+/// Project every concrete Rust descriptor oneof member into a closed Haskell
+/// GADT.  The shared `WIRE_UNION_VARIANTS` policy intentionally describes the
+/// open compatibility envelope only; the descriptor inventory supplies the
+/// actual payload identity that prevents a known arm from accepting bytes or
+/// an unrelated message.
+fn haskell_oneof_projection() -> Result<HaskellOneofProjection, String> {
+    let mut members = resolved_oneof_members()?;
+    members.retain(|member| !member.field.proto3_optional);
+    let mut seen = std::collections::BTreeSet::new();
+    let mut arms = Vec::new();
+    let mut imports = std::collections::BTreeMap::<String, String>::new();
+    for member in members {
+        let key = format!(
+            "{}:{}:{}:{}",
+            member.field.message_path, member.field.oneof_name.as_deref().unwrap_or_default(),
+            member.field.field, member.field.number
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+        let (payload_type, test_expression) = haskell_oneof_payload(&member, &mut imports)?;
+        let constructor = format!(
+            "Known{}{}N{}",
+            haskell_identifier(&member.field.message_path),
+            haskell_identifier(&member.field.field),
+            member.field.number
+        );
+        arms.push(HaskellOneofArm { constructor, payload_type, test_expression });
+    }
+    if arms.is_empty() {
+        return Err("Rust descriptor inventory contains no concrete Haskell oneof arms".to_owned());
+    }
+    Ok(HaskellOneofProjection { imports: imports.into_values().collect(), arms })
+}
+
+fn haskell_oneof_payload(
+    member: &ResolvedOneofMember,
+    imports: &mut std::collections::BTreeMap<String, String>,
+) -> Result<(String, String), String> {
+    let kind = member.payload_kind.as_str_name();
+    let scalar = match kind {
+        "TYPE_BOOL" => Some(("Bool".to_owned(), "False".to_owned())),
+        "TYPE_STRING" => Some(("String".to_owned(), "\"\"".to_owned())),
+        "TYPE_BYTES" => Some(("BS.ByteString".to_owned(), "BS.empty".to_owned())),
+        "TYPE_INT32" | "TYPE_SINT32" | "TYPE_SFIXED32" => Some(("Int32".to_owned(), "0".to_owned())),
+        "TYPE_INT64" | "TYPE_SINT64" | "TYPE_SFIXED64" => Some(("Int64".to_owned(), "0".to_owned())),
+        "TYPE_UINT32" | "TYPE_FIXED32" => Some(("Word32".to_owned(), "0".to_owned())),
+        "TYPE_UINT64" | "TYPE_FIXED64" => Some(("Word64".to_owned(), "0".to_owned())),
+        "TYPE_FLOAT" => Some(("Float".to_owned(), "0".to_owned())),
+        "TYPE_DOUBLE" => Some(("Double".to_owned(), "0".to_owned())),
+        "TYPE_ENUM" | "TYPE_MESSAGE" | "TYPE_GROUP" => None,
+        other => return Err(format!("unsupported Rust oneof payload kind {other}")),
+    };
+    if let Some(value) = scalar {
+        return Ok(value);
+    }
+    let full_name = member.payload_type.as_deref().ok_or_else(|| {
+        format!("Rust oneof {}.{} has no descriptor payload identity", member.field.message_path, member.field.field)
+    })?;
+    let (module, alias, ty) = haskell_proto_type(full_name)?;
+    imports
+        .entry(module.clone())
+        .or_insert_with(|| format!("import qualified {module} as {alias}"));
+    let test_expression = if kind == "TYPE_MESSAGE" || kind == "TYPE_GROUP" {
+        "defMessage".to_owned()
+    } else {
+        "error \"generated enum arm test payload\"".to_owned()
+    };
+    Ok((format!("{alias}.{ty}"), test_expression))
+}
+
+fn haskell_proto_type(full_name: &str) -> Result<(String, String, String), String> {
+    let parts = full_name.trim_start_matches('.').split('.').collect::<Vec<_>>();
+    let (family_part, version_part, type_start) = match parts.as_slice() {
+        ["acyclic", family, version, ..] => (*family, *version, 3),
+        ["inference", "customer", version, ..] => ("inference", *version, 3),
+        _ => return Err(format!("Rust oneof payload {full_name} is outside the generated Rust-owned protobuf set")),
+    };
+    if parts.len() <= type_start {
+        return Err(format!("Rust oneof payload {full_name} has no concrete message or enum type"));
+    }
+    let family = if family_part == "inference" { "Inference".to_owned() } else { haskell_identifier(family_part) };
+    let version = haskell_identifier(version_part);
+    let module = format!("Proto.{family}.{version}.{family}");
+    let alias = format!("{family}{version}");
+    let ty = parts[type_start..].iter().map(|part| haskell_identifier(part)).collect::<Vec<_>>().join("'");
+    Ok((module, alias, ty))
+}
+
+fn haskell_identifier(value: &str) -> String {
+    value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            chars.next().map(|first| first.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default()
+        })
+        .collect()
+}
+
+fn lower_camel(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+// (module, request, response, service method, lower-case method, client-streaming, server-streaming)
+type HaskellMethod = (String, String, String, String, String, bool, bool);
+
+fn descriptor_method(rpc: &str) -> Result<HaskellMethod, String> {
+    let (service_name, method_name) = rpc.rsplit_once('/').ok_or_else(|| format!("RPC has no method separator: {rpc}"))?;
+    for (_, descriptor_bytes) in descriptor_sets() {
+        let pool = DescriptorPool::decode(descriptor_bytes.as_slice()).map_err(|error| format!("decode descriptor set: {error}"))?;
+        for service in pool.services() {
+            if service.full_name() == service_name {
+                if let Some(method) = service.methods().find(|candidate| candidate.name() == method_name) {
+                    return Ok((service_name.to_owned(), method.input().full_name().to_owned(), method.output().full_name().to_owned(), method_name.to_owned(), haskell_lower_first(method_name), method.is_client_streaming(), method.is_server_streaming()));
+                }
+            }
+        }
+    }
+    Err(format!("Rust descriptors do not contain {rpc}"))
+}
+
+fn descriptor_sets() -> Vec<(&'static str, Vec<u8>)> {
+    vec![
+        ("actors", acyclic_actors::FILE_DESCRIPTOR_SET.to_vec()),
+        ("workers", acyclic_workers::FILE_DESCRIPTOR_SET.to_vec()),
+        ("objects", acyclic_objects::v2::FILE_DESCRIPTOR_SET.to_vec()),
+        ("stream", acyclic_stream::FILE_DESCRIPTOR_SET.to_vec()),
+        ("filesystem", acyclic_fs::FILE_DESCRIPTOR_SET.to_vec()),
+        ("harness", acyclic_harness::FILE_DESCRIPTOR_SET.to_vec()),
+        ("inference", BindingFamily::Inference.model_descriptor()),
+        ("machines", acyclic_machines::FILE_DESCRIPTOR_SET.to_vec()),
+    ]
+}
+
+fn haskell_module_for_service(service: &str) -> Result<String, String> {
+    let module = if service.starts_with("acyclic.actors.") { "Proto.Actors.V1.Actors" }
+        else if service.starts_with("acyclic.filesystem.") { "Proto.Filesystem.V2.Filesystem" }
+        else if service.starts_with("acyclic.harness.") { "Proto.Harness.V2.Harness" }
+        else if service.starts_with("inference.customer.") { "Proto.Inference.V1.Inference" }
+        else if service.starts_with("acyclic.machines.") { "Proto.Machines.V1.Machines" }
+        else if service.starts_with("acyclic.objects.") { "Proto.Objects.V2.Objects" }
+        else if service.starts_with("acyclic.stream.") { "Proto.Stream.V2.Stream" }
+        else if service.starts_with("acyclic.workers.") { "Proto.Workers.V1.Workers" }
+        else { return Err(format!("no Rust-owned Haskell module mapping for {service}")); };
+    Ok(module.to_owned())
+}
+
+fn haskell_module_alias(module: &str) -> &'static str {
+    match module {
+        "Proto.Actors.V1.Actors" => "Actors",
+        "Proto.Filesystem.V2.Filesystem" => "Filesystem",
+        "Proto.Harness.V2.Harness" => "Harness",
+        "Proto.Inference.V1.Inference" => "Inference",
+        "Proto.Machines.V1.Machines" => "Machines",
+        "Proto.Objects.V2.Objects" => "ObjectsV2",
+        "Proto.Stream.V2.Stream" => "Stream",
+        "Proto.Workers.V1.Workers" => "Workers",
+        "Proto.Protocol.V1.Protocol" => "Protocol",
+        _ => "Generated",
+    }
+}
+
+fn haskell_last(value: &str) -> &str { value.rsplit('.').next().unwrap_or(value) }
+
+fn haskell_lower_first(value: &str) -> String {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn haskell_bytes(encoded: &str) -> Result<String, String> {
+    let bytes = decode_base64(encoded)?;
+    if bytes.is_empty() {
+        return Ok("BS.empty".to_owned());
+    }
+    const LITERAL_CHUNK_SIZE: usize = 1024;
+    const REPEAT_THRESHOLD: usize = 4;
+    let mut pieces = Vec::new();
+    let mut literal = Vec::with_capacity(LITERAL_CHUNK_SIZE);
+    let mut flush_literal = |literal: &mut Vec<u8>, pieces: &mut Vec<String>| {
+        if !literal.is_empty() {
+            pieces.push(format!(
+                "BS.pack [{}]",
+                literal
+                    .drain(..)
+                    .map(|byte| byte.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+    };
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        let mut end = index + 1;
+        while end < bytes.len() && bytes[end] == byte {
+            end += 1;
+        }
+        let run_length = end - index;
+        if run_length >= REPEAT_THRESHOLD {
+            flush_literal(&mut literal, &mut pieces);
+            pieces.push(format!("BS.replicate {run_length} {byte}"));
+        } else {
+            literal.extend_from_slice(&bytes[index..end]);
+            if literal.len() >= LITERAL_CHUNK_SIZE {
+                flush_literal(&mut literal, &mut pieces);
+            }
+        }
+        index = end;
+    }
+    flush_literal(&mut literal, &mut pieces);
+    if pieces.len() == 1 {
+        Ok(pieces.into_iter().next().expect("one byte expression"))
+    } else {
+        Ok(format!("BS.concat [{}]", pieces.join(",")))
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[((first & 0x03) << 4 | second >> 4) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((second & 0x0f) << 2 | third >> 6) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 4 != 0 {
+        return Err("base64 length is not a multiple of four".to_owned());
+    }
+    fn sextet(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let bytes = value.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let first = sextet(chunk[0]).ok_or_else(|| format!("invalid base64 at byte {}", index * 4))?;
+        let second = sextet(chunk[1]).ok_or_else(|| format!("invalid base64 at byte {}", index * 4 + 1))?;
+        output.push((first << 2) | (second >> 4));
+        if chunk[2] != b'=' {
+            let third = sextet(chunk[2]).ok_or_else(|| format!("invalid base64 at byte {}", index * 4 + 2))?;
+            output.push((second << 4) | (third >> 2));
+            if chunk[3] != b'=' {
+                let fourth = sextet(chunk[3]).ok_or_else(|| format!("invalid base64 at byte {}", index * 4 + 3))?;
+                output.push((third << 6) | fourth);
+            }
+        } else if chunk[3] != b'=' {
+            return Err("invalid base64 padding".to_owned());
+        }
+    }
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        actual_execution_records, base64, records, unique_inventory, validate_actual_records,
+        ExpectedOutcome, ResponseFrameRecord, TypedRequestRecord,
+    };
+
+    fn observed_record() -> TypedRequestRecord {
+        let encoded = base64(&[0]);
+        let digest = "sha256:6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d";
+        TypedRequestRecord {
+            family: "actors".to_owned(),
+            rpc: "acyclic.actors.v1.ActorsService/CreateActor".to_owned(),
+            scenario_id: None,
+            request_type: "acyclic.actors.v1.CreateActorRequest".to_owned(),
+            request_base64: encoded.clone(),
+            request_sha256: digest.to_owned(),
+            request_frames: Vec::new(),
+            expected_wire: "canonical-protobuf-v3".to_owned(),
+            response_type: Some("acyclic.actors.v1.CreateActorResponse".to_owned()),
+            response_base64: Some(encoded.clone()),
+            response_sha256: Some(digest.to_owned()),
+            response_frames: vec![ResponseFrameRecord {
+                sequence: 0,
+                response_type: "acyclic.actors.v1.CreateActorResponse".to_owned(),
+                response_base64: encoded,
+                response_sha256: digest.to_owned(),
+            }],
+            expected_status: "rust-fixture-executed",
+            expected_outcome: ExpectedOutcome::success(),
+        }
+    }
+
+    #[test]
+    fn base64_matches_the_empty_protobuf_payload_shape() {
+        assert_eq!(base64(&[]), "");
+        assert_eq!(base64(&[0]), "AA==");
+        assert_eq!(base64(&[0, 1]), "AAE=");
+        assert_eq!(base64(&[0, 1, 2]), "AAEC");
+    }
+
+    #[test]
+    fn descriptor_authorities_cover_all_rpcs() {
+        let manifest = records().expect("Rust descriptors decode");
+        assert_eq!(manifest.len(), 106);
+        assert!(manifest.iter().all(|record| {
+            !record.rpc.is_empty()
+                && !record.request_type.is_empty()
+                && record.expected_status == "descriptor-only"
+        }));
+    }
+
+    #[test]
+    fn observed_frames_accept_canonical_order() {
+        validate_actual_records(&[observed_record()]).expect("canonical frame is valid");
+    }
+
+    #[test]
+    fn observed_frames_reject_altered_order() {
+        let mut record = observed_record();
+        record.response_frames[0].sequence = 1;
+        let error = validate_actual_records(&[record]).expect_err("altered order must fail");
+        assert!(error.contains("frame 0"));
+    }
+
+    #[test]
+    fn observed_frames_reject_altered_type_and_status() {
+        let mut wrong_type = observed_record();
+        wrong_type.response_frames[0].response_type = "forged.Response".to_owned();
+        let error = validate_actual_records(&[wrong_type]).expect_err("altered type must fail");
+        assert!(error.contains("frame 0"));
+
+        let mut wrong_status = observed_record();
+        wrong_status.expected_status = "forged-status";
+        let error = validate_actual_records(&[wrong_status]).expect_err("altered status must fail");
+        assert!(error.contains("unrecognized observed status"));
+    }
+
+    #[test]
+    fn outcomes_reject_missing_codes_and_wrong_stream_terminals() {
+        let mut missing_error_code = observed_record();
+        missing_error_code.expected_outcome = ExpectedOutcome::error(None, Some("missing"), Some("error"));
+        let error = validate_actual_records(&[missing_error_code])
+            .expect_err("an error without a gRPC code must fail");
+        assert!(error.contains("incomplete error outcome"));
+
+        let mut timeout_marked_eof = observed_record();
+        timeout_marked_eof.expected_outcome = ExpectedOutcome::stream_terminal(
+            "eof",
+            Some("DEADLINE_EXCEEDED"),
+        );
+        let error = validate_actual_records(&[timeout_marked_eof])
+            .expect_err("a deadline code cannot be reported as EOF");
+        assert!(error.contains("incomplete stream outcome"));
+
+        let mut eof_marked_timeout = observed_record();
+        eof_marked_timeout.expected_outcome = ExpectedOutcome::stream_terminal("timeout", None);
+        let error = validate_actual_records(&[eof_marked_timeout])
+            .expect_err("a timeout terminal cannot carry an OK code");
+        assert!(error.contains("incomplete stream outcome"));
+    }
+
+    #[tokio::test]
+    async fn actual_collector_is_complete_and_uses_put_object_envelope() {
+        let execution = actual_execution_records()
+            .await
+            .expect("Rust actual fixture execution plan");
+        assert!(execution.len() > 106);
+        let records = unique_inventory(&execution).expect("unique Rust fixture inventory");
+        assert_eq!(records.len(), 106);
+        validate_actual_records(&records).expect("actual fixture records are canonical");
+        let create_bucket_count = execution
+            .iter()
+            .filter(|record| record.rpc == "acyclic.objects.v2.BucketsService/CreateBucket")
+            .count();
+        let create_multipart_count = execution
+            .iter()
+            .filter(|record| record.rpc == "acyclic.objects.v2.MultipartService/CreateMultipart")
+            .count();
+        assert_eq!(create_bucket_count, 2);
+        assert_eq!(create_multipart_count, 3);
+        let put = records
+            .iter()
+            .find(|record| record.rpc == "acyclic.objects.v2.ObjectsService/PutObject")
+            .expect("Objects PutObject record");
+        assert_eq!(put.request_type, "acyclic.objects.v2.PutObjectRequest");
+        assert_eq!(put.response_frames.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn ordered_execution_plan_is_replayable_by_protocol_shape() {
+        let first = actual_execution_records()
+            .await
+            .expect("first Rust actual fixture execution plan");
+        let second = actual_execution_records()
+            .await
+            .expect("second Rust actual fixture execution plan");
+        let shape = |records: &[TypedRequestRecord]| {
+            records
+                .iter()
+                .map(|record| {
+                    format!(
+                        "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+                        record.family,
+                        record.rpc,
+                        record.request_type,
+                        record.request_frames.len(),
+                        record.response_frames.len(),
+                        record.expected_status,
+                        record.expected_outcome.kind,
+                        record.expected_outcome.grpc_code.as_deref().unwrap_or(""),
+                        record.expected_outcome.terminal.as_deref().unwrap_or(""),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first.len(), 111);
+        assert_eq!(second.len(), 111);
+        assert_eq!(shape(&first), shape(&second));
+        assert_eq!(
+            first
+                .iter()
+                .filter(|record| record.rpc == "acyclic.objects.v2.BucketsService/CreateBucket")
+                .count(),
+            2
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|record| record.rpc == "acyclic.objects.v2.MultipartService/CreateMultipart")
+                .count(),
+            3
+        );
+        let negative_steps = first
+            .iter()
+            .filter(|record| record.scenario_id.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(negative_steps.len(), 2);
+        assert!(negative_steps.iter().all(|record| {
+            record.rpc == "acyclic.objects.v2.ObjectsService/PutObject"
+                || record.rpc == "acyclic.objects.v2.MultipartService/UploadPart"
+        }));
+        assert!(negative_steps.iter().all(|record| {
+            record.expected_outcome.kind == "error"
+                && record.expected_outcome.grpc_code.as_deref() == Some("INVALID_ARGUMENT")
+                && record.expected_outcome.terminal.as_deref() == Some("error")
+        }));
+    }
+}

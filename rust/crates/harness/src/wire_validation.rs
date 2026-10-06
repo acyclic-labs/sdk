@@ -7,7 +7,7 @@ use crate::{
     Error, Result, wire,
     wire_codec::{protocol_identity, validate_protocol},
 };
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 use prost::Message as _;
 
 /// Returns the protocol identity compiled into this crate.
@@ -131,7 +131,7 @@ pub fn validate_cancel_response(
 }
 
 /// Validates a protobuf-encoded handshake request and response.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub fn validate_wire_handshake(request: &[u8], response: &[u8]) -> Result<()> {
     let request = wire::HandshakeRequest::decode(request)
         .map_err(|error| Error::Invalid(format!("invalid handshake request: {error}")))?;
@@ -151,7 +151,7 @@ pub fn validate_wire_handshake(request: &[u8], response: &[u8]) -> Result<()> {
 }
 
 /// Validates protobuf-encoded command admission identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub fn validate_wire_admission(command: &[u8], admission: &[u8]) -> Result<()> {
     let command = wire::CommandEnvelope::decode(command)
         .map_err(|error| Error::Invalid(format!("invalid command envelope: {error}")))?;
@@ -161,7 +161,7 @@ pub fn validate_wire_admission(command: &[u8], admission: &[u8]) -> Result<()> {
 }
 
 /// Validates protobuf-encoded operation status identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub fn validate_wire_status(request: &[u8], status: &[u8]) -> Result<()> {
     let request = wire::ObserveRequest::decode(request)
         .map_err(|error| Error::Invalid(format!("invalid observe request: {error}")))?;
@@ -171,7 +171,7 @@ pub fn validate_wire_status(request: &[u8], status: &[u8]) -> Result<()> {
 }
 
 /// Validates protobuf-encoded cancellation response identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub fn validate_wire_cancellation(request: &[u8], response: &[u8]) -> Result<()> {
     let request = wire::CancelRequest::decode(request)
         .map_err(|error| Error::Invalid(format!("invalid cancel request: {error}")))?;

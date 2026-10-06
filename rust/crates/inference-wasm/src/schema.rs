@@ -40,6 +40,25 @@ pub fn run_terminal_metadata() -> Result<String, JsValue> {
     terminal_metadata().map_err(JsValue::from_str)
 }
 
+/// Validate terminal metadata supplied by a host against the canonical
+/// descriptor projection. The comparison stays in Rust so browser adapters
+/// cannot independently redefine terminal names, values, or partial-output
+/// semantics.
+#[wasm_bindgen(js_name = validateRunTerminalMetadata)]
+pub fn validate_run_terminal_metadata(raw: String) -> Result<String, JsValue> {
+    let expected = terminal_metadata().map_err(JsValue::from_str)?;
+    let actual: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|_| JsValue::from_str("run terminal metadata is not valid JSON"))?;
+    let canonical: serde_json::Value = serde_json::from_str(&expected)
+        .map_err(|_| JsValue::from_str("Rust terminal metadata is invalid"))?;
+    if actual != canonical {
+        return Err(JsValue::from_str(
+            "run terminal metadata does not match the Rust descriptor",
+        ));
+    }
+    Ok(expected)
+}
+
 /// Return terminal metadata for native generators and the WASM boundary.
 pub fn terminal_metadata() -> Result<String, &'static str> {
     let Some(pool) = pool() else {

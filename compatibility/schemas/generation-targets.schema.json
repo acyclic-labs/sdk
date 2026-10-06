@@ -1,0 +1,454 @@
+{
+  "$defs": {
+    "ContractAuthority": {
+      "enum": [
+        "rust"
+      ],
+      "type": "string"
+    },
+    "EmbeddedLevel": {
+      "enum": [
+        "rust-native",
+        "ffi-or-wasm",
+        "none"
+      ],
+      "type": "string"
+    },
+    "EmbeddedProjectionSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/EmbeddedRegistryCapabilitySchema"
+          },
+          "type": "array"
+        },
+        "level": {
+          "$ref": "#/$defs/EmbeddedLevel"
+        },
+        "qualification": {
+          "$ref": "#/$defs/Qualification"
+        }
+      },
+      "required": [
+        "level",
+        "qualification",
+        "capabilities"
+      ],
+      "title": "EmbeddedProjectionSchema",
+      "type": "object"
+    },
+    "EmbeddedRegistryArtifactSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "target_identities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "identity",
+        "installable",
+        "target_identities"
+      ],
+      "type": "object"
+    },
+    "EmbeddedRegistryCapabilitySchema": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/EmbeddedRegistryArtifactSchema"
+        },
+        "binding": {
+          "type": "string"
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string"
+        },
+        "qualification": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "language",
+        "family",
+        "binding",
+        "artifact",
+        "installable",
+        "qualification",
+        "coverage",
+        "source_evidence",
+        "receipt"
+      ],
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "claim": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "format": "uri-reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "claim"
+      ],
+      "type": "object"
+    },
+    "Generator": {
+      "additionalProperties": false,
+      "properties": {
+        "license": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pin": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "format": "uri",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "source",
+        "license",
+        "pin"
+      ],
+      "type": "object"
+    },
+    "Maturity": {
+      "enum": [
+        "stable",
+        "beta",
+        "experimental",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "Package": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ecosystem": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "artifact",
+        "installable"
+      ],
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "output": {
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!\\\\)(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+",
+          "type": "string"
+        },
+        "program": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "program",
+        "args",
+        "output"
+      ],
+      "type": "object"
+    },
+    "Qualification": {
+      "enum": [
+        "unqualified",
+        "prototype",
+        "qualified",
+        "blocked"
+      ],
+      "type": "string"
+    },
+    "RemoteCapability": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/RemoteLevel"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "qualification": {
+          "$ref": "#/$defs/Qualification"
+        },
+        "streaming": {
+          "items": {
+            "$ref": "#/$defs/StreamShape"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "wire": {
+          "$ref": "#/$defs/WireKind"
+        }
+      },
+      "required": [
+        "level",
+        "streaming",
+        "wire"
+      ],
+      "type": "object"
+    },
+    "RemoteLevel": {
+      "enum": [
+        "full-grpc",
+        "http-projection",
+        "none"
+      ],
+      "type": "string"
+    },
+    "SourceOfTruth": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractAuthority"
+        },
+        "descriptor": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "wire_semantics": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "contract",
+        "descriptor",
+        "wire_semantics"
+      ],
+      "type": "object"
+    },
+    "StreamShape": {
+      "enum": [
+        "unary",
+        "client",
+        "server",
+        "bidi"
+      ],
+      "type": "string"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "embedded": {
+          "$ref": "#/$defs/EmbeddedProjectionSchema"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "generator": {
+          "$ref": "#/$defs/Generator"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "language_family": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maturity": {
+          "$ref": "#/$defs/Maturity"
+        },
+        "outstanding": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "package": {
+          "$ref": "#/$defs/Package"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "remote": {
+          "$ref": "#/$defs/RemoteCapability"
+        },
+        "status": {
+          "$ref": "#/$defs/TargetStatus"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "language_family",
+        "status",
+        "remote",
+        "maturity",
+        "generator",
+        "package",
+        "evidence",
+        "outstanding",
+        "embedded"
+      ],
+      "type": "object"
+    },
+    "TargetKind": {
+      "enum": [
+        "language",
+        "platform",
+        "tooling"
+      ],
+      "type": "string"
+    },
+    "TargetStatus": {
+      "enum": [
+        "qualified",
+        "baseline-supported",
+        "strong-candidate",
+        "candidate",
+        "experimental",
+        "http-only",
+        "adapter-only",
+        "not-qualifiable"
+      ],
+      "type": "string"
+    },
+    "WireKind": {
+      "enum": [
+        "protobuf-grpc",
+        "json-http",
+        "none"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://sdk.acyclic.dev/generation-targets.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalogued_at": {
+      "format": "date",
+      "type": "string"
+    },
+    "qualification_gates": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "source_of_truth": {
+      "$ref": "#/$defs/SourceOfTruth"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/Target"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_of_truth",
+    "qualification_gates",
+    "targets",
+    "catalogued_at"
+  ],
+  "title": "Acyclic SDK generation targets",
+  "type": "object"
+}
