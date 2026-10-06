@@ -8279,7 +8279,7 @@ mod tests {
     use crate::batch_publication::ModelBatchPublisher;
     use crate::context::ContextStage;
     use crate::interaction::Interaction;
-    use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
+    use crate::model::{ModelAttempt, ModelContentPart, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
     use serde_json::{Value, json};
     use std::sync::{
