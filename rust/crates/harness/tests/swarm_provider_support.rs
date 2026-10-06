@@ -41,14 +41,15 @@ pub struct FixtureFailureSummary {
 /// original error.  The temp directory is kept only on this explicit failure
 /// path; successful tests retain their normal cleanup behavior.
 #[cfg(feature = "test-support")]
-pub async fn preserve_failure_evidence(
+pub fn preserve_failure_evidence(
     directory: TempDir,
     swarm: &PersistentLocalSwarm,
     operation: OperationId,
     task_operations: Vec<(TaskId, OperationId)>,
     summary: FixtureFailureSummary,
     error: Error,
-) -> Error {
+) -> futures::future::BoxFuture<'_, Error> {
+    Box::pin(async move {
     let sessions = match swarm.sessions().await {
         Ok(sessions) => serde_json::to_value(
             sessions
@@ -116,6 +117,7 @@ pub async fn preserve_failure_evidence(
         preserved_path.display()
     );
     error
+    })
 }
 
 #[derive(Default)]
