@@ -5,12 +5,8 @@ use std::collections::HashSet;
 pub mod grpc;
 pub mod http;
 
-/// Generated Actors v1 wire types. The documented schema is `proto/actors/v1/actors.proto`.
-pub mod wire {
-    #![allow(missing_docs, reason = "generated from the public Actors schema")]
-    #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
-    include!("generated/acyclic.actors.v1.rs");
-}
+/// Rust-owned Actors v1 wire types and schema metadata.
+pub mod wire;
 
 /// Canonical version-one descriptor set.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-actors-v1.bin");
@@ -163,7 +159,7 @@ mod tests {
         assert!(!subscription(&invalid));
 
         let mut create = wire::CreateActorRequest {
-            code_sha256: vec![1; 32],
+            code_sha256: vec![1; 32].into(),
             home_region: "eu".into(),
             bindings: vec![],
             limits: Some(wire::ActorLimits {

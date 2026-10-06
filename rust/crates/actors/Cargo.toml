@@ -11,6 +11,7 @@ readme = "README.md"
 
 [dependencies]
 prost.workspace = true
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
 reqwest.workspace = true
 serde_json.workspace = true

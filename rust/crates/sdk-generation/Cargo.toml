@@ -1,0 +1,16 @@
+[package]
+name = "sdk-generation"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Fixed Rust-owned SDK documentation generation and drift entrypoint"
+default-run = "sdk-generation"
+
+[workspace]
+
+[dependencies]
+sdk-docs = { path = "../sdk-docs" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"

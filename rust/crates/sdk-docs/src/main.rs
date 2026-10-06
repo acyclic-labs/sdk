@@ -2,6 +2,7 @@ use sdk_docs::{build_data, write_bundle, BuildInput, Channel, Error};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 fn main() {
     if let Err(error) = run() {
@@ -39,6 +40,7 @@ fn run() -> Result<(), Error> {
         channel,
         revision,
         source_state,
+        source_sha256: None,
         repository_root: repository,
         rustdoc_files,
         mark_latest,
@@ -57,9 +59,13 @@ fn validate_arguments(args: &[String]) -> Result<(), Error> {
         "--channel",
         "--source-state",
     ];
+    let mut seen = HashSet::new();
     let mut index = 0;
     while index < args.len() {
         let flag = &args[index];
+        if !seen.insert(flag.as_str()) {
+            return Err(Error::Invalid(format!("duplicate argument {flag}")));
+        }
         if flag == "--latest" {
             index += 1;
         } else if value_flags.contains(&flag.as_str()) {
@@ -95,6 +101,14 @@ fn optional_value(args: &[String], name: &str) -> Result<Option<String>, Error> 
 }
 
 fn discover_rustdoc_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        if is_reparse_or_symlink(&metadata) {
+            return Err(Error::Invalid(format!(
+                "rustdoc input is a reparse point or symlink: {}",
+                path.display()
+            )));
+        }
+    }
     let mut files = Vec::new();
     if path.is_file() {
         files.push(path.to_owned());
@@ -118,9 +132,17 @@ fn discover_rustdoc_files(path: &Path) -> Result<Vec<PathBuf>, Error> {
 fn collect_json(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
     for entry in fs::read_dir(root)? {
         let path = entry?.path();
-        if path.is_dir() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if is_reparse_or_symlink(&metadata) {
+            return Err(Error::Invalid(format!(
+                "rustdoc input contains a reparse point or symlink: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
             collect_json(&path, files)?;
-        } else if path
+        } else if metadata.is_file()
+            && path
             .extension()
             .is_some_and(|extension| extension == "json")
         {
@@ -128,4 +150,19 @@ fn collect_json(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn is_reparse_or_symlink(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return metadata.file_attributes() & 0x400 != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
