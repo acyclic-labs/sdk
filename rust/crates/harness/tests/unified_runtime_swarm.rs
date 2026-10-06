@@ -582,9 +582,45 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
         Limits::default(),
     )
     .await?;
-    let output = swarm
-        .run_root(id(0xA0), "run the complete recursive local swarm")
-        .await?;
+    let operation = id(0xA0);
+    let output = match swarm
+        .run_root(operation, "run the complete recursive local swarm")
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            #[cfg(feature = "test-support")]
+            {
+                let mut task_operations = Vec::with_capacity(4);
+                if let Ok(root_task) = swarm.root_task().await {
+                    task_operations.push((root_task, operation));
+                }
+                for operation_id in [child_a, child_b, grandchild] {
+                    task_operations.push((
+                        acyclic_harness::TaskId::from_bytes(operation_id.into_bytes()),
+                        operation_id,
+                    ));
+                }
+                let request_count = provider.requests().len();
+                return Err(
+                    swarm_provider_support::preserve_failure_evidence(
+                        directory,
+                        &swarm,
+                        operation,
+                        task_operations,
+                        swarm_provider_support::FixtureFailureSummary {
+                            dispatches: request_count,
+                            serialized_request_count: request_count,
+                        },
+                        error,
+                    )
+                    .await,
+                );
+            }
+            #[cfg(not(feature = "test-support"))]
+            return Err(error);
+        }
+    };
     assert_eq!(output.text, "unified recursive swarm complete");
     assert_eq!(swarm.sessions().await?.len(), 4);
     for operation in [child_a, child_b, grandchild] {

@@ -34,8 +34,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tempfile::tempdir;
-#[cfg(feature = "test-support")]
-use tempfile::TempDir;
 
 #[path = "swarm_provider_support.rs"]
 mod swarm_provider_support;
@@ -69,95 +67,6 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
-}
-
-#[cfg(feature = "test-support")]
-fn preserve_recursive_failure<'a>(
-    directory: TempDir,
-    swarm: &'a PersistentLocalSwarm,
-    provider: &'a DeterministicProvider,
-    operation: OperationId,
-    error: Error,
-) -> BoxFuture<'a, Error> {
-    Box::pin(async move {
-        let mut task_operations = Vec::with_capacity(4);
-        if let Ok(root_task) = swarm.root_task().await {
-            task_operations.push((root_task, operation));
-        }
-        for operation_id in [id(0xF1), id(0xF2), id(0xF3)] {
-            task_operations.push((
-                acyclic_harness::TaskId::from_bytes(operation_id.into_bytes()),
-                operation_id,
-            ));
-        }
-        let sessions = match swarm.sessions().await {
-            Ok(sessions) => serde_json::to_value(
-                sessions
-                    .iter()
-                    .map(|session| {
-                        json!({
-                            "task": session.task,
-                            "parent": session.parent,
-                            "depth": session.depth,
-                            "operation": session.operation,
-                            "phase": format!("{:?}", session.phase),
-                        })
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .unwrap_or_else(|serialization| json!({"error": serialization.to_string()})),
-            Err(session_error) => json!({"error": session_error.to_string()}),
-        };
-
-        let mut journals = Vec::with_capacity(task_operations.len());
-        for (task, operation_id) in task_operations {
-            let records = match swarm.read_execution_journal(task, operation_id).await {
-                Ok(records) => serde_json::to_value(records)
-                    .unwrap_or_else(|serialization| json!({"error": serialization.to_string()})),
-                Err(journal_error) => json!({"error": journal_error.to_string()}),
-            };
-            journals.push(json!({
-                "task": task,
-                "operation": operation_id,
-                "records": records,
-            }));
-        }
-
-        let evidence = json!({
-            "format": "acyclic.local-model-swarm.failure.v1",
-            "error": {
-                "display": error.to_string(),
-                "debug": format!("{error:?}"),
-            },
-            "operation": operation,
-            "provider": {
-                "dispatches": provider.dispatches.load(Ordering::SeqCst),
-                "serialized_request_count": provider.serialized_requests().len(),
-            },
-            "sessions": sessions,
-            "journals": journals,
-        });
-        let evidence_path = directory.path().join("recursive-failure-evidence.json");
-        if let Err(write_error) = std::fs::write(
-            &evidence_path,
-            serde_json::to_vec_pretty(&evidence).unwrap_or_else(|serialization| {
-                let message = serde_json::to_string(&serialization.to_string()).unwrap_or_default();
-                format!("{{\"error\":{message}}}").into_bytes()
-            }),
-        ) {
-            eprintln!(
-                "recursive fixture evidence write failed at {}: {}",
-                evidence_path.display(),
-                write_error
-            );
-        }
-        let preserved_path = directory.keep();
-        eprintln!(
-            "recursive fixture failure evidence preserved at {}",
-            preserved_path.display()
-        );
-        error
-    })
 }
 
 fn message_contains(request: &ModelRequest, needle: &str) -> bool {
@@ -1683,9 +1592,32 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
         Ok(output) => output,
         Err(error) => {
             #[cfg(feature = "test-support")]
-            return Err(
-                preserve_recursive_failure(directory, &swarm, &provider, operation, error).await,
-            );
+            {
+                let mut task_operations = Vec::with_capacity(4);
+                if let Ok(root_task) = swarm.root_task().await {
+                    task_operations.push((root_task, operation));
+                }
+                for operation_id in [id(0xF1), id(0xF2), id(0xF3)] {
+                    task_operations.push((
+                        acyclic_harness::TaskId::from_bytes(operation_id.into_bytes()),
+                        operation_id,
+                    ));
+                }
+                return Err(
+                    swarm_provider_support::preserve_failure_evidence(
+                        directory,
+                        &swarm,
+                        operation,
+                        task_operations,
+                        swarm_provider_support::FixtureFailureSummary {
+                            dispatches: provider.dispatches.load(Ordering::SeqCst),
+                            serialized_request_count: provider.serialized_requests().len(),
+                        },
+                        error,
+                    )
+                    .await,
+                );
+            }
             #[cfg(not(feature = "test-support"))]
             return Err(error);
         }
