@@ -395,12 +395,13 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
 
 fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> String {
     let property = response_field_property(field);
-    if let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
+    if !field.proto3_optional
+        && let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
         binding.family == family
             && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
             && binding.wire_field == field.field
             && binding.direction == PublicFieldDirection::Request
-    }) && upper(binding.field) == property
+        }) && upper(binding.field) == property
         && let Some(assignment) = csharp_wire_assignment(family, binding)
     {
         return assignment;
@@ -409,6 +410,24 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
         && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
     {
         let clear = format!("        wire.Clear{property}();\n");
+        if let Some(semantic_id) = field.semantic_type.as_deref() {
+            let semantic = semantic_type(semantic_id).expect("Rust semantic type must resolve");
+            let assignment = match semantic.wire_kind {
+                WireValueKind::UnsignedInteger => {
+                    format!("checked((ulong){property}.Value.ToWire())")
+                }
+                WireValueKind::SignedInteger
+                | WireValueKind::Boolean
+                | WireValueKind::String
+                | WireValueKind::Bytes
+                | WireValueKind::Timestamp => format!("{property}.Value.ToWire()"),
+                WireValueKind::Message => format!("{property}.Value.ToWire()"),
+                WireValueKind::Enum | WireValueKind::Oneof => format!("{property}.Value"),
+            };
+            return format!(
+                "        if ({property}.HasValue) wire.{property} = {assignment}; else\n{clear}"
+            );
+        }
         return match field.wire_type {
             Some(kind) if kind == FieldType::Enum as i32 => {
                 format!(
@@ -827,7 +846,12 @@ fn response_field_accessor(field: &ResolvedRequestField) -> String {
                 format!("new {rust_name}(Wire.{property}.ToByteArray())")
             }
         }
-        WireValueKind::UnsignedInteger | WireValueKind::SignedInteger | WireValueKind::Boolean => format!("new {rust_name}(Wire.{property})"),
+        WireValueKind::UnsignedInteger => {
+            format!("new {rust_name}(checked((ulong)Wire.{property}))")
+        }
+        WireValueKind::SignedInteger | WireValueKind::Boolean => {
+            format!("new {rust_name}(Wire.{property})")
+        }
         _ => format!("Wire.{property}"),
     }
 }
