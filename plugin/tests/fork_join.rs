@@ -17,7 +17,7 @@ mod support;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
-use support::{ACYCLIC, ServiceGuard, command, isolated_state, output_with_stdin, test_tempdir};
+use support::{ACYCLIC, ServiceGuard, command, isolated_state, test_tempdir};
 
 /// The host protocol these scenarios drive; its hook contract matches every
 /// host that forks subagents.
@@ -99,7 +99,11 @@ impl Session {
         let mut run = command(ACYCLIC);
         run.args(arguments).current_dir(cwd);
         isolated_state(&mut run, self.home.path());
-        let output = output_with_stdin(&mut run, input);
+        let output = self
+            .service
+            .as_ref()
+            .expect("session service owner")
+            .output_with_stdin(&mut run, input);
         let text = if output.status.success() {
             String::from_utf8_lossy(&output.stdout).into_owned()
         } else {

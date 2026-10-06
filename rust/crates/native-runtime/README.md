@@ -87,6 +87,13 @@ fixtures that deliberately inherit their parent's containment. JavaScript and
 shell build/release or external CI orchestrators remain outside this Rust SDK
 ownership boundary; no command-execution binding or new crate is introduced.
 
+A Windows service started by a client inside a non-breakaway Job remains in
+that Job even when the client exits; detachment does not escape Job ownership.
+Service-backed qualification sessions retain their client process trees until
+authenticated service drain and then explicitly terminate the retained trees.
+Linux service drain instead follows client cleanup because its service starts
+a separate session and surviving clients can hold FUSE mounts busy.
+
 On Darwin, group signalling returns EPERM for a zombie-only group. Cleanup
 accepts that case only when a kernel membership snapshot is empty or contains
 exactly the owned, independently observed exited leader. Additional members or

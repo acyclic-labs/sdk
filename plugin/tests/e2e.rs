@@ -44,6 +44,7 @@ fn packaged_service_hook_latency_receipt() {
     let workspace = |session: usize| temporary.path().join(format!("workspace-{session}"));
     let hook_at = |session: usize, cwd: &Path, event: &str, fields: Value| {
         timed_hook(
+            &service,
             &package.native,
             temporary.path(),
             session,
@@ -116,7 +117,7 @@ fn packaged_service_hook_latency_receipt() {
         record("SessionEnd", hook(session, "SessionEnd", none()));
     }
     hook(0, "SessionEnd", none());
-    record_codex_transports(&package, temporary.path(), pairs, &mut record);
+    record_codex_transports(&service, &package, temporary.path(), pairs, &mut record);
     service.drain();
     let events = samples
         .into_iter()
@@ -276,6 +277,7 @@ impl CodexHookServer {
 /// One Codex session on the running service, whose hooks are delivered over
 /// any [`CodexTransport`] and timed end to end from the host's side.
 struct CodexLatencySession<'a> {
+    service: &'a ServiceGuard,
     package: &'a PackagedPlugin,
     root: &'a Path,
     workspace: &'a Path,
@@ -349,7 +351,7 @@ impl CodexLatencySession<'_> {
                 .current_dir(self.workspace)
                 .env("PLUGIN_ROOT", &self.package.root);
             isolated_state(&mut process, self.root);
-            let output = output_with_stdin(
+            let output = self.service.output_with_stdin(
                 &mut process,
                 &serde_json::to_vec(event).expect("hook input"),
             );
@@ -511,6 +513,7 @@ fn codex_expand(template: &Value, event: &Value) -> Value {
 /// `PowerShell`, `-c` for a POSIX shell). Transports alternate call by call,
 /// so they share the host's load.
 fn record_codex_transports(
+    service: &ServiceGuard,
     package: &PackagedPlugin,
     root: &Path,
     pairs: usize,
@@ -522,6 +525,7 @@ fn record_codex_transports(
     let workspace = root.join("codex-workspace");
     fs::create_dir_all(&workspace).expect("Codex workspace");
     let session = CodexLatencySession {
+        service,
         package,
         root,
         workspace: &workspace,
@@ -562,6 +566,7 @@ fn record_codex_transports(
 /// Runs one hook for session `session` from `workspace` and returns the
 /// process's end-to-end latency and its response.
 fn timed_hook(
+    service: &ServiceGuard,
     native: &Path,
     root: &Path,
     session: usize,
@@ -589,7 +594,7 @@ fn timed_hook(
         .current_dir(workspace);
     isolated_state(&mut process, root);
     let started = Instant::now();
-    let output = output_with_stdin(&mut process, &input);
+    let output = service.output_with_stdin(&mut process, &input);
     let elapsed = started.elapsed();
     assert!(
         output.status.success(),
@@ -647,6 +652,32 @@ fn repository_has_one_canonical_plugin_root() {
         Some("plugin")
     );
     assert!(!repository.join("plugins/acyclic").exists());
+}
+
+#[test]
+#[cfg(windows)]
+fn service_client_jobs_remain_owned_until_authenticated_drain() {
+    let temporary = test_tempdir("service-client-jobs-");
+    let mut service = ServiceGuard::new(temporary.path());
+    let mut identity = None;
+    for _ in 0..2 {
+        let mut client = command(ACYCLIC);
+        client.args(["agents", "--json"]);
+        isolated_state(&mut client, temporary.path());
+        let output = service.output_with_stdin(&mut client, b"");
+        assert!(
+            output.status.success(),
+            "service client failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let observed = service.assert_hook_service_live();
+        if let Some(expected) = &identity {
+            assert_eq!(&observed, expected, "service must survive client exit");
+        }
+        identity = Some(observed);
+    }
+    service.drain();
+    assert_service_absent(temporary.path()).expect("service drained and clients cleaned");
 }
 
 #[test]

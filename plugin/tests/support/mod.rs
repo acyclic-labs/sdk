@@ -6,6 +6,7 @@ pub use scripted_provider::{RequestFingerprint, ScriptedProvider};
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
@@ -88,7 +89,7 @@ fn default_e2e_scratch_root() -> PathBuf {
 pub struct ServiceGuard {
     home: PathBuf,
     identity: Option<String>,
-    process_tree: Option<ProcessTree>,
+    process_trees: RefCell<Vec<ProcessTree>>,
     active: bool,
 }
 
@@ -97,13 +98,30 @@ impl ServiceGuard {
         Self {
             home: home.to_path_buf(),
             identity: None,
-            process_tree: None,
+            process_trees: RefCell::new(Vec::new()),
             active: true,
         }
     }
 
-    pub fn attach_process_tree(&mut self, process_tree: ProcessTree) {
-        assert!(self.process_tree.replace(process_tree).is_none());
+    pub fn attach_process_tree(&self, process_tree: ProcessTree) {
+        self.process_trees.borrow_mut().push(process_tree);
+    }
+
+    /// Keep client containment alive until authenticated service drain. On
+    /// Windows the service inherits the starting client's non-breakaway Job.
+    pub fn output_with_stdin(&self, command: &mut Command, input: &[u8]) -> Output {
+        let bounded = output_with_stdin_timeout(command, input, Duration::from_secs(120));
+        self.attach_process_tree(bounded.process_tree);
+        assert!(!bounded.expired, "service client exceeded its deadline");
+        bounded.output
+    }
+
+    fn terminate_clients(&mut self) -> Result<(), String> {
+        for tree in self.process_trees.get_mut().iter_mut() {
+            tree.terminate().map_err(|error| error.to_string())?;
+        }
+        self.process_trees.get_mut().clear();
+        Ok(())
     }
 
     pub fn assert_hook_service_live(&mut self) -> String {
@@ -155,19 +173,16 @@ impl ServiceGuard {
             Ok(authenticated) => authenticated,
             Err(authentication_error) => {
                 if self.clear_dead_service_marker()? {
-                    if let Some(tree) = self.process_tree.as_mut() {
-                        tree.terminate().map_err(|error| error.to_string())?;
-                    }
+                    self.terminate_clients()?;
                     self.active = false;
-                    drop(self.process_tree.take());
                     return Ok(());
                 }
                 return Err(authentication_error);
             }
         };
         let Some(identity) = authenticated else {
+            self.terminate_clients()?;
             self.active = false;
-            drop(self.process_tree.take());
             return Ok(());
         };
         // A host can retain open handles below its native mount even after its direct process
@@ -175,9 +190,7 @@ impl ServiceGuard {
         // containment before asking it to synchronize and unmount; the reverse order can deadlock
         // Linux FUSE teardown.
         #[cfg(target_os = "linux")]
-        if let Some(tree) = self.process_tree.as_mut() {
-            tree.terminate().map_err(|error| error.to_string())?;
-        }
+        self.terminate_clients()?;
         let mut drain = command(ACYCLIC);
         drain.arg("__service-drain").arg(&identity);
         isolated_state(&mut drain, &self.home);
@@ -196,11 +209,8 @@ impl ServiceGuard {
         }
         self.verify_drained(&identity)?;
         #[cfg(not(target_os = "linux"))]
-        if let Some(tree) = self.process_tree.as_mut() {
-            tree.terminate().map_err(|error| error.to_string())?;
-        }
+        self.terminate_clients()?;
         self.active = false;
-        drop(self.process_tree.take());
         Ok(())
     }
 
