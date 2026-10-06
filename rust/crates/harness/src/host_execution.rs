@@ -685,6 +685,7 @@ impl ExecutionResolutionCapability {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn matches(
         &self,
         session_id: SessionId,

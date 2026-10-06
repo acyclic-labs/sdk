@@ -1600,16 +1600,6 @@ impl SwarmBudget {
         })
     }
 
-    /// Records complete model/workspace publication and returns a dispatch token.
-    pub(crate) fn activate(
-        &self,
-        operation_id: OperationId,
-        owner: SwarmOwnerFence,
-        publication: ForkPublication,
-    ) -> Result<SwarmDispatchToken> {
-        self.activate_with_dispatch(operation_id, owner, publication, None)
-    }
-
     /// Records publication and the provider attempt identity atomically.
     pub(crate) fn activate_with_dispatch(
         &self,
@@ -2789,10 +2779,11 @@ mod tests {
                 .report_usage(child.operation_id, &owner(0), SwarmUsage::default())
                 .is_err()
         );
-        let token = budget.activate(
+        let token = budget.activate_with_dispatch(
             child.operation_id,
             owner(0),
             publication(child.operation_id, None),
+            None,
         )?;
         assert_eq!(token.operation_id, child.operation_id);
         assert_eq!(token.resources(), child.resources);
@@ -2973,10 +2964,11 @@ mod tests {
             execution_time_ms: 600,
         };
         let child = budget.reserve_child(child_request)?.reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             child.operation_id,
             owner(0),
             publication(child.operation_id, Some(parent.operation_id)),
+            None,
         )?;
         budget.complete(
             child.operation_id,
@@ -3001,18 +2993,20 @@ mod tests {
     fn parent_completion_waits_for_live_descendants() -> Result<()> {
         let budget = SwarmBudget::new(id(9), owner(0), limits())?;
         let parent = budget.reserve_child(request(1, None))?.reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             parent.operation_id,
             owner(0),
             publication(parent.operation_id, None),
+            None,
         )?;
         let child = budget
             .reserve_child(request(2, Some(parent.operation_id)))?
             .reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             child.operation_id,
             owner(0),
             publication(child.operation_id, Some(parent.operation_id)),
+            None,
         )?;
         assert!(
             budget
@@ -3044,10 +3038,11 @@ mod tests {
             execution_time_ms: 1_000,
         };
         let child = budget.reserve_child(child_request)?.reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             child.operation_id,
             owner(0),
             publication(child.operation_id, Some(parent.operation_id)),
+            None,
         )?;
         let mut grandchild_request = request(3, Some(child.operation_id));
         grandchild_request.depth = 3;
@@ -3057,10 +3052,11 @@ mod tests {
             execution_time_ms: 400,
         };
         let grandchild = budget.reserve_child(grandchild_request)?.reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             grandchild.operation_id,
             owner(0),
             publication(grandchild.operation_id, Some(child.operation_id)),
+            None,
         )?;
         budget.complete(
             grandchild.operation_id,
@@ -3086,10 +3082,11 @@ mod tests {
     fn cancellation_releases_active_capacity_but_keeps_consumed_usage() -> Result<()> {
         let budget = SwarmBudget::new(id(9), owner(0), limits())?;
         let child = budget.reserve_child(request(1, None))?.reservation;
-        budget.activate(
+        budget.activate_with_dispatch(
             child.operation_id,
             owner(0),
             publication(child.operation_id, None),
+            None,
         )?;
         let root_owner = owner(0);
         budget.report_usage(
@@ -3147,17 +3144,19 @@ mod tests {
         assert_eq!(current.generation, 1);
         assert!(
             budget
-                .activate(
+                .activate_with_dispatch(
                     child.operation_id,
                     owner(0),
-                    publication(child.operation_id, None)
+                    publication(child.operation_id, None),
+                    None,
                 )
                 .is_err()
         );
-        budget.activate(
+        budget.activate_with_dispatch(
             child.operation_id,
             current.clone(),
             publication(child.operation_id, None),
+            None,
         )?;
         Ok(())
     }

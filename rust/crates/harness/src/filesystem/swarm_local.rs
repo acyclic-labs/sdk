@@ -64,13 +64,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    future::Future,
     path::{Path, PathBuf},
-    pin::Pin,
     sync::{Arc, Mutex as StdMutex, OnceLock, RwLock, Weak},
-    task::{Context, Poll},
 };
 use tokio::sync::Mutex;
+
+#[cfg(test)]
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 #[path = "swarm_read_projection.rs"]
 mod read_projection;
@@ -139,16 +143,19 @@ async fn pause_after_timer_admission_append() {
 /// A spawned child turn remains owned by its activation future. Dropping the
 /// activation must cancel the child task instead of detaching a model worker
 /// that can continue dispatching effects after its caller has gone away.
+#[cfg(test)]
 struct AbortOnDrop<T> {
     handle: tokio::task::JoinHandle<T>,
 }
 
+#[cfg(test)]
 impl<T> AbortOnDrop<T> {
     fn new(handle: tokio::task::JoinHandle<T>) -> Self {
         Self { handle }
     }
 }
 
+#[cfg(test)]
 impl<T> Future for AbortOnDrop<T> {
     type Output = std::result::Result<T, tokio::task::JoinError>;
 
@@ -157,6 +164,7 @@ impl<T> Future for AbortOnDrop<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.handle.abort();
@@ -478,24 +486,6 @@ impl LocalSwarmBindings {
     #[must_use]
     pub fn with_budget_usage_source(mut self, source: Arc<dyn SwarmUsageSource>) -> Self {
         self.budget_usage_source = Some(source);
-        self
-    }
-
-    /// Installs the Harness-owned project workspace tools for this swarm.
-    #[must_use]
-    pub(crate) fn with_workspace_tools(
-        mut self,
-        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
-        root_project: VolumeRef,
-        root_task: TaskId,
-        limits: Limits,
-    ) -> Self {
-        self.workspace_tools = Some(workspace_tools::WorkspaceToolsBinding {
-            host,
-            root_project,
-            root_task,
-            limits,
-        });
         self
     }
 
