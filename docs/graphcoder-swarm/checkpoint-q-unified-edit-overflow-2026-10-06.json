@@ -1,0 +1,31 @@
+{
+  "qualification": "Diagnostic failure only; no acceptance requirement closed.",
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f3d9612fa-unified-runtime\\source.tar",
+      "sha256": "faf367d8038b1099cac5d287a815eb4ccbdf4cae0fa099d3d007971a24528b51"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f3d9612fa-unified-runtime\\native.log",
+      "sha256": "73558ec3bede50a25171875a4298c841c9e4fc7a53c0aa2cdecbb9a29d93cb23"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f3d9612fa-unified-runtime\\exit-code",
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f3d9612fa-unified-runtime\\unified_runtime_swarm.exe",
+      "sha256": "992646edcdd94b05f91458476fdd468427aa49120ba81f3907ffb31674737606"
+    }
+  ],
+  "source": "f3d9612fa813dfa089be4fd534dd900f640eb4b7",
+  "observation": "Workspace read and edit completed, including host apply. Runtime then overflowed before the second batch publication. Full recursive acceptance remains unmet.",
+  "platform": "Windows native",
+  "failed": 1,
+  "stack_override": false,
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "passed": 0,
+  "result": "failed",
+  "exit_code": -1073741571,
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test unified_runtime_swarm -j1 default_local_runtime_executes_two_children_grandchild_and_communication -- --exact --nocapture"
+}

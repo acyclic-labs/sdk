@@ -45,6 +45,13 @@ It does not qualify later source revisions or the full matrix:
   children without the prior overflow, but the scenario failed during the
   `default-message-child` tool exchange. See [communication failure](checkpoint-q-owned-task-communication-failure-2026-10-06.json).
 
+- The unified native scenario at `f3d9612fa` completed workspace read and edit,
+  then overflowed before its second batch publication. See
+  [unified runtime failure](checkpoint-q-unified-edit-overflow-2026-10-06.json).
+- Qualification tooling at `f3d9612fa`: thirty-two cases pass with no skips;
+  see [tooling checks](checkpoint-q-tooling-32-pass-2026-10-06.json). These
+  checks do not qualify runtime or installed artifacts.
+
 Packaging-side focused checks also remain distinct from actual artifact builds:
 
 - Native binding producer commit `9da098ca9`: five producer tests pass,
