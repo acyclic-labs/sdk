@@ -40,6 +40,10 @@ for (let index = 0; index < optionArgs.length; index += 1) {
   const value = optionArgs[index];
   if (!value.startsWith("--")) usage(`unexpected argument ${value}`);
   const key = value.slice(2);
+  if (key === "require-source-binding") {
+    options.set(key, true);
+    continue;
+  }
   const next = optionArgs[index + 1];
   if (!next || next.startsWith("--")) usage(`${value} requires a value`);
   options.set(key, next);
