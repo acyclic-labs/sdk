@@ -629,6 +629,7 @@ impl ExecutionResolutionCapability {
         ))
     }
 
+    #[cfg(test)]
     pub(crate) fn owner_token(
         session_id: SessionId,
         volume: &VolumeRef,
