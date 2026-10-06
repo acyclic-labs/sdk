@@ -6,7 +6,7 @@ use crate::{
     Outcome,
     communication::{message_endpoint_operation, publish_control_record},
     durable_mail::MailboxStore,
-    runtime::{DurableTaskHost, TaskCommunicationScope},
+    runtime::{DurableTaskHost, TaskCommunicationScope, read_granted},
     scheduler::InboxItem,
     swarm_budget::SwarmReservationState,
 };
@@ -236,21 +236,20 @@ impl DurableTaskHost for SwarmCommunicationHost {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let result = async {
-                if message.into_bytes() == [0; 16] {
-                    return Err(Error::Invalid("swarm message identity is nil".into()));
-                }
-                let swarm = self.swarm()?;
-                let sender_scope = self.communication_scope(sender).await?;
-                let recipient_scope = self.communication_scope(recipient).await?;
-                if sender_scope.parent != Some(recipient)
-                    && recipient_scope.parent != Some(sender)
-                {
-                    return Err(Error::Unauthorized(
-                        "message endpoints are not direct parent and child".into(),
-                    ));
-                }
-                recipient_scope.limits.validate_file(&payload)?;
+            if message.into_bytes() == [0; 16] {
+                return Err(Error::Invalid("swarm message identity is nil".into()));
+            }
+            let swarm = self.swarm()?;
+            let sender_scope = self.communication_scope(sender).await?;
+            let recipient_scope = self.communication_scope(recipient).await?;
+            if sender_scope.parent != Some(recipient)
+                && recipient_scope.parent != Some(sender)
+            {
+                return Err(Error::Unauthorized(
+                    "message endpoints are not direct parent and child".into(),
+                ));
+            }
+            recipient_scope.limits.validate_file(&payload)?;
                 // A lifecycle-fenced endpoint may still recover the exact
                 // committed delivery. Probe before admitting any new mutation;
                 // the normal publication path remains the sole ledger for active
@@ -265,10 +264,15 @@ impl DurableTaskHost for SwarmCommunicationHost {
                 let recipient_harness = swarm.open_session(recipient).await?;
                 let storage = recipient_harness.storage();
                 let sender_harness = swarm.open_session(sender).await?;
-                // Validate sender read authority and content residency before the
-                // lifecycle CAS. An admission must never survive a malformed or
-                // inaccessible source payload.
-                let bytes = sender_harness.storage().read(&payload).await?;
+            // Validate sender read authority and content residency before the
+            // lifecycle CAS. An admission must never survive a malformed or
+            // inaccessible source payload.
+            if !read_granted(&sender_scope.grants, &payload)? {
+                return Err(Error::Unauthorized(
+                    "sender scope cannot read the mailed file".into(),
+                ));
+            }
+            let bytes = sender_harness.storage().read(&payload).await?;
                 swarm
                     .admit_message(sender, recipient, message, payload.clone())
                     .await?;
@@ -294,17 +298,9 @@ impl DurableTaskHost for SwarmCommunicationHost {
                         )
                         .await?
                 };
-                MailboxStore::new(self.stream.clone(), storage.content_verifier())
-                    .send_admitted(self, sender, recipient, message, delivered)
-                    .await
-            }
-            .await;
-            if let Err(error) = &result {
-                crate::stack_diagnostics::message_failure(&format!(
-                    "sender={sender} recipient={recipient} message={message} error={error}"
-                ));
-            }
-            result
+            MailboxStore::new(self.stream.clone(), storage.content_verifier())
+                .send_admitted(self, sender, recipient, message, delivered)
+                .await
         })
     }
 

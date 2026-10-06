@@ -1038,6 +1038,19 @@ impl DurableCommunication {
     /// Validates target authorization from owner-retained admissions before
     /// publishing the ref-only message through the host.
     pub async fn send(&self, request: MessageRequest) -> Result<()> {
+        let sender = request.sender;
+        let recipient = request.recipient;
+        let message = request.message_id;
+        let result = self.send_inner(request).await;
+        if let Err(error) = &result {
+            crate::stack_diagnostics::message_failure(&format!(
+                "sender={sender} recipient={recipient} message={message} error={error}"
+            ));
+        }
+        result
+    }
+
+    async fn send_inner(&self, request: MessageRequest) -> Result<()> {
         request.validate()?;
         let sender = self.host.communication_scope(request.sender).await?;
         let recipient = self.host.communication_scope(request.recipient).await?;
