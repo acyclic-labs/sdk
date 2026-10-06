@@ -9337,6 +9337,154 @@ mod tests {
         usage: Arc<MockUsageSource>,
     }
 
+    /// Emits one durable fork, then reports a child transport failure once.
+    /// The recovery test uses the same provider for the cold retry, so a
+    /// successful retry proves the retained seed and request were reused.
+    struct AliasRecoveryModel {
+        child: OperationId,
+        root_sent: AtomicBool,
+        child_failed: AtomicBool,
+        usage: Arc<MockUsageSource>,
+    }
+
+    impl AliasRecoveryModel {
+        fn new(child: OperationId) -> Arc<Self> {
+            Arc::new(Self {
+                child,
+                root_sent: AtomicBool::new(false),
+                child_failed: AtomicBool::new(false),
+                usage: mock_usage_source(),
+            })
+        }
+
+        fn is_alias_child_request(request: &ModelRequest) -> bool {
+            request.messages.iter().rev().any(|message| {
+                let text = match &message.content {
+                    ModelContent::Text(text) => Some(text.as_str()),
+                    ModelContent::Part(ModelContentPart::Text { text }) => Some(text.as_str()),
+                    ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
+                        ModelContentPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                text.is_some_and(|text| text.starts_with("child task: alias-child; parent:"))
+            })
+        }
+    }
+
+    impl ModelProvider for AliasRecoveryModel {
+        fn supports_dispatch_context(&self) -> bool {
+            true
+        }
+
+        fn swarm_usage_source(
+            &self,
+        ) -> Option<Arc<dyn crate::swarm_budget::SwarmUsageSource>> {
+            Some(self.usage.clone())
+        }
+
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            if Self::is_alias_child_request(prepared.request())
+                && !self.child_failed.swap(true, Ordering::SeqCst)
+            {
+                return Box::pin(futures::stream::once(async {
+                    Err(Error::Storage(
+                        "simulated lost child acknowledgement after seed publication".into(),
+                    ))
+                }));
+            }
+            let events = if !self.root_sent.swap(true, Ordering::SeqCst) {
+                vec![
+                    ModelEvent::ToolCall {
+                        call_id: "alias-fork-child".into(),
+                        name: "acyclic.fork_child".into(),
+                        arguments: json!({
+                            "child_operation": self.child.to_string(),
+                            "task": "alias-child",
+                            "prompt": "recover the child after publication"
+                        }),
+                    },
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]
+            } else {
+                vec![
+                    ModelEvent::Content {
+                        delta: "ordinary completion".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: Value::Null,
+                    },
+                ]
+            };
+            Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+        }
+
+        fn generate_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            if let Ok(mut usage) = self.usage.usage.lock() {
+                usage
+                    .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                    .or_default()
+                    .model_steps = 1;
+            }
+            let started = std::time::Instant::now();
+            let stream = self.generate(prepared);
+            let usage = self.usage.clone();
+            Box::pin(stream.map(move |event| {
+                if let Ok(event) = &event {
+                    if let Ok(mut usage) = usage.usage.lock() {
+                        let entry = usage
+                            .entry((dispatch.operation_id, dispatch.dispatch_id.0.clone()))
+                            .or_default();
+                        entry.output_bytes = entry.output_bytes.saturating_add(
+                            crate::contract::canonical_json_bytes(event)
+                                .map(|bytes| bytes.len() as u64)
+                                .unwrap_or_default(),
+                        );
+                        entry.execution_time_ms = entry
+                            .execution_time_ms
+                            .max(started.elapsed().as_millis() as u64);
+                    }
+                }
+                event
+            }))
+        }
+
+        fn reconcile_admitted_with_dispatch<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            attempt: ModelAttempt,
+            dispatch: ProviderDispatchContext,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async move {
+                if dispatch.operation_id != attempt.operation_id
+                    || dispatch.request_digest != attempt.request_digest
+                {
+                    return Err(Error::Conflict(
+                        "alias recovery dispatch context does not match admitted attempt".into(),
+                    ));
+                }
+                self.reconcile_admitted(prepared, attempt).await
+            })
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
     struct ShellModel {
         calls: AtomicUsize,
         arguments: Value,
@@ -10876,6 +11024,151 @@ mod tests {
         assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
         assert!(reopened.bindings.filesystem_fork_resolver.is_some());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retry_published_child_repairs_missing_alias_after_cold_reopen() -> Result<()> {
+        use acyclic_fs::GitCompatStore;
+
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let child_operation = OperationId::from_bytes([0xC1; 16]);
+        let root_operation = OperationId::from_bytes([0xC0; 16]);
+        let provider = AliasRecoveryModel::new(child_operation);
+        let model = Model::new("mock", "local-alias-recovery", "1", json!({}))?;
+        let limits = Limits::default();
+        let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            limits,
+        )
+        .await?;
+        let output = first
+            .run_root(root_operation, "publish the alias recovery child")
+            .await?;
+        assert_eq!(output.text, "ordinary completion");
+        let child = TaskId::from_bytes(child_operation.into_bytes());
+        assert_eq!(first.session(child).await?.phase, LocalSessionPhase::Activating);
+        let seed = first.published_seed(child).await?;
+        let child_project = seed
+            .resources
+            .iter()
+            .find_map(|resource| match &resource.revision {
+                ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Conflict("alias recovery seed has no child project".into()))?;
+        let branch = direct_child_branch_name(&child_project)?;
+        drop(first);
+
+        let filesystem = LocalFs::local(LocalOptions::new(root.path().join("filesystem")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let root_workspace = filesystem
+            .workspace_id("local-project")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let git = LocalCoreStateStore::new(root.path().join("git"));
+        let before = git
+            .load(root_workspace)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .ok_or_else(|| Error::Conflict("recursive runtime did not persist Git state".into()))?;
+        let child_branch = before
+            .branches
+            .get(&branch)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("recursive runtime did not persist child alias".into()))?;
+        let mut missing_alias = before.clone();
+        missing_alias.branches.remove(&branch);
+        missing_alias.revision = missing_alias
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Conflict("Git state revision overflow".into()))?;
+        assert!(git
+            .compare_and_swap(root_workspace, before.revision, missing_alias.clone())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            limits,
+        )
+        .await?;
+        let root_task = reopened.root_task().await?;
+        let root_harness = reopened.open_session(root_task).await?;
+        let mut parent = root_harness.conversation_aggregate(limits).await?;
+        let resolver = reopened
+            .bindings
+            .filesystem_fork_resolver
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("recursive resolver is missing".into()))?;
+        let issuer = LocalFilesystemForkResolver::child_issuer(
+            &seed.child,
+            child_operation,
+            root_harness.signing_key(),
+        );
+        let recovered = reopened
+            .retry_published_child(
+                child,
+                resolver.host(),
+                resolver.stream(),
+                issuer,
+                &mut parent,
+            )
+            .await?;
+        assert_eq!(recovered.output.text, "ordinary completion");
+        drop(reopened);
+
+        let repaired = git
+            .load(root_workspace)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .ok_or_else(|| Error::Conflict("Git state disappeared during alias retry".into()))?;
+        assert_eq!(repaired.revision, missing_alias.revision + 1);
+        assert_eq!(repaired.branches.get(&branch), Some(&child_branch));
+        let after_first_retry = repaired.clone();
+
+        let reopened_second =
+            PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                root.path(),
+                model,
+                provider,
+                limits,
+            )
+            .await?;
+        let root_task = reopened_second.root_task().await?;
+        let root_harness = reopened_second.open_session(root_task).await?;
+        let mut parent = root_harness.conversation_aggregate(limits).await?;
+        let resolver = reopened_second
+            .bindings
+            .filesystem_fork_resolver
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("recursive resolver is missing".into()))?;
+        let issuer = LocalFilesystemForkResolver::child_issuer(
+            &seed.child,
+            child_operation,
+            root_harness.signing_key(),
+        );
+        let second = reopened_second
+            .retry_published_child(
+                child,
+                resolver.host(),
+                resolver.stream(),
+                issuer,
+                &mut parent,
+            )
+            .await?;
+        assert_eq!(second.output.text, "ordinary completion");
+        drop(reopened_second);
+        assert_eq!(
+            git.load(root_workspace)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            Some(after_first_retry)
+        );
         Ok(())
     }
 

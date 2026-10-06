@@ -8,22 +8,19 @@
 //! captured below is the actual serialized provider request produced by the
 //! durable executor.
 
-use acyclic_fs::{GitCompatStore, LocalCoreStateStore, LocalFs, LocalOptions};
+use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
     Error, OperationId, Result,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::AuthorityIssuer,
     filesystem::{
-        FilesystemHost, LocalFilesystemForkResolver, LocalHarnessTools, LocalSessionPhase,
-        LocalSwarmBindings, LocalSwarmConfig, PersistentLocalHarness, PersistentLocalSwarm,
-        WorkspaceMutation, direct_child_branch_name, workspace_ref,
+        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
+        LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{
         Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest, ModelRole,
         ProviderDispatchContext,
     },
     resources::ProviderRef,
-    fork::ResourceRevision,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
@@ -119,80 +116,6 @@ fn staged_file(request: &ModelRequest) -> Option<Value> {
             .then(|| value.get("file").cloned())
             .flatten()
     })
-}
-
-/// Publishes one child, then loses the first child acknowledgement after the
-/// durable fork seed has been admitted. The retry must recover the exact child
-/// without redispatching a second fork publication.
-struct AliasRecoveryProvider {
-    child: OperationId,
-    root_sent: AtomicBool,
-    child_failed: AtomicBool,
-    usage: FixtureUsage,
-}
-
-impl AliasRecoveryProvider {
-    fn new(child: OperationId) -> Arc<Self> {
-        Arc::new(Self {
-            child,
-            root_sent: AtomicBool::new(false),
-            child_failed: AtomicBool::new(false),
-            usage: FixtureUsage::new("harness.test.local-model-swarm.alias-recovery"),
-        })
-    }
-}
-
-impl ModelProvider for AliasRecoveryProvider {
-    fixture_budget_methods!();
-
-    fn generate<'a>(
-        &'a self,
-        prepared: acyclic_harness::model_input::PreparedModelInput,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        let request = prepared.request();
-        if latest_declared_child_task(request) == Some("alias-child")
-            && !self.child_failed.swap(true, Ordering::SeqCst)
-        {
-            return Box::pin(stream::once(async {
-                Err(Error::Storage(
-                    "simulated lost child acknowledgement after seed publication".into(),
-                ))
-            }));
-        }
-        let events = if !self.root_sent.swap(true, Ordering::SeqCst) {
-            vec![
-                ModelEvent::ToolCall {
-                    call_id: "alias-fork-child".into(),
-                    name: "acyclic.fork_child".into(),
-                    arguments: json!({
-                        "child_operation": self.child.to_string(),
-                        "task": "alias-child",
-                        "prompt": "recover the child after publication"
-                    }),
-                },
-                ModelEvent::Completed {
-                    metadata: Value::Null,
-                },
-            ]
-        } else {
-            vec![
-                ModelEvent::Content {
-                    delta: "ordinary completion".into(),
-                },
-                ModelEvent::Completed {
-                    metadata: Value::Null,
-                },
-            ]
-        };
-        Box::pin(stream::iter(events.into_iter().map(Ok)))
-    }
-
-    fn reconcile<'a>(
-        &'a self,
-        _attempt: acyclic_harness::model::ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
 }
 
 fn has_read_result(request: &ModelRequest) -> bool {
@@ -1763,175 +1686,5 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
         "explicit λ🦀\n  reply".as_bytes());
     assert_eq!(reopened.run_root(operation, "run default recursive composition").await?, output);
     assert_eq!(provider.serialized_requests(), requests);
-    Ok(())
-}
-
-#[tokio::test]
-async fn cold_retry_repairs_missing_child_alias_once() -> Result<()> {
-    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
-    let child_operation = id(0xC1);
-    let root_operation = id(0xC0);
-    let provider = AliasRecoveryProvider::new(child_operation);
-    let model = Model::new("mock", "local-alias-recovery", "1", json!({}))?;
-    let limits = Limits::default();
-    let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(),
-        model.clone(),
-        provider.clone(),
-        limits,
-    )
-    .await?;
-    let output = swarm
-        .run_root(root_operation, "publish the alias recovery child")
-        .await?;
-    assert_eq!(output.text, "ordinary completion");
-    let child = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
-    assert_eq!(swarm.session(child).await?.phase, LocalSessionPhase::Activating);
-    let seed = swarm.published_seed(child).await?;
-    let root_task = swarm.root_task().await?;
-    drop(swarm);
-
-    let child_project = seed
-        .resources
-        .iter()
-        .find_map(|resource| match &resource.revision {
-            ResourceRevision::Project { volume, .. } => Some(volume.clone()),
-            _ => None,
-        })
-        .ok_or_else(|| Error::Conflict("alias recovery seed has no child project".into()))?;
-    let branch = direct_child_branch_name(&child_project)?;
-    let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-    let filesystem = LocalFs::local(LocalOptions::new(directory.path().join("filesystem")))
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let root_workspace = filesystem
-        .workspace_id("local-project")
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let git = LocalCoreStateStore::new(directory.path().join("git"));
-    let before = git
-        .load(root_workspace)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?
-        .ok_or_else(|| Error::Conflict("recursive runtime did not persist Git state".into()))?;
-    let child_branch = before
-        .branches
-        .get(&branch)
-        .cloned()
-        .ok_or_else(|| Error::Conflict("recursive runtime did not persist child alias".into()))?;
-    let mut missing_alias = before.clone();
-    missing_alias.branches.remove(&branch);
-    missing_alias.revision = missing_alias
-        .revision
-        .checked_add(1)
-        .ok_or_else(|| Error::Conflict("Git state revision overflow".into()))?;
-    assert!(git
-        .compare_and_swap(root_workspace, before.revision, missing_alias.clone())
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?);
-    assert!(!git
-        .load(root_workspace)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?
-        .ok_or_else(|| Error::Conflict("missing Git state after alias removal".into()))?
-        .branches
-        .contains_key(&branch));
-
-    let provider_for_reopen = provider.clone();
-    let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(),
-        model.clone(),
-        provider_for_reopen.clone(),
-        limits,
-    )
-    .await?;
-    let root_project_provider = filesystem_provider.clone();
-    let host = Arc::new(
-        FilesystemHost::new(
-            filesystem,
-            filesystem_provider,
-        )?,
-    );
-    let stream_provider = ProviderRef::new("local", "stream", "2")?;
-    let stream = StreamClient::new(Arc::new(
-        LocalStream::open(directory.path().join("conversation"), LocalStreamLimits::default())
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
-    ));
-    let root_project = VolumeRef::new(
-        root_project_provider,
-        "local-project",
-        VolumeClass::Project,
-        VolumeOwner::Project("local-swarm".into()),
-    )?;
-    let model_for_second = model.clone();
-    let provider_for_second = provider_for_reopen.clone();
-    let root_harness = PersistentLocalHarness::open_with_tools_and_project_on_providers(
-        directory.path().join("tasks").join(root_task.to_string()),
-        model,
-        provider_for_reopen,
-        limits,
-        LocalHarnessTools::new(),
-        Some(root_project),
-        host.clone(),
-        stream.clone(),
-        stream_provider,
-    )
-    .await?;
-    let mut parent = root_harness.conversation_aggregate(limits).await?;
-    let mut key = blake3::Hasher::new_keyed(&root_harness.signing_key());
-    key.update(b"acyclic.local-swarm.child-authority.v1\0");
-    key.update(seed.child.id.as_bytes());
-    key.update(&child_operation.into_bytes());
-    let issuer = AuthorityIssuer::new(
-        "local-swarm-fork",
-        *key.finalize().as_bytes(),
-        seed.child.clone(),
-    );
-    let recovered = reopened
-        .retry_published_child(
-            child,
-            host.clone(),
-            stream.clone(),
-            issuer.clone(),
-            &mut parent,
-        )
-        .await?;
-    assert_eq!(recovered.output.text, "ordinary completion");
-
-    drop(reopened);
-    let repaired = git
-        .load(root_workspace)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?
-        .ok_or_else(|| Error::Conflict("Git state disappeared during alias retry".into()))?;
-    assert_eq!(repaired.revision, missing_alias.revision + 1);
-    assert_eq!(repaired.branches.get(&branch), Some(&child_branch));
-    let after_first_retry = repaired.clone();
-    // The same durable retry is an acknowledgement, not a second branch
-    // mutation. Its state and revision must remain byte-for-byte equivalent.
-    let reopened_second = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-        directory.path(),
-        model_for_second,
-        provider_for_second,
-        limits,
-    )
-    .await?;
-    let second = reopened_second
-        .retry_published_child(
-            child,
-            host,
-            stream,
-            issuer,
-            &mut parent,
-        )
-        .await?;
-    assert_eq!(second.output.text, "ordinary completion");
-    drop(reopened_second);
-    assert_eq!(
-        git.load(root_workspace)
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))?,
-        Some(after_first_retry)
-    );
     Ok(())
 }
