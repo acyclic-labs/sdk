@@ -297,6 +297,65 @@ impl DurableTaskHost for SwarmCommunicationHost {
         })
     }
 
+    fn send_body<'a>(
+        &'a self,
+        sender: TaskId,
+        recipient: TaskId,
+        message: OperationId,
+        body: &'a [u8],
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            if message.into_bytes() == [0; 16] {
+                return Err(Error::Invalid("swarm message identity is nil".into()));
+            }
+            let swarm = self.swarm()?;
+            let sender_scope = self.communication_scope(sender).await?;
+            let recipient_scope = self.communication_scope(recipient).await?;
+            if sender_scope.parent != Some(recipient) && recipient_scope.parent != Some(sender) {
+                return Err(Error::Unauthorized(
+                    "message endpoints are not direct parent and child".into(),
+                ));
+            }
+            if body.len() as u64 > sender_scope.limits.file_bytes {
+                return Err(Error::Invalid(
+                    "swarm message exceeds the configured file bound".into(),
+                ));
+            }
+            if let Some(payload) = self
+                .replay_message_body(sender, recipient, message, body)
+                .await?
+            {
+                return Ok(payload);
+            }
+            sender_scope.require_new_mutation()?;
+            recipient_scope.require_new_mutation()?;
+            let sender_harness = swarm.open_session(sender).await?;
+            let transfer = message_endpoint_operation(sender, recipient, message);
+            let path = format!("system/swarm/messages/{transfer}.txt");
+            let descriptor = FileDescriptor::from_bytes(body, "text/plain")?;
+            swarm
+                .prepare_message(
+                    sender,
+                    recipient,
+                    message,
+                    sender_harness.storage().volume().clone(),
+                    path.clone(),
+                    descriptor.clone(),
+                    "message.txt".into(),
+                )
+                .await?;
+            // The owner reservation above is the cancellation linearization
+            // point. A crash now leaves a retryable preparation, while a
+            // cancellation that wins first prevents this stage entirely.
+            let payload = sender_harness
+                .storage()
+                .stage(transfer, &path, body, "text/plain", "message.txt")
+                .await?;
+            self.send(sender, recipient, message, payload.clone()).await?;
+            Ok(payload)
+        })
+    }
+
     fn inbox<'a>(
         &'a self,
         task: TaskId,

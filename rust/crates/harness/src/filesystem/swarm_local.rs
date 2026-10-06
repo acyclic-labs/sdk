@@ -16,9 +16,11 @@ use super::{
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
-    communication::{DurableCommunication, MessageRequest, MessageTarget},
+    communication::DurableCommunication,
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
-    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{
+        ConversationMessage, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef,
+    },
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{
         ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
@@ -3161,6 +3163,18 @@ enum StoredEvent {
         message_id: OperationId,
         payload: FileRef,
     },
+    /// Owner-journal reservation for a body-backed message. The reservation
+    /// fences cancellation before the sender-owned immutable bytes are staged;
+    /// the later `MessageAdmitted` record pins the generated file version.
+    MessagePreparing {
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        volume: VolumeRef,
+        path: String,
+        descriptor: FileDescriptor,
+        display_name: String,
+    },
     /// Owner-journal admission for one durable deadline timer. The timer
     /// stream is only the publication surface; this record orders it against
     /// task cancellation on the same lifecycle CAS.
@@ -5214,76 +5228,27 @@ impl PersistentLocalSwarm {
         }
         let sender_session = self.session(sender).await?;
         let recipient_session = self.session(recipient).await?;
-        let target = if sender_session.parent == Some(recipient) {
-            MessageTarget::Parent
-        } else if recipient_session.parent == Some(sender) {
-            MessageTarget::Child
-        } else {
+        if sender_session.parent != Some(recipient)
+            && recipient_session.parent != Some(sender)
+        {
             return Err(Error::Unauthorized(
                 "swarm messages require a direct parent or child recipient".into(),
             ));
-        };
+        }
         let host =
             self.bindings.communication_host.clone().ok_or_else(|| {
                 Error::Unsupported("durable communication host is not bound".into())
             })?;
-        let sender_scope = host.communication_scope(sender).await?;
-        let recipient_scope = host.communication_scope(recipient).await?;
-        if !sender_scope.accepts_new_mutations || !recipient_scope.accepts_new_mutations {
-            // Recover an exact committed delivery before staging a new sender
-            // body. A changed body is rejected by the host and a new identity
-            // still reaches the lifecycle fence below.
-            if let Some(payload) = host
-                .replay_message_body(sender, recipient, message_id, body)
-                .await?
-            {
-                return Ok(LocalSwarmMessage {
-                    sender,
-                    recipient,
-                    message_id,
-                    payload,
-                });
-            }
-        }
-        // Generic hosts fence before staging. The local host also supports
-        // replaying a previously journal-admitted message after cancellation;
-        // its owner CAS and mailbox publication path decide whether this is
-        // a recovery or a new mutation.
-        if (sender_scope.accepts_new_mutations && recipient_scope.accepts_new_mutations)
-            || !host.supports_admitted_message_recovery()
-        {
-            sender_scope.require_new_mutation()?;
-            recipient_scope.require_new_mutation()?;
-        }
-        // The sender owns the explicit source. The communication host checks
-        // sender read authority and transfers it into recipient-private storage
-        // before publishing the inbox record.
-        let harness = self.open_session(sender).await?;
-        let transfer = crate::communication::message_endpoint_operation(sender, recipient, message_id);
-        let payload = harness
-            .storage()
-            .stage(
-                transfer,
-                &format!("system/swarm/messages/{transfer}.txt"),
-                body,
-                "text/plain",
-                "message.txt",
-            )
-            .await?;
-        DurableCommunication::new(host)
-            .send(MessageRequest {
-                sender,
-                recipient,
-                message_id,
-                target,
-                payload: payload.clone(),
-            })
-            .await?;
+        // Body-backed local mail must cross the owner's durable preparation
+        // boundary before sender content is staged. Ref-only hosts retain the
+        // lower-level `DurableCommunication::send` contract; this local host
+        // owns the preparation record and pins the generated file version.
+        let payload = host.send_body(sender, recipient, message_id, body).await?;
         Ok(LocalSwarmMessage {
             sender,
             recipient,
             message_id,
-            payload,
+            payload: payload.clone(),
         })
     }
 
@@ -5291,6 +5256,97 @@ impl PersistentLocalSwarm {
     /// recipient-owned content. An existing identical admission is recoverable and
     /// may finish after cancellation; a cancellation that wins the same
     /// registry tail prevents a new admission.
+    pub(crate) async fn prepare_message(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        volume: VolumeRef,
+        path: String,
+        descriptor: FileDescriptor,
+        display_name: String,
+    ) -> Result<()> {
+        if sender.into_bytes() == [0; 16]
+            || recipient.into_bytes() == [0; 16]
+            || message_id.into_bytes() == [0; 16]
+            || sender == recipient
+        {
+            return Err(Error::Invalid("message preparation identity is invalid".into()));
+        }
+        let pending = FileRef::new(
+            volume.clone(),
+            path.clone(),
+            "pending",
+            descriptor.clone(),
+            display_name.clone(),
+        )?;
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        if sender_session.parent != Some(recipient)
+            && recipient_session.parent != Some(sender)
+        {
+            return Err(Error::Unauthorized(
+                "message endpoints are not direct parent and child".into(),
+            ));
+        }
+        if self
+            .find_message_preparation(sender, recipient, message_id, &pending)
+            .await?
+        {
+            return Ok(());
+        }
+        if !matches!(
+            sender_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) || !matches!(
+            recipient_session.phase,
+            LocalSessionPhase::Ready
+                | LocalSessionPhase::Activating
+                | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "message preparation lost the lifecycle cancellation race".into(),
+            ));
+        }
+        let event = StoredEvent::MessagePreparing {
+            sender,
+            recipient,
+            message_id,
+            volume,
+            path,
+            descriptor,
+            display_name,
+        };
+        match append_record_at(&registry, event, observed_tail).await {
+            Ok(()) => {
+                self.retain_appended_registry_tail(observed_tail).await?;
+                Ok(())
+            }
+            Err(error) => {
+                if self.refresh_registry_state().await.is_ok()
+                    && self
+                        .find_message_preparation(sender, recipient, message_id, &pending)
+                        .await?
+                {
+                    return Ok(());
+                }
+                if matches!(error, Error::Conflict(_)) {
+                    return Err(Error::Conflict(
+                        "message preparation lost its durable lifecycle race".into(),
+                    ));
+                }
+                Err(Error::Indeterminate(message_id))
+            }
+        }
+    }
+
     pub(crate) async fn admit_message(
         &self,
         sender: TaskId,
@@ -5325,6 +5381,48 @@ impl PersistentLocalSwarm {
             .await?
         {
             return Ok(());
+        }
+        // A body-backed send first reserves its identity before staging. The
+        // generated file version is unavailable until that stage completes,
+        // so finalize the same owner admission once the exact bytes exist.
+        if self
+            .find_message_preparation(sender, recipient, message_id, &payload)
+            .await?
+        {
+            match append_record_at(
+                &registry,
+                StoredEvent::MessageAdmitted {
+                    sender,
+                    recipient,
+                    message_id,
+                    payload: payload.clone(),
+                },
+                observed_tail,
+            )
+            .await
+            {
+                Ok(()) => {
+                    self.retain_appended_registry_tail(observed_tail).await?;
+                    #[cfg(test)]
+                    pause_after_message_admission_append().await;
+                    return Ok(());
+                }
+                Err(error) => {
+                    if self.refresh_registry_state().await.is_ok()
+                        && self
+                            .find_message_admission(sender, recipient, message_id, &payload)
+                            .await?
+                    {
+                        return Ok(());
+                    }
+                    if matches!(error, Error::Conflict(_)) {
+                        return Err(Error::Conflict(
+                            "message preparation lost its durable lifecycle race".into(),
+                        ));
+                    }
+                    return Err(Error::Indeterminate(message_id));
+                }
+            }
         }
         if !matches!(
             sender_session.phase,
@@ -5373,6 +5471,50 @@ impl PersistentLocalSwarm {
                 Err(Error::Indeterminate(message_id))
             }
         }
+    }
+
+    async fn find_message_preparation(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        payload: &FileRef,
+    ) -> Result<bool> {
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&registry).await? {
+            if let StoredEvent::MessagePreparing {
+                sender: candidate_sender,
+                recipient: candidate_recipient,
+                message_id: candidate_message,
+                volume,
+                path,
+                descriptor,
+                display_name,
+            } = record.event
+                && candidate_sender == sender
+                && candidate_message == message_id
+            {
+                if candidate_recipient != recipient {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another recipient".into(),
+                    ));
+                }
+                if &volume != payload.volume()
+                    || path != payload.path()
+                    || descriptor != payload.descriptor().clone()
+                    || display_name != payload.display_name()
+                {
+                    return Err(Error::Conflict(
+                        "message identity was reused with another payload".into(),
+                    ));
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn find_message_admission(
@@ -7830,6 +7972,39 @@ fn apply_record(
             {
                 return Err(Error::Conflict(
                     "message admission endpoints are not direct parent and child".into(),
+                ));
+            }
+        }
+        StoredEvent::MessagePreparing {
+            sender,
+            recipient,
+            message_id,
+            volume,
+            path,
+            descriptor,
+            display_name,
+        } => {
+            if sender.into_bytes() == [0; 16]
+                || recipient.into_bytes() == [0; 16]
+                || message_id.into_bytes() == [0; 16]
+                || sender == recipient
+            {
+                return Err(Error::Conflict(
+                    "persisted message preparation identity is invalid".into(),
+                ));
+            }
+            FileRef::new(volume, path, "pending", descriptor, display_name)?;
+            let sender_session = sessions
+                .get(&sender)
+                .ok_or_else(|| Error::Storage("message preparation sender is missing".into()))?;
+            let recipient_session = sessions
+                .get(&recipient)
+                .ok_or_else(|| Error::Storage("message preparation recipient is missing".into()))?;
+            if sender_session.parent != Some(recipient)
+                && recipient_session.parent != Some(sender)
+            {
+                return Err(Error::Conflict(
+                    "message preparation endpoints are not direct parent and child".into(),
                 ));
             }
         }

@@ -943,6 +943,24 @@ pub trait DurableTaskHost: Send + Sync {
         Box::pin(async { Err(Error::Unsupported("durable task mail is not bound".into())) })
     }
 
+    /// Publishes one body-backed message through the owner's admission boundary.
+    /// Local hosts use this path to durably reserve the message before staging
+    /// sender content, so a cancellation cannot leave an unowned staged body.
+    /// Generic hosts may keep the ref-only contract and reject this operation.
+    fn send_body<'a>(
+        &'a self,
+        _sender: TaskId,
+        _recipient: TaskId,
+        _message_id: OperationId,
+        _body: &'a [u8],
+    ) -> BoxFuture<'a, Result<FileRef>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "body-backed durable task mail is not bound".into(),
+            ))
+        })
+    }
+
     /// Reads a bounded, ordered page of committed inbox items.
     fn inbox<'a>(
         &'a self,

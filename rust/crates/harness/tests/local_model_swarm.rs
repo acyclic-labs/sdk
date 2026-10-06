@@ -1275,6 +1275,31 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream() 
         Err(Error::Conflict(_))
     ));
     assert_eq!(reopened.read_inbox(child_task, 0, 8).await?, before_cancel);
+    // A new identity must be rejected before sender staging once the
+    // recipient is cancelled. The public body-backed path therefore leaves
+    // no sender-private artifact that could later be mistaken for a delivery.
+    let denied_message = id(0xD4);
+    assert!(matches!(
+        reopened
+            .send_message(root_task, child_task, denied_message, b"must not stage")
+            .await,
+        Err(Error::Conflict(_))
+    ));
+    assert_eq!(reopened.read_inbox(child_task, 0, 8).await?, before_cancel);
+    let sender = reopened.open_session(root_task).await?;
+    let denied_transfer = acyclic_harness::communication::message_endpoint_operation(
+        root_task,
+        child_task,
+        denied_message,
+    );
+    assert!(sender
+        .storage()
+        .read_private_path(
+            &format!("system/swarm/messages/{denied_transfer}.txt"),
+            None,
+        )
+        .await
+        .is_err());
     // Cancellation and cold recovery must not redispatch the admitted model.
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
     assert_eq!(provider.child_dispatches.load(Ordering::SeqCst), 1);
