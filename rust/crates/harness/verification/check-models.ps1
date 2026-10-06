@@ -17,7 +17,8 @@ $runId = [guid]::NewGuid().ToString('N')
 $cases = if ($Model -eq 'ActivationRecovery') { @(
     @{ Name = 'safe'; Config = 'ActivationRecovery.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe'; Config = 'ActivationRecoveryUnsafe.cfg'; Exit = 12; Expected = 'Invariant AdmittedClaimRetained is violated.' },
-    @{ Name = 'unsafe-unknown-before-dispatch'; Config = 'ActivationRecoveryUnsafeUnknown.cfg'; Exit = 12; Expected = 'Invariant UnknownRequiresObservedEffect is violated.' }
+    @{ Name = 'unsafe-false-success'; Config = 'ActivationRecoveryUnsafeFalseSuccess.cfg'; Exit = 12; Expected = 'Invariant SuccessRequiresDurableResult is violated.' },
+    @{ Name = 'unsafe-redispatch'; Config = 'ActivationRecoveryUnsafeRedispatch.cfg'; Exit = 12; Expected = 'Invariant RecoveryDoesNotRedispatch is violated.' }
 ) } elseif ($Model -eq 'ForkBoundary') { @(
     @{ Name = 'safe'; Config = 'ForkBoundary.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'safe-single-selected'; Config = 'ForkBoundarySingleSelected.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },

@@ -32,13 +32,16 @@ reservation. `CancelResolver` models the pre-seed cancellation path that
 releases the reservation; the unsafe case publishes after that cancellation
 linearization.
 
-`ActivationRecovery.tla` already represented the post-effect, pre-result
-journal boundary: `Dispatch` records one provider attempt, `Crash` changes the
-outcome to `indeterminate`, and `Recover` may reconcile without redispatching.
-The added `UnknownRequiresObservedEffect` invariant and negative control make
-that assumption executable. These are bounded transition checks only. They do
-not prove the native overflow path, provider guarantees, alias storage
-implementation, resolver cancellation timing, or Rust refinement.
+`ActivationRecovery.tla` represents the post-admission uncertainty boundary:
+`dispatched` is the actual effect count, while `dispatchEvidence` is the
+durable observation available to recovery. `Crash` can therefore leave an
+admitted operation indeterminate when the actual effect count is either zero or
+one. `Recover` may reconcile without redispatching; `PersistNoDispatch` is the
+separate path that records authoritative evidence that no effect occurred.
+Negative controls cover false success without one effect and unsafe
+redispatch. These are bounded transition checks only. They do not prove the
+native overflow path, provider guarantees, alias storage implementation,
+resolver cancellation timing, or Rust refinement.
 
 ## Findings
 
