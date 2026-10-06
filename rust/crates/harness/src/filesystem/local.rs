@@ -83,6 +83,7 @@ pub struct FilesystemExecutionReceiptStore<A, O> {
     read: ContentGrant,
     write: ContentGrant,
     session_id: SessionId,
+    #[cfg(test)]
     resolution_token: [u8; 32],
     maximum_bytes: u64,
 }
@@ -98,7 +99,7 @@ where
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
         session_id: SessionId,
-        owner_scope: &crate::core::Scope,
+        _owner_scope: &crate::core::Scope,
         read: ContentGrant,
         write: ContentGrant,
         maximum_bytes: u64,
@@ -113,8 +114,9 @@ where
         }
         write.require(&volume, VolumeOperation::Write)?;
         read.require(&volume, VolumeOperation::Read)?;
+        #[cfg(test)]
         let resolution_token =
-            ExecutionResolutionCapability::owner_token(session_id, &volume, owner_scope)?;
+            ExecutionResolutionCapability::owner_token(session_id, &volume, _owner_scope)?;
         let stream_name = format!(
             "{EXECUTION_RECEIPT_STREAM}/{}/{}",
             volume.storage_name()?,
@@ -130,6 +132,7 @@ where
             read,
             write,
             session_id,
+            #[cfg(test)]
             resolution_token,
             maximum_bytes: maximum_bytes.min(EXECUTION_RECEIPT_MAX_BYTES),
         })

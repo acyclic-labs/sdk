@@ -16,7 +16,11 @@ use acyclic_native_runtime::{OutputReader, ProcessTree, spawn_output_reader, spa
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "native-process-tree",
+    not(target_arch = "wasm32"),
+    not(windows)
+))]
 use std::io::Read;
 use std::{
     collections::BTreeMap,
