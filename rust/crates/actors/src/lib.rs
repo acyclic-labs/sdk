@@ -55,6 +55,11 @@ fn digest(value: &[u8]) -> bool {
     value.len() == 32 && value.iter().any(|byte| *byte != 0)
 }
 
+/// Idempotency keys share the 1..=256 byte bound used by the other families.
+fn idempotency_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256
+}
+
 fn subscription(value: &wire::SubscriptionSpec) -> bool {
     !value.subscription_id.is_empty()
         && !value.stream_path.is_empty()
@@ -69,7 +74,7 @@ fn subscription(value: &wire::SubscriptionSpec) -> bool {
 pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
     if !digest(&request.code_sha256)
         || request.home_region.is_empty()
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -112,7 +117,7 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !digest(&request.code_sha256)
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.limits.as_ref().is_some_and(|limits| {
             limits.handler_timeout_millis > 0
                 && limits.memory_bytes > 0
@@ -141,7 +146,7 @@ pub fn validate_add_subscription(
     request: &wire::AddSubscriptionRequest,
 ) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
-        || request.idempotency_key.is_empty()
+        || !idempotency_key(&request.idempotency_key)
         || !request.subscription.as_ref().is_some_and(subscription)
     {
         return Err(ContractError::InvalidArgument);
@@ -187,6 +192,13 @@ mod tests {
             }],
             idempotency_key: "create-a".into(),
         };
+        assert_eq!(validate_create(&create), Ok(()));
+        create.idempotency_key = "k".repeat(257);
+        assert_eq!(
+            validate_create(&create),
+            Err(ContractError::InvalidArgument)
+        );
+        create.idempotency_key = "k".repeat(256);
         assert_eq!(validate_create(&create), Ok(()));
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
