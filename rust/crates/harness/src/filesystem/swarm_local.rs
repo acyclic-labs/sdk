@@ -2556,6 +2556,19 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 // the rebind intent below.
                 if let Ok(existing_seed) = swarm.published_seed(child).await {
                     if parent.reducer().fork(&existing_seed.child) == Some(&existing_seed) {
+                        // The parent seed and child binding may have committed
+                        // before the compatibility alias was acknowledged.
+                        // Re-run this idempotent registration on every retry;
+                        // otherwise a lost alias acknowledgement leaves the
+                        // durable fork usable but its Git-facing child branch
+                        // permanently absent.
+                        swarm
+                            .register_project_child(
+                                &existing_seed,
+                                first_parent,
+                                parent.reducer(),
+                            )
+                            .await?;
                         prepared.push((plan, existing_seed));
                         continue;
                     }
@@ -7192,6 +7205,12 @@ impl PersistentLocalSwarm {
                 ));
             }
         }
+        // Seed publication and the Git compatibility alias are separate
+        // durable effects. A restart after the seed append can lose only the
+        // alias acknowledgement, so replay the idempotent registration even
+        // when the parent already contains the exact seed.
+        self.register_project_child(&seed, request.parent, parent.reducer())
+            .await?;
         self.activate_published_child(request, host, stream, issuer, parent, &seed)
             .await
     }
