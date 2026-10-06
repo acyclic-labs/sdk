@@ -1,15 +1,175 @@
 {
   "$schema": "../compatibility/schemas/package-names.schema.json",
   "families": {
-    "rust": { "registry": "crates.io", "umbrella": null, "implemented": true },
-    "typescript": { "registry": "npm", "umbrella": "@acyclic-labs/sdk", "implemented": true },
-    "go": { "registry": "Go modules", "umbrella": "github.com/acyclic-labs/sdk/go", "implemented": false },
-    "jvm": { "registry": "Maven Central", "umbrella": "dev.acyclic:acyclic-sdk", "implemented": false },
-    "dotnet": { "registry": "NuGet", "umbrella": "Acyclic.Sdk", "implemented": false },
-    "swift": { "registry": "Swift Package Manager", "umbrella": "AcyclicSDK", "implemented": false },
-    "cpp": { "registry": "source package", "umbrella": "acyclic-sdk-cpp", "implemented": false },
-    "ruby": { "registry": "RubyGems", "umbrella": "acyclic-sdk", "implemented": false },
-    "php": { "registry": "Packagist", "umbrella": "acyclic/sdk", "implemented": false },
-    "dart": { "registry": "pub.dev", "umbrella": "acyclic_sdk", "implemented": false }
+    "ada": {
+      "implemented": true,
+      "registry": "Alire/source",
+      "umbrella": "acyclic_sdk"
+    },
+    "ballerina": {
+      "implemented": false,
+      "registry": "Ballerina Central",
+      "umbrella": "acyclic/sdk"
+    },
+    "bash": {
+      "implemented": true,
+      "registry": "shell script",
+      "umbrella": "acyclic-http-bash-0.1.0.zip"
+    },
+    "c": {
+      "implemented": false,
+      "registry": "CMake/source",
+      "umbrella": "acyclic_sdk"
+    },
+    "clojure": {
+      "implemented": true,
+      "registry": "Maven/Leiningen",
+      "umbrella": "acyclic-sdk"
+    },
+    "common-lisp": {
+      "implemented": false,
+      "registry": "Quicklisp",
+      "umbrella": "acyclic-sdk"
+    },
+    "cpp": {
+      "implemented": true,
+      "registry": "vcpkg/Conan/CMake",
+      "umbrella": "acyclic-sdk-cpp source package"
+    },
+    "crystal": {
+      "implemented": true,
+      "registry": "Shards",
+      "umbrella": "acyclic_sdk"
+    },
+    "csharp": {
+      "implemented": true,
+      "registry": "NuGet",
+      "umbrella": "Acyclic.Sdk"
+    },
+    "dart": {
+      "implemented": true,
+      "registry": "pub.dev",
+      "umbrella": "acyclic_sdk"
+    },
+    "docs-and-execution-targets": {
+      "implemented": false,
+      "registry": "generated artifact",
+      "umbrella": "docs/snippets"
+    },
+    "elixir": {
+      "implemented": false,
+      "registry": "Hex",
+      "umbrella": "acyclic_sdk"
+    },
+    "elm": {
+      "implemented": true,
+      "registry": "Elm package",
+      "umbrella": "acyclic-sdk"
+    },
+    "erlang": {
+      "implemented": false,
+      "registry": "Hex/rebar3",
+      "umbrella": "acyclic_sdk"
+    },
+    "gdscript": {
+      "implemented": true,
+      "registry": "Godot asset/project",
+      "umbrella": "acyclic_sdk"
+    },
+    "go": {
+      "implemented": true,
+      "registry": "Go modules",
+      "umbrella": "github.com/acyclic-labs/sdk/go"
+    },
+    "haskell": {
+      "implemented": false,
+      "registry": "Hackage",
+      "umbrella": "acyclic-sdk"
+    },
+    "java": {
+      "implemented": true,
+      "registry": "Maven Central",
+      "umbrella": "dev.acyclic:sdk-java"
+    },
+    "julia": {
+      "implemented": true,
+      "registry": "Julia General registry",
+      "umbrella": "AcyclicSDK"
+    },
+    "kotlin": {
+      "implemented": true,
+      "registry": "Maven Central",
+      "umbrella": "com.acyclic:sdk-kotlin"
+    },
+    "lua": {
+      "implemented": false,
+      "registry": "LuaRocks",
+      "umbrella": "acyclic-sdk"
+    },
+    "nim": {
+      "implemented": true,
+      "registry": "Nimble",
+      "umbrella": "acyclic_sdk"
+    },
+    "objective-c": {
+      "implemented": false,
+      "registry": "CocoaPods",
+      "umbrella": "AcyclicSDK"
+    },
+    "ocaml": {
+      "implemented": false,
+      "registry": "opam",
+      "umbrella": "acyclic-sdk"
+    },
+    "perl": {
+      "implemented": true,
+      "registry": "CPAN",
+      "umbrella": "acyclic-http-perl-0.1.0.zip"
+    },
+    "php": {
+      "implemented": true,
+      "registry": "Packagist/PECL",
+      "umbrella": "acyclic/sdk"
+    },
+    "powershell": {
+      "implemented": true,
+      "registry": "PowerShell Gallery/module",
+      "umbrella": "Acyclic.SDK"
+    },
+    "python": {
+      "implemented": true,
+      "registry": "PyPI",
+      "umbrella": "acyclic-sdk-transport"
+    },
+    "r": {
+      "implemented": true,
+      "registry": "CRAN",
+      "umbrella": "acyclicSDK"
+    },
+    "ruby": {
+      "implemented": true,
+      "registry": "RubyGems",
+      "umbrella": "acyclic-sdk"
+    },
+    "rust": {
+      "implemented": true,
+      "registry": "crates.io/Cargo",
+      "umbrella": "family crates (no umbrella)"
+    },
+    "scala": {
+      "implemented": false,
+      "registry": "Maven Central/SBT",
+      "umbrella": "dev.acyclic:sdk-scala_2.13"
+    },
+    "swift": {
+      "implemented": true,
+      "registry": "Swift Package Manager",
+      "umbrella": "AcyclicSDK generated package"
+    },
+    "typescript": {
+      "implemented": true,
+      "registry": "npm",
+      "umbrella": "@acyclic-labs/sdk"
+    }
   }
 }

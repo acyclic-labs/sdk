@@ -1,127 +1,373 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sdk.acyclic.dev/generation-targets.v1.json",
-  "title": "Acyclic SDK generation targets",
-  "description": "Evidence-backed language and non-language projections from the Rust-owned contract.",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["schema_version", "catalogued_at", "source_of_truth", "qualification_gates", "targets"],
-  "properties": {
-    "schema_version": { "const": 1 },
-    "catalogued_at": { "type": "string", "format": "date" },
-    "source_of_truth": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["contract", "descriptor", "wire_semantics"],
-      "properties": {
-        "contract": { "const": "rust" },
-        "descriptor": { "type": "string", "minLength": 1 },
-        "wire_semantics": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
-      }
-    },
-    "qualification_gates": {
-      "type": "array",
-      "items": { "type": "string", "minLength": 1 },
-      "minItems": 1,
-      "uniqueItems": true
-    },
-    "targets": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/target" },
-      "minItems": 1
-    }
-  },
   "$defs": {
-    "target": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "kind", "language_family", "status", "remote", "embedded", "maturity", "generator", "package", "evidence", "outstanding"],
-      "properties": {
-        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
-        "kind": { "enum": ["language", "platform", "tooling"] },
-        "language_family": { "type": "string", "minLength": 1 },
-        "status": { "enum": ["qualified", "baseline-supported", "strong-candidate", "candidate", "experimental", "http-only", "adapter-only", "not-qualifiable"] },
-        "remote": { "$ref": "#/$defs/capability" },
-        "embedded": { "$ref": "#/$defs/embedded" },
-        "maturity": { "enum": ["stable", "beta", "experimental", "unknown"] },
-        "generator": { "$ref": "#/$defs/tool" },
-        "producer": { "$ref": "#/$defs/producer" },
-        "package": { "$ref": "#/$defs/package" },
-        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" }, "minItems": 1 },
-        "outstanding": { "type": "array", "items": { "type": "string", "minLength": 1 } }
-      }
+    "ContractAuthority": {
+      "enum": [
+        "rust"
+      ],
+      "type": "string"
     },
-    "capability": {
-      "type": "object",
+    "EmbeddedCapability": {
       "additionalProperties": false,
-      "required": ["level", "streaming", "wire"],
       "properties": {
-        "level": { "enum": ["full-grpc", "http-projection", "none"] },
-        "qualification": { "enum": ["unqualified", "prototype", "qualified", "blocked"] },
-        "streaming": { "type": "array", "items": { "enum": ["unary", "client", "server", "bidi"] }, "uniqueItems": true },
-        "wire": { "enum": ["protobuf-grpc", "json-http", "none"] },
-        "notes": { "type": "string" }
-      }
+        "level": {
+          "$ref": "#/$defs/EmbeddedLevel"
+        },
+        "notes": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "qualification": {
+          "$ref": "#/$defs/Qualification"
+        }
+      },
+      "required": [
+        "level",
+        "notes"
+      ],
+      "type": "object"
     },
-    "embedded": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["level", "notes"],
-      "properties": {
-        "level": { "enum": ["rust-native", "ffi-or-wasm", "none", "unknown"] },
-        "qualification": { "enum": ["unqualified", "prototype", "qualified", "blocked"] },
-        "notes": { "type": "string", "minLength": 1 }
-      }
+    "EmbeddedLevel": {
+      "enum": [
+        "rust-native",
+        "ffi-or-wasm",
+        "none",
+        "unknown"
+      ],
+      "type": "string"
     },
-    "tool": {
-      "type": "object",
+    "Evidence": {
       "additionalProperties": false,
-      "required": ["name", "version", "source", "license"],
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "version": { "type": "string", "minLength": 1 },
-        "source": { "type": "string", "format": "uri" },
-        "license": { "type": "string", "minLength": 1 },
-        "pin": { "type": "string" }
-      }
+        "claim": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "format": "uri-reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "url",
+        "claim"
+      ],
+      "type": "object"
     },
-    "producer": {
-      "type": "object",
+    "Generator": {
       "additionalProperties": false,
-      "required": ["program", "args", "output"],
       "properties": {
-        "program": { "type": "string", "minLength": 1 },
+        "license": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pin": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "source": {
+          "format": "uri",
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "source",
+        "license",
+        "pin"
+      ],
+      "type": "object"
+    },
+    "Maturity": {
+      "enum": [
+        "stable",
+        "beta",
+        "experimental",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "Package": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "ecosystem": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ecosystem",
+        "artifact",
+        "installable"
+      ],
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
         "args": {
-          "type": "array",
-          "items": { "type": "string" },
-          "minItems": 1
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
         },
         "output": {
-          "type": "string",
           "minLength": 1,
-          "pattern": "^(?![A-Za-z]:)(?!/)(?!\\\\)(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+"
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!\\\\)(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+",
+          "type": "string"
+        },
+        "program": {
+          "minLength": 1,
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "program",
+        "args",
+        "output"
+      ],
+      "type": "object"
     },
-    "package": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["ecosystem", "artifact", "installable"],
-      "properties": {
-        "ecosystem": { "type": "string", "minLength": 1 },
-        "artifact": { "type": "string", "minLength": 1 },
-        "installable": { "type": "boolean" },
-        "notes": { "type": "string" }
-      }
+    "Qualification": {
+      "enum": [
+        "unqualified",
+        "prototype",
+        "qualified",
+        "blocked"
+      ],
+      "type": "string"
     },
-    "evidence": {
-      "type": "object",
+    "RemoteCapability": {
       "additionalProperties": false,
-      "required": ["url", "claim"],
       "properties": {
-        "url": { "type": "string", "format": "uri-reference" },
-        "claim": { "type": "string", "minLength": 1 }
-      }
+        "level": {
+          "$ref": "#/$defs/RemoteLevel"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "qualification": {
+          "$ref": "#/$defs/Qualification"
+        },
+        "streaming": {
+          "items": {
+            "$ref": "#/$defs/StreamShape"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "wire": {
+          "$ref": "#/$defs/WireKind"
+        }
+      },
+      "required": [
+        "level",
+        "streaming",
+        "wire"
+      ],
+      "type": "object"
+    },
+    "RemoteLevel": {
+      "enum": [
+        "full-grpc",
+        "http-projection",
+        "none"
+      ],
+      "type": "string"
+    },
+    "SourceOfTruth": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "$ref": "#/$defs/ContractAuthority"
+        },
+        "descriptor": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "wire_semantics": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "contract",
+        "descriptor",
+        "wire_semantics"
+      ],
+      "type": "object"
+    },
+    "StreamShape": {
+      "enum": [
+        "unary",
+        "client",
+        "server",
+        "bidi"
+      ],
+      "type": "string"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "embedded": {
+          "$ref": "#/$defs/EmbeddedCapability"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "generator": {
+          "$ref": "#/$defs/Generator"
+        },
+        "id": {
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "language_family": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "maturity": {
+          "$ref": "#/$defs/Maturity"
+        },
+        "outstanding": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "package": {
+          "$ref": "#/$defs/Package"
+        },
+        "producer": {
+          "$ref": "#/$defs/Producer"
+        },
+        "remote": {
+          "$ref": "#/$defs/RemoteCapability"
+        },
+        "status": {
+          "$ref": "#/$defs/TargetStatus"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "language_family",
+        "status",
+        "remote",
+        "embedded",
+        "maturity",
+        "generator",
+        "package",
+        "evidence",
+        "outstanding"
+      ],
+      "type": "object"
+    },
+    "TargetKind": {
+      "enum": [
+        "language",
+        "platform",
+        "tooling"
+      ],
+      "type": "string"
+    },
+    "TargetStatus": {
+      "enum": [
+        "qualified",
+        "baseline-supported",
+        "strong-candidate",
+        "candidate",
+        "experimental",
+        "http-only",
+        "adapter-only",
+        "not-qualifiable"
+      ],
+      "type": "string"
+    },
+    "WireKind": {
+      "enum": [
+        "protobuf-grpc",
+        "json-http",
+        "none"
+      ],
+      "type": "string"
     }
-  }
+  },
+  "$id": "https://sdk.acyclic.dev/generation-targets.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "catalogued_at": {
+      "format": "date",
+      "type": "string"
+    },
+    "qualification_gates": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "schema_version": {
+      "maximum": 1,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "source_of_truth": {
+      "$ref": "#/$defs/SourceOfTruth"
+    },
+    "targets": {
+      "items": {
+        "$ref": "#/$defs/Target"
+      },
+      "minItems": 1,
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source_of_truth",
+    "qualification_gates",
+    "targets",
+    "catalogued_at"
+  ],
+  "title": "Acyclic SDK generation targets",
+  "type": "object"
 }

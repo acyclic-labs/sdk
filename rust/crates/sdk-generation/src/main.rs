@@ -24,6 +24,7 @@ use tar::Archive;
 #[allow(dead_code)]
 mod canonical_rust_verifier;
 mod installed_package_receipts;
+mod language_catalog;
 #[path = "observation_verifier.rs"]
 #[allow(dead_code)]
 mod observation_verifier;
@@ -33,6 +34,14 @@ const GENERATION_SCHEMA: &str = "acyclic.sdk.generation.manifest.v1";
 const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
 const EVIDENCE_SCHEMA: &str = "acyclic.sdk.qualification.evidence.v1";
 const INVENTORY_SCHEMA: &str = "acyclic.sdk.language-inventory.v1";
+const LANGUAGE_CATALOG_SOURCE: &str = "rust/crates/sdk-generation/src/language_catalog.rs";
+const LANGUAGE_PACKAGES_PROJECTION: &str = "languages/package-names.json";
+const LANGUAGE_PACKAGES_SCHEMA_PROJECTION: &str = "compatibility/schemas/package-names.schema.json";
+const LANGUAGE_GUIDE_SOURCE: &str = "rust/crates/sdk-generation/guides/language-generation.md";
+const LANGUAGE_GUIDE_PROJECTION: &str = "languages/README.md";
+const LANGUAGE_CATALOG_PROJECTION: &str = "languages/generation-targets.json";
+const LANGUAGE_CATALOG_SCHEMA_PROJECTION: &str =
+    "compatibility/schemas/generation-targets.schema.json";
 const OPENAPI_STAGE_RECEIPT_SCHEMA: &str = "acyclic.sdk.openapi.stage-receipt.v1";
 const REQUIRED_TOOL_IDS: &[&str] = &[
     "sdk-product-artifacts",
@@ -126,6 +135,7 @@ const IMMUTABLE_BASELINES: &[(&str, &str)] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Generate,
+    Catalog,
     Check,
     Drift,
     Seal,
@@ -345,6 +355,7 @@ fn run() -> Result<(), CliError> {
     fs::create_dir_all(&output)?;
     match args.operation {
         Operation::Generate => generate(&source_root, &output),
+        Operation::Catalog => emit_language_catalog(&source_root, &output),
         Operation::Check => check(&source_root, &output),
         Operation::Drift => drift(&source_root, &output),
         Operation::Seal => seal(&source_root, &output),
@@ -381,6 +392,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut values = env::args().skip(1);
     let operation = match values.next().as_deref() {
         Some("generate") => Operation::Generate,
+        Some("catalog") => Operation::Catalog,
         Some("check") => Operation::Check,
         Some("drift") => Operation::Drift,
         Some("seal") => Operation::Seal,
@@ -391,12 +403,12 @@ fn parse_args() -> Result<Args, CliError> {
         Some("typescript-qualification") => Operation::TypescriptQualification,
         Some(other) => {
             return Err(CliError::new(format!(
-                "unknown operation {other}; expected generate, check, drift, seal, qualify, qualify-embedded, inventory, package-manifest, or typescript-qualification"
+                "unknown operation {other}; expected generate, catalog, check, drift, seal, qualify, qualify-embedded, inventory, package-manifest, or typescript-qualification"
             )));
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                "usage: sdk-generation <generate|catalog|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
             ));
         }
     };
@@ -472,7 +484,7 @@ fn parse_args() -> Result<Args, CliError> {
             }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                    "usage: sdk-generation <generate|catalog|check|drift|seal|qualify|qualify-embedded|inventory|package-manifest|typescript-qualification> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -493,6 +505,7 @@ fn parse_args() -> Result<Args, CliError> {
 }
 
 fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
+    synchronize_language_catalog(source_root)?;
     let source = source_identity(source_root)?;
     let authoritative_source = authoritative_source_identity(source_root)?;
     let tools = run_tools(source_root, output, &source, Operation::Generate)?;
@@ -648,6 +661,7 @@ fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
 }
 
 fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
+    verify_language_catalog_projection(source_root)?;
     let manifest_path = output.join("sdk-generation-manifest.json");
     let manifest: Manifest = read_json(&manifest_path)
         .map_err(|error| CliError::new(format!("cannot read generation manifest: {error}")))?;
@@ -751,6 +765,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
 /// the deterministic regeneration gate and `qualify` remains the evidence
 /// gate.
 fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
+    verify_language_catalog_projection(source_root)?;
     let manifest_path = output.join("sdk-generation-manifest.json");
     let manifest: Manifest = read_json(&manifest_path)
         .map_err(|error| CliError::new(format!("cannot read generation manifest: {error}")))?;
@@ -2146,7 +2161,15 @@ fn is_authored_text_path(path: &str) -> bool {
 
 fn is_generated_output_path(path: &str) -> bool {
     let path = path.replace('\\', "/");
+    if acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS.contains(&path.as_str()) {
+        return true;
+    }
     path == "generated"
+        || path == LANGUAGE_CATALOG_PROJECTION
+        || path == LANGUAGE_CATALOG_SCHEMA_PROJECTION
+        || path == LANGUAGE_PACKAGES_PROJECTION
+        || path == LANGUAGE_PACKAGES_SCHEMA_PROJECTION
+        || path == LANGUAGE_GUIDE_PROJECTION
         || path.starts_with("generated/")
         || path.starts_with("rust/crates/sdk-contract-wire/generated/")
         || path.starts_with("python/src/acyclic_sdk/generated/")
@@ -2934,7 +2957,7 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
         ToolSpec {
             id: "sdk-language-producers",
             required: true,
-            manifest: some_file(root, "languages/generation-targets.json"),
+            manifest: some_file(root, LANGUAGE_CATALOG_SOURCE),
             script: None,
         },
         ToolSpec {
@@ -3262,6 +3285,7 @@ fn run_tools(
     source: &SourceIdentity,
     operation: Operation,
 ) -> Result<Vec<ToolResult>, CliError> {
+    write_generation_source_authority_metadata(output, source)?;
     let request_directory = output.join("requests");
     fs::create_dir_all(&request_directory)?;
     let mut results = Vec::new();
@@ -3767,6 +3791,7 @@ fn ensure_generation_destination(
 fn operation_name(operation: Operation) -> &'static str {
     match operation {
         Operation::Generate => "generate",
+        Operation::Catalog => "catalog",
         Operation::Check => "check",
         Operation::Drift => "drift",
         Operation::Seal => "seal",
@@ -3981,13 +4006,90 @@ fn prepare_type_audit_root(output: &Path) -> Result<PathBuf, CliError> {
         "ruby",
         "php",
         "dart",
+        "haskell",
     ] {
         let source = output.join(relative);
         if source.exists() {
             copy_type_audit_tree(&source, &staging.join(relative))?;
         }
     }
+    // Bind the staged public facades to the same Rust source revision passed
+    // to the audit executable.  This metadata lives beside the product
+    // surfaces so the audit can reject a mixed-revision artifact cohort.
+    let authority = output.join("source-authority.json");
+    if authority.is_file() {
+        fs::copy(&authority, staging.join("source-authority.json"))?;
+    }
     Ok(staging)
+}
+
+fn require_type_audit_source_revision(output: &Path, expected: &str) -> Result<(), CliError> {
+    let authority = [
+        output.join("source-authority.json"),
+        output.join("generated/rust-source-authority.json"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+    .unwrap_or_else(|| output.join("source-authority.json"));
+    let bytes = fs::read(&authority).map_err(|error| {
+        CliError::new(format!(
+            "generated type audit requires {}: {error}",
+            authority.display()
+        ))
+    })?;
+    let document: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        CliError::new(format!(
+            "generated type audit source authority is invalid JSON: {error}"
+        ))
+    })?;
+    let actual = document
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            CliError::new("generated type audit source authority is missing source_revision")
+        })?;
+    if actual != expected {
+        return Err(CliError::new(format!(
+            "generated type audit source authority revision differs from generation source: expected {expected}, got {actual}"
+        )));
+    }
+    Ok(())
+}
+
+fn write_generation_source_authority_metadata(
+    output: &Path,
+    source: &SourceIdentity,
+) -> Result<(), CliError> {
+    let path = output.join("generated/rust-source-authority.json");
+    write_json_value(
+        &path,
+        &json!({
+            "schema": "acyclic.sdk.generation.source-authority.v1",
+            "source_revision": source.revision,
+            "source_digest": source.digest,
+        }),
+    )
+}
+
+fn generated_type_audit_command(
+    manifest: &Path,
+    audit_root: &Path,
+    source_revision: &str,
+) -> Vec<OsString> {
+    vec![
+        cargo_program(),
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--locked"),
+        OsString::from("--bin"),
+        OsString::from("audit-generated-types"),
+        OsString::from("--"),
+        OsString::from("--artifact-root"),
+        audit_root.as_os_str().to_os_string(),
+        OsString::from("--source-revision"),
+        OsString::from(source_revision),
+    ]
 }
 
 fn run_generated_type_audit(
@@ -4010,19 +4112,21 @@ fn run_generated_type_audit(
             message: Some("generated type audit manifest is not present in this checkout".into()),
         });
     };
+    if let Err(error) = require_type_audit_source_revision(output, &source.revision) {
+        return Ok(ToolResult {
+            id: spec.id.into(),
+            status: "failed".into(),
+            required: spec.required,
+            command: Vec::new(),
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: Some(1),
+            message: Some(error.to_string()),
+        });
+    }
     let audit_root = prepare_type_audit_root(output)?;
-    let command = vec![
-        cargo_program(),
-        OsString::from("run"),
-        OsString::from("--manifest-path"),
-        manifest.as_os_str().to_os_string(),
-        OsString::from("--locked"),
-        OsString::from("--bin"),
-        OsString::from("audit-generated-types"),
-        OsString::from("--"),
-        OsString::from("--artifact-root"),
-        audit_root.as_os_str().to_os_string(),
-    ];
+    let command = generated_type_audit_command(manifest, &audit_root, source.revision.as_str());
     let command_text = command
         .iter()
         .map(|part| part.to_string_lossy().into_owned())
@@ -4230,6 +4334,154 @@ fn ensure_product_destination(
     Ok(())
 }
 
+/// Production recipes come from the compiled Rust model. Synthetic catalogs
+/// exist only in unit tests and cannot become production generation inputs.
+fn load_language_catalog(root: &Path) -> Result<Option<Value>, CliError> {
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file() {
+        verify_compiled_language_catalog(root)?;
+        return Ok(Some(language_catalog::catalog()));
+    }
+    #[cfg(test)]
+    if root.join(LANGUAGE_CATALOG_PROJECTION).is_file() {
+        return read_json(&root.join(LANGUAGE_CATALOG_PROJECTION)).map(Some);
+    }
+    Ok(None)
+}
+
+fn verify_compiled_language_catalog(root: &Path) -> Result<(), CliError> {
+    if fs::read(root.join(LANGUAGE_CATALOG_SOURCE))? != language_catalog::COMPILED_SOURCE.as_bytes()
+    {
+        return Err(CliError::new(
+            "Rust language catalog differs from the compiled generator; rebuild the generator for this source checkout",
+        ));
+    }
+    if fs::read(root.join(LANGUAGE_GUIDE_SOURCE))? != language_catalog::LANGUAGE_GUIDE.as_bytes() {
+        return Err(CliError::new(
+            "Rust language guide differs from the compiled generator; rebuild the generator for this source checkout",
+        ));
+    }
+    Ok(())
+}
+
+fn synchronize_language_catalog(root: &Path) -> Result<(), CliError> {
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file() {
+        verify_compiled_language_catalog(root)?;
+        let expected = language_catalog::catalog();
+        let projection = root.join(LANGUAGE_CATALOG_PROJECTION);
+        // Avoid changing a clean checkout merely to normalize JSON formatting.
+        if read_json::<Value>(&projection).ok().as_ref() != Some(&expected) {
+            write_json_value(&projection, &expected)?;
+        }
+        let expected_schema = language_catalog::schema();
+        let schema_projection = root.join(LANGUAGE_CATALOG_SCHEMA_PROJECTION);
+        if read_json::<Value>(&schema_projection).ok().as_ref() != Some(&expected_schema) {
+            write_json_value(&schema_projection, &expected_schema)?;
+        }
+        let expected_packages = language_catalog::package_names();
+        let packages_projection = root.join(LANGUAGE_PACKAGES_PROJECTION);
+        if read_json::<Value>(&packages_projection).ok().as_ref() != Some(&expected_packages) {
+            write_json_value(&packages_projection, &expected_packages)?;
+        }
+        let package_schema = language_catalog::package_schema();
+        let package_schema_projection = root.join(LANGUAGE_PACKAGES_SCHEMA_PROJECTION);
+        if read_json::<Value>(&package_schema_projection).ok().as_ref() != Some(&package_schema) {
+            write_json_value(&package_schema_projection, &package_schema)?;
+        }
+        let guide_projection = root.join(LANGUAGE_GUIDE_PROJECTION);
+        if fs::read(&guide_projection).ok().as_deref()
+            != Some(language_catalog::LANGUAGE_GUIDE.as_bytes())
+        {
+            fs::write(&guide_projection, language_catalog::LANGUAGE_GUIDE)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_language_catalog_projection(root: &Path) -> Result<(), CliError> {
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file() {
+        verify_compiled_language_catalog(root)?;
+    }
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file()
+        && read_json::<Value>(&root.join(LANGUAGE_CATALOG_PROJECTION))
+            .ok()
+            .as_ref()
+            != Some(&language_catalog::catalog())
+    {
+        return Err(CliError::new(
+            "generated language catalog differs from its Rust source; run generation",
+        ));
+    }
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file()
+        && read_json::<Value>(&root.join(LANGUAGE_CATALOG_SCHEMA_PROJECTION))
+            .ok()
+            .as_ref()
+            != Some(&language_catalog::schema())
+    {
+        return Err(CliError::new(
+            "generated language catalog schema differs from its Rust source; run generation",
+        ));
+    }
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file()
+        && read_json::<Value>(&root.join(LANGUAGE_PACKAGES_PROJECTION))
+            .ok()
+            .as_ref()
+            != Some(&language_catalog::package_names())
+    {
+        return Err(CliError::new(
+            "generated language package inventory differs from its Rust source; run generation",
+        ));
+    }
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file()
+        && read_json::<Value>(&root.join(LANGUAGE_PACKAGES_SCHEMA_PROJECTION))
+            .ok()
+            .as_ref()
+            != Some(&language_catalog::package_schema())
+    {
+        return Err(CliError::new(
+            "generated package inventory schema differs from its Rust source; run generation",
+        ));
+    }
+    if root.join(LANGUAGE_CATALOG_SOURCE).is_file()
+        && fs::read(root.join(LANGUAGE_GUIDE_PROJECTION))
+            .ok()
+            .as_deref()
+            != Some(language_catalog::LANGUAGE_GUIDE.as_bytes())
+    {
+        return Err(CliError::new(
+            "generated language guide differs from its Rust source; run generation",
+        ));
+    }
+    Ok(())
+}
+
+fn emit_language_catalog(root: &Path, output: &Path) -> Result<(), CliError> {
+    synchronize_language_catalog(root)?;
+    if !root.join(LANGUAGE_CATALOG_SOURCE).is_file() {
+        return Err(CliError::new("Rust language catalog source is missing"));
+    }
+    write_json_value(
+        &output.join("generated/languages/generation-targets.json"),
+        &language_catalog::catalog(),
+    )?;
+    write_json_value(
+        &output.join("generated/languages/generation-targets.schema.json"),
+        &language_catalog::schema(),
+    )?;
+    write_json_value(
+        &output.join("generated/languages/package-names.json"),
+        &language_catalog::package_names(),
+    )?;
+    write_json_value(
+        &output.join("generated/languages/package-names.schema.json"),
+        &language_catalog::package_schema(),
+    )?;
+    fs::write(
+        output.join("generated/languages/README.md"),
+        language_catalog::LANGUAGE_GUIDE,
+    )?;
+    Ok(())
+}
+
 /// Emit the Rust-owned language producer plan and, when a target supplies an
 /// explicit staged-output recipe, execute that recipe against the current Rust
 /// authority. The plan never claims package installation or qualification;
@@ -4255,12 +4507,20 @@ fn run_language_producers(
             message: Some("language generation target catalog is missing".into()),
         });
     };
-    let catalog: Value = read_json(targets_path).map_err(|error| {
+    let catalog = load_language_catalog(root)?.ok_or_else(|| {
         CliError::new(format!(
-            "cannot read language generation target catalog {}: {error}",
+            "Rust language catalog is missing: {}",
             targets_path.display()
         ))
     })?;
+    write_json_value(
+        &output.join("generated/languages/generation-targets.json"),
+        &catalog,
+    )?;
+    write_json_value(
+        &output.join("generated/languages/generation-targets.schema.json"),
+        &language_catalog::schema(),
+    )?;
     let targets = catalog
         .get("targets")
         .and_then(Value::as_array)
@@ -4360,7 +4620,7 @@ fn run_language_producers(
                     "contract_scope": "rust-authority",
                     "contract_inputs": [
                         "rust/crates/sdk-contract-wire",
-                        "languages/generation-targets.json"
+                        LANGUAGE_CATALOG_SOURCE
                     ]
                 });
                 write_json_value(&target_request, &target_request_value)?;
@@ -4519,7 +4779,7 @@ fn run_language_producers(
                 "contract_scope": "rust-authority",
                 "contract_inputs": [
                     "rust/crates/sdk-contract-wire",
-                    "languages/generation-targets.json"
+                    LANGUAGE_CATALOG_SOURCE
                 ]
             }
         }));
@@ -4713,9 +4973,47 @@ fn expand_producer_command(
                 value.replace(placeholder, replacement)
             })
     };
-    let mut command = vec![OsString::from(expand(&recipe.program))];
+    let program = resolve_producer_program(&expand(&recipe.program))?;
+    let mut command = vec![program];
     command.extend(recipe.args.iter().map(|arg| OsString::from(expand(arg))));
     Ok(command)
+}
+
+/// Resolve the small set of platform aliases allowed in Rust-owned producer
+/// recipes.  A catalog entry may retain the Windows-compatible
+/// `powershell.exe` identity while the generator runs on Unix; in that case
+/// execute PowerShell Core when it is installed instead of requiring a
+/// disposable shell shim or leaking a platform flag to consumers.
+fn resolve_producer_program(program: &str) -> Result<OsString, CliError> {
+    resolve_producer_program_for_platform(program, cfg!(windows), env::var_os("PATH").as_deref())
+}
+
+fn resolve_producer_program_for_platform(
+    program: &str,
+    is_windows: bool,
+    path: Option<&OsStr>,
+) -> Result<OsString, CliError> {
+    if !is_windows && matches!(program, "powershell.exe" | "powershell") {
+        if program_on_path("pwsh", path) {
+            // Keep the logical command stable in manifests; resolving to an
+            // absolute host path here would make otherwise identical runs
+            // differ across machines.
+            return Ok(OsString::from("pwsh"));
+        }
+        return Err(CliError::new(
+            "language producer requires PowerShell Core (pwsh) on non-Windows; install pwsh or provide a Rust-native producer",
+        ));
+    }
+    Ok(OsString::from(program))
+}
+
+fn program_on_path(program: &str, path: Option<&OsStr>) -> bool {
+    let Some(path) = path else {
+        return false;
+    };
+    env::split_paths(path)
+        .map(|directory| directory.join(program))
+        .any(|candidate| candidate.is_file())
 }
 
 fn is_safe_relative_path(value: &str) -> bool {
@@ -5039,7 +5337,7 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
                 "rust/crates/sdk-contract-validation",
                 "rust/crates/sdk-contract-wire/tests/fixtures",
                 "compatibility/manifest.json",
-                "languages/generation-targets.json",
+                LANGUAGE_CATALOG_SOURCE,
             ] {
                 if root.join(path).exists() {
                     inputs.push(path.into());
@@ -5075,8 +5373,9 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
         }
         "sdk-language-producers" => {
             for path in [
-                "languages/generation-targets.json",
-                "languages/package-names.json",
+                LANGUAGE_CATALOG_SOURCE,
+                LANGUAGE_CATALOG_SOURCE,
+                LANGUAGE_GUIDE_SOURCE,
                 "compatibility/manifest.json",
             ] {
                 if root.join(path).exists() {
@@ -5102,7 +5401,7 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
             for path in [
                 "rust/crates/sdk-contract-wire",
                 "rust/crates/sdk-python",
-                "languages/generation-targets.json",
+                LANGUAGE_CATALOG_SOURCE,
             ] {
                 if root.join(path).exists() {
                     inputs.push(path.into());
@@ -5263,7 +5562,8 @@ fn tool_command(
             // orchestrator; a destination-only check would always fail before
             // drift comparison because the tree starts empty.
             Operation::Generate | Operation::Check => "packages-write",
-            Operation::Drift
+            Operation::Catalog
+            | Operation::Drift
             | Operation::Seal
             | Operation::Qualify
             | Operation::QualifyEmbedded
@@ -5294,7 +5594,8 @@ fn tool_command(
         let manifest = spec.manifest.as_ref()?;
         let mode = match operation {
             Operation::Generate => "all-write",
-            Operation::Check
+            Operation::Catalog
+            | Operation::Check
             | Operation::Drift
             | Operation::Seal
             | Operation::Qualify
@@ -5621,7 +5922,10 @@ fn language_inventory(
     expectations: Option<&EvidenceExpectations>,
 ) -> Result<Vec<LanguageStatus>, CliError> {
     let package_names = root.join("languages/package-names.json");
-    let value: Value = if package_names.is_file() {
+    let value: Value = if root.join(LANGUAGE_CATALOG_SOURCE).is_file() {
+        verify_compiled_language_catalog(root)?;
+        language_catalog::package_names()
+    } else if package_names.is_file() {
         read_json(&package_names)?
     } else {
         json!({ "families": {} })
@@ -5644,9 +5948,7 @@ fn language_inventory(
         }
     }
     families = canonicalize_language_families(families, &aliases);
-    let targets_path = root.join("languages/generation-targets.json");
-    if targets_path.is_file() {
-        let targets: Value = read_json(&targets_path)?;
+    if let Some(targets) = load_language_catalog(root)? {
         if let Some(targets) = targets.get("targets").and_then(Value::as_array) {
             for target in targets {
                 let Some(id) = target.get("id").and_then(Value::as_str) else {
@@ -6826,6 +7128,7 @@ fn validate_semantic_verifier(
     let (_verifier_path, verifier_bytes) =
         artifact_binding_bytes(output, expected, binding, "semantic verifier")?;
     let verifier: Value = serde_json::from_slice(&verifier_bytes).ok()?;
+    let executable_digest = generation_executable_sha256()?;
     if verifier.get("schema").and_then(Value::as_str)
         != Some("acyclic.sdk.rpd.rust-semantic-verifier.v1")
         || verifier.get("status").and_then(Value::as_str) != Some("passed")
@@ -6835,7 +7138,10 @@ fn validate_semantic_verifier(
         || verifier
             .get("verifier_sha256")
             .and_then(Value::as_str)
-            .is_none_or(|digest| !is_sha256(digest))
+            .is_none_or(|digest| {
+                let digest = digest.strip_prefix("sha256:").unwrap_or(digest);
+                format!("sha256:{}", digest.to_ascii_lowercase()) != executable_digest
+            })
         || verifier
             .get("failures")
             .and_then(Value::as_array)
@@ -8432,6 +8738,7 @@ mod tests {
         let output = test_directory("type-audit-staging");
         fs::create_dir_all(output.join("generated")).expect("generated staging fixture");
         fs::create_dir_all(output.join("dotnet")).expect("dotnet staging fixture");
+        fs::create_dir_all(output.join("haskell")).expect("Haskell staging fixture");
         fs::write(
             output.join("generated").join("public-type-audit.json"),
             b"prior report must not be audited",
@@ -8442,16 +8749,77 @@ mod tests {
             b"public sealed class RustTypedClients {}\n",
         )
         .expect("C# facade fixture");
+        fs::write(
+            output.join("haskell").join("generated_typed.hs"),
+            b"module GeneratedTyped where\n",
+        )
+        .expect("Haskell facade fixture");
+        fs::write(
+            output.join("source-authority.json"),
+            br#"{"source_revision":"1111111111111111111111111111111111111111"}"#,
+        )
+        .expect("source authority fixture");
 
         let first = prepare_type_audit_root(&output).expect("first audit staging");
         assert!(!first.join("generated/public-type-audit.json").exists());
         assert!(first.join("dotnet/RustTypedClients.cs").exists());
+        assert!(first.join("haskell/generated_typed.hs").exists());
+        assert!(first.join("source-authority.json").exists());
 
         let second = prepare_type_audit_root(&output).expect("repeat audit staging");
         assert!(!second.join("generated/public-type-audit.json").exists());
         assert!(second.join("dotnet/RustTypedClients.cs").exists());
+        assert!(second.join("haskell/generated_typed.hs").exists());
+        assert!(second.join("source-authority.json").exists());
         cleanup(&second);
         cleanup(&output);
+    }
+
+    #[test]
+    fn generated_type_audit_command_binds_staged_root_and_source_revision() {
+        let command = generated_type_audit_command(
+            Path::new("rust/crates/sdk-contract-wire/Cargo.toml"),
+            Path::new("audit-root"),
+            "1111111111111111111111111111111111111111",
+        );
+        let text = command
+            .iter()
+            .map(|part| part.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            text.windows(2)
+                .any(|pair| pair[0] == "--artifact-root" && pair[1] == "audit-root")
+        );
+        assert!(text.windows(2).any(|pair| {
+            pair[0] == "--source-revision" && pair[1] == "1111111111111111111111111111111111111111"
+        }));
+    }
+
+    #[test]
+    fn generated_type_audit_rejects_missing_or_mismatched_source_authority() {
+        let root = test_directory("type-audit-source-authority");
+        let revision = "1111111111111111111111111111111111111111";
+        let missing = require_type_audit_source_revision(&root, revision)
+            .expect_err("missing authority metadata must fail");
+        assert!(missing.message.contains("requires"));
+
+        fs::write(
+            root.join("source-authority.json"),
+            br#"{"source_revision":"2222222222222222222222222222222222222222"}"#,
+        )
+        .expect("write mismatched authority");
+        let mismatch = require_type_audit_source_revision(&root, revision)
+            .expect_err("mismatched authority metadata must fail");
+        assert!(mismatch.message.contains("differs from generation source"));
+
+        fs::write(
+            root.join("source-authority.json"),
+            format!(r#"{{"source_revision":"{revision}"}}"#),
+        )
+        .expect("write matching authority");
+        require_type_audit_source_revision(&root, revision)
+            .expect("matching authority metadata should pass");
+        cleanup(&root);
     }
 
     #[test]
@@ -8530,6 +8898,43 @@ mod tests {
     }
 
     #[test]
+    fn producer_program_resolves_windows_powershell_recipe_to_pwsh_on_unix() {
+        let root = test_directory("producer-program-resolution");
+        let bin = root.join("bin");
+        fs::create_dir_all(&bin).expect("create producer bin");
+        let pwsh = bin.join("pwsh");
+        fs::write(&pwsh, b"#!/bin/sh\n").expect("write pwsh fixture");
+
+        let resolved =
+            resolve_producer_program_for_platform("powershell.exe", false, Some(bin.as_os_str()))
+                .expect("PowerShell Core alias should resolve");
+        assert_eq!(resolved, OsString::from("pwsh"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn producer_program_fails_closed_when_unix_has_no_pwsh() {
+        let root = test_directory("producer-program-missing");
+        let error =
+            resolve_producer_program_for_platform("powershell.exe", false, Some(root.as_os_str()))
+                .expect_err("missing PowerShell Core must fail closed");
+        assert!(error.message.contains("PowerShell Core"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn producer_program_keeps_non_aliases_and_windows_commands_unchanged() {
+        assert_eq!(
+            resolve_producer_program_for_platform("mvn", false, None).unwrap(),
+            OsString::from("mvn")
+        );
+        assert_eq!(
+            resolve_producer_program_for_platform("powershell.exe", true, None).unwrap(),
+            OsString::from("powershell.exe")
+        );
+    }
+
+    #[test]
     fn language_producer_plan_rejects_missing_generator_pin() {
         let root = test_directory("language-producer-invalid");
         fs::create_dir_all(root.join("languages")).expect("create language catalog");
@@ -8575,6 +8980,106 @@ mod tests {
         )
         .expect_err("missing generator pin must fail closed");
         assert!(error.message.contains("missing pin"));
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rust_catalog_ignores_json_recipe_edits_and_regenerates_projection() {
+        let root = test_directory("rust-language-catalog-authority");
+        let rust_source = root.join(LANGUAGE_CATALOG_SOURCE);
+        fs::create_dir_all(rust_source.parent().expect("source parent")).unwrap();
+        fs::write(&rust_source, language_catalog::COMPILED_SOURCE).unwrap();
+        let guide_source = root.join(LANGUAGE_GUIDE_SOURCE);
+        fs::create_dir_all(guide_source.parent().unwrap()).unwrap();
+        fs::write(&guide_source, language_catalog::LANGUAGE_GUIDE).unwrap();
+        let projection = root.join(LANGUAGE_CATALOG_PROJECTION);
+        write_json_value(&projection, &json!({"targets": [{"id": "forged"}]})).unwrap();
+        let expected = language_catalog::catalog();
+        assert_eq!(
+            load_language_catalog(&root).unwrap(),
+            Some(expected.clone())
+        );
+        assert!(verify_language_catalog_projection(&root).is_err());
+        synchronize_language_catalog(&root).unwrap();
+        assert_eq!(read_json::<Value>(&projection).unwrap(), expected);
+        verify_language_catalog_projection(&root).unwrap();
+        let schema_projection = root.join(LANGUAGE_CATALOG_SCHEMA_PROJECTION);
+        write_json_value(&schema_projection, &json!({"type": "null"})).unwrap();
+        assert!(
+            verify_language_catalog_projection(&root)
+                .expect_err("edited derived schemas must fail drift checks")
+                .to_string()
+                .contains("schema differs")
+        );
+        synchronize_language_catalog(&root).unwrap();
+        verify_language_catalog_projection(&root).unwrap();
+        write_json_value(
+            &root.join(LANGUAGE_PACKAGES_PROJECTION),
+            &json!({"families": {"typescript": {
+                "registry": "forged", "umbrella": "forged", "implemented": true
+            }}}),
+        )
+        .unwrap();
+        assert!(verify_language_catalog_projection(&root).is_err());
+        let inventory = language_inventory(&root, &root.join("output"), "uncommitted", None)
+            .expect("Rust inventory ignores edited package projections");
+        let typescript = inventory
+            .iter()
+            .find(|entry| entry.id == "typescript")
+            .unwrap();
+        assert_eq!(typescript.package.as_deref(), Some("@acyclic-labs/sdk"));
+        assert_eq!(typescript.registry, "npm");
+        synchronize_language_catalog(&root).unwrap();
+        verify_language_catalog_projection(&root).unwrap();
+        fs::write(
+            root.join(LANGUAGE_GUIDE_PROJECTION),
+            "edited downstream guide",
+        )
+        .unwrap();
+        assert!(verify_language_catalog_projection(&root).is_err());
+        synchronize_language_catalog(&root).unwrap();
+        verify_language_catalog_projection(&root).unwrap();
+        fs::write(&guide_source, "new Rust-owned guide").unwrap();
+        assert!(
+            load_language_catalog(&root)
+                .expect_err("a stale compiled guide must fail closed")
+                .to_string()
+                .contains("guide differs")
+        );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn rust_catalog_model_changes_authority_but_json_projection_does_not() {
+        let root = test_directory("rust-language-catalog-source-identity");
+        let rust_source = root.join(LANGUAGE_CATALOG_SOURCE);
+        fs::create_dir_all(rust_source.parent().expect("source parent")).unwrap();
+        fs::write(&rust_source, language_catalog::COMPILED_SOURCE).unwrap();
+        let guide_source = root.join(LANGUAGE_GUIDE_SOURCE);
+        fs::create_dir_all(guide_source.parent().unwrap()).unwrap();
+        fs::write(&guide_source, language_catalog::LANGUAGE_GUIDE).unwrap();
+        synchronize_language_catalog(&root).unwrap();
+        fs::write(root.join("existing.rs"), "pub fn fixture() {}\n").unwrap();
+        initialize_git_source(&root);
+        let before = authoritative_source_identity(&root).unwrap();
+        write_json_value(
+            &root.join(LANGUAGE_CATALOG_PROJECTION),
+            &json!({"targets": []}),
+        )
+        .unwrap();
+        assert_eq!(
+            before.digest,
+            authoritative_source_identity(&root).unwrap().digest
+        );
+        fs::write(&rust_source, "// Rust language catalog version two\n").unwrap();
+        let stale =
+            load_language_catalog(&root).expect_err("a stale compiled catalog must fail closed");
+        assert!(stale.message.contains("rebuild the generator"));
+        assert!(synchronize_language_catalog(&root).is_err());
+        assert_ne!(
+            before.digest,
+            authoritative_source_identity(&root).unwrap().digest
+        );
         cleanup(&root);
     }
 
@@ -9418,7 +9923,13 @@ mod tests {
             "dotnet/GeneratedRemotePolicy.cs",
             "typescript/packages/actors/src/generated-client.ts",
             "python/src/acyclic_sdk/generated/actors/v1/actors_pb2.py",
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS
+                .iter()
+                .copied(),
+        ) {
             let path = root.join(path);
             fs::create_dir_all(path.parent().expect("facade parent"))
                 .expect("create generated facade parent");
@@ -9429,7 +9940,53 @@ mod tests {
         assert_eq!(before.revision, after.revision);
         assert_eq!(before.digest, after.digest);
         assert_ne!(before.digest, complete_after.digest);
+        for path in acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS {
+            fs::write(root.join(path), "edited generated facade").expect("mutate generated facade");
+        }
+        let edited_outputs =
+            authoritative_source_identity(&root).expect("hash source after generated facade edits");
+        assert_eq!(before.digest, edited_outputs.digest);
+        assert_ne!(
+            complete_after.digest,
+            source_identity(&root).expect("hash edited outputs").digest
+        );
+        let emitter = root.join("rust/crates/sdk-contract-wire/src/portable_typed_facades.rs");
+        fs::create_dir_all(emitter.parent().expect("emitter parent"))
+            .expect("create emitter parent");
+        fs::write(&emitter, "pub fn generate() {}\n").expect("write Rust emitter");
+        let with_emitter = authoritative_source_identity(&root).expect("hash Rust emitter");
+        assert_ne!(before.digest, with_emitter.digest);
+        fs::write(&emitter, "pub fn generate() { changed(); }\n").expect("change Rust emitter");
+        assert_ne!(
+            with_emitter.digest,
+            authoritative_source_identity(&root)
+                .expect("hash changed Rust emitter")
+                .digest
+        );
         cleanup(&root);
+    }
+
+    #[test]
+    fn generated_facade_paths_do_not_become_authoritative_contract_inputs() {
+        for path in acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS {
+            assert!(
+                is_generated_output_path(path),
+                "generated facade counted as authority: {path}"
+            );
+            assert!(is_generated_output_path(&path.replace('/', "\\")));
+        }
+        for adapter in [
+            "ruby/lib/acyclic_sdk/client.rb",
+            "php/src/Acyclic/Runtime/GrpcTransport.php",
+            "dart/lib/src/client.dart",
+            "jvm/src/main/java/dev/acyclic/transport/Transport.java",
+            "rust/crates/sdk-contract-wire/src/portable_typed_facades.rs",
+        ] {
+            assert!(
+                !is_generated_output_path(adapter),
+                "authored adapter excluded: {adapter}"
+            );
+        }
     }
 
     #[test]

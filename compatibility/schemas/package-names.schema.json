@@ -1,19 +1,45 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://acyclic.dev/schemas/sdk-package-names.json",
-  "type": "object",
-  "required": ["families"],
-  "properties": {
-    "$schema": { "type": "string" },
-    "families": {
-      "type": "object",
-      "additionalProperties": {
-        "type": "object",
-        "required": ["registry", "umbrella", "implemented"],
-        "properties": { "registry": { "type": "string" }, "umbrella": { "type": ["string", "null"] }, "implemented": { "type": "boolean" } },
-        "additionalProperties": false
-      }
+  "$defs": {
+    "PackageIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "implemented": {
+          "type": "boolean"
+        },
+        "registry": {
+          "type": "string"
+        },
+        "umbrella": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "registry",
+        "umbrella",
+        "implemented"
+      ],
+      "type": "object"
     }
   },
-  "additionalProperties": false
+  "$id": "https://acyclic.dev/schemas/sdk-package-names.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Compatibility projection for consumers of the former package inventory.\nInstallation qualification remains receipt-driven; this metadata describes\nRust-owned package identities and whether a producer is implemented.",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "families": {
+      "additionalProperties": {
+        "$ref": "#/$defs/PackageIdentity"
+      },
+      "type": "object"
+    }
+  },
+  "required": [
+    "$schema",
+    "families"
+  ],
+  "title": "PackageInventory",
+  "type": "object"
 }
