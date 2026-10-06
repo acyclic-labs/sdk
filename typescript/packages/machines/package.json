@@ -15,7 +15,7 @@
   "files": ["dist", "generated", "CHANGELOG.md"],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun ../../../scripts/build-machines-wasm.mjs",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs machines",
     "test": "bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },

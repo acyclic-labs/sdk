@@ -42,7 +42,7 @@ elif command -v wslpath >/dev/null 2>&1; then
 fi
 
 cd "$root"
-bun scripts/build-inference-wasm.mjs
+bun scripts/build-wasm.mjs inference
 bun x tsc -b typescript/packages/inference/tsconfig.json
 bun test typescript/packages/inference/test
 npm_stage="$work/npm-package"

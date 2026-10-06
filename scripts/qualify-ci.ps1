@@ -70,12 +70,14 @@ $ReleaseTargetDir = "$CargoTargetDir-release"
 $PluginOutput = Join-Path $env:SDK_ARTIFACT_DIR 'acyclic-plugin'
 $wasmBindgenRoot = Join-Path $env:TOOLS_DIR 'cargo'
 $wasmBindgenBin = Join-Path $wasmBindgenRoot 'bin\wasm-bindgen.exe'
+# The CLI must match the wasm-bindgen crate pinned in the workspace manifest.
+$wasmBindgenVersion = (Select-String -LiteralPath Cargo.toml -Pattern '^wasm-bindgen = "=([^"]+)"').Matches[0].Groups[1].Value
 if (-not (Test-Path -LiteralPath $wasmBindgenBin) -or
-    (& $wasmBindgenBin --version) -ne 'wasm-bindgen 0.2.117') {
-    cargo install --locked wasm-bindgen-cli --version 0.2.117 --root $wasmBindgenRoot
+    (& $wasmBindgenBin --version) -ne "wasm-bindgen $wasmBindgenVersion") {
+    cargo install --locked wasm-bindgen-cli --version $wasmBindgenVersion --root $wasmBindgenRoot
 }
-if ((& $wasmBindgenBin --version) -ne 'wasm-bindgen 0.2.117') {
-    throw 'The WASM build requires wasm-bindgen 0.2.117.'
+if ((& $wasmBindgenBin --version) -ne "wasm-bindgen $wasmBindgenVersion") {
+    throw "The WASM build requires wasm-bindgen $wasmBindgenVersion."
 }
 $env:PATH = "$(Split-Path -Parent $wasmBindgenBin);$env:PATH"
 # web-sys's large feature set exceeds sccache's Windows rustc spawn path.
