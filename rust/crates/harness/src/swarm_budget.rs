@@ -1104,6 +1104,17 @@ pub enum SwarmBudgetEvent {
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
     },
+    /// Holds execution capacity before a trusted Harness effect crosses its
+    /// physical boundary.  The hold remains durable until a measured effect
+    /// settles it, so a lost acknowledgement cannot release capacity and
+    /// race a sibling reservation.
+    HarnessEffectAdmitted {
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        effect_id: IdempotencyKey,
+        ceiling_ms: u64,
+    },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
         /// Child operation identity.
@@ -1285,6 +1296,7 @@ struct SwarmBudgetState {
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
     harness_effects: BTreeMap<(OperationId, IdempotencyKey, IdempotencyKey), u64>,
+    harness_effect_claims: BTreeMap<(OperationId, IdempotencyKey, IdempotencyKey), u64>,
 }
 
 /// Thread-safe, atomically updated budget projection for one session.
@@ -1342,6 +1354,7 @@ impl SwarmBudget {
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
                 harness_effects: BTreeMap::new(),
+                harness_effect_claims: BTreeMap::new(),
             })),
         })
     }
@@ -1417,10 +1430,12 @@ impl SwarmBudget {
             .reservations
             .get(&operation_id)
             .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        let pending = harness_effect_pending_time(&state, operation_id)?;
         let consumed = reservation
             .usage
             .execution_time_ms
             .checked_add(harness_effect_time(&state, operation_id)?)
+            .and_then(|value| value.checked_add(pending))
             .ok_or_else(|| Error::Invalid("swarm execution time usage exhausted".into()))?;
         Ok(reservation.resources.execution_time_ms.saturating_sub(consumed))
     }
@@ -1562,10 +1577,12 @@ impl SwarmBudget {
                 ));
             }
             let parent_harness_time = harness_effect_time(&state, parent.operation_id)?;
+            let parent_pending_time = harness_effect_pending_time(&state, parent.operation_id)?;
             let parent_execution_time = parent
                 .usage
                 .execution_time_ms
                 .checked_add(parent_harness_time)
+                .and_then(|value| value.checked_add(parent_pending_time))
                 .ok_or_else(|| Error::Invalid("swarm parent time usage exhausted".into()))?;
             let remaining = SwarmResourceRequest {
                 model_steps: parent
@@ -1758,6 +1775,9 @@ impl SwarmBudget {
     ) -> Result<SwarmForkReservation> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
+        if harness_effect_pending_time(&state, operation_id)? != 0 {
+            return Err(Error::Indeterminate(operation_id));
+        }
         update_usage(&mut state, operation_id, owner, usage, true, None)
     }
 
@@ -1795,6 +1815,9 @@ impl SwarmBudget {
     ) -> Result<SwarmForkReservation> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
+        if harness_effect_pending_time(&state, operation_id)? != 0 {
+            return Err(Error::Indeterminate(operation_id));
+        }
         update_usage(&mut state, operation_id, owner, usage, true, receipt)
     }
 
@@ -1807,6 +1830,84 @@ impl SwarmBudget {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
         update_root_usage(&mut state, owner, usage, receipt)
+    }
+
+    /// Holds one trusted Harness execution ceiling before crossing the
+    /// physical effect boundary.  This is part of the same projection as
+    /// child reservations, so sibling admission and effect admission cannot
+    /// both spend the same remaining execution capacity.
+    pub(crate) fn admit_harness_effect(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: &IdempotencyKey,
+        effect_id: &IdempotencyKey,
+        ceiling_ms: u64,
+    ) -> Result<bool> {
+        if ceiling_ms == 0 {
+            return Err(Error::Conflict("Harness effect has no execution ceiling".into()));
+        }
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let child_reservation = if operation_id == state.session_id {
+            None
+        } else {
+            Some(state.reservations.get(&operation_id).cloned().ok_or_else(|| {
+                Error::NotFound(format!("swarm reservation {operation_id}"))
+            })?)
+        };
+        if operation_id == state.session_id {
+            if state.root_dispatch_id.as_ref() != Some(dispatch_id) {
+                return Err(Error::Unauthorized("effect is not bound to the canonical root dispatch".into()));
+            }
+        } else {
+            let reservation = child_reservation.as_ref().expect("child reservation loaded");
+            if reservation.owner != *owner
+                || reservation.dispatch_id.as_ref() != Some(dispatch_id)
+                || !matches!(reservation.state, SwarmReservationState::Reserved | SwarmReservationState::Active)
+            {
+                return Err(Error::Conflict("effect dispatch lease is not active".into()));
+            }
+        }
+        let key = (operation_id, dispatch_id.clone(), effect_id.clone());
+        if state.harness_effects.contains_key(&key) {
+            return Ok(false);
+        }
+        if let Some(previous) = state.harness_effect_claims.get(&key) {
+            if *previous == ceiling_ms {
+                return Ok(false);
+            }
+            return Err(Error::Conflict("Harness effect ceiling changed for an existing attempt".into()));
+        }
+        if let Some(reservation) = child_reservation.as_ref() {
+            let measured = harness_effect_time(&state, operation_id)?;
+            let pending = harness_effect_pending_time(&state, operation_id)?;
+            let used = reservation
+                .usage
+                .execution_time_ms
+                .checked_add(measured)
+                .and_then(|value| value.checked_add(pending))
+                .and_then(|value| value.checked_add(ceiling_ms))
+                .ok_or_else(|| Error::Invalid("swarm child time usage exhausted".into()))?;
+            if used > reservation.resources.execution_time_ms {
+                return Err(Error::Conflict("Harness effect exceeds child time reservation".into()));
+            }
+        } else {
+            // Root effects do not have a child reservation to hold capacity;
+            // reserve their full ceiling in the session projection instead.
+            let available = root_resource_limits(&state)?.execution_time_ms;
+            if ceiling_ms > available {
+                return Err(Error::Conflict("Harness effect exceeds root time budget".into()));
+            }
+            state.usage.reserved.execution_time_ms = state
+                .usage
+                .reserved
+                .execution_time_ms
+                .checked_add(ceiling_ms)
+                .ok_or_else(|| Error::Invalid("swarm time reservation exhausted".into()))?;
+        }
+        state.harness_effect_claims.insert(key, ceiling_ms);
+        Ok(true)
     }
 
     /// Records one authenticated physical Harness effect exactly once.
@@ -1854,6 +1955,12 @@ impl SwarmBudget {
             if *previous == elapsed_ms { return Ok(false); }
             return Err(Error::Conflict("Harness effect measurement changed for an existing physical effect".into()));
         }
+        let ceiling = state.harness_effect_claims.get(&key).copied().ok_or_else(|| {
+            Error::Conflict("Harness effect was not durably admitted before dispatch".into())
+        })?;
+        if elapsed_ms > ceiling {
+            return Err(Error::Conflict("Harness effect exceeded its admitted ceiling".into()));
+        }
         let next = state.usage.consumed.execution_time_ms.checked_add(elapsed_ms)
             .ok_or_else(|| Error::Invalid("swarm time usage exhausted".into()))?;
         if next > state.limits.max_execution_time_ms {
@@ -1878,8 +1985,19 @@ impl SwarmBudget {
                 .execution_time_ms
                 .checked_sub(elapsed_ms)
                 .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
+        } else {
+            // Release the held ceiling and charge only measured time.  This
+            // keeps a root effect's reservation from contaminating the
+            // provider cumulative receipt cursor.
+            state.usage.reserved.execution_time_ms = state
+                .usage
+                .reserved
+                .execution_time_ms
+                .checked_sub(ceiling)
+                .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
         }
         state.usage.consumed.execution_time_ms = next;
+        state.harness_effect_claims.remove(&key);
         state.harness_effects.insert(key, elapsed_ms);
         Ok(true)
     }
@@ -1918,6 +2036,9 @@ impl SwarmBudget {
         }
         if reservation.state == SwarmReservationState::Cancelled {
             return Ok(reservation);
+        }
+        if harness_effect_pending_time(&state, operation_id)? != 0 {
+            return Err(Error::Indeterminate(operation_id));
         }
         let harness_time = harness_effect_time(&state, operation_id)?;
         release_remaining(&mut state.usage, &reservation, harness_time)?;
@@ -2012,6 +2133,19 @@ impl SwarmBudget {
                 &dispatch_id,
                 &effect_id,
                 elapsed_ms,
+            ).map(|_| ()),
+            SwarmBudgetEvent::HarnessEffectAdmitted {
+                operation_id,
+                owner,
+                dispatch_id,
+                effect_id,
+                ceiling_ms,
+            } => self.admit_harness_effect(
+                operation_id,
+                &owner,
+                &dispatch_id,
+                &effect_id,
+                ceiling_ms,
             ).map(|_| ()),
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
@@ -2134,6 +2268,18 @@ fn harness_effect_time(state: &SwarmBudgetState, operation_id: OperationId) -> R
         })
 }
 
+fn harness_effect_pending_time(state: &SwarmBudgetState, operation_id: OperationId) -> Result<u64> {
+    state
+        .harness_effect_claims
+        .iter()
+        .filter(|((effect_operation, _, _), _)| *effect_operation == operation_id)
+        .try_fold(0_u64, |total, (_, ceiling)| {
+            total
+                .checked_add(*ceiling)
+                .ok_or_else(|| Error::Invalid("swarm Harness effect reservation exhausted".into()))
+        })
+}
+
 fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
     SwarmUsage {
         model_steps: reservation.resources.model_steps,
@@ -2197,6 +2343,9 @@ mod harness_effect_tests {
             },
             Some(dispatch.clone()),
         )?;
+        assert!(budget.admit_harness_effect(
+            session, &owner, &dispatch, &effect, 10
+        )?);
         assert!(budget.record_harness_effect(
             session, &owner, &dispatch, &effect, 3
         )?);
@@ -2254,6 +2403,7 @@ mod harness_effect_tests {
             },
             Some(dispatch.clone()),
         )?;
+        assert!(budget.admit_harness_effect(child, &owner, &dispatch, &effect, 8)?);
         assert!(budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
         assert!(!budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
         let stored = budget.reservation(child)?.expect("child reservation");
@@ -2264,6 +2414,70 @@ mod harness_effect_tests {
         assert_eq!(budget.operation_execution_time_remaining(child)?, 5);
         assert_eq!(budget.usage()?.reserved.execution_time_ms, 5);
         assert_eq!(budget.usage()?.consumed.execution_time_ms, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn predispatch_effect_hold_closes_root_child_capacity_race() -> Result<()> {
+        let session = OperationId::from_bytes([0x61; 16]);
+        let child = OperationId::from_bytes([0x62; 16]);
+        let owner = SwarmOwnerFence::new("race-owner", 0)?;
+        let root_dispatch = IdempotencyKey::new("race-root-dispatch")?;
+        let effect = IdempotencyKey::new("race-effect")?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            session,
+            owner.clone(),
+            SwarmBudgetLimits {
+                max_active_agents: 2,
+                max_total_agents: 2,
+                max_recursion_depth: 1,
+                max_model_steps: 10,
+                max_output_bytes: 100,
+                max_execution_time_ms: 10,
+            },
+            Some(root_dispatch.clone()),
+        )?;
+        assert!(budget.admit_harness_effect(
+            session,
+            &owner,
+            &root_dispatch,
+            &effect,
+            8,
+        )?);
+        assert!(matches!(
+            budget.reserve_child(SwarmForkRequest {
+                operation_id: child,
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 1,
+                    output_bytes: 1,
+                    execution_time_ms: 3,
+                },
+                idempotency_key: IdempotencyKey::new("race-child")?,
+                admission_digest: None,
+            }),
+            Err(Error::Conflict(_))
+        ));
+        assert!(budget.record_harness_effect(
+            session,
+            &owner,
+            &root_dispatch,
+            &effect,
+            3,
+        )?);
+        assert!(budget.reserve_child(SwarmForkRequest {
+            operation_id: child,
+            parent_operation_id: None,
+            depth: 1,
+            resources: SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: 1,
+                execution_time_ms: 3,
+            },
+            idempotency_key: IdempotencyKey::new("race-child")?,
+            admission_digest: None,
+        })?.reservation.operation_id == child);
         Ok(())
     }
 }

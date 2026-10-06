@@ -511,6 +511,12 @@ pub trait Executor: Send + Sync {
 
 /// Trusted Harness-side effect measurement sink bound to one durable budget.
 pub trait HarnessEffectRecorder: Send + Sync {
+    /// Durably claims the execution ceiling before the physical effect starts.
+    fn admit<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
+        effect_id: &'a IdempotencyKey, ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        let _ = (operation_id, dispatch_id, effect_id, ceiling_ms);
+        Box::pin(async { Err(Error::Unsupported("Harness effect admission is not bound".into())) })
+    }
     fn record<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
         effect_id: &'a IdempotencyKey, elapsed_ms: u64) -> BoxFuture<'a, Result<()>>;
     fn remaining_execution_time_ms(&self) -> Option<u64> { None }
@@ -536,6 +542,12 @@ pub trait SwarmProviderAdmission: Send {
         step: u32,
         request_digest: [u8; 32],
     ) -> Result<ProviderDispatchContext>;
+    /// Holds the full execution ceiling in the durable Harness budget before
+    /// a generic effect crosses its physical boundary.
+    fn admit_harness_effect_async<'a>(&'a self, _effect_id: &'a IdempotencyKey,
+        _ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async { Err(Error::Unsupported("Harness effect admission is not bound".into())) })
+    }
     fn record_harness_effect_async<'a>(&'a self, _effect_id: &'a IdempotencyKey,
         _elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) })
@@ -577,6 +589,14 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
             return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
         };
         recorder.record(self.context.operation_id(), self.context.dispatch_id(), effect_id, elapsed_ms)
+    }
+
+    pub fn admit_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        let Some(recorder) = &self.effect_recorder else {
+            return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
+        };
+        recorder.admit(self.context.operation_id(), self.context.dispatch_id(), effect_id, ceiling_ms)
     }
 
     pub fn remaining_execution_time_ms(&self) -> Option<u64> {
@@ -687,6 +707,10 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
         elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
         Self::record_harness_effect_async(self, effect_id, elapsed_ms)
     }
+    fn admit_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        Self::admit_harness_effect_async(self, effect_id, ceiling_ms)
+    }
     fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
     fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
     fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
@@ -718,6 +742,14 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
             return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
         };
         recorder.record(self.context.operation_id(), self.context.dispatch_id(), effect_id, elapsed_ms)
+    }
+
+    pub fn admit_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        let Some(recorder) = &self.effect_recorder else {
+            return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
+        };
+        recorder.admit(self.context.operation_id(), self.context.dispatch_id(), effect_id, ceiling_ms)
     }
 
     pub fn remaining_execution_time_ms(&self) -> Option<u64> {
@@ -808,6 +840,10 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
     fn record_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
         elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
         Self::record_harness_effect_async(self, effect_id, elapsed_ms)
+    }
+    fn admit_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        Self::admit_harness_effect_async(self, effect_id, ceiling_ms)
     }
     fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
     fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
@@ -3959,35 +3995,58 @@ async fn run_timed_harness_effect<'a, T, F>(
 where
     F: Future<Output = Result<T>> + 'a,
 {
-    let started_at = clock.now_unix_millis();
-    let outcome = if let Some(admission) = budget.as_deref_mut() {
+    let timeout_ms = if let Some(admission) = budget.as_deref_mut() {
         if let Some(remaining) = admission.remaining_execution_time_ms_async().await? {
             if remaining == 0 {
                 return Err(Error::Conflict("provider execution time ceiling exhausted".into()));
             }
+            // The live journal must own a durable capacity hold before the
+            // future is polled.  A false result means another owner already
+            // admitted this exact physical attempt; dispatching it again
+            // would turn a lost acknowledgement into a duplicate effect.
+            if !admission.admit_harness_effect_async(effect_id, remaining).await? {
+                return Err(Error::Indeterminate(operation));
+            }
+            Some(remaining)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let started_at = clock.now_unix_millis();
+    let outcome = match timeout_ms {
+        Some(remaining) => {
             match tokio::time::timeout(std::time::Duration::from_millis(remaining), effect).await {
                 Ok(result) => result,
                 Err(_) => Err(Error::Indeterminate(operation)),
             }
-        } else {
-            effect.await
         }
-    } else {
-        effect.await
+        None => effect.await,
     };
-    let elapsed = elapsed_provider_time(clock, started_at, operation)?;
-        if elapsed > 0 {
-            if let Some(admission) = budget.as_deref_mut() {
-                if admission.record_harness_effect_async(effect_id, elapsed).await.is_err()
-                    || admission.admit_execution_time_ms(elapsed).is_err()
-                {
-                    // The physical effect already crossed its boundary. The
-                    // caller must recover/reconcile it rather than recording
-                    // an ordinary tool or publication failure.
-                    return Err(Error::Indeterminate(operation));
-                }
-            }
+    let elapsed = match elapsed_provider_time(clock, started_at, operation) {
+        Ok(elapsed) => elapsed,
+        Err(_) => {
+            // The physical effect has already crossed its boundary, but its
+            // measurement is unavailable.  Keep the durable predispatch
+            // hold for recovery instead of exposing an ordinary effect error.
+            return Err(Error::Indeterminate(operation));
         }
+    };
+    if elapsed == 0 {
+        // A zero sample cannot settle a claimed physical effect.  Retain the
+        // claim for reconciliation rather than treating an unmeasured effect
+        // as successful or refunding its capacity.
+        return Err(Error::Indeterminate(operation));
+    }
+    if let Some(admission) = budget.as_deref_mut() {
+        if admission.record_harness_effect_async(effect_id, elapsed).await.is_err() {
+            // The physical effect already crossed its boundary. The
+            // caller must recover/reconcile it rather than recording
+            // an ordinary tool or publication failure.
+            return Err(Error::Indeterminate(operation));
+        }
+    }
     outcome
 }
 

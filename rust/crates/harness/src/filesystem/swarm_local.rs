@@ -115,6 +115,23 @@ struct LocalHarnessEffectRecorder {
 }
 
 impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
+    fn admit<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
+        effect_id: &'a IdempotencyKey, ceiling_ms: u64) -> BoxFuture<'a, Result<bool>> {
+        Box::pin(async move {
+            self.journal
+                .lock()
+                .await
+                .admit_harness_effect_time_ms(
+                    operation_id,
+                    &self.owner,
+                    dispatch_id,
+                    effect_id,
+                    ceiling_ms,
+                )
+                .await
+        })
+    }
+
     fn record<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
         effect_id: &'a IdempotencyKey, elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {

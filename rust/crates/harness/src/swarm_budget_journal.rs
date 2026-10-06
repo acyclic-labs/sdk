@@ -230,6 +230,50 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     /// Returns the authenticated projection rebuilt from the journal tail.
     pub fn live_projection(&self) -> SwarmBudget { self.budget.clone() }
 
+    /// Durably holds a Harness execution ceiling before the effect starts.
+    /// The event is appended through the same tail CAS as child reservations;
+    /// a lost acknowledgement therefore leaves a replayable hold rather than
+    /// allowing a second caller to spend the capacity.
+    pub async fn admit_harness_effect_time_ms(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: &IdempotencyKey,
+        effect_id: &IdempotencyKey,
+        ceiling_ms: u64,
+    ) -> Result<bool> {
+        let mut retries = 0;
+        loop {
+            let projected = SwarmBudget::replay(self.events.clone())?;
+            if !projected.admit_harness_effect(
+                operation_id,
+                owner,
+                dispatch_id,
+                effect_id,
+                ceiling_ms,
+            )? {
+                return Ok(false);
+            }
+            let event = SwarmBudgetEvent::HarnessEffectAdmitted {
+                operation_id,
+                owner: owner.clone(),
+                dispatch_id: dispatch_id.clone(),
+                effect_id: effect_id.clone(),
+                ceiling_ms,
+            };
+            match self.commit(event, operation_id).await {
+                Ok(applied) => return Ok(applied),
+                Err(Error::Conflict(message))
+                    if message == "swarm budget tail changed"
+                        && retries < MAX_ADMISSION_RETRIES =>
+                {
+                    retries += 1;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     /// Persists measured Harness effect time before exposing its outcome.
     pub async fn record_harness_effect_time_ms(
         &mut self,
@@ -239,18 +283,36 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         effect_id: &IdempotencyKey,
         elapsed_ms: u64,
     ) -> Result<()> {
-        let projected = SwarmBudget::replay(self.events.clone())?;
-        if !projected.record_harness_effect(operation_id, owner, dispatch_id, effect_id, elapsed_ms)? {
-            return Ok(());
+        let mut retries = 0;
+        loop {
+            let projected = SwarmBudget::replay(self.events.clone())?;
+            if !projected.record_harness_effect(
+                operation_id,
+                owner,
+                dispatch_id,
+                effect_id,
+                elapsed_ms,
+            )? {
+                return Ok(());
+            }
+            let event = SwarmBudgetEvent::HarnessEffectMeasured {
+                operation_id,
+                owner: owner.clone(),
+                dispatch_id: dispatch_id.clone(),
+                effect_id: effect_id.clone(),
+                elapsed_ms,
+            };
+            match self.commit(event, operation_id).await {
+                Ok(_) => return Ok(()),
+                Err(Error::Conflict(message))
+                    if message == "swarm budget tail changed"
+                        && retries < MAX_ADMISSION_RETRIES =>
+                {
+                    retries += 1;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        self.commit(SwarmBudgetEvent::HarnessEffectMeasured {
-            operation_id,
-            owner: owner.clone(),
-            dispatch_id: dispatch_id.clone(),
-            effect_id: effect_id.clone(),
-            elapsed_ms,
-        }, operation_id).await?;
-        Ok(())
     }
 
     /// Reloads all committed records from the provider's current tail.
@@ -1040,12 +1102,30 @@ mod tests {
         )
         .await?;
         journal
+            .admit_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &effect_id,
+                7,
+            )
+            .await?;
+        journal
             .record_harness_effect_time_ms(
                 session_id,
                 &owner,
                 &dispatch_id,
                 &effect_id,
                 7,
+            )
+            .await?;
+        journal
+            .admit_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &sibling_effect_id,
+                5,
             )
             .await?;
         journal
@@ -1297,6 +1377,75 @@ mod tests {
                 assert_eq!(usage.reserved, SwarmUsage::default(), "{dimension} parent budget");
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_root_effect_hold_and_child_reservation_share_tail_cas() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("effect-race-owner", 0)?;
+        let root_dispatch = IdempotencyKey::new("effect-race-root")?;
+        let effect_id = IdempotencyKey::new("effect-race-effect")?;
+        SwarmBudgetJournal::start_with_root_dispatch(
+            &client,
+            session_id,
+            owner.clone(),
+            SwarmBudgetLimits {
+                max_active_agents: 2,
+                max_total_agents: 2,
+                max_recursion_depth: 1,
+                max_model_steps: 10,
+                max_output_bytes: 10,
+                max_execution_time_ms: 10,
+            },
+            root_dispatch.clone(),
+        )
+        .await?;
+        let mut effect = SwarmBudgetJournal::open(&client, session_id).await?;
+        let mut child = SwarmBudgetJournal::open(&client, session_id).await?;
+        let child_id = OperationId::new();
+        let (effect_result, child_result) = tokio::join!(
+            effect.admit_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &root_dispatch,
+                &effect_id,
+                8,
+            ),
+            child.reserve_child(child_request(
+                child_id,
+                "effect-race-child",
+                1,
+                SwarmResourceRequest {
+                    model_steps: 1,
+                    output_bytes: 1,
+                    execution_time_ms: 3,
+                },
+            )),
+        );
+        let effect_won = match effect_result {
+            Ok(admitted) => admitted,
+            Err(_) => false,
+        };
+        let child_won = child_result.is_ok();
+        assert_ne!(effect_won, child_won, "both tail contenders admitted");
+        assert!(effect_won || child_won, "neither tail contender admitted");
+        let mut recovered = SwarmBudgetJournal::open(&client, session_id).await?;
+        if effect_won {
+            recovered
+                .record_harness_effect_time_ms(
+                    session_id,
+                    &owner,
+                    &root_dispatch,
+                    &effect_id,
+                    3,
+                )
+                .await?;
+        } else {
+            recovered.cancel(child_id, &owner).await?;
+        }
+        assert_eq!(recovered.usage()?.reserved, SwarmUsage::default());
         Ok(())
     }
 
