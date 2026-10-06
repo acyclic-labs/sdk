@@ -6,11 +6,20 @@ It is a design and test-gap report. It does not claim Rust refinement,
 unbounded recursion, liveness, process confinement, or a model of every
 provider schedule.
 
+The findings below were recorded before the follow-up model correction on the
+current branch. `SwarmMessage.tla` now permits completion of an already
+admitted message after cancellation while retaining a pre-admission rejection
+invariant. `ForkBoundary.tla` now separates immutable inherited capture from
+publication revision, models proven rebind, and qualifies a selected-child
+subset. The runtime tests and exporter still need to establish those
+correspondences; the corrections are bounded model changes, not a Rust
+refinement proof.
+
 ## Findings
 
 ### Message cancellation has two linearization cases
 
-`SwarmMessage.tla`'s `CancelledNeverDelivered` is sound only when cancellation
+The original `SwarmMessage.tla`'s `CancelledNeverDelivered` was sound only when cancellation
 wins before `MessageAdmitted`. The production path first appends
 `StoredEvent::MessageAdmitted` in `PersistentLocalSwarm::admit_message`
 (`filesystem/swarm_local.rs:4813`), then publishes the recipient mailbox
@@ -18,11 +27,12 @@ record through `MailboxStore::send_admitted`
 (`filesystem/swarm_communication.rs:231`). If the admission already exists,
 the recovery path can finish that exact delivery after an endpoint has been
 cancelled; this is the intended durable-admission recovery behavior. The
-model's `UnsafeCancelDelivery` case currently treats that allowed recovery as
-unsafe behavior.
+pre-correction model's `UnsafeCancelDelivery` case treated that allowed
+recovery as unsafe behavior.
 
-The model should distinguish `cancel_before_admission` from
-`cancel_after_admission`, and retain the invariant only for the first case.
+The current model distinguishes `cancel_before_admission` from
+`cancel_after_admission` as `PreAdmissionCancellationNeverDelivered`, retaining
+the invariant only for the first case.
 The minimal runtime test is a controlled seam that admits the message, cancels
 the recipient before mailbox publication, reopens the swarm, and retries the
 same `(sender, recipient, message_id, payload)`. It must produce one mailbox
@@ -47,13 +57,13 @@ revision for a prepared child when another parent event advanced the stream.
 `filesystem/swarm_local.rs:2129-2145` through an authenticated
 `ForkRebindProof`, `rebind_report_history`, and `rebind_fork_seed`.
 
-The model therefore conflates two values:
+The original model therefore conflated two values:
 
 * the immutable completed-model boundary whose bytes are inherited by the
   child; and
 * the parent aggregate revision used by the later `ForkPublished` event.
 
-Split these values in the model. A rebind may advance the publication
+The current model splits these values. A rebind may advance the publication
 revision only when the proof binds the same boundary, seed resources, and
 child operation. A focused runtime test should advance the parent stream
 between preparation and publication, then assert that the child request bytes

@@ -1,0 +1,108 @@
+{
+  "schema": "bounded-tlc-qualification/v1",
+  "generated_utc": "2026-10-06T00:07:08.7468085Z",
+  "source_head": "121d6f009b9dcad03ed622de61b7210aa800f554",
+  "tool": {
+    "path": "target/formal-tools/tla2tools-1.7.4.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "expected_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "runner": "check-models.ps1",
+    "workers": 1,
+    "java_heap_mb": 512,
+    "fingerprint_index": 0,
+    "seed": 1
+  },
+  "scope": {
+    "models": [
+      "SwarmMessage",
+      "ForkBoundary"
+    ],
+    "cases": 9,
+    "safe_cases": 3,
+    "expected_counterexamples": 6,
+    "claims": "finite bounded safety only; no Rust refinement, liveness, unbounded recursion, OS confinement, or runtime-trace qualification",
+    "message": "pre-admission cancellation cannot deliver; admitted message may finish after cancellation",
+    "fork": "selected-child subset and immutable inherited capture remain separate from publication revision rebind"
+  },
+  "sources": {
+    "rust/crates/harness/verification/SwarmMessage.tla": "d966cc577149f2100c3d959b35307edd3bc1d99e7e36f59f4e557cca06ceee3a",
+    "rust/crates/harness/verification/SwarmMessage.cfg": "a93f174190e76c32d71927f4c3e9e65a3a0c4ce00b29f76901d821bffe0f9536",
+    "rust/crates/harness/verification/SwarmMessageUnsafeDuplicate.cfg": "c7c41107773d1d367d17f2bbec8911251bec05add8cd8b8118d5f52427ac3594",
+    "rust/crates/harness/verification/SwarmMessageUnsafeOrphan.cfg": "885734d870be4083e13cea6f2cc996b62d6e7f0edaa2e8b1bf19c0433b5b3d24",
+    "rust/crates/harness/verification/SwarmMessageUnsafeCancel.cfg": "1a4cd037a08a0d2ef481298fc18f1df2271944c1b62dba295ace494ffd587b08",
+    "rust/crates/harness/verification/SwarmMessageUnsafePublication.cfg": "e2cab2fdc73e1feac04ddbe64d8051faa07a52f2002e8b49317ddff32c0fe1d0",
+    "rust/crates/harness/verification/ForkBoundary.tla": "077b79088775d0f7d899bef3e1c56ace088ca8732e995554a95cce4679ea6226",
+    "rust/crates/harness/verification/ForkBoundary.cfg": "70774d3175ee8b30e553facfa6413092fac28cd137bc9e44c54784fcebfcb4fb",
+    "rust/crates/harness/verification/ForkBoundarySingleSelected.cfg": "973a85ff9238047ac8903830ed923b9ebe538c6ceff6ad1f7b72530b23fc1cec",
+    "rust/crates/harness/verification/ForkBoundaryEarlyDispatch.cfg": "e86d0ac4ef01166701cd969a3c76b0669874d3194e35897916cfca6e55721b03",
+    "rust/crates/harness/verification/ForkBoundaryMutableCapture.cfg": "abea162846b56fd660f1efca7eb99cfe44b3718b48715cd9b4436b9583818f10",
+    "rust/crates/harness/verification/check-models.ps1": "fa4c50e5cf87ee5ab85d9c266c930a8e19a5663106568d08822911e2f21538d0",
+    "rust/crates/harness/verification/README.md": "bf036956ae000223e89d9a225dd39a4d7841bfce8dfc4a8e7adb508eef5703c5",
+    "rust/crates/harness/verification/refinement-audit-2026-10-06.md": "51229b305b0a9b8c614ccd54e6016ccb7a41592915dff9d117ec8a5f0042b131"
+  },
+  "results": [
+    {
+      "path": "target\\formal-evidence\\admission-cancellation-20261006-rerun\\b06e80052f5344d684eff708528a76d9-safe.log",
+      "sha256": "baeb96dad4705b3e3afb03b7d1a612d3af9d4d0cb9a1e5cc2c7bef25d42a50e2",
+      "status": "safe",
+      "states_generated": 8,
+      "distinct_states": 8
+    },
+    {
+      "path": "target\\formal-evidence\\admission-cancellation-20261006-rerun\\b06e80052f5344d684eff708528a76d9-unsafe-cancel.log",
+      "sha256": "4af53eabda73c89158a35417fd5bf482c6e1cb1469b3cc67e35022c187be2e3f",
+      "status": "expected-counterexample",
+      "states_generated": 6,
+      "distinct_states": 6
+    },
+    {
+      "path": "target\\formal-evidence\\admission-cancellation-20261006-rerun\\b06e80052f5344d684eff708528a76d9-unsafe-duplicate.log",
+      "sha256": "d50f66f91509350526e285b868b86daa2b3a7e261be1d3b82a932fbf7d6143c6",
+      "status": "expected-counterexample",
+      "states_generated": 7,
+      "distinct_states": 7
+    },
+    {
+      "path": "target\\formal-evidence\\admission-cancellation-20261006-rerun\\b06e80052f5344d684eff708528a76d9-unsafe-orphan.log",
+      "sha256": "03b157a151f4179ccf68f58c19c3bf57d0c561a379f6fb83e2ddea9da065b71c",
+      "status": "expected-counterexample",
+      "states_generated": 4,
+      "distinct_states": 4
+    },
+    {
+      "path": "target\\formal-evidence\\admission-cancellation-20261006-rerun\\b06e80052f5344d684eff708528a76d9-unsafe-publication.log",
+      "sha256": "07aedcee06d3b26f54838c71ade67a789b3f45462a44a8d5978c9b9c31db266b",
+      "status": "expected-counterexample",
+      "states_generated": 9,
+      "distinct_states": 9
+    },
+    {
+      "path": "target\\formal-evidence\\fork-subset-rebind-20261006-rerun\\af9727734c4d410d945a68dcff77a857-early-dispatch.log",
+      "sha256": "eb950035ac3a62184d282fbf03e4bc2e8446068e29c6036b5b8fe70e9bab0f64",
+      "status": "expected-counterexample",
+      "states_generated": 24,
+      "distinct_states": 22
+    },
+    {
+      "path": "target\\formal-evidence\\fork-subset-rebind-20261006-rerun\\af9727734c4d410d945a68dcff77a857-mutable-capture.log",
+      "sha256": "e012d0093cd88147b43fd5c106325f1f0e64e5807faaeec92783b8c4765dc8fc",
+      "status": "expected-counterexample",
+      "states_generated": 14,
+      "distinct_states": 13
+    },
+    {
+      "path": "target\\formal-evidence\\fork-subset-rebind-20261006-rerun\\af9727734c4d410d945a68dcff77a857-safe-single-selected.log",
+      "sha256": "0019b7d6e7c00943c628d517a7db05d86711328f267cb51c503ded1dda65083a",
+      "status": "safe",
+      "states_generated": 64,
+      "distinct_states": 43
+    },
+    {
+      "path": "target\\formal-evidence\\fork-subset-rebind-20261006-rerun\\af9727734c4d410d945a68dcff77a857-safe.log",
+      "sha256": "0e78a89452535a7405feaaf44a108bdb7f4ed2e3f3f1f964c0a94285a86f254b",
+      "status": "safe",
+      "states_generated": 354,
+      "distinct_states": 163
+    }
+  ]
+}

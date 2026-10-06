@@ -60,19 +60,23 @@ or whole-swarm verification. The locked acceptance matrix remains required.
 
 ## Completed fork boundary model
 
-`ForkBoundary.tla` models one batch with two selected children and three parent
-revisions. It checks that all children are bound and the ordered triggering
-exchange is complete before any child dispatches, and that inherited captures
-stay pinned while the parent changes. Two negative controls separately permit
-early dispatch and mutable capture refresh; both must produce their expected
-invariant violation. Run through the shared checker:
+`ForkBoundary.tla` models a possible child set with a selected batch subset and
+three parent revisions. It checks that every selected child is bound and the
+ordered triggering exchange is complete before dispatch, while unselected plans
+remain outside the batch. The immutable inherited boundary (`pinnedRevision` /
+`captured`) is separate from the parent publication revision. A proven rebind
+may update the latter without rewriting inherited model-input identity. Two
+negative controls separately permit early dispatch and mutable capture refresh;
+both must produce their expected invariant violation. The shared checker also
+qualifies a one-child selected batch:
 
 ```powershell
 ./check-models.ps1 -Model ForkBoundary -ToolsJar C:/tools/tla2tools.jar -EvidenceDirectory C:/evidence/forks
 ```
 
-The correspondence is `LocalModelForkPublisher::publish`'s completed-batch
-barrier and the frozen declaration consumed by `inherited_task_bundle`.
+The correspondence is `LocalModelForkPublisher::publish`'s selected-plan
+barrier and the frozen declaration consumed by `inherited_task_bundle`; the
+publication revision models the separately proven parent-stream rebind.
 This is a design model, not an implementation conformance proof. Captures are
 abstract immutable revision identities: it does not check serialization bytes,
 reference authorization, storage corruption, recursive depth, crashes, or
@@ -189,9 +193,9 @@ for this bounded run, not a proof of the production implementation.
 | Authority | four agents; directed parent map; four message and three wait identities; transcript inheritance flags | `SwarmAuthority` | sibling/unauthorized, root self-target, and inherited-prefix authority violations cover `DirectMessageAuthority` / `SelfMessageAuthority` / `TranscriptInheritanceDoesNotGrantAuthority` |
 | Budget | five agents; depth two; total allocation three; two steps per agent | `SwarmBudget` | over-allocation, over-step, and over-depth violate their conservation/bound invariants |
 | Publication | one child; generations `0..1` | `SwarmPublication` | stale publication violates `PublicationAtCapturedGeneration` |
-| Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission` |
+| Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission`; pre-admission cancellation delivery violates `PreAdmissionCancellationNeverDelivered` while admitted delivery may finish |
 | Activation recovery | one operation; two owner identities | `ActivationRecovery` | dropping an admitted claim violates `AdmittedClaimRetained` |
-| Fork boundary | two selected children; three parent revisions | `ForkBoundary` | early dispatch and mutable capture violate their boundary invariants |
+| Fork boundary | two possible children; selected subset; three parent revisions | `ForkBoundary` | early dispatch and mutable capture violate their boundary invariants |
 | Integration and approval | four agents; root `1`; children `2,4`; grandchild `3`; generations `0..1`; explicit integrate/discard | `SwarmIntegration` | sibling integration, grandchild writeback, stale approval, and mismatched approval each reach an effect and violate the scoped invariant |
 
 These results establish finite transition safety for the model states and
@@ -325,7 +329,7 @@ The registry sequence only proves that the receipt follows its admission; the
 child completion may race with receipt publication after scheduling and is not
 treated as a fabricated cross-event chronology.
 
-The cancellation model's `CancelledNeverDelivered` and activation model's
+The cancellation model's `PreAdmissionCancellationNeverDelivered` and activation model's
 `CancellationBeforeAdmissionHasNoDispatch` therefore apply only to their
 declared linearization boundary. They must not be read as a claim that a live
 provider call can be rolled back. Likewise `AtMostOncePublication` is about a

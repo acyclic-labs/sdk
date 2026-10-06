@@ -28,9 +28,10 @@ Cancel == /\ ~cancelled
          /\ UNCHANGED <<admitted, deliveryCount, published, publicationCount>>
 
 Deliver == /\ (state = "admitted" \/
+                (state = "cancelled" /\ admitted) \/
                 (UnsafeOrphan /\ state = "absent") \/
                 (UnsafeDuplicate /\ state = "delivered") \/
-                (UnsafeCancelDelivery /\ state = "cancelled" /\ admitted))
+                (UnsafeCancelDelivery /\ state = "cancelled" /\ ~admitted))
            /\ deliveryCount < 2
            /\ ~published
            /\ state' = "delivered"
@@ -39,7 +40,6 @@ Deliver == /\ (state = "admitted" \/
 
 Publish == /\ state = "delivered"
           /\ admitted
-          /\ ~cancelled
           /\ ~published
           /\ state' = "published"
           /\ published' = TRUE
@@ -67,11 +67,10 @@ TypeOK == /\ state \in {"absent", "admitted", "cancelled", "delivered", "publish
 
 DeliveredRequiresAdmission == deliveryCount > 0 => admitted
 AtMostOnce == deliveryCount <= 1
-CancelledNeverDelivered == cancelled => deliveryCount = 0
+PreAdmissionCancellationNeverDelivered == cancelled /\ ~admitted => deliveryCount = 0
 PublicationRequiresDelivery == publicationCount > 0 =>
     /\ admitted
     /\ deliveryCount = 1
     /\ published
-    /\ ~cancelled
 AtMostOncePublication == publicationCount <= 1
 =============================================================================
