@@ -3161,6 +3161,153 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// One generated reducer input; indices select earlier operations.
+    #[derive(Clone, Debug)]
+    enum Step {
+        Lifecycle(usize),
+        Custom(u8),
+        Bind(u8),
+        Resubmit(usize),
+        ConflictingIntent(usize),
+        StaleRevision,
+    }
+
+    fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        prop_oneof![
+            (0..6_usize).prop_map(Step::Lifecycle),
+            any::<u8>().prop_map(Step::Custom),
+            any::<u8>().prop_map(Step::Bind),
+            any::<usize>().prop_map(Step::Resubmit),
+            any::<usize>().prop_map(Step::ConflictingIntent),
+            Just(Step::StaleRevision),
+        ]
+    }
+
+    fn pick_admitted(
+        admitted: &[(Command, Event)],
+        pick: usize,
+    ) -> std::result::Result<&(Command, Event), proptest::test_runner::TestCaseError> {
+        admitted
+            .get(pick % admitted.len())
+            .ok_or_else(|| proptest::test_runner::TestCaseError::fail("no admitted operation"))
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn reducer_admission_is_replayable_and_atomic(
+            steps in proptest::collection::vec(step(), 1..24),
+        ) {
+            use proptest::prelude::*;
+            let fail = |error: Error| TestCaseError::fail(error.to_string());
+            let lifecycle = [
+                LifecycleState::Pending,
+                LifecycleState::Active,
+                LifecycleState::Waiting,
+                LifecycleState::Completed,
+                LifecycleState::Failed,
+                LifecycleState::Cancelled,
+            ];
+            let authority = issuer().verifier();
+            let mut reducer = Reducer::new(
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "conversation-1".into(),
+                },
+                authority.clone(),
+                schemas(),
+            );
+            let mut admitted: Vec<(Command, Event)> = Vec::new();
+            for (index, step) in steps.into_iter().enumerate() {
+                let id = OperationId::from_bytes(
+                    u128::try_from(index + 1).unwrap_or_default().to_be_bytes(),
+                );
+                let revision = reducer.revision();
+                let next = match step {
+                    Step::Lifecycle(to) => command(id, revision, Action::TransitionLifecycle {
+                        to: *lifecycle.get(to).ok_or_else(|| TestCaseError::fail("state"))?,
+                        reason: None,
+                    }),
+                    Step::Custom(text) => command(id, revision, Action::AppendCustom {
+                        schema: "example.message".into(),
+                        version: 1,
+                        content: request_file(format!(r#"{{"text":"{text}"}}"#).as_bytes())
+                            .map_err(fail)?,
+                    }),
+                    Step::Bind(agent) => command(id, revision, Action::BindConversation {
+                        agent: AgentId::from_bytes([agent; 16]),
+                    }),
+                    Step::Resubmit(_) | Step::ConflictingIntent(_) if admitted.is_empty() => {
+                        continue;
+                    }
+                    Step::Resubmit(pick) => {
+                        // (b) the exact admitted command replays its event.
+                        let (prior, event) = pick_admitted(&admitted, pick)?;
+                        let replayed = reducer.apply(prior.clone()).map_err(fail)?;
+                        prop_assert_eq!(replayed, ApplyResult::Replayed { event: event.clone() });
+                        continue;
+                    }
+                    Step::ConflictingIntent(pick) => {
+                        let (prior, _) = pick_admitted(&admitted, pick)?;
+                        let conflicting = command(prior.operation_id, revision, Action::TransitionLifecycle {
+                            to: LifecycleState::Active,
+                            reason: Some("other intent".into()),
+                        });
+                        // (e) a conflicting intent leaves state unchanged.
+                        let before = reducer.clone();
+                        prop_assert!(matches!(
+                            reducer.apply(conflicting),
+                            Err(Error::Conflict(_))
+                        ));
+                        prop_assert_eq!(&reducer, &before);
+                        continue;
+                    }
+                    Step::StaleRevision => command(
+                        id,
+                        revision.wrapping_add(1),
+                        Action::TransitionLifecycle {
+                            to: LifecycleState::Active,
+                            reason: None,
+                        },
+                    ),
+                };
+                match reducer.plan(&next) {
+                    Ok(ApplyResult::Applied { event }) => {
+                        // (a) every planned event commits, (d) one revision at a time.
+                        prop_assert_eq!(event.revision, revision + 1);
+                        let committed = reducer.apply_committed(event.clone()).map_err(fail)?;
+                        prop_assert_eq!(committed, ApplyResult::Applied { event: event.clone() });
+                        prop_assert_eq!(reducer.revision(), revision + 1);
+                        admitted.push((next, event));
+                    }
+                    Ok(ApplyResult::Replayed { .. }) => {
+                        prop_assert!(false, "fresh operation replayed");
+                    }
+                    Err(_) => {
+                        let before = reducer.clone();
+                        prop_assert!(reducer.apply(next).is_err());
+                        prop_assert_eq!(&reducer, &before);
+                    }
+                }
+            }
+            // (c) restoring a snapshot equals replaying every committed event.
+            let restored = Reducer::restore(
+                reducer.snapshot().map_err(fail)?,
+                authority.clone(),
+                schemas(),
+            )
+            .map_err(fail)?;
+            let mut replayed = Reducer::new(reducer.authority().clone(), authority, schemas());
+            for (_, event) in &admitted {
+                replayed.apply_committed(event.clone()).map_err(fail)?;
+            }
+            prop_assert_eq!(&restored, &reducer);
+            prop_assert_eq!(&replayed, &reducer);
+        }
+    }
+
     #[test]
     fn transition_tags_and_capabilities_are_pinned() {
         const PINNED: &str = "\
