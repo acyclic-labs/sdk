@@ -25,6 +25,7 @@ use tar::Archive;
 mod canonical_rust_verifier;
 mod installed_package_receipts;
 mod language_catalog;
+mod producer_provenance;
 #[path = "observation_verifier.rs"]
 #[allow(dead_code)]
 mod observation_verifier;
@@ -790,6 +791,13 @@ fn check(
         ));
     }
     verify_artifacts(output, &manifest.artifacts)?;
+    producer_provenance::verify_plan(
+        output,
+        &source.revision,
+        &source.digest,
+        &require_rust_wire_model_digest(output, &source.revision)?,
+    )
+    .map_err(CliError::new)?;
     verify_authority_manifest(source_root, output)?;
     verify_revision_artifacts(source_root, output, &source.revision)?;
     let check_root = output.join(".check");
@@ -901,6 +909,13 @@ fn drift(
         ));
     }
     verify_artifacts(output, &manifest.artifacts)?;
+    producer_provenance::verify_plan(
+        output,
+        &source.revision,
+        &source.digest,
+        &require_rust_wire_model_digest(output, &source.revision)?,
+    )
+    .map_err(CliError::new)?;
     verify_authority_manifest(source_root, output)?;
     verify_revision_artifacts(source_root, output, &source.revision)?;
     let report = json!({
@@ -3437,6 +3452,7 @@ fn run_tools(
                 &spec,
                 relative_request,
                 operation,
+                profile,
             )?);
             continue;
         }
@@ -3542,6 +3558,7 @@ fn run_tools(
             }
         }
         if spec.id == "sdk-language-producers" {
+            let rust_model_digest = require_rust_wire_model_digest(output, &source.revision)?;
             results.push(run_language_producers(
                 root,
                 output,
@@ -3549,6 +3566,7 @@ fn run_tools(
                 relative_request,
                 source,
                 operation,
+                &rust_model_digest,
             )?);
             continue;
         }
@@ -4126,9 +4144,15 @@ fn prepare_type_audit_root(
     let parent = output
         .parent()
         .ok_or_else(|| CliError::new("generated output has no parent for audit staging"))?;
+    // Distinct generation outputs in one process must never share staging.
+    let output_identity = format!(
+        "{:x}",
+        Sha256::digest(output.as_os_str().to_string_lossy().as_bytes())
+    );
     let staging = parent.join(format!(
-        ".acyclic-generated-type-audit-{}",
-        std::process::id()
+        ".acyclic-generated-type-audit-{}-{}",
+        std::process::id(),
+        &output_identity[..16]
     ));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
@@ -4426,6 +4450,7 @@ fn run_product_artifacts(
     spec: &ToolSpec,
     request: String,
     operation: Operation,
+    profile: GenerationProfile,
 ) -> Result<ToolResult, CliError> {
     let Some(manifest) = spec.manifest.as_ref() else {
         return Ok(ToolResult {
@@ -4473,6 +4498,8 @@ fn run_product_artifacts(
             root.as_os_str().to_os_string(),
             OsString::from("--out"),
             destination.as_os_str().to_os_string(),
+            OsString::from("--profile"),
+            OsString::from(profile.as_str()),
         ];
         if first_command.is_empty() {
             first_command = command.clone();
@@ -4731,6 +4758,7 @@ fn run_language_producers(
     request: String,
     source: &SourceIdentity,
     operation: Operation,
+    rust_model_digest: &str,
 ) -> Result<ToolResult, CliError> {
     let Some(targets_path) = spec.manifest.as_ref() else {
         return Ok(ToolResult {
@@ -4855,6 +4883,7 @@ fn run_language_producers(
                     "source_root": root,
                     "output": target_output,
                     "source": source,
+                    "rust_model_digest": rust_model_digest,
                     "contract_scope": "rust-authority",
                     "contract_inputs": [
                         "rust/crates/sdk-contract-wire",
@@ -4972,6 +5001,20 @@ fn run_language_producers(
                             } else {
                                 None
                             };
+                            let producer_root = output.join("language-producers").join(id);
+                            let (producer_manifest_path, producer_manifest) =
+                                producer_provenance::emit(
+                                    &producer_root,
+                                    id,
+                                    &source.revision,
+                                    &source.digest,
+                                    rust_model_digest,
+                                )
+                                .map_err(|error| {
+                                    CliError::new(format!(
+                                        "Rust producer provenance failed for {id}: {error}"
+                                    ))
+                                })?;
                             let artifact_digest = directory_digest(&target_output)?;
                             execution = json!({
                                 "status": "passed",
@@ -4984,6 +5027,8 @@ fn run_language_producers(
                                 "exit_code": process.status.code(),
                                 "output": relative_or_absolute(&target_output, output),
                                 "artifact_digest": artifact_digest,
+                                "producer_manifest": relative_or_absolute(&producer_manifest_path, output),
+                                "files": producer_manifest.files,
                                 "package_policy": package_policy,
                             });
                         }
@@ -5014,6 +5059,7 @@ fn run_language_producers(
                 "operation": operation_name(operation),
                 "source_revision": source.revision,
                 "source_digest": source.digest,
+                "rust_model_digest": rust_model_digest,
                 "contract_scope": "rust-authority",
                 "contract_inputs": [
                     "rust/crates/sdk-contract-wire",
@@ -8567,11 +8613,15 @@ mod tests {
     use super::*;
     use flate2::{Compression, write::GzEncoder};
     use tar::Builder;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
     fn test_directory(name: &str) -> PathBuf {
+        let nonce = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
         let path = env::temp_dir().join(format!(
-            "acyclic-sdk-generation-{name}-{}",
-            std::process::id()
+            "acyclic-sdk-generation-{name}-{}-{nonce}",
+            std::process::id(),
         ));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).expect("create test directory");
@@ -9406,6 +9456,7 @@ mod tests {
             "requests/sdk-language-producers.json".into(),
             &source,
             Operation::Generate,
+            &"a".repeat(64),
         )
         .expect("target catalog is valid");
         assert!(matches!(result.status.as_str(), "pending" | "failed"));
@@ -9541,6 +9592,7 @@ mod tests {
             "requests/sdk-language-producers.json".into(),
             &source,
             Operation::Generate,
+            &"a".repeat(64),
         )
         .expect_err("missing generator pin must fail closed");
         assert!(error.message.contains("missing pin"));
@@ -9702,10 +9754,16 @@ mod tests {
     fn python_protobuf_stage_targets_generated_subtree() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let output = root.join("target/sdk-generation-python-stage-test");
-        let spec = tool_specs(&root)
-            .into_iter()
-            .find(|spec| spec.id == "sdk-python")
-            .expect("Python producer is registered");
+        // Keep this command-shape regression independent of the primary
+        // Rust/TypeScript profile, which intentionally excludes Python.  The
+        // fixture models the producer entry without requiring the optional
+        // Python package to be present in the checkout.
+        let spec = ToolSpec {
+            id: "sdk-python",
+            required: true,
+            manifest: Some(root.join("rust/crates/sdk-python/Cargo.toml")),
+            script: None,
+        };
         let source = SourceIdentity {
             revision: "0123456789012345678901234567890123456789".into(),
             dirty: false,

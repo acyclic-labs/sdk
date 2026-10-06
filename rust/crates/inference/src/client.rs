@@ -39,8 +39,7 @@ impl From<crate::http::Error> for Error {
             crate::http::Error::MalformedResponse => Self::MalformedResponse,
             crate::http::Error::Service { status, detail } => Self::Service(
                 detail
-                    .map(|detail| format!("HTTP {status}: {detail:?}"))
-                    .unwrap_or_else(|| format!("HTTP {status}")),
+                    .map_or_else(|| format!("HTTP {status}"), |detail| format!("HTTP {status}: {detail:?}")),
             ),
         }
     }
@@ -143,9 +142,9 @@ impl Client {
                     "endpoint has no compatible Inference transport".into(),
                 ));
             }
-            return Ok(Self {
+            Ok(Self {
                 backend: Backend::Http(client),
-            });
+            })
         }
 
         #[cfg(target_arch = "wasm32")]

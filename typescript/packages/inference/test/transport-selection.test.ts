@@ -8,7 +8,7 @@ import {
 } from "../src/index.js";
 
 test("Rust-owned policy selects the best transport without consumer flags", () => {
-  expect(INFERENCE_REMOTE_POLICY.transport.native.map(option => option.kind)).toEqual(["grpc", "http"]);
+  expect(INFERENCE_REMOTE_POLICY.transport.native.map(option => option.kind)).toEqual(["http"]);
   expect(INFERENCE_REMOTE_POLICY.transport.browser.map(option => option.kind)).toEqual(["http"]);
   const client = fromEnv({ endpoint: "https://inference.example", token: "fixture" });
   expect(client).toBeInstanceOf(InferenceClient);
@@ -16,9 +16,9 @@ test("Rust-owned policy selects the best transport without consumer flags", () =
   expect(client.transport).not.toBeInstanceOf(HttpInferenceTransport);
 });
 
-test("legacy transport settings remain harmless compatibility input", () => {
-  const client = fromEnv({ endpoint: "https://inference.example", token: "fixture", transport: "grpc" });
-  expect(client.transport).toBeInstanceOf(RustInferenceTransport);
+test("unavailable transport settings are rejected by the generated policy", () => {
+  expect(() => fromEnv({ endpoint: "https://inference.example", token: "fixture", transport: "grpc" as never }))
+    .toThrow("transport grpc is unavailable");
   const compatibility = new HttpInferenceTransport("https://inference.example", "fixture");
   expect(compatibility).toBeInstanceOf(RustInferenceTransport);
 });

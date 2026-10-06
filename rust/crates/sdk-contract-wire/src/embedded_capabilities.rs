@@ -575,12 +575,40 @@ pub const fn embedded_capabilities() -> &'static [EmbeddedCapability] {
     EMBEDDED_CAPABILITIES
 }
 
-/// Find one exact language/family capability, if a binding is actually
-/// declared.  `None` is the canonical answer for an unsupported binding.
+/// Find one exact language/family capability when that pair has one binding.
+///
+/// Ambiguous pairs return `None`; callers that need to select among multiple
+/// Rust-declared bindings must use [`embedded_capabilities_for`] or
+/// [`embedded_capability_with_binding`].  This prevents the old first-entry
+/// behavior from silently hiding a valid alternative.
 pub fn embedded_capability(language: &str, family: &str) -> Option<&'static EmbeddedCapability> {
+    let mut matches = embedded_capabilities_for(language, family).into_iter();
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
+
+/// Return every Rust-declared binding for an exact language/family pair.
+pub fn embedded_capabilities_for(
+    language: &str,
+    family: &str,
+) -> Vec<&'static EmbeddedCapability> {
     EMBEDDED_CAPABILITIES
         .iter()
-        .find(|entry| entry.language.as_str() == language && entry.family.as_str() == family)
+        .filter(|entry| entry.language.as_str() == language && entry.family.as_str() == family)
+        .collect()
+}
+
+/// Find one explicitly selected Rust-declared binding for a language/family pair.
+pub fn embedded_capability_with_binding(
+    language: &str,
+    family: &str,
+    binding: EmbeddedBinding,
+) -> Option<&'static EmbeddedCapability> {
+    EMBEDDED_CAPABILITIES.iter().find(|entry| {
+        entry.language.as_str() == language
+            && entry.family.as_str() == family
+            && entry.binding == binding
+    })
 }
 
 /// Project the registry into the deterministic JSON consumed by docs and
@@ -665,10 +693,25 @@ mod tests {
     fn remote_web_is_distinct_from_local_wasm() {
         let actors = embedded_capability("typescript", "actors").unwrap();
         assert_eq!(actors.binding, EmbeddedBinding::RemoteWebWasm);
-        let stream = embedded_capability("typescript", "stream").unwrap();
-        assert_eq!(stream.binding, EmbeddedBinding::Wasm);
+        assert!(embedded_capability("typescript", "stream").is_none());
+        let stream = embedded_capabilities_for("typescript", "stream");
+        assert_eq!(stream.len(), 2);
+        assert_eq!(
+            stream.first().map(|entry| entry.binding),
+            Some(EmbeddedBinding::Wasm)
+        );
+        assert_eq!(
+            stream.get(1).map(|entry| entry.binding),
+            Some(EmbeddedBinding::TypeScriptNative)
+        );
+        assert_eq!(
+            embedded_capability_with_binding("typescript", "stream", EmbeddedBinding::Wasm)
+                .unwrap()
+                .binding,
+            EmbeddedBinding::Wasm
+        );
         assert!(!actors.binding.is_local());
-        assert!(stream.binding.is_local());
+        assert!(stream.iter().all(|entry| entry.binding.is_local()));
     }
 
     #[test]
@@ -716,6 +759,19 @@ mod tests {
             .iter()
             .find(|family| family["family"] == "stream")
             .unwrap();
+        let typescript = stream["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["language"] == "typescript")
+            .collect::<Vec<_>>();
+        assert_eq!(typescript.len(), 2);
+        assert!(typescript.iter().any(|row| row["binding"] == "wasm"));
+        assert!(
+            typescript
+                .iter()
+                .any(|row| row["binding"] == "typescript-native")
+        );
         assert!(
             stream["capabilities"]
                 .as_array()
@@ -778,5 +834,18 @@ mod tests {
             .find(|entry| entry.binding == EmbeddedBinding::Napi)
             .unwrap();
         assert_eq!(filesystem_napi.artifact.target_identities.len(), 6);
+        let dotnet = EMBEDDED_CAPABILITIES
+            .iter()
+            .find(|entry| entry.binding == EmbeddedBinding::DotnetNuget)
+            .expect("the source worktree includes the .NET producer package");
+        assert!(dotnet.artifact.installable);
+        assert!(dotnet
+            .evidence
+            .source_evidence
+            .contains(&"dotnet/Acyclic.Sdk.Embedded.csproj"));
+        assert!(dotnet
+            .evidence
+            .source_evidence
+            .contains(&"scripts/build-dotnet-embedded-package.ps1"));
     }
 }

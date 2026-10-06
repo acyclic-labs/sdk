@@ -2985,7 +2985,7 @@ pub const TYPE_PROJECTION_PROFILES: &[TypeProjectionProfile] = &[
         refinements: "factory methods returning typed validation errors",
         presence: "optional wrappers only where presence is explicit",
         unknown_values: "UNRECOGNIZED plus canonical OpaqueUnknownFields and explicit Absent",
-        integers: "long with unsigned helper/value wrapper",
+        integers: "java.math.BigInteger for UInt64; long for Int64",
         checker: "javac -Xlint + Error Prone",
     },
     TypeProjectionProfile {
@@ -3065,7 +3065,7 @@ pub const TYPE_PROJECTION_PROFILES: &[TypeProjectionProfile] = &[
         refinements: "refined constructors and Either",
         presence: "Option only for explicit presence",
         unknown_values: "open enum Unknown case carrying raw integer; OpaqueUnknownFields and Absent for oneofs",
-        integers: "Long with UInt64 value class",
+        integers: "scala.math.BigInt for UInt64; Long for Int64",
         checker: "scalac -Xfatal-warnings + munit",
     },
     TypeProjectionProfile {
@@ -3408,6 +3408,7 @@ fn validate_producer_manifest(
     document: &serde_json::Value,
     target_root: &Path,
     expected_git_revision: Option<&str>,
+    expected_model_digest: Option<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     if document.get("schema").and_then(serde_json::Value::as_str)
@@ -3433,6 +3434,17 @@ fn validate_producer_manifest(
         if actual != Some(expected) {
             errors.push(format!(
                 "producer manifest source revision differs: expected {expected}, got {}",
+                actual.unwrap_or("<missing>")
+            ));
+        }
+    }
+    if let Some(expected) = expected_model_digest {
+        let actual = document
+            .get("rust_model_digest")
+            .and_then(serde_json::Value::as_str);
+        if !model_digest_matches(actual, expected) {
+            errors.push(format!(
+                "producer manifest Rust model digest differs: expected {expected}, got {}",
                 actual.unwrap_or("<missing>")
             ));
         }
@@ -3543,9 +3555,38 @@ fn source_binding_value<'a>(value: &'a serde_json::Value, key: &str) -> Option<&
 }
 
 fn model_digest_matches(actual: Option<&str>, expected: &str) -> bool {
-    actual.is_some_and(|value| {
-        value == expected || value.strip_prefix("sha256:") == Some(expected)
-    })
+    actual.is_some_and(|value| canonical_model_digest(value) == canonical_model_digest(expected))
+}
+
+fn canonical_model_digest(value: &str) -> String {
+    value.strip_prefix("sha256:").unwrap_or(value).to_ascii_lowercase()
+}
+
+fn producer_model_digest_claims(document: &serde_json::Value) -> Vec<(&'static str, &str)> {
+    let mut claims = Vec::new();
+    match source_binding_value(document, "schema") {
+        Some("acyclic.sdk.language-toolchain-receipt.v1") => {
+            for key in ["rust_model_digest", "model_digest", "source_digest"] {
+                if let Some(value) = source_binding_value(document, key) {
+                    claims.push((key, value));
+                }
+            }
+            if let Some(authority) = document.get("authority") {
+                for (key, label) in [("rust_model_digest", "authority.rust_model_digest"), ("model_digest", "authority.model_digest")] {
+                    if let Some(value) = source_binding_value(authority, key) {
+                        claims.push((label, value));
+                    }
+                }
+            }
+        }
+        Some(schema) if schema.ends_with(".rust-authority.v1") => {
+            if let Some(value) = source_binding_value(document, "source_revision") {
+                claims.push(("source_revision", value));
+            }
+        }
+        _ => {}
+    }
+    claims
 }
 
 /// Return the contract-model identity from a producer-owned authority
@@ -3604,6 +3645,14 @@ fn validate_producer_authority_document(
     expected_model_digest: Option<&str>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
+    let claims = producer_model_digest_claims(document);
+    if let Some((first_label, first)) = claims.first() {
+        for (label, value) in &claims[1..] {
+            if !model_digest_matches(Some(value), first) {
+                errors.push(format!("Rust model digest claims conflict: {first_label}={first}, {label}={value}"));
+            }
+        }
+    }
     let authority = source_binding_value(document, "authority");
     let schema = source_binding_value(document, "schema");
     if authority != Some("rust")
@@ -3735,7 +3784,12 @@ pub fn audit_language_producer_source_bindings_for_languages(
             if authority_path.file_name().and_then(|name| name.to_str())
                 == Some("producer-manifest.json")
             {
-                for reason in validate_producer_manifest(&document, &target_root, expected_git_revision)
+                for reason in validate_producer_manifest(
+                    &document,
+                    &target_root,
+                    expected_git_revision,
+                    expected_model_digest,
+                )
                 {
                     violations.push(LanguageProducerBindingViolation {
                         producer: producer.clone(),
@@ -3992,7 +4046,7 @@ pub fn audit_generated_descriptor_shape_coverage_for_languages(
             let covered = descriptor_projection_aliases(language, &enum_type)
                 .iter()
                 .any(|alias| match language {
-                    "python" | "go" | "jvm" | "haskell" => {
+                    "python" | "go" | "jvm" | "haskell" | "typescript" => {
                         source_contains_descriptor_enum_projection(language, &source, alias)
                     }
                     _ => source_contains_identifier(&source, alias),
@@ -4007,47 +4061,80 @@ pub fn audit_generated_descriptor_shape_coverage_for_languages(
             }
         }
 
-        let mut message_oneof_types = std::collections::BTreeSet::new();
-        for entry in &oneofs {
-            if !matches!(entry.payload_kind, FieldType::Message | FieldType::Group) {
-                continue;
+        if language == "typescript" {
+            for entry in &oneofs {
+                if !source_contains_descriptor_oneof_arm(language, &source, entry) {
+                    violations.push(GeneratedSurfaceViolation {
+                        language,
+                        path: format!(
+                            "{report_path} (missing Rust oneof arm {}.{}.{})",
+                            entry.field.message_path,
+                            entry.field.oneof_name.as_deref().unwrap_or("<unnamed>"),
+                            entry.field.field
+                        ),
+                        line: 0,
+                        reason: "generated facade omits a descriptor-bound oneof arm",
+                    });
+                }
             }
-            if let Some(payload_type) = &entry.payload_type {
-                message_oneof_types.insert(payload_type.clone());
+        } else {
+            let mut message_oneof_types = std::collections::BTreeSet::new();
+            for entry in &oneofs {
+                if !matches!(entry.payload_kind, FieldType::Message | FieldType::Group) {
+                    continue;
+                }
+                if let Some(payload_type) = &entry.payload_type {
+                    message_oneof_types.insert(payload_type.clone());
+                }
             }
-        }
-        for payload_type in message_oneof_types {
-            let mut matching_members = oneofs.iter().filter(|entry| {
-                entry.payload_type.as_deref() == Some(payload_type.as_str())
-                    && matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            });
-            let covered = matching_members
-                .any(|entry| source_contains_descriptor_oneof_arm(language, &source, entry));
-            if !covered {
-                violations.push(GeneratedSurfaceViolation {
-                    language,
-                    path: format!("{report_path} (missing Rust oneof payload {payload_type})"),
-                    line: 0,
-                    reason: "generated facade omits a descriptor-bound message oneof arm",
+            for payload_type in message_oneof_types {
+                let covered = oneofs.iter().any(|entry| {
+                    entry.payload_type.as_deref() == Some(payload_type.as_str())
+                        && matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+                        && source_contains_descriptor_oneof_arm(language, &source, entry)
                 });
+                if !covered {
+                    violations.push(GeneratedSurfaceViolation {
+                        language,
+                        path: format!("{report_path} (missing Rust oneof payload {payload_type})"),
+                        line: 0,
+                        reason: "generated facade omits a descriptor-bound message oneof arm",
+                    });
+                }
             }
         }
 
-        let mut presence_fields = std::collections::BTreeSet::new();
-        for entry in &presence {
-            presence_fields.insert((entry.field.field.clone(), entry.field.json_name.clone()));
-        }
-        for (field, json_name) in presence_fields {
-            let field_present = source_contains_identifier(&source, &field)
-                || source_contains_identifier(&source, &json_name)
-                || source_contains_identifier(&source, &snake_to_camel(&field));
-            if !field_present {
-                violations.push(GeneratedSurfaceViolation {
-                    language,
-                    path: format!("{report_path} (missing Rust presence field {field})"),
-                    line: 0,
-                    reason: "generated facade omits a Rust descriptor presence field",
-                });
+        if language == "typescript" {
+            for entry in &presence {
+                if !typescript_presence_field_is_declared(&source, entry) {
+                    violations.push(GeneratedSurfaceViolation {
+                        language,
+                        path: format!(
+                            "{report_path} (missing Rust presence field {}.{})",
+                            entry.field.message_path, entry.field.field
+                        ),
+                        line: 0,
+                        reason: "generated facade omits a Rust descriptor presence field",
+                    });
+                }
+            }
+        } else {
+            let mut presence_fields = std::collections::BTreeSet::new();
+            for entry in &presence {
+                presence_fields.insert((entry.field.field.clone(), entry.field.json_name.clone()));
+            }
+            for (field, json_name) in presence_fields {
+                let field_present = source_contains_identifier(&source, &field)
+                    || source_contains_identifier(&source, &json_name)
+                    || source_contains_identifier(&source, &snake_to_camel(&field));
+                if !field_present {
+                    violations.push(GeneratedSurfaceViolation {
+                        language,
+                        path: format!("{report_path} (missing Rust presence field {field})"),
+                        line: 0,
+                        reason: "generated facade omits a Rust descriptor presence field",
+                    });
+                }
             }
         }
     }
@@ -4424,6 +4511,111 @@ fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
     ]
 }
 
+fn typescript_property_name_matches(line: &str, names: &[String]) -> bool {
+    let trimmed = line.trim_start();
+    names.iter().any(|name| {
+        trimmed.starts_with(&format!("{name}:"))
+            || trimmed.starts_with(&format!("{name}?:"))
+    })
+}
+
+fn typescript_oneof_block<'a>(
+    source: &'a str,
+    entry: &ResolvedOneofMember,
+) -> Option<Vec<&'a str>> {
+    let oneof = entry.field.oneof_name.as_deref()?;
+    let marker = format!(
+        "@generated from oneof {}.{oneof}",
+        entry.field.message_path
+    );
+    let names = vec![oneof.to_owned(), snake_to_camel(oneof)];
+    let lines = source.lines().collect::<Vec<_>>();
+    let first_marker_index = lines.iter().position(|line| line.contains(&marker))?;
+    for marker_index in first_marker_index..lines.len() {
+        if marker_index > 0 && lines[marker_index].contains("@generated from oneof")
+            && !lines[marker_index].contains(&marker)
+        {
+            break;
+        }
+        let Some(property_index) = lines
+            .iter()
+            .enumerate()
+            .skip(marker_index + 1)
+            .take_while(|(_, line)| {
+                !line.contains("@generated from oneof")
+                    && !line.trim_start().starts_with("export ")
+            })
+            .find_map(|(index, line)| {
+                typescript_property_name_matches(line, &names).then_some(index)
+            })
+        else {
+            continue;
+        };
+        let mut depth = 0i32;
+        for end in property_index..lines.len() {
+            depth += lines[end].matches('{').count() as i32;
+            depth -= lines[end].matches('}').count() as i32;
+            if end > property_index && depth <= 0 {
+                return Some(lines[property_index..=end].to_vec());
+            }
+        }
+    }
+    None
+}
+
+fn typescript_presence_field_is_declared(
+    source: &str,
+    entry: &ResolvedPresenceField,
+) -> bool {
+    let names = vec![
+        entry.field.field.clone(),
+        entry.field.json_name.clone(),
+        snake_to_camel(&entry.field.field),
+    ];
+    if entry.field.oneof_name.is_some() {
+        let oneof = ResolvedOneofMember {
+            field: entry.field.clone(),
+            payload_kind: entry
+                .field
+                .wire_type
+                .and_then(|value| FieldType::try_from(value).ok())
+                .unwrap_or(FieldType::Message),
+            payload_type: entry.field.type_name.clone(),
+            preserves_unknown_members: true,
+        };
+        if let Some(block) = typescript_oneof_block(source, &oneof) {
+            let case = entry.field.json_name.as_str();
+            return block.iter().any(|line| {
+                !is_source_comment(line) && line.contains(&format!("case: \"{case}\";"))
+            });
+        }
+        return false;
+    }
+
+    let message_marker = format!("Message<\"{}\">", entry.field.message_path);
+    let lines = source.lines().collect::<Vec<_>>();
+    let Some(first_declaration_index) = lines.iter().position(|line| {
+        !is_source_comment(line)
+            && line.trim_start().starts_with("export declare type ")
+            && line.contains(&message_marker)
+    }) else {
+        return false;
+    };
+    for declaration_index in first_declaration_index..lines.len() {
+        let mut depth = 0i32;
+        for end in declaration_index..lines.len() {
+            depth += lines[end].matches('{').count() as i32;
+            depth -= lines[end].matches('}').count() as i32;
+            if end > declaration_index && depth <= 0 {
+                return lines[declaration_index..=end]
+                    .iter()
+                    .any(|line| !is_source_comment(line) && typescript_property_name_matches(line, &names));
+            }
+        }
+    }
+    false
+}
+
 /// Check an actual language-specific union arm, rather than accepting a
 /// detached payload DTO.  A payload wrapper alone does not preserve the
 /// protobuf discriminant; the choice type and its concrete arm must both be
@@ -4550,24 +4742,18 @@ fn source_contains_descriptor_oneof_arm(
             // rustdoc-derived marker and represents each concrete arm as a
             // `{ value, case }` union member.  Require both pieces so a
             // detached payload DTO cannot satisfy descriptor coverage.
-            let oneof = entry.field.oneof_name.as_deref().unwrap_or_default();
-            let marker = format!(
-                "@generated from oneof {}.{oneof}",
-                entry.field.message_path
-            );
-            if oneof.is_empty() || !source.contains(&marker) {
-                return false;
-            }
             let case = entry.field.json_name.as_str();
             let scalar_aliases = descriptor_oneof_scalar_aliases(language, entry);
-            let lines = source.lines().collect::<Vec<_>>();
-            lines.iter().enumerate().any(|(index, line)| {
+            let Some(block) = typescript_oneof_block(source, entry) else {
+                return false;
+            };
+            block.iter().enumerate().any(|(index, line)| {
                 if is_source_comment(line)
                     || !line.contains(&format!("case: \"{case}\";"))
                 {
                     return false;
                 }
-                lines[index.saturating_sub(8)..index]
+                block[index.saturating_sub(8)..index]
                     .iter()
                     .any(|candidate| {
                         let candidate = candidate.trim_start();
@@ -5264,7 +5450,10 @@ fn surface_language(path: &Path) -> Option<&'static str> {
             .any(|parts| parts == ["generated", "rust"])
     {
         Some("rust")
-    } else if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" {
+    } else if name.ends_with("-metadata.ts")
+        || name == "RustTypedClients.ts"
+        || name.ends_with("_pb.d.ts")
+    {
         Some("typescript")
     } else if name == "remote.py" {
         Some("python")
@@ -5466,6 +5655,21 @@ mod tests {
     }
 
     #[test]
+    fn producer_digest_claims_reject_conflicts_and_accept_prefix_equivalence() {
+        let document = serde_json::json!({
+            "schema": "acyclic.sdk.language-toolchain-receipt.v1",
+            "rust_model_digest": "abc",
+            "source_digest": "sha256:ABC",
+            "authority": {"model_digest": "abc"},
+            "model_digest": "def"
+        });
+        let errors = validate_producer_authority_document(&document, None, Some("sha256:abc"));
+        assert!(errors.iter().any(|error| error.contains("digest claims conflict")));
+        assert!(model_digest_matches(Some("ABC"), "sha256:abc"));
+        assert!(model_digest_matches(Some("sha256:abc"), "ABC"));
+    }
+
+    #[test]
     fn producer_manifest_binds_revision_and_every_output_file() {
         let root = producer_audit_fixture_root("manifest");
         let git = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -5483,6 +5687,7 @@ mod tests {
                 "target": "python",
                 "source_revision": git,
                 "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "rust_model_digest": model,
                 "files": [{"path": relative, "sha256": hash, "bytes": bytes.len()}],
                 "artifact_digest": artifact_digest,
             }))
@@ -5595,6 +5800,18 @@ mod tests {
             &typescript_source.replace("GetObjectHeader", "OpenEnumValue"),
             &member,
         ));
+        let presence = ResolvedPresenceField {
+            field: member.field.clone(),
+            kind: ResolvedPresenceKind::Oneof,
+        };
+        assert!(typescript_presence_field_is_declared(
+            &typescript_source,
+            &presence,
+        ));
+        assert!(!typescript_presence_field_is_declared(
+            &typescript_source.replace("frame:", "other:"),
+            &presence,
+        ));
     }
 
     #[test]
@@ -5672,6 +5889,18 @@ mod tests {
             assert!(!profile.unknown_values.is_empty());
             assert!(!profile.integers.is_empty());
         }
+    }
+
+    #[test]
+    fn jvm_uint64_profiles_match_rust_emitter_wire_types() {
+        assert_eq!(
+            type_projection_profile(TypePolicyLanguage::Java).integers,
+            "java.math.BigInteger for UInt64; long for Int64"
+        );
+        assert_eq!(
+            type_projection_profile(TypePolicyLanguage::Scala).integers,
+            "scala.math.BigInt for UInt64; Long for Int64"
+        );
     }
 
     #[test]
@@ -6650,6 +6879,10 @@ mod tests {
         assert_eq!(
             descriptor_projection_aliases("jvm", "acyclic.actors.v1.ActorState"),
             vec!["RustActorsActorStateEnum"]
+        );
+        assert_eq!(
+            surface_language(Path::new("generated/typescript/objects/v2/objects_pb.d.ts")),
+            Some("typescript")
         );
 
         let member = resolved_oneof_members()

@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -132,8 +132,68 @@ if (target === undefined) {
   throw new Error(`unknown native package target ${packageTarget}; Rust-owned targets: ${[...targets.keys()].join(", ")}`);
 }
 
+// Bind the build to the exact source identity before creating or deleting any
+// output. A dirty checkout is accepted only when the caller supplies both
+// Rust model and source-content identities; otherwise an exact clean HEAD is
+// required. This keeps a failed provenance check from starting Cargo or
+// removing a previous package artifact.
+const revision = process.env.SOURCE_REVISION?.trim();
+if (!revision || !/^[0-9a-f]{40}$/i.test(revision)) {
+  throw new Error("cannot bind native package to an immutable Git source revision");
+}
+const sourceModelRevision = process.env.SOURCE_MODEL_REVISION?.trim() || undefined;
+if (sourceModelRevision !== undefined && !/^[0-9a-f]{64}$/i.test(sourceModelRevision)) {
+  throw new Error("SOURCE_MODEL_REVISION must be a 64-character Rust model identity");
+}
+const sourceContentSha256 = process.env.SOURCE_CONTENT_SHA256?.trim() || undefined;
+if (sourceContentSha256 !== undefined && !/^[0-9a-f]{64}$/i.test(sourceContentSha256)) {
+  throw new Error("SOURCE_CONTENT_SHA256 must be a 64-character SHA-256 digest");
+}
+
+const gitHeadResult = spawnSync("git", ["rev-parse", "--verify", "HEAD"], {
+  cwd: root,
+  encoding: "utf8",
+  stdio: ["ignore", "pipe", "ignore"],
+});
+const gitHead = gitHeadResult.status === 0 ? gitHeadResult.stdout.trim() : undefined;
+if (gitHead !== undefined && !/^[0-9a-f]{40}$/i.test(gitHead)) {
+  throw new Error("source checkout returned an invalid Git HEAD");
+}
+if (gitHead !== undefined && gitHead.toLowerCase() !== revision.toLowerCase()) {
+  throw new Error(`SOURCE_REVISION ${revision} does not match checkout HEAD ${gitHead}`);
+}
+if (gitHead !== undefined) {
+  const status = spawnSync("git", ["status", "--porcelain=v1", "--untracked-files=all"], {
+    cwd: root,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+  const clean = status.status === 0 && status.stdout.trim().length === 0;
+  if (!clean && (sourceModelRevision === undefined || sourceContentSha256 === undefined)) {
+    throw new Error("dirty source checkout requires SOURCE_MODEL_REVISION and SOURCE_CONTENT_SHA256 provenance");
+  }
+} else if (sourceModelRevision === undefined || sourceContentSha256 === undefined) {
+  throw new Error("Git metadata is unavailable; SOURCE_MODEL_REVISION and SOURCE_CONTENT_SHA256 are required");
+}
+
 const targetRoot = resolve(targetDir);
 const artifactRoot = resolve(output);
+const pathSeparator = process.platform === "win32" ? "\\" : "/";
+const pathInside = (parent, child) => {
+  const childRelative = relative(parent, child);
+  return childRelative === "" ||
+    (!childRelative.startsWith(`..${pathSeparator}`) &&
+      childRelative !== ".." && !isAbsolute(childRelative));
+};
+if (pathInside(root, targetRoot) || pathInside(root, artifactRoot)) {
+  throw new Error("native build target and package output must be outside the Rust source checkout");
+}
+if (pathInside(targetRoot, artifactRoot) || pathInside(artifactRoot, targetRoot)) {
+  throw new Error("native build target and package output must be disjoint directories");
+}
+if (provenancePath !== undefined && pathInside(root, resolve(provenancePath))) {
+  throw new Error("native provenance output must be outside the Rust source checkout");
+}
 const releaseRoot = join(targetRoot, target.rust, "release");
 const binarySource = join(releaseRoot, target.binary);
 mkdirSync(targetRoot, { recursive: true });
@@ -147,19 +207,6 @@ const cargo = spawnSync("cargo", [
 ], { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
 if (cargo.status !== 0) process.exit(cargo.status ?? 1);
 if (!existsSync(binarySource)) throw new Error(`cargo did not produce ${binarySource}`);
-
-const revision = process.env.SOURCE_REVISION?.trim();
-if (!revision || !/^[0-9a-f]{40}$/i.test(revision)) {
-  throw new Error("cannot bind native package to an immutable Git source revision");
-}
-const sourceModelRevision = process.env.SOURCE_MODEL_REVISION?.trim() || undefined;
-if (sourceModelRevision !== undefined && !/^[0-9a-f]{64}$/i.test(sourceModelRevision)) {
-  throw new Error("SOURCE_MODEL_REVISION must be a 64-character Rust model identity");
-}
-const sourceContentSha256 = process.env.SOURCE_CONTENT_SHA256?.trim() || undefined;
-if (sourceContentSha256 !== undefined && !/^[0-9a-f]{64}$/i.test(sourceContentSha256)) {
-  throw new Error("SOURCE_CONTENT_SHA256 must be a 64-character SHA-256 digest");
-}
 
 const packageRoot = join(artifactRoot, packageTarget);
 rmSync(packageRoot, { recursive: true, force: true });

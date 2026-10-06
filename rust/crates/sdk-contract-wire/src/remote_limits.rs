@@ -55,8 +55,14 @@ mod tests {
     #[test]
     fn limits_cover_all_generated_remote_families() {
         for family in [
-            "actors", "workers", "objects", "stream", "inference", "machines",
-            "filesystem", "harness",
+            "actors",
+            "workers",
+            "objects",
+            "stream",
+            "inference",
+            "machines",
+            "filesystem",
+            "harness",
         ] {
             let limits = family_remote_limits(family).expect("generated family policy");
             assert!(limits.maximum_message_bytes > 0);

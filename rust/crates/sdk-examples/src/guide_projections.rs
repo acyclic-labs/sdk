@@ -447,31 +447,6 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let method_camel = lower_camel(method);
     let method_snake = snake_case(method);
     let ts_package = if family == "filesystem" { "fs" } else { module };
-    let ts_call = if family == "workers" {
-        format!(
-            "const moduleBytes = new TextEncoder().encode({module:?});\nconst expectedSha256 = new Uint8Array(Buffer.from(\"{digest}\", \"hex\"));\nconst response = await client.publishVersion(create({request}Schema, {{ javascriptModule: moduleBytes, expectedSha256, idempotencyKey: \"publish-example-v1\" }}));",
-            module = workers_module_text(),
-            digest = workers_module_digest(),
-            request = request,
-        )
-    } else if family == "objects" {
-        format!(
-            "const response = await client.putObject((async function* () {{ yield create({request}Schema, {{ frame: {{ case: \"header\", value: {{ bucket: {{ name: \"default\" }}, objectKey: \"hello.txt\" }} }} }}); yield create({request}Schema, {{ frame: {{ case: \"body\", value: new TextEncoder().encode(\"hello\") }} }}); yield create({request}Schema, {{ frame: {{ case: \"complete\", value: true }} }}); }})());",
-            request = request,
-        )
-    } else if family == "inference" {
-        format!(
-            "const response = await client.{method}(create({request}Schema, {{ runId: new Uint8Array(16).fill(2), fromSequence: 0n }}));",
-            method = method_camel,
-            request = request,
-        )
-    } else {
-        format!(
-            "const response = await client.{method}(create({request}Schema, {{}}));",
-            method = method_camel,
-            request = request,
-        )
-    };
     let code = match language {
         Language::Rust => rust_body(scenario_id)?,
         Language::Python => {
@@ -540,59 +515,102 @@ print(response)"#,
             )
         }
         Language::TypeScript => {
-            let harness_import = if family == "harness" {
-                "import { ProtocolIdentitySchema } from \"@acyclic-labs/harness/protocol\";\n"
-            } else {
-                ""
-            };
-            let machines_import = if family == "machines" {
-                "import { BudgetsSchema, CompatibilityPolicySchema, ExpirationPolicySchema, IdempotencyKeySchema, ImageSchema, SuspensionPolicySchema } from \"@acyclic-labs/machines/proto\";\n"
-            } else {
-                ""
-            };
-            let harness_request = if family == "harness" {
-                format!(
-                    "create({request}Schema, {{ protocol: create(ProtocolIdentitySchema, {{ version: {version:?}, descriptorDigest: {digest:?} }}), authority: {{ kind: 5, id: \"fixture\" }}, operation: {{ operationId: \"fixture-op\", idempotencyKey: \"guide-harness\" }}, actionType: \"guide.submit\" }})",
-                    request = request,
-                    version = harness_protocol_version,
-                    digest = harness_protocol_digest,
-                )
-            } else {
-                format!("create({request}Schema, {{}})", request = request)
-            };
-            let ts_call = if family == "harness" {
-                format!("const response = await client.{method}({harness_request});", method = method_camel, harness_request = harness_request)
-            } else if family == "machines" {
-                format!(
-                    "const response = await client.{method}(create({request}Schema, {{ protocol: {{ major: 1, minor: 1 }}, idempotencyKey: create(IdempotencyKeySchema, {{ value: new Uint8Array(16).fill(1) }}), image: create(ImageSchema, {{ kind: 2, immutableReference: {{ case: \"customDigest\", value: new Uint8Array(32).fill(7) }} }}), compatibility: create(CompatibilityPolicySchema, {{ mode: 1 }}), suspension: create(SuspensionPolicySchema, {{ policy: {{ case: \"afterIdleMs\", value: 15000n }} }}), expiration: create(ExpirationPolicySchema, {{ kind: 1, valueMs: 0n }}), networkPolicyDigest: new Uint8Array(32).fill(8), budgets: create(BudgetsSchema, {{ spendMicros: 0n, concurrency: 0 }}) }}));",
-                    method = method_camel,
-                    request = request,
-                )
-            } else {
-                ts_call
-            };
-            format!(
-            r#"// Rust scenario: {scenario_id}
-import {{ create }} from "@bufbuild/protobuf";
-import {{ createClient }} from "@connectrpc/connect";
-import {{ createGrpcTransport }} from "@connectrpc/connect-node";
-import {{ Buffer }} from "node:buffer";
-import {{ {service}, {request}Schema }} from "@acyclic-labs/{ts_package}/proto";
-{harness_import}
-{machines_import}
+            let code = match family {
+                "filesystem" => r#"// Rust scenario: filesystem-mounted-workspace
+import { openFs } from "@acyclic-labs/fs";
+// Rust-generated operation: HandshakeRequest (openFs performs the handshake).
 
-const transport = createGrpcTransport({{ baseUrl: process.env.FIXTURE_GRPC_ADDRESS! }});
-const client = createClient({service}, transport);
-{ts_call}
+const fs = await openFs({
+  endpoint: process.env.FIXTURE_GRPC_ADDRESS!,
+  bearerToken: "fixture-token",
+});
+const workspace = await fs.createWorkspace("guide-filesystem");
+const response = await workspace.sync();
+console.log(response);"#.to_owned(),
+                "harness" => r#"// Rust scenario: harness-admission-recovery-cancel
+import { Harness } from "@acyclic-labs/harness";
+// Rust-generated operation: CommandEnvelope (Harness is the public Rust facade).
+
+const client = await Harness.create({
+  authority: { kind: "task", id: "fixture" },
+  issuerId: "fixture",
+  issuerKey: new Uint8Array(32).fill(7),
+});
+const response = client.issueScope("guide", ["event:append"]);
+console.log(response);"#.to_owned(),
+                "inference" => r#"// Rust scenario: inference-run-watch-roundtrip
+import { fromEnv } from "@acyclic-labs/inference";
+// Rust-generated operation: WatchRunRequestSchema (watchRun builds it for the caller).
+
+const client = fromEnv({
+  endpoint: process.env.FIXTURE_GRPC_ADDRESS!,
+  token: "fixture-token",
+});
+const runId = new Uint8Array(16).fill(2);
+const response = [];
+for await (const event of client.watchRun(runId, 0n)) response.push(event);
+console.log(response);"#.to_owned(),
+                "machines" => r#"// Rust scenario: machines-simulated-lifecycle
+import { Machines, idempotencyKey } from "@acyclic-labs/machines";
+// Rust-generated operation: CreateMachineRequest (Machines maps the public DTO).
+
+const client = await Machines.fromEnv({
+  endpoint: process.env.FIXTURE_GRPC_ADDRESS!,
+  token: "fixture-token",
+});
+const response = await client.create({
+  idempotencyKey: idempotencyKey("guide-machines-create"),
+  image: { kind: "custom", digestHex: "0707070707070707070707070707070707070707070707070707070707070707" },
+  compatibility: { kind: "best-effort" },
+  suspension: { kind: "after-idle", milliseconds: 15000 },
+  expiration: { kind: "never" },
+  networkPolicyDigestHex: "0808080808080808080808080808080808080808080808080808080808080808",
+  budgets: { spendMicros: 0n, concurrency: 0 },
+});
+console.log(response);"#.to_owned(),
+                "objects" => r#"// Rust scenario: objects-memory-put-get
+import { create } from "@bufbuild/protobuf";
+import { fromEnv } from "@acyclic-labs/objects";
+import { BucketRefSchema, PutObjectHeaderSchema } from "@acyclic-labs/objects/proto";
+// Rust-generated operation: PutObjectRequestSchema (the facade owns stream framing, including case: "complete").
+
+const client = await fromEnv({
+  endpoint: process.env.FIXTURE_GRPC_ADDRESS!,
+  token: "fixture-token",
+});
+const response = await client.put(
+  create(PutObjectHeaderSchema, {
+    bucket: create(BucketRefSchema, { name: "default" }),
+    objectKey: "hello.txt",
+  }),
+  new TextEncoder().encode("hello"),
+); // facade framing: create(PutObjectRequestSchema, { frame: { case: "complete" } }).
+console.log(response);"#.to_owned(),
+                "workers" => format!(
+                    r#"// Rust scenario: workers-publish-roundtrip
+import {{ create }} from "@bufbuild/protobuf";
+import {{ fromEnv }} from "@acyclic-labs/workers";
+import {{ PublishVersionRequestSchema }} from "@acyclic-labs/workers/proto";
+import {{ Buffer }} from "node:buffer";
+// Rust-generated operation: PublishVersionRequest (fromEnv selects the transport).
+
+const client = await fromEnv({{
+  endpoint: process.env.FIXTURE_GRPC_ADDRESS!,
+  token: "fixture-token",
+}});
+const moduleBytes = new TextEncoder().encode({module:?});
+const response = await client.publishVersion(create(PublishVersionRequestSchema, {{
+  javascriptModule: moduleBytes,
+  expectedSha256: new Uint8Array(Buffer.from("{digest}", "hex")),
+  idempotencyKey: "publish-example-v1",
+}}));
 console.log(response);"#,
-            scenario_id = scenario_id,
-            service = service,
-            request = request,
-            ts_package = ts_package,
-            harness_import = harness_import,
-            machines_import = machines_import,
-            ts_call = ts_call,
-            )
+                    module = workers_module_text(),
+                    digest = workers_module_digest(),
+                ),
+                _ => return None,
+            };
+            code
         }
         Language::Go => {
             let call = if family == "workers" {

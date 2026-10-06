@@ -7,8 +7,6 @@ import com.google.protobuf.ByteString;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
 import io.grpc.ServerServiceDefinition;
@@ -159,9 +157,12 @@ final class RpcScenarioEvidenceTest {
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static List<Scenario> exerciseRemoteService(ServiceDescriptor descriptor, String revision,
       String endpoint, Map<String, ResponseExpectation> expectations) throws Exception {
-    String target = endpoint.replaceFirst("^https?://", "");
-    ManagedChannel channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
-    try {
+    String family = familyForRpc(descriptor.getMethods().get(0).getFullMethodName());
+    boolean streaming = descriptor.getMethods().stream().anyMatch(method ->
+        method.getType() != MethodDescriptor.MethodType.UNARY);
+    try (var client = RemoteClientFactory.create(
+        family, streaming, fixtureDefaults(endpoint), null)) {
+      Channel channel = client.channel();
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
         InvocationResult invocation = invoke(channel, method, true, expectations);
@@ -170,9 +171,13 @@ final class RpcScenarioEvidenceTest {
             shape(method.getType()), "remote", invocation.responseCount(), invocation.semantic()));
       }
       return scenarios;
-    } finally {
-      channel.shutdownNow();
     }
+  }
+
+  private static GeneratedRemotePolicy.Defaults fixtureDefaults(String endpoint) {
+    String token = System.getProperty("acyclic.bearerToken");
+    if (token == null || token.isBlank()) token = System.getenv("ACYCLIC_BEARER_TOKEN");
+    return new GeneratedRemotePolicy.Defaults(endpoint, token == null ? "" : token);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})

@@ -86,7 +86,7 @@ pub fn execute() -> Result<PublishReceipt, Box<dyn std::error::Error + Send + Sy
 #[must_use]
 pub fn rust_snippet() -> String {
     format!(
-        "// capability: supported\nuse acyclic_workers::{{validate_publish, wire}};\nuse sha2::{{Digest, Sha256}};\n\nlet module = {module:?};\nlet request = wire::PublishVersionRequest {{ javascript_module: module.to_vec(), expected_sha256: Sha256::digest(module).to_vec(), idempotency_key: \"publish-example-v1\".into() }};\nvalidate_publish(&request)?;",
+        "// capability: supported\nuse acyclic_workers::{{validate_publish, wire}};\nuse sha2::{{Digest, Sha256}};\n\nlet module = {module:?};\nlet request = wire::PublishVersionRequest {{ javascript_module: module.as_bytes().to_vec(), expected_sha256: Sha256::digest(module.as_bytes()).to_vec(), idempotency_key: \"publish-example-v1\".into() }};\nvalidate_publish(&request)?;",
         module = String::from_utf8_lossy(MODULE),
     )
 }

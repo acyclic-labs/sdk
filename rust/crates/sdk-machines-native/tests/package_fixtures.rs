@@ -7,7 +7,9 @@ const TARGETS: &[&str] = &[
     "win32-x64",
     "win32-arm64",
     "linux-x64-gnu",
+    "linux-x64-musl",
     "linux-arm64-gnu",
+    "linux-arm64-musl",
     "darwin-x64",
     "darwin-arm64",
 ];

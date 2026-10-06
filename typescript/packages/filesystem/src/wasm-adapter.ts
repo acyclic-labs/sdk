@@ -87,6 +87,7 @@ export function adaptWasmFs(
       return { nextObject: BigInt(value.nextObject), work: copyWork(value.work) };
     },
     async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId), validatePositiveBound); },
+    cancel(): void { raw.cancel(); },
     close(): void {
       raw.close();
     },
@@ -119,6 +120,7 @@ function adaptVolume(
   return {
     get id() { return copyBytes(raw.id); },
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
+    cancel(): void { raw.cancel(); },
     async diffGenerations(before, after, maximumChanges) {
       validatePositiveBound(maximumChanges, "maximum changes");
       return generationDiff(await raw.diffGenerations(before, after, maximumChanges));
@@ -130,6 +132,7 @@ function adaptVolume(
 function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
   return {
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
+    cancel(): void { raw.cancel(); },
     async applyTransaction(operations) { const value = await raw.applyTransaction(Array.from(operations)); return copyTransactionResult(value, copyWork(value.work)); },
     async checkpoint() { return copyCheckpoint(await raw.checkpoint()); },
     async refreshHead() { return copyCheckpoint(await raw.refreshHead()); },

@@ -644,6 +644,7 @@ function adaptVolume(raw: NativeRawVolume): FsVolume {
   return {
     get id() { return copyBytes(raw.id); },
     get acquisitionWork() { return parseWork(raw.acquisitionWorkJson); },
+    cancel(): void { raw.cancel(); },
     async diffGenerations(before, after, maximumChanges) {
       return nativeGenerationDiff(await raw.diffGenerations(before, after, maximumChanges));
     },
@@ -783,6 +784,7 @@ function adaptResolvedFile(raw: import("./contracts.js").NativeRawResolvedFile):
     kind: raw.kind,
     logicalBytes: raw.logicalBytes,
     metadataCanonicalBytes: copyBytes(raw.metadataCanonicalBytes),
+    cancel(): void { raw.cancel(); },
     async readRange(offset, length) { return fileReadResult(await raw.readRange(offset, length)); },
     async readSymbolicLink() { return fileReadResult(await raw.readSymbolicLink()); },
   };
@@ -794,6 +796,7 @@ function captureResult(value: { readonly examinedPaths: bigint; readonly changed
 
 function adaptWatcher(raw: NativeRawWatcher): NativeWatcher {
   return {
+    cancel(): void { raw.cancel(); },
     async reconcile(maximumPaths, maximumExtentSpans) {
       const value = await raw.reconcile(maximumPaths, maximumExtentSpans);
       return { epoch: value.epoch, baseline: captureResult(value.baseline), postBaseline: nativeWatchBatch(value.postBaseline) };

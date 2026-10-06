@@ -6,15 +6,26 @@
       ],
       "type": "string"
     },
-    "EmbeddedCapability": {
+    "EmbeddedLevel": {
+      "enum": [
+        "rust-native",
+        "ffi-or-wasm",
+        "none"
+      ],
+      "type": "string"
+    },
+    "EmbeddedProjectionSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "capabilities": {
+          "items": {
+            "$ref": "#/$defs/EmbeddedRegistryCapabilitySchema"
+          },
+          "type": "array"
+        },
         "level": {
           "$ref": "#/$defs/EmbeddedLevel"
-        },
-        "notes": {
-          "minLength": 1,
-          "type": "string"
         },
         "qualification": {
           "$ref": "#/$defs/Qualification"
@@ -22,18 +33,88 @@
       },
       "required": [
         "level",
-        "notes"
+        "qualification",
+        "capabilities"
+      ],
+      "title": "EmbeddedProjectionSchema",
+      "type": "object"
+    },
+    "EmbeddedRegistryArtifactSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "target_identities": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "identity",
+        "installable",
+        "target_identities"
       ],
       "type": "object"
     },
-    "EmbeddedLevel": {
-      "enum": [
-        "rust-native",
-        "ffi-or-wasm",
-        "none",
-        "unknown"
+    "EmbeddedRegistryCapabilitySchema": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/EmbeddedRegistryArtifactSchema"
+        },
+        "binding": {
+          "type": "string"
+        },
+        "coverage": {
+          "type": "string"
+        },
+        "family": {
+          "type": "string"
+        },
+        "installable": {
+          "type": "boolean"
+        },
+        "language": {
+          "type": "string"
+        },
+        "qualification": {
+          "type": "string"
+        },
+        "receipt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source_evidence": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "language",
+        "family",
+        "binding",
+        "artifact",
+        "installable",
+        "qualification",
+        "coverage",
+        "source_evidence",
+        "receipt"
       ],
-      "type": "string"
+      "type": "object"
     },
     "Evidence": {
       "additionalProperties": false,
@@ -239,7 +320,7 @@
           "type": "array"
         },
         "embedded": {
-          "$ref": "#/$defs/EmbeddedCapability"
+          "$ref": "#/$defs/EmbeddedProjectionSchema"
         },
         "evidence": {
           "items": {
@@ -290,12 +371,12 @@
         "language_family",
         "status",
         "remote",
-        "embedded",
         "maturity",
         "generator",
         "package",
         "evidence",
-        "outstanding"
+        "outstanding",
+        "embedded"
       ],
       "type": "object"
     },

@@ -335,13 +335,13 @@ pub fn decode(route: &str, input: &[u8]) -> std::result::Result<Vec<u8>, &'stati
     }
     let value: Value = serde_json::from_slice(input).map_err(|_| "invalid_argument")?;
     match route {
-        "append" => decode_append_json(value),
-        "read" => decode_read_json(value),
-        _ => decode_protobuf_json(route, value),
+        "append" => decode_append_json(&value),
+        "read" => decode_read_json(&value),
+        _ => decode_protobuf_json(route, &value),
     }
 }
 
-fn decode_append_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> {
+fn decode_append_json(value: &Value) -> std::result::Result<Vec<u8>, &'static str> {
     let object = value.as_object().ok_or("invalid_argument")?;
     let path = object
         .get("path")
@@ -381,7 +381,7 @@ fn decode_append_json(value: Value) -> std::result::Result<Vec<u8>, &'static str
     .encode_to_vec())
 }
 
-fn decode_read_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> {
+fn decode_read_json(value: &Value) -> std::result::Result<Vec<u8>, &'static str> {
     let object = value.as_object().ok_or("invalid_argument")?;
     Ok(wire::ReadRequest {
         path: object
@@ -398,7 +398,7 @@ fn decode_read_json(value: Value) -> std::result::Result<Vec<u8>, &'static str> 
 
 fn decode_protobuf_json(
     route: &str,
-    value: Value,
+    value: &Value,
 ) -> std::result::Result<Vec<u8>, &'static str> {
     let message_name = match route {
         "idempotency/inspect" => "acyclic.stream.v2.InspectIdempotencyRequest",
@@ -440,32 +440,51 @@ fn parse_u64_json(value: &Value) -> std::result::Result<u64, &'static str> {
 }
 
 fn decode_base64(value: &str) -> std::result::Result<Vec<u8>, &'static str> {
-    if value.len() % 4 != 0 {
+    let (chunks, remainder) = value.as_bytes().as_chunks::<4>();
+    if !remainder.is_empty() {
         return Err("invalid_argument");
     }
     let mut output = Vec::with_capacity(value.len() / 4 * 3);
-    let mut chunk = [0u8; 4];
-    for part in value.as_bytes().chunks(4) {
-        for (index, byte) in part.iter().enumerate() {
-            chunk[index] = match *byte {
-                b'A'..=b'Z' => *byte - b'A',
-                b'a'..=b'z' => *byte - b'a' + 26,
-                b'0'..=b'9' => *byte - b'0' + 52,
-                b'+' => 62,
-                b'/' => 63,
-                b'=' => 0,
-                _ => return Err("invalid_argument"),
-            };
+    for (index, &[first, second, third, fourth]) in chunks.iter().enumerate() {
+        let last = index + 1 == chunks.len();
+        let third_padding = third == b'=';
+        let fourth_padding = fourth == b'=';
+        if first == b'=' || second == b'='
+            || (third_padding && !fourth_padding)
+            || ((third_padding || fourth_padding) && !last)
+        {
+            return Err("invalid_argument");
         }
-        output.push((chunk[0] << 2) | (chunk[1] >> 4));
-        if part[2] != b'=' {
-            output.push((chunk[1] << 4) | (chunk[2] >> 2));
+        let first = decode_base64_symbol(first).ok_or("invalid_argument")?;
+        let second = decode_base64_symbol(second).ok_or("invalid_argument")?;
+        let third = decode_base64_symbol(third).ok_or("invalid_argument")?;
+        let fourth = decode_base64_symbol(fourth).ok_or("invalid_argument")?;
+        if (third_padding && (second & 0x0f) != 0)
+            || (fourth_padding && !third_padding && (third & 0x03) != 0)
+        {
+            return Err("invalid_argument");
         }
-        if part[3] != b'=' {
-            output.push((chunk[2] << 6) | chunk[3]);
+        output.push((first << 2) | (second >> 4));
+        if !third_padding {
+            output.push((second << 4) | (third >> 2));
+        }
+        if !fourth_padding {
+            output.push((third << 6) | fourth);
         }
     }
     Ok(output)
+}
+
+fn decode_base64_symbol(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        b'=' => Some(0),
+        _ => None,
+    }
 }
 
 fn encode_base64(value: &[u8]) -> String {
@@ -558,5 +577,25 @@ mod tests {
         )
         .expect("read request");
         assert_eq!(decoded, read);
+    }
+
+    #[test]
+    fn base64_accepts_rfc4648_padding_and_multiple_blocks() {
+        for (encoded, expected) in [
+            ("", b"".as_slice()),
+            ("AA==", b"\0".as_slice()),
+            ("AAA=", b"\0\0".as_slice()),
+            ("AAAA", b"\0\0\0".as_slice()),
+            ("SGVsbG8gV29ybGQ=", b"Hello World".as_slice()),
+        ] {
+            assert_eq!(decode_base64(encoded).expect("valid Base64"), expected);
+        }
+    }
+
+    #[test]
+    fn base64_rejects_noncanonical_or_misplaced_padding() {
+        for encoded in ["=AAA", "AA=A", "A===", "AA==AAAA", "AB==", "AAB="] {
+            assert!(decode_base64(encoded).is_err(), "accepted {encoded}");
+        }
     }
 }

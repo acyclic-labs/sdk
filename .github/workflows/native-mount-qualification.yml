@@ -1,17 +1,10 @@
 name: Native Mount Qualification
 
 on:
+  release:
+    types: [published]
+  workflow_call:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/native-mount-qualification.yml'
-      - '.github/actions/rust-build-cache/action.yml'
-      - 'Cargo.lock'
-      - 'rust/crates/conformance/**'
-      - 'rust/crates/filesystem/**'
-      - 'rust/crates/native-runtime/**'
-      - 'scripts/qualify-native-mount.*'
 
 permissions:
   contents: read

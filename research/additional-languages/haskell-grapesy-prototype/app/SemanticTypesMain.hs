@@ -34,6 +34,22 @@ main = do
   expectLeft "short workspace" (Semantics.mkWorkspaceId (BS8.pack "short"))
   let _known :: Semantics.WireChoice
       _known = Semantics.KnownOneof (Semantics.KnownAcyclicActorsV1SubscriptionStartCursorN1 (0 :: Word64))
+      _knownMaxU64 :: Semantics.WireChoice
+      _knownMaxU64 = Semantics.KnownOneof (Semantics.KnownAcyclicFilesystemV2OptionalU64PresentN1 (maxBound :: Word64))
+      _knownUnavailable :: Semantics.WireChoice
+      _knownUnavailable = Semantics.KnownOneof (Semantics.KnownAcyclicFilesystemV2OptionalU64UnavailableN2 True)
+      _knownSigned :: Semantics.WireChoice
+      _knownSigned = Semantics.KnownOneof (Semantics.KnownAcyclicFilesystemV2OptionalI64PresentN1 (-42 :: Int64))
+      _knownSignedUnavailable :: Semantics.WireChoice
+      _knownSignedUnavailable = Semantics.KnownOneof (Semantics.KnownAcyclicFilesystemV2OptionalI64UnavailableN2 False)
       _unknown :: Semantics.WireChoice
+      _enum :: Semantics.ActorsActorStateEnum
+      _enum = Semantics.actorsActorStateEnumFromWire 0
+      _unknownEnum :: Semantics.ActorsActorStateEnum
+      _unknownEnum = Semantics.actorsActorStateEnumFromWire 99
       _unknown = Semantics.UnknownOneof (Semantics.workspaceIdValue workspace)
+  if Semantics.actorsActorStateEnumValue _unknownEnum /= 99
+    then fail "unknown enum value was not retained by Rust-owned semantics"
+    else pure ()
   putStrLn ("PASS:rust-owned-haskell-semantic-types=" <> show (Semantics.actorIdValue actor))
+  putStrLn "PASS:rust-owned-haskell-semantic-vectors=max-u64,optional-i64-negative,optional-unavailable;unknown-enum=99"

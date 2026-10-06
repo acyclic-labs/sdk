@@ -4,7 +4,11 @@
 //! emitters and every handwritten runtime adapter as authored input.
 
 use crate::csharp_typed_facades::CSHARP_TYPED_PATH;
+use crate::embedded_cpp::CPP_EMBEDDED_PATH;
 use crate::embedded_facades::{DOTNET_EMBEDDED_STREAM_PATH, JAVA_EMBEDDED_STREAM_PATH};
+use crate::embedded_swift::{
+    SWIFT_EMBEDDED_MODULEMAP_PATH, SWIFT_EMBEDDED_PACKAGE_PATH, SWIFT_EMBEDDED_PATH,
+};
 use crate::facades::{
     DART_TYPED_PATH, FacadeLanguage, JAVA_CLIENTS_PATH, JAVA_PATH, JAVA_REQUESTS_PATH,
     JAVA_RESPONSES_PATH, KOTLIN_CLIENTS_PATH, KOTLIN_PATH, KOTLIN_REQUESTS_PATH,
@@ -46,6 +50,10 @@ pub const GENERATED_FACADE_PATHS: &[&str] = &[
     PHP_UINT64_PATH,
     DOTNET_EMBEDDED_STREAM_PATH,
     JAVA_EMBEDDED_STREAM_PATH,
+    SWIFT_EMBEDDED_PATH,
+    SWIFT_EMBEDDED_PACKAGE_PATH,
+    SWIFT_EMBEDDED_MODULEMAP_PATH,
+    CPP_EMBEDDED_PATH,
 ];
 
 #[cfg(test)]
@@ -84,6 +92,26 @@ mod tests {
                 output.path
             );
         }
+        let swift = crate::generate_embedded_swift();
+        assert!(
+            paths.contains(swift.path),
+            "unregistered embedded Swift facade {}",
+            swift.path
+        );
+        let swift_package = crate::generate_embedded_swift_package();
+        assert!(
+            paths.contains(swift_package.path),
+            "unregistered embedded Swift package {}",
+            swift_package.path
+        );
+        let swift_module_map = crate::generate_embedded_swift_module_map();
+        assert!(
+            paths.contains(swift_module_map.path),
+            "unregistered embedded Swift module map {}",
+            swift_module_map.path
+        );
+        let cpp = crate::generate_embedded_cpp();
+        assert!(paths.contains(cpp.path), "unregistered embedded C++ facade {}", cpp.path);
         for (path, _) in crate::generate_jvm_semantic_types()
             .into_iter()
             .chain(crate::generate_jvm_typed_requests())

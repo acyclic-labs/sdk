@@ -13,7 +13,7 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedCheckpointId = RustOwnedSemanticBytes<"checkpoint_id">;
 export function makeRustOwnedCheckpointId(value: Uint8Array): RustOwnedCheckpointId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedCheckpointId; }
@@ -27,10 +27,18 @@ export type RustOwnedMachineId = RustOwnedSemanticBytes<"machine_id">;
 export function makeRustOwnedMachineId(value: Uint8Array): RustOwnedMachineId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedMachineId; }
 export type RustOwnedMachinePageLimit = RustOwnedSemanticNumber<"machine_page_limit">;
 export function makeRustOwnedMachinePageLimit(value: number): RustOwnedMachinePageLimit { if (value <= 0) throw new RangeError("value must be positive");if (value > 256) throw new RangeError("value exceeds its item limit"); return value as RustOwnedMachinePageLimit; }
+export type RustOwnedOpaqueBytes = RustOwnedSemanticBytes<"opaque_bytes">;
+export function makeRustOwnedOpaqueBytes(value: Uint8Array): RustOwnedOpaqueBytes {  return value as RustOwnedOpaqueBytes; }
 export type RustOwnedOperationId = RustOwnedSemanticBytes<"operation_id">;
 export function makeRustOwnedOperationId(value: Uint8Array): RustOwnedOperationId { if (value.length === 0) throw new TypeError("value must not be empty");if (value.byteLength !== 16) throw new RangeError("value has the wrong length"); return value as RustOwnedOperationId; }
+export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
+export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
 export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
+export type RustOwnedTimestampMillis = RustOwnedSemanticNumber<"timestamp_millis">;
+export function makeRustOwnedTimestampMillis(value: number): RustOwnedTimestampMillis { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedTimestampMillis; }
 
 export const MACHINES_PUBLIC_FIELD_BINDINGS = [
   { family: "machines", field: "image", semanticType: "immutable_image", module: "machines", message: "CreateMachineRequest", wireField: "image", direction: "request", rules: ["Immutable"] },
@@ -43,13 +51,24 @@ export const MACHINES_PUBLIC_FIELD_BINDINGS = [
   { family: "machines", field: "operation_id", semanticType: "operation_id", module: "machines", message: "OperationRequest", wireField: "operation", direction: "request", rules: ["NonEmpty", "FixedLength(16)"] },
   { family: "machines", field: "page_limit", semanticType: "machine_page_limit", module: "machines", message: "ListMachinesRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(256)"] },
   { family: "machines", field: "event_page_limit", semanticType: "machine_event_page_limit", module: "machines", message: "EventsRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1024)"] },
+  { family: "machines", field: "next_sequence", semanticType: "sequence", module: "machines", message: "EventPage", wireField: "next_sequence", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "created_at_unix_ms", semanticType: "timestamp_millis", module: "machines", message: "CheckpointState", wireField: "created_at_unix_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "created_at_unix_ms", semanticType: "timestamp_millis", module: "machines", message: "MachineState", wireField: "created_at_unix_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "changed_at_unix_ms", semanticType: "timestamp_millis", module: "machines", message: "MachineState", wireField: "changed_at_unix_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "compatibility_revision", semanticType: "revision_digest", module: "machines", message: "ImageQualification", wireField: "compatibility_revision", direction: "response", rules: ["FixedLength(32)"] },
+  { family: "machines", field: "start_unix_ms", semanticType: "timestamp_millis", module: "machines", message: "UsageReceipt", wireField: "start_unix_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "end_unix_ms", semanticType: "timestamp_millis", module: "machines", message: "UsageReceipt", wireField: "end_unix_ms", direction: "response", rules: ["NonNegative"] },
+  { family: "machines", field: "receipt", semanticType: "opaque_bytes", module: "machines", message: "UsageReceipt", wireField: "receipt", direction: "response", rules: [] },
+  { family: "machines", field: "lineage_receipt_sha256", semanticType: "sha256_digest", module: "machines", message: "UsageReceipt", wireField: "lineage_receipt_sha256", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const MACHINES_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = CheckpointAdmission | CheckpointMachineRequest | CheckpointMutationRequest | CheckpointState | CreateMachineRequest | EventPage | EventsRequest | ForkAdmission | ForkCheckpointRequest | ForkMachineAdmission | ForkMachineRequest | ImageQualification | InspectCheckpointRequest | InspectMachineRequest | ListMachinesRequest | MachineAdmission | MachineMutationRequest | MachinePage | MachineState | MutationAdmission | OperationRequest | OperationState | PolicyAdmission | QualifyImageRequest | RecoverRequest | RecoveredAdmission | SetSuspensionPolicyRequest | UsageReceipt | UsageRequest;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/machines/v1/machines_pb.js";
@@ -61,12 +80,16 @@ export type RustOwnedPublicField<Name extends string, Value> = Value & { readonl
 export type RustOwnedPublicCheckpointAdmission = RustWire.CheckpointAdmission;
 export type RustOwnedPublicCheckpointMachineRequest = RustWire.CheckpointMachineRequest;
 export type RustOwnedPublicCheckpointMutationRequest = RustWire.CheckpointMutationRequest;
-export type RustOwnedPublicCheckpointState = RustWire.CheckpointState;
+export type RustOwnedPublicCheckpointState = Omit<RustWire.CheckpointState, "createdAtUnixMs"> & {
+  readonly createdAtUnixMs: RustOwnedTimestampMillis;
+};
 export type RustOwnedPublicCreateMachineRequest = Omit<RustWire.CreateMachineRequest, "idempotencyKey" | "image"> & {
   readonly idempotencyKey: RustOwnedSemanticMessage<"idempotency_key_message">;
   readonly image: RustOwnedSemanticMessage<"immutable_image">;
 };
-export type RustOwnedPublicEventPage = RustWire.EventPage;
+export type RustOwnedPublicEventPage = Omit<RustWire.EventPage, "nextSequence"> & {
+  readonly nextSequence: RustOwnedSequence;
+};
 export type RustOwnedPublicEventsRequest = Omit<RustWire.EventsRequest, "limit"> & {
   readonly limit: RustOwnedMachineEventPageLimit;
 };
@@ -78,7 +101,9 @@ export type RustOwnedPublicImage = Omit<RustWire.Image, "customDigest" | "manage
   readonly customDigest: RustOwnedSha256Digest;
   readonly managedDigest: RustOwnedSha256Digest;
 };
-export type RustOwnedPublicImageQualification = RustWire.ImageQualification;
+export type RustOwnedPublicImageQualification = Omit<RustWire.ImageQualification, "compatibilityRevision"> & {
+  readonly compatibilityRevision: RustOwnedRevisionDigest;
+};
 export type RustOwnedPublicInspectCheckpointRequest = Omit<RustWire.InspectCheckpointRequest, "checkpoint"> & {
   readonly checkpoint: RustOwnedCheckpointId;
 };
@@ -91,7 +116,10 @@ export type RustOwnedPublicListMachinesRequest = Omit<RustWire.ListMachinesReque
 export type RustOwnedPublicMachineAdmission = RustWire.MachineAdmission;
 export type RustOwnedPublicMachineMutationRequest = RustWire.MachineMutationRequest;
 export type RustOwnedPublicMachinePage = RustWire.MachinePage;
-export type RustOwnedPublicMachineState = RustWire.MachineState;
+export type RustOwnedPublicMachineState = Omit<RustWire.MachineState, "changedAtUnixMs" | "createdAtUnixMs"> & {
+  readonly changedAtUnixMs: RustOwnedTimestampMillis;
+  readonly createdAtUnixMs: RustOwnedTimestampMillis;
+};
 export type RustOwnedPublicMutationAdmission = RustWire.MutationAdmission;
 export type RustOwnedPublicOperationRequest = Omit<RustWire.OperationRequest, "operation"> & {
   readonly operation: RustOwnedOperationId;
@@ -104,7 +132,12 @@ export type RustOwnedPublicQualifyImageRequest = Omit<RustWire.QualifyImageReque
 export type RustOwnedPublicRecoverRequest = RustWire.RecoverRequest;
 export type RustOwnedPublicRecoveredAdmission = RustWire.RecoveredAdmission;
 export type RustOwnedPublicSetSuspensionPolicyRequest = RustWire.SetSuspensionPolicyRequest;
-export type RustOwnedPublicUsageReceipt = RustWire.UsageReceipt;
+export type RustOwnedPublicUsageReceipt = Omit<RustWire.UsageReceipt, "endUnixMs" | "lineageReceiptSha256" | "receipt" | "startUnixMs"> & {
+  readonly endUnixMs: RustOwnedTimestampMillis;
+  readonly lineageReceiptSha256: RustOwnedSha256Digest;
+  readonly receipt: RustOwnedOpaqueBytes;
+  readonly startUnixMs: RustOwnedTimestampMillis;
+};
 export type RustOwnedPublicUsageRequest = RustWire.UsageRequest;
 
 export interface RustOwnedMachinesPublicClient {
@@ -159,6 +192,9 @@ export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKi
 
 export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 67108864, maximumHttpRequestBytes: 67108864, maximumHttpResponseBytes: 67108864, requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
+/** Rust-owned native companion targets present in the generated package. */
+export const MACHINES_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu", "win32-arm64", "win32-x64"] as const;
+
 /** Selects the first Rust-qualified transport that is installed for this runtime. */
 export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {
   const options = policy.transport[runtime];
@@ -204,7 +240,7 @@ export const MACHINES_OPERATIONS = {
   "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "c305dd5ecdede53d46241d17858c5a431b2f8fc83431a97431ca70077de2e348", sourceModelSha256: "c305dd5ecdede53d46241d17858c5a431b2f8fc83431a97431ca70077de2e348", handshakeRoute: "/v1/sdk/machines/handshake", handshakeVersion: "acyclic.machines.v1", handshakeDescriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758", modeledOperations: 19, httpProjection: false } as const;
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "5bee908f51706a69b28e042138e5c1226ba321ae7fa012733fc2bf8bd42bf118", sourceModelSha256: "5bee908f51706a69b28e042138e5c1226ba321ae7fa012733fc2bf8bd42bf118", handshakeRoute: "/v1/sdk/machines/handshake", handshakeVersion: "acyclic.machines.v1", handshakeDescriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_HANDSHAKE = { family: "machines", route: "/v1/sdk/machines/handshake", version: "acyclic.machines.v1", descriptorDigest: "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758" } as const;
 

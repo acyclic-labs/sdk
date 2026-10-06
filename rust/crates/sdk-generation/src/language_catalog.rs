@@ -7,7 +7,12 @@
 
 use schemars::JsonSchema;
 use serde::Serialize;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
+
+use acyclic_sdk_contract_wire::{
+    EmbeddedCapability as RustEmbeddedCapability, EmbeddedLanguage, embedded_capabilities,
+};
 
 pub const COMPILED_SOURCE: &str = include_str!("language_catalog.rs");
 pub const LANGUAGE_GUIDE: &str = include_str!("../guides/language-generation.md");
@@ -63,12 +68,10 @@ enum RemoteLevel {
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-#[allow(dead_code)] // Unknown remains representable before a target is investigated.
 enum EmbeddedLevel {
     RustNative,
     FfiOrWasm,
     None,
-    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
@@ -128,7 +131,6 @@ struct Target {
     language_family: &'static str,
     status: TargetStatus,
     remote: RemoteCapability,
-    embedded: EmbeddedCapability,
     maturity: Maturity,
     generator: Generator,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -160,13 +162,34 @@ struct RemoteCapability {
 
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct EmbeddedCapability {
+struct EmbeddedProjectionSchema {
     level: EmbeddedLevel,
-    #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Qualification")]
-    qualification: Option<Qualification>,
-    #[schemars(length(min = 1))]
-    notes: &'static str,
+    qualification: Qualification,
+    capabilities: Vec<EmbeddedRegistryCapabilitySchema>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmbeddedRegistryCapabilitySchema {
+    language: String,
+    family: String,
+    binding: String,
+    artifact: EmbeddedRegistryArtifactSchema,
+    installable: bool,
+    qualification: String,
+    coverage: String,
+    source_evidence: Vec<String>,
+    receipt: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EmbeddedRegistryArtifactSchema {
+    kind: String,
+    identity: String,
+    installable: bool,
+    target_identities: Vec<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -261,13 +284,8 @@ const CATALOG: Catalog = Catalog {
                 ],
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(
-                    "Canonical workspace provider and descriptor baseline; this migration has not yet produced an independently qualified Rust SDK artifact for every family.",
+                    "Canonical workspace provider and descriptor baseline; the installable acyclic-sdk facade groups the public family crates without re-exporting internal generators or prototypes.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::RustNative,
-                qualification: Some(Qualification::Prototype),
-                notes: "Canonical Rust implementation and native conformance provider.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -280,10 +298,10 @@ const CATALOG: Catalog = Catalog {
             producer: None,
             package: Package {
                 ecosystem: "crates.io/Cargo",
-                artifact: "family crates (no umbrella)",
-                installable: false,
+                artifact: "acyclic-sdk",
+                installable: true,
                 notes: Some(
-                    "Cargo.toml publishes family-specific crates acyclic-actors, acyclic-fs, acyclic-harness, acyclic-inference, acyclic-machines, acyclic-objects, acyclic-stream and acyclic-workers; the workspace has no complete acyclic-sdk umbrella artifact or install receipt.",
+                    "The acyclic-sdk facade installs one dependency and exposes actors, filesystem, harness, inference, machines, objects, stream and workers namespaces; family crates remain independently publishable.",
                 ),
             },
             evidence: &[Evidence {
@@ -291,7 +309,7 @@ const CATALOG: Catalog = Catalog {
                 claim: "Rust is the canonical implementation and source-of-truth boundary for this migration.",
             }],
             outstanding: &[
-                "Complete the Rust-owned generation entrypoint across every active family and retain deterministic install receipts.",
+                "Retain a clean-checkout Cargo package receipt for the umbrella and each public family at every release.",
                 "Run the full active RPC, descriptor digest, cancellation, recovery and embedded conformance suites before calling the new pipeline qualified.",
             ],
             aliases: None,
@@ -314,11 +332,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "Generated transport and UI adapters only; shared handwritten behavior remains Rust-owned.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
             },
             maturity: Maturity::Unknown,
             generator: Generator {
@@ -365,11 +378,6 @@ const CATALOG: Catalog = Catalog {
                     "Python remote clients are generated from the Rust-owned protobuf contract; embedded behavior remains behind the Rust FFI/WASM boundary.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpcio-tools",
@@ -412,11 +420,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "Rust-authority-bound Go producer emits an installable module for all nine families plus validation options; transport qualification remains separately evidenced.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
             },
             maturity: Maturity::Unknown,
             generator: Generator {
@@ -490,11 +493,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc + grpc-java",
@@ -557,11 +555,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "Grpc.Tools + Grpc.Net.Client",
@@ -619,11 +612,6 @@ const CATALOG: Catalog = Catalog {
                 ],
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
             },
             maturity: Maturity::Unknown,
             generator: Generator {
@@ -698,11 +686,6 @@ const CATALOG: Catalog = Catalog {
                     "Pinned Generate.ps1 emits source-bound receipt; remote CMake requires matching Protobuf 36.2 and gRPC C++ 1.80.0.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc + gRPC C++",
@@ -774,11 +757,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "grpc-tools + grpc Ruby",
@@ -839,11 +817,6 @@ const CATALOG: Catalog = Catalog {
                 ],
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
             },
             maturity: Maturity::Unknown,
             generator: Generator {
@@ -906,11 +879,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some(""),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "protoc_plugin + grpc Dart",
@@ -972,11 +940,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::ProtobufGrpc,
                 notes: Some("Distinct Kotlin coroutine/stub artifact over Java protobuf messages."),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use Rust JNI/JNA or WASM boundary; do not translate embedded behavior.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "grpc-kotlin protoc plugin",
@@ -994,6 +957,8 @@ const CATALOG: Catalog = Catalog {
                     "Bypass",
                     "-File",
                     "{source_root}/jvm/kotlin-producer-adapter.ps1",
+                    "-SourceRoot",
+                    "{source_root}",
                     "-Authority",
                     "{wire_root}",
                     "-Request",
@@ -1044,11 +1009,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "The unified JVM producer compiles Rust-generated Scala facades over the generated Java gRPC transport. The separately pinned ScalaPB prototype provides native Scala protobuf/gRPC research evidence. Installed full-RPC cancellation and recovery qualification remains pending.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use a Rust FFI/WASM boundary only.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1133,11 +1093,6 @@ const CATALOG: Catalog = Catalog {
                     "grpc and protobuf Hex packages; custom Rust facade still required for recovery policy.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Call Rust through NIF only if a separately qualified embedded ABI is requested.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "elixir-grpc + protobuf_generate",
@@ -1188,11 +1143,6 @@ const CATALOG: Catalog = Catalog {
                     "Built-in bal grpc generator/runtime; toolchain is tied to Ballerina/JVM releases.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "No embedded parity without a Rust native/WASM bridge.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "bal grpc",
@@ -1239,11 +1189,6 @@ const CATALOG: Catalog = Catalog {
                 ],
                 wire: WireKind::ProtobufGrpc,
                 notes: Some("Official gRPC Objective-C plugin and Protobuf CocoaPods runtime."),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use Rust C ABI for embedded behavior; not a translated Objective-C implementation.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1296,11 +1241,6 @@ const CATALOG: Catalog = Catalog {
                     "grpcbox advertises generated services, reflection and all streaming shapes, but needs maintenance qualification.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use a Rust NIF/port only for embedded behavior.",
-            },
             maturity: Maturity::Experimental,
             generator: Generator {
                 name: "grpcbox + gpb",
@@ -1349,11 +1289,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "ocaml-grpc supports Eio/Lwt/Async and all streaming forms; ecosystem maturity is lower.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use Rust C ABI/WASM for embedded behavior.",
             },
             maturity: Maturity::Experimental,
             generator: Generator {
@@ -1405,11 +1340,6 @@ const CATALOG: Catalog = Catalog {
                     "ag-gRPC demonstrates generated stubs but package/license provenance is not yet release-grade.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Embedded behavior remains Rust-owned.",
-            },
             maturity: Maturity::Unknown,
             generator: Generator {
                 name: "ag-gRPC",
@@ -1449,11 +1379,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "OpenAPI Generator Ada client; no qualifying protobuf/gRPC generator in the selected stack.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust native binding only.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1515,11 +1440,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator C/libcurl output is HTTP-only and documented as beta.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::FfiOrWasm,
-                qualification: Some(Qualification::Unqualified),
-                notes: "C ABI may expose selected Rust embedded APIs, but generated HTTP code is not embedded parity.",
-            },
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator c",
@@ -1557,11 +1477,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "OAG Clojure client is an HTTP projection; Java gRPC stubs are a possible adapter but not independent Clojure generation.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust interop only.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1623,11 +1538,6 @@ const CATALOG: Catalog = Catalog {
                 wire: WireKind::JsonHttp,
                 notes: Some("OAG Crystal client is beta; no maintained gRPC target selected."),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust native boundary only.",
-            },
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator crystal",
@@ -1687,11 +1597,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "OpenAPI Generator output is browser/HTTP oriented; no native gRPC runtime.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Browser UI can call a Rust/WASM adapter, not embed arbitrary service behavior.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1753,11 +1658,6 @@ const CATALOG: Catalog = Catalog {
                     "Godot 4 HTTP client target; platform/library variant rather than a general SDK runtime.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Use a Rust WASM/native Godot extension for embedded behavior.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator gdscript",
@@ -1816,11 +1716,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-owned five-family HTTP projection is qualified by the Julia receipt; no maintained Julia gRPC generator is selected.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust native/WASM boundary only.",
-            },
             maturity: Maturity::Beta,
             generator: Generator {
                 name: "OpenAPI Generator julia-client",
@@ -1876,11 +1771,6 @@ const CATALOG: Catalog = Catalog {
                 streaming: &[],
                 wire: WireKind::JsonHttp,
                 notes: Some("OAG Nim client; no selected maintained gRPC runtime."),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust C ABI only.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -1939,11 +1829,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "Rust-derived OpenAPI projections for Actors, Workers, Stream, Objects and Inference have installed Perl HTTP consumers; OAG remains JSON/HTTP-only and does not provide protobuf support.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust ABI only.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -2015,11 +1900,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-owned adapted PowerShell HTTP modules are installed and loopback-qualified for one route in each of the five HTTP family projections; no protobuf/gRPC package target.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Shell can invoke a Rust CLI but does not embed behavior.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator powershell",
@@ -2090,11 +1970,6 @@ const CATALOG: Catalog = Catalog {
                     "OAG R feature table is JSON/XML and does not provide protobuf/gRPC parity.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust native binding not applicable to generated HTTP package.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator r",
@@ -2152,11 +2027,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "Rust-derived OpenAPI projections generate an installable Bash/curl bundle for all five explicit HTTP families; receipt: research/additional-languages/openapi-targets/bash-manifest.json.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Invoke a Rust CLI for embedded behavior instead.",
             },
             maturity: Maturity::Stable,
             generator: Generator {
@@ -2226,11 +2096,6 @@ const CATALOG: Catalog = Catalog {
                     "Rust-generated protobuf services and descriptor-specific semantic GADTs compile with proto-lens and use grapesy HTTP/2 transport.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust FFI remains the only embedded path.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "proto-lens-protoc + grapesy",
@@ -2239,13 +2104,28 @@ const CATALOG: Catalog = Catalog {
                 license: "BSD-3-Clause",
                 pin: "GHC 9.2.8; Cabal 3.10.2.1; proto-lens-protoc 0.9.0.1 sha256:513e4338ca74b06929251f78e1c0cd1cc6b26d5e32e80cbcbcc23848ac16e446; grapesy 1.2.1 sha256:be40dda86d9a08d042504d9b94b4f8377ed08a9ce45fee413b8d0637a50951ca; research/additional-languages/haskell-grapesy-prototype/cabal.project.freeze",
             },
-            producer: None,
+            producer: Some(Producer {
+                program: "powershell.exe",
+                args: &[
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    "{source_root}/research/additional-languages/haskell-grapesy-prototype/generate.ps1",
+                    "-Request",
+                    "{request}",
+                    "-Output",
+                    "{target_output}",
+                ],
+                output: "generated",
+            }),
             package: Package {
                 ecosystem: "Hackage",
-                artifact: "acyclic-haskell-grapesy-prototype",
+                artifact: "acyclic-sdk-haskell",
                 installable: true,
                 notes: Some(
-                    "Cabal source archive and installed typed consumer are produced by the pinned local Haskell toolchain.",
+                    "Rust-owned generation-only producer emits an installable Cabal package with generated proto-lens bindings and descriptor-specific semantic types; the grapesy transport facade remains thin and Rust-authority-bound.",
                 ),
             },
             evidence: &[
@@ -2263,7 +2143,6 @@ const CATALOG: Catalog = Catalog {
                 },
             ],
             outstanding: &[
-                "Register generation-only producer and final package identity.",
                 "Complete source-bound installed 111-step conformance, streaming, cancellation, recovery and TLS qualification.",
             ],
             aliases: None,
@@ -2281,11 +2160,6 @@ const CATALOG: Catalog = Catalog {
                 notes: Some(
                     "lua-protobuf provides serialization but no maintained gRPC runtime; OAG Lua output is beta HTTP-only.",
                 ),
-            },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Rust native/WASM boundary only.",
             },
             maturity: Maturity::Experimental,
             generator: Generator {
@@ -2331,11 +2205,6 @@ const CATALOG: Catalog = Catalog {
                     "OpenAPI Generator also lists k6, JMeter, Terraform provider and documentation targets; these are not SDK languages.",
                 ),
             },
-            embedded: EmbeddedCapability {
-                level: EmbeddedLevel::None,
-                qualification: Some(Qualification::Unqualified),
-                notes: "Generated docs/examples must call qualified SDKs or the Rust-owned HTTP projection.",
-            },
             maturity: Maturity::Stable,
             generator: Generator {
                 name: "OpenAPI Generator docs/tooling templates",
@@ -2364,8 +2233,80 @@ const CATALOG: Catalog = Catalog {
     catalogued_at: "2026-10-03",
 };
 
+fn embedded_language_for_target(target_id: &str) -> Option<EmbeddedLanguage> {
+    match target_id {
+        "rust" => Some(EmbeddedLanguage::Rust),
+        "c" => Some(EmbeddedLanguage::C),
+        "python" => Some(EmbeddedLanguage::Python),
+        "typescript" => Some(EmbeddedLanguage::TypeScript),
+        "csharp" => Some(EmbeddedLanguage::CSharp),
+        _ => None,
+    }
+}
+
+fn embedded_projection(target_id: &str) -> Value {
+    let language = embedded_language_for_target(target_id);
+    let entries: Vec<&RustEmbeddedCapability> = embedded_capabilities()
+        .iter()
+        .filter(|entry| Some(entry.language) == language)
+        .collect();
+    let level = if entries.is_empty() {
+        EmbeddedLevel::None
+    } else if entries
+        .iter()
+        .all(|entry| entry.binding == acyclic_sdk_contract_wire::EmbeddedBinding::RustNative)
+    {
+        EmbeddedLevel::RustNative
+    } else {
+        EmbeddedLevel::FfiOrWasm
+    };
+    let qualification = if entries.is_empty() {
+        Qualification::Unqualified
+    } else if entries.iter().any(|entry| {
+        entry.evidence.qualification == acyclic_sdk_contract_wire::EmbeddedQualification::Verified
+    }) {
+        Qualification::Qualified
+    } else {
+        Qualification::Prototype
+    };
+    let capabilities = entries
+        .iter()
+        .map(|entry| {
+            json!({
+                "language": entry.language.as_str(),
+                "family": entry.family.as_str(),
+                "binding": entry.binding.as_str(),
+                "artifact": {
+                    "kind": entry.artifact.kind.as_str(),
+                    "identity": entry.artifact.identity,
+                    "installable": entry.artifact.installable,
+                    "target_identities": entry.artifact.target_identities,
+                },
+                "installable": entry.artifact.installable,
+                "qualification": entry.evidence.qualification.as_str(),
+                "coverage": entry.evidence.coverage.as_str(),
+                "source_evidence": entry.evidence.source_evidence,
+                "receipt": entry.evidence.receipt,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "level": level,
+        "qualification": qualification,
+        "capabilities": capabilities,
+    })
+}
+
 pub fn catalog() -> serde_json::Value {
-    serde_json::to_value(&CATALOG).expect("static Rust target catalog is serializable")
+    let mut value = serde_json::to_value(&CATALOG).expect("static Rust target catalog is serializable");
+    let targets = value["targets"]
+        .as_array_mut()
+        .expect("catalog targets serialize as an array");
+    for target in targets {
+        let target_id = target["id"].as_str().expect("catalog target has an id");
+        target["embedded"] = embedded_projection(target_id);
+    }
+    value
 }
 
 /// Compatibility projection for consumers of the former package inventory.
@@ -2426,6 +2367,36 @@ pub fn schema() -> serde_json::Value {
         .into_generator()
         .into_root_schema_for::<Catalog>();
     let mut value = serde_json::to_value(schema).expect("derived catalog schema is serializable");
+    let embedded_schema = schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<EmbeddedProjectionSchema>();
+    let embedded_value =
+        serde_json::to_value(embedded_schema).expect("embedded projection schema is serializable");
+    if let Some(definitions) = embedded_value["$defs"].as_object() {
+        let target_definitions = value["$defs"]
+            .as_object_mut()
+            .expect("catalog schema definitions are an object");
+        for (name, definition) in definitions {
+            target_definitions.insert(name.clone(), definition.clone());
+        }
+    }
+    let mut embedded_definition = embedded_value.clone();
+    embedded_definition
+        .as_object_mut()
+        .expect("embedded projection schema is an object")
+        .remove("$defs");
+    value["$defs"]["EmbeddedProjectionSchema"] = embedded_definition;
+    let target = value["$defs"]["Target"]
+        .as_object_mut()
+        .expect("catalog target schema is an object");
+    target["properties"]["embedded"] = json!({
+        "$ref": "#/$defs/EmbeddedProjectionSchema"
+    });
+    target["required"]
+        .as_array_mut()
+        .expect("catalog target required properties are an array")
+        .push(Value::String("embedded".to_owned()));
     // Draft 2020-12 validators do not define the OpenAPI uint32 format.
     // The Rust-derived integer type and explicit bounds carry this constraint.
     value["properties"]["schema_version"]
@@ -2472,6 +2443,36 @@ mod tests {
         assert_eq!(version["maximum"], 1);
         assert!(version.get("format").is_none());
         assert_eq!(generated["additionalProperties"], false);
+        let schema_text = generated.to_string();
+        assert!(schema_text.contains("embedded"));
+        assert!(schema_text.contains("target_identities"));
+    }
+
+    #[test]
+    fn embedded_catalog_projection_comes_from_rust_registry() {
+        let generated = catalog();
+        let rust_target = generated["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|target| target["id"] == "rust")
+            .unwrap();
+        let expected = embedded_capabilities()
+            .iter()
+            .filter(|entry| entry.language == EmbeddedLanguage::Rust)
+            .count();
+        assert_eq!(
+            rust_target["embedded"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .len(),
+            expected
+        );
+        assert!(rust_target["embedded"].get("notes").is_none());
+        assert_eq!(
+            rust_target["embedded"]["capabilities"][0]["artifact"]["identity"],
+            "rust/crates/sdk-embedded-prototype"
+        );
     }
 
     #[test]

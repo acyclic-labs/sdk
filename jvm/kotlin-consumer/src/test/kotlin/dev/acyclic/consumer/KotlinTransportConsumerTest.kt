@@ -14,10 +14,11 @@ import acyclic.protocol.v1.Protocol
 import acyclic.workers.v1.Workers
 import dev.acyclic.transport.RustTypedClientsKotlin
 import dev.acyclic.transport.RustTypedRequestsKotlin
+import dev.acyclic.transport.GeneratedRemotePolicy
+import dev.acyclic.transport.RemoteClientFactory
 import inference.customer.v1.Inference
 import io.grpc.inprocess.InProcessChannelBuilder
 import io.grpc.inprocess.InProcessServerBuilder
-import io.grpc.ManagedChannelBuilder
 import io.grpc.Status
 import io.grpc.StatusException
 import com.google.protobuf.ByteString
@@ -184,18 +185,19 @@ class KotlinTransportConsumerTest {
       if (Files.isRegularFile(path)) path.parent else path
     }
     fun requestBytes(relative: String): ByteArray = Files.readAllBytes(fixtureRoot.resolve(relative))
-    val target = endpoint.removePrefix("http://").removePrefix("https://")
-    val channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build()
+    val defaults = fixtureDefaults(endpoint)
+    val actorsClient = RemoteClientFactory.create("actors", false, defaults, null)
+    val streamClient = RemoteClientFactory.create("stream", true, defaults, null)
     try {
       val actorBytes = requestBytes("fixtures/actors-create-unary-v1/request.bin")
       val request = Actors.CreateActorRequest.parseFrom(actorBytes)
       assertContentEquals(actorBytes, request.toByteArray(), "Rust actor request changed during typed decode")
-      val actors = ActorsServiceGrpcKt.ActorsServiceCoroutineStub(channel)
+      val actors = ActorsServiceGrpcKt.ActorsServiceCoroutineStub(actorsClient.channel())
       val actorResponse = actors.createActor(request)
       assertTrue(actorResponse.hasActor(), "Rust fixture returned no actor")
       assertContentEquals(request.codeSha256.toByteArray(), actorResponse.actor.codeSha256.toByteArray())
 
-      val stream = StreamServiceGrpcKt.StreamServiceCoroutineStub(channel)
+      val stream = StreamServiceGrpcKt.StreamServiceCoroutineStub(streamClient.channel())
       val appendBytes = requestBytes("fixtures/stream-append-read-v2/append-request.bin")
       val appendRequest = Stream.AppendRequest.parseFrom(appendBytes)
       assertContentEquals(appendBytes, appendRequest.toByteArray(), "Rust append request changed during typed decode")
@@ -215,7 +217,8 @@ class KotlinTransportConsumerTest {
       job.cancelAndJoin()
       assertTrue(received, "Rust fixture did not produce a streamed record")
     } finally {
-      channel.shutdownNow()
+      actorsClient.close()
+      streamClient.close()
     }
   }
 
@@ -223,10 +226,11 @@ class KotlinTransportConsumerTest {
   fun installedJarExercisesRustTypedFacadeAgainstFixture() = runBlocking {
     val endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT")
     if (endpoint.isNullOrBlank()) return@runBlocking
-    val target = endpoint.removePrefix("http://").removePrefix("https://")
-    val channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build()
+    val defaults = fixtureDefaults(endpoint)
+    val actorsClient = RemoteClientFactory.create("actors", false, defaults, null)
+    val streamClient = RemoteClientFactory.create("stream", true, defaults, null)
     try {
-      val actors = ActorsServiceGrpc.newBlockingStub(channel)
+      val actors = ActorsServiceGrpc.newBlockingStub(actorsClient.channel())
       val actorRequest = RustTypedRequestsKotlin.ActorsActorsCreateActorRequest(
         Actors.CreateActorRequest.newBuilder()
           .setHomeRegion("fixture")
@@ -243,7 +247,7 @@ class KotlinTransportConsumerTest {
       assertEquals("fixture-actor", actorResponse.actorActorId().value)
       assertEquals("fixture", actorResponse.actor().homeRegion)
 
-      val stream = StreamServiceGrpc.newBlockingStub(channel)
+      val stream = StreamServiceGrpc.newBlockingStub(streamClient.channel())
       val appendWire = Stream.AppendRequest.newBuilder()
         .setPath("fixture/kotlin-typed-facade")
         .setIfTail(0)
@@ -276,7 +280,7 @@ class KotlinTransportConsumerTest {
 
       val firstFollowRecord = CompletableDeferred<Unit>()
       val followJob = launch {
-        StreamServiceGrpcKt.StreamServiceCoroutineStub(channel)
+        StreamServiceGrpcKt.StreamServiceCoroutineStub(streamClient.channel())
           .follow(Stream.FollowRequest.newBuilder()
             .setPath("fixture/kotlin-typed-facade")
             .setFrom(0)
@@ -311,8 +315,16 @@ class KotlinTransportConsumerTest {
       val record = read.next()
       assertEquals(1L, record.record().sequence)
     } finally {
-      channel.shutdownNow()
-      channel.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)
+      actorsClient.close()
+      streamClient.close()
     }
+  }
+
+  private fun fixtureDefaults(endpoint: String): GeneratedRemotePolicy.Defaults {
+    val token = System.getProperty("acyclic.bearerToken")
+      ?.takeIf { it.isNotBlank() }
+      ?: System.getenv("ACYCLIC_BEARER_TOKEN")
+      ?: ""
+    return GeneratedRemotePolicy.Defaults(endpoint, token)
   }
 }

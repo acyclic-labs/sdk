@@ -18,6 +18,7 @@
 #![doc = include_str!("../docs/managed-agent-runtime.md")]
 #![doc = include_str!("../docs/objects.md")]
 
+#[cfg(target_arch = "wasm32")]
 use std::future::Future;
 use futures::Stream;
 
@@ -67,9 +68,11 @@ pub mod turn;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
+/// Browser capability description returned by the remote Harness service.
 pub use acyclic_sdk_remote_web::{BrowserHarnessCapabilities, BrowserHarnessClient};
 pub mod wire_api;
 mod wire_codec;
+/// Encodes a Harness error for a wire response.
 pub use wire_codec::encode_error;
 pub mod wire_validation;
 pub mod wire_values;
@@ -91,6 +94,7 @@ pub(crate) type PlatformBoxStream<'a, T> = futures::stream::LocalBoxStream<'a, T
 
 /// Box a future using the executor model of the compiled target.  Native
 /// builds retain Send futures; browser builds remain on the local executor.
+#[cfg(target_arch = "wasm32")]
 pub(crate) trait PlatformFutureExt: Future + Sized {
     fn platform_boxed<'a>(self) -> BoxFuture<'a, Self::Output>
     where
@@ -116,16 +120,6 @@ impl<S: Stream + Send> PlatformStreamExt for S {
 #[cfg(target_arch = "wasm32")]
 impl<S: Stream> PlatformStreamExt for S {
     fn platform_boxed<'a>(self) -> PlatformBoxStream<'a, Self::Item>
-    where
-        Self: 'a,
-    {
-        Box::pin(self)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<F: Future + Send> PlatformFutureExt for F {
-    fn platform_boxed<'a>(self) -> BoxFuture<'a, Self::Output>
     where
         Self: 'a,
     {
@@ -217,7 +211,9 @@ mod generated {
 /// Generated Protobuf envelopes shared by every transport: the harness
 /// contract and the protocol handshake it negotiates with.
 pub mod wire {
+    /// Version-two Harness wire messages.
     pub use super::generated::acyclic::harness::v2::*;
+    /// Version-one protocol handshake messages.
     pub use super::generated::acyclic::protocol::v1::*;
 }
 
@@ -225,20 +221,107 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/harness_descriptor.bin"));
 
-pub use bundle::{HarnessBuilder, HarnessBundle as Harness};
-pub use contract::{
-    Admission, AgentId, AuthorityLevel, AuthorityPolicy, BatchId, COMPONENT_LABEL_FORBIDDEN_EXACT,
-    COMPONENT_LABEL_FORBIDDEN_SEPARATORS, COMPONENT_LABEL_MAX_BYTES, Capabilities, ConversationId,
-    EffectAttemptId, EffectId, Error, GroupId, IdempotencyKey, InteractionId, InteractionRejection,
-    OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
-    is_valid_component_label, resolve_policies, resolve_policy_layers,
-};
-pub use extension::{
-    ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
-    ExtensionRuntime, NativeExtension, NativeExtensionBundle,
-};
-pub use handles::{Agent, Conversation, Session, Task, Turn};
-pub use live::{
-    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,
-    race, recursive_sum,
-};
+/// Builder for a configured Harness bundle.
+pub use bundle::HarnessBuilder;
+/// Complete collection of registered Harness services.
+pub use bundle::HarnessBundle as Harness;
+/// Authenticated task admission payload.
+pub use contract::Admission;
+/// Stable agent identity.
+pub use contract::AgentId;
+/// Authority level used by policy evaluation.
+pub use contract::AuthorityLevel;
+/// Immutable authority policy definition.
+pub use contract::AuthorityPolicy;
+/// Stable batch identity.
+pub use contract::BatchId;
+/// Exact component labels that are forbidden by the contract.
+pub use contract::COMPONENT_LABEL_FORBIDDEN_EXACT;
+/// Separators forbidden in component labels.
+pub use contract::COMPONENT_LABEL_FORBIDDEN_SEPARATORS;
+/// Maximum encoded component-label length.
+pub use contract::COMPONENT_LABEL_MAX_BYTES;
+/// Capability set carried by an authority scope.
+pub use contract::Capabilities;
+/// Stable conversation identity.
+pub use contract::ConversationId;
+/// Stable effect-attempt identity.
+pub use contract::EffectAttemptId;
+/// Stable effect identity.
+pub use contract::EffectId;
+/// Harness error type.
+pub use contract::Error;
+/// Stable task-group identity.
+pub use contract::GroupId;
+/// Idempotency key for a durable operation.
+pub use contract::IdempotencyKey;
+/// Stable interaction identity.
+pub use contract::InteractionId;
+/// Rejection details for an interaction response.
+pub use contract::InteractionRejection;
+/// Stable operation identity.
+pub use contract::OperationId;
+/// Result of a completed Harness operation.
+pub use contract::Outcome;
+/// One layer in the effective authority policy.
+pub use contract::PolicyLayer;
+/// Negotiated Harness protocol identity.
+pub use contract::ProtocolIdentity;
+/// Crate result alias.
+pub use contract::Result;
+/// Stable session identity.
+pub use contract::SessionId;
+/// Stable task identity.
+pub use contract::TaskId;
+/// Stable turn identity.
+pub use contract::TurnId;
+/// Validates a component label against the Harness contract.
+pub use contract::is_valid_component_label;
+/// Resolves the effective policy for an authority.
+pub use contract::resolve_policies;
+/// Resolves policy layers in their canonical order.
+pub use contract::resolve_policy_layers;
+/// Stable extension identity.
+pub use extension::ExtensionIdentity;
+/// Lease granted to an extension.
+pub use extension::ExtensionLease;
+/// Collection of active extension leases.
+pub use extension::ExtensionLeases;
+/// Links extension dependencies to their runtime implementations.
+pub use extension::ExtensionLinker;
+/// Registry of installed extensions.
+pub use extension::ExtensionRegistry;
+/// Runtime used to execute extension hooks.
+pub use extension::ExtensionRuntime;
+/// Native extension implementation boundary.
+pub use extension::NativeExtension;
+/// Bundle of native extension implementations.
+pub use extension::NativeExtensionBundle;
+/// Public agent handle.
+pub use handles::Agent;
+/// Public conversation handle.
+pub use handles::Conversation;
+/// Public session handle.
+pub use handles::Session;
+/// Public task handle.
+pub use handles::Task;
+/// Public turn handle.
+pub use handles::Turn;
+/// Group of live tasks sharing one lifecycle.
+pub use live::TaskGroup;
+/// Handle for observing or controlling a live task.
+pub use live::TaskHandle;
+/// Streams task completions as they arrive.
+pub use live::completion_stream;
+/// Returns the first successful live-task result.
+pub use live::first_success;
+/// Joins all live-task results.
+pub use live::join_all;
+/// Reduces live-task results in input order.
+pub use live::ordered_reduce;
+/// Resolves a result once a quorum completes.
+pub use live::quorum;
+/// Returns the first completed live-task result.
+pub use live::race;
+/// Recursively combines a live-task result stream.
+pub use live::recursive_sum;

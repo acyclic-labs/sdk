@@ -1,0 +1,103 @@
+{
+  "artifact_sha256": {
+    "cpp/OneofProbe.cpp": "90e7106f2a35c75bf9461a12608d7c89d9a51bd35e6e410ecc3f84a96c0f8e25",
+    "cpp/OneofProbe.exe": "ef69e69b6d781b22f0db347b9f9e18d9240728c1bbccca33cf398bea6cd316e1",
+    "cpp/TypedProbe.exe": "9d0d76653ece6878cb1870c312c2e1be1b6a8d987a798aca4bf008bd0635017c",
+    "cpp/include/acyclic/rust_typed_clients.hpp": "86c55785035831d2f5427242587c15d0c33fd1265eb14a09e24cfba04abf12f9",
+    "dart/lib/src/generated_remote_policy.dart": "00cc5a34379507f05a00ad423020655a65c49515e9585b5ad50d4832e6dad054",
+    "dotnet/EmbeddedStream.Generated.cs": "bb01126292d087bfebe9eee1b30624f60a90851c432a317e1f0e247976b1bf87",
+    "dotnet/GeneratedRemotePolicy.cs": "60c66c25b561e90f472d1dae3359e78dfdc98b47f369f1a19b3621ca3bb72099",
+    "dotnet/RustTypedClients.cs": "db91bf68db73d058b0967cfffbd6801519d8e6d51583eab028cc2de9aa988e47",
+    "dotnet/consumer/RustTypedFacadeConsumer.cs": "7b721aaa064d70de060058183fff59ce82e7cfade3e773a24ef6717826ae58c7",
+    "dotnet/consumer/negative/RustTypedFacadeNegative.cs.txt": "d8d931b2b059f77740daafd985a7566a804c536715ffd68d736d7ea534b21177",
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.rs": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb",
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.tonic.rs": "36063b692ed0923d3137b0eac682b942e036e22c14714d6b0651752be335af98",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.rs": "f6d1fb951c17cc36b994131d3f5807eb012cde579786c02ce7c354181c553969",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.tonic.rs": "49223faaca603ab24911aec53750d5efbbf08998e27939af25ba9e6a56ddd1b9",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.rs": "0585fcc914f51fd06ae1fc5e5f153471ab51894ed8555d7af52c8171268945ca",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.tonic.rs": "98db6103a29c75a1958d1f75cfcd6820c62dc97f77ea31ad5526deeadc353c97",
+    "generated/sdk/type-policy.json": "f2c3c4efacdd3b22d5c3530ce30dcb78827216d13eb45de8803e9436db92f049",
+    "go/client.go": "7774a553c80be8806efb8c3c264a941f42df89a7714f9842692c5c0b6eadce2b",
+    "go/type_policy_generated_test.go": "64c79e343eb86dd04471f53ed00dcd074ded9431393e51c7298e9693a9a53023",
+    "jvm/embedded/src/main/java/dev/acyclic/embedded/GeneratedStreamOperations.java": "dfec809180d0a756e8f531259ca6e039f3e9e37fc9375926cf6fbb164420243e",
+    "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java": "2f3e81e946cb07f93c093a9ba083b65e27a12b4729aa7e3c0500951b1a4b19e9",
+    "jvm/src/main/java/dev/acyclic/transport/RustSemanticTypes.java": "3e65f1fca5ad13f57cc39d04c580ab91938833c5b4898b47164b49289650ffed",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedClients.java": "687d7e8ac009f85c250f84d10759d971c61abf80bc8b5591867342fc405b8e32",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedRequests.java": "3bbef0e670077b29451762fc61eb24d6efae4f3281b95371fdfe41e768bd5e59",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedResponses.java": "af379e20df3fd52bcfa716bee3a57a575ea0d58c6133998677e151fc9cb1b2e5",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustSemanticTypes.kt": "697c4b0a4e4c3d7a34423a456f91657b3d2bdeca61bf1d18dbd9baaa96c30b1f",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedClients.kt": "289567c712b2c8ab8d28071fe2319de3ee6a460d50dcbd38d63c10bf639f461b",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedRequests.kt": "8ae5526ae427b6132a0f7c419a8beeded0a6eb91e73d65a4943d229ae9eba51f",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedResponses.kt": "ea65f7c53597f680b289103238b74f42c98e5e62e404b52dadf2cc1ac77dae5d",
+    "jvm/src/main/scala/dev/acyclic/transport/RustSemanticTypes.scala": "aaa4b59dcf742e1d219d7c05a0eb8ce4e08ee64952b3404c2a1644bea26f3f72",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedClients.scala": "6557b863f9f79a6cb441e6874a590bca2a37e5216e6a80a0572bc51b0864be1f",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedRequests.scala": "68a7c639fe6c224c3caf10a8c32b865cf877c54af0d8bc87a7a0a379a8fbc38c",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedResponses.scala": "70226d339ca72ba5c9e1aa134b6a113729a75b667ff386f007d1990e79c2e258",
+    "jvm/src/test/java/dev/acyclic/transport/RustSemanticTypesTest.java": "2d5091a2dfe29400b76b5d751e7c3231aea0a17a10b303777718697ba24da922",
+    "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php": "edae148e5231f5bd77dffab137d5c49bd354d06fb2a8a6936093189fba1bd19b",
+    "python/src/acyclic_sdk/py.typed": "c4432926a71024a12e35f50392845349bf64c127a8d44814174c4a2938d47212",
+    "python/src/acyclic_sdk/remote.py": "a029222f9a682a0aab666dcd7586f737cde197051c3fae7a23768c44beddcffe",
+    "python/tests/generated_type_policy_test.py": "346ade4fec10e155de064654a71f1465e275ce0dab5df590406738adff794082",
+    "ruby/lib/acyclic_sdk/generated_remote_policy.rb": "05e30fd526533a0eac2c8f131de269e55d30000dc45f39f898e0769775b2d007",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.rs": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs": "36063b692ed0923d3137b0eac682b942e036e22c14714d6b0651752be335af98",
+    "rust/crates/actors/src/generated/acyclic.protocol.v1.rs": "7df572f7dcfd8ba490ec0051c3de75f9d7f412687c7e04233142daa090a1a969",
+    "rust/crates/actors/src/generated/acyclic.transport.v1.rs": "87037f9bbe293bb387cd245c5995267603c2ba4ff32278edc02cd9a01f9b791d",
+    "rust/crates/actors/src/generated/platform-client-methods.rs": "62467ddbd24202a038ee2d5dac6c510b156a213d1c5e15b932f28549d59103f7",
+    "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
+    "rust/crates/harness/src/generated/harness-archived-v2.bin": "b1d721a657f40f652a560769ff440b7a1ca44739765fd3114269b727de5474e4",
+    "rust/crates/harness/src/generated/rust-model-harness-v2.bin": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
+    "rust/crates/inference-contract/inference_model_descriptor.bin": "5f02501c4b99f496ed3acc3276c744569d4c198c091dcca7da71e146e84b4633",
+    "rust/crates/inference-contract/inference_model_descriptor_docs.bin": "95888e12e9be7bd361c570407d3a874db7a352d6ae41fff0ae9f892f72892e61",
+    "rust/crates/inference/inference_descriptor.bin": "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
+    "rust/crates/inference/inference_model_descriptor.bin": "5f02501c4b99f496ed3acc3276c744569d4c198c091dcca7da71e146e84b4633",
+    "rust/crates/inference/inference_model_descriptor_docs.bin": "95888e12e9be7bd361c570407d3a874db7a352d6ae41fff0ae9f892f72892e61",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.bin": "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin": "548d0b612dc836bcbc8b9ffc10cea78e9470226d7e5f9eb2548dd6def7804122",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.rs": "f6d1fb951c17cc36b994131d3f5807eb012cde579786c02ce7c354181c553969",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs": "49223faaca603ab24911aec53750d5efbbf08998e27939af25ba9e6a56ddd1b9",
+    "rust/crates/workers/src/generated/acyclic.protocol.v1.rs": "7df572f7dcfd8ba490ec0051c3de75f9d7f412687c7e04233142daa090a1a969",
+    "rust/crates/workers/src/generated/acyclic.transport.v1.rs": "87037f9bbe293bb387cd245c5995267603c2ba4ff32278edc02cd9a01f9b791d",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.rs": "0585fcc914f51fd06ae1fc5e5f153471ab51894ed8555d7af52c8171268945ca",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.tonic.rs": "98db6103a29c75a1958d1f75cfcd6820c62dc97f77ea31ad5526deeadc353c97",
+    "rust/crates/workers/src/generated/platform-client-methods.rs": "6f2f0ef4d7cbb217a4010330fd26fe0ad7a8f279ce5ad3582d3feb3224052fe3",
+    "swift/RustTypedClients.swift": "7783fd36c7d209e6e29f7dcab6100eb04e1b00dc694837db206ecbd39255a314"
+  },
+  "check": "generated public source types",
+  "errors": [
+    "missing generated public SDK surfaces in \\\\?\\Q:\\sdk\\work\\swift-cpp-products-strong-oneof-20261006: dart"
+  ],
+  "passed": false,
+  "required_languages": [
+    "dart"
+  ],
+  "schema": "acyclic.sdk.generated-public-type-audit.v1",
+  "verifier_sha256": "a953c9de6a9c9fc70b2fe72e8f41f7f66727f4e859e0e805fd344fa9f2aae833",
+  "violations": [
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\java\\dev\\acyclic\\transport\\RustSemanticTypes.java",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustSemanticTypes.kt",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustSemanticTypes.scala",
+      "reason": "JVM facade lacks explicit presence representation"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustSemanticTypes.scala",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    }
+  ]
+}

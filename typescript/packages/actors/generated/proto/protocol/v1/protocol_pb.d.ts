@@ -137,3 +137,4 @@ export declare type HandshakeResponse = Message<"acyclic.protocol.v1.HandshakeRe
  * Use `create(HandshakeResponseSchema)` to create a new message.
  */
 export declare const HandshakeResponseSchema: GenMessage<HandshakeResponse>;
+

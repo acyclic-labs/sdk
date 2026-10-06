@@ -170,6 +170,7 @@ cmake --build "$CONSUMER_BUILD"
 assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_consumer"
 assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_negative"
 assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_cross_thread"
+assert_musl_executable "$CONSUMER_BUILD/acyclic_cpp_embedded_raw_header"
 ctest --test-dir "$CONSUMER_BUILD" --output-on-failure
 cmake --install "$CONSUMER_BUILD" --prefix "$PREFIX"
 
@@ -244,6 +245,7 @@ source_inputs = [
     "cpp/embedded-consumer/main.cpp",
     "cpp/embedded-consumer/negative_lifetime_smoke.cpp",
     "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+    "cpp/embedded-consumer/raw_header_consumer.cpp",
 ]
 source_digest_lines = []
 for relative in source_inputs:
@@ -291,7 +293,7 @@ json.dump({
             "source_sha256": hashlib.sha256((source_root / "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp").read_bytes()).hexdigest(),
             "package_artifact": runtime_package_path,
             "package_artifact_sha256": hashlib.sha256(pathlib.Path(runtime_path).read_bytes()).hexdigest(),
-            "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"],
+            "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "raw_generated_header", "clean_prefix_install"],
         },
         },
     "ctest": "passed",

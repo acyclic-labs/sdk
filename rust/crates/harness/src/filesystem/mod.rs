@@ -37,20 +37,27 @@ use std::{
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
 mod execution_journal;
+/// Durable execution journal backed by the filesystem host.
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
+/// Prepares filesystem state for a forked operation.
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
+/// Filesystem-backed interaction resolution host.
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
+/// Filesystem-backed project workspace operations.
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
+/// Filesystem-backed workflow journal.
 pub use workflow_journal::FilesystemWorkflowJournal;
 mod memory;
+/// In-memory local Harness storage.
 pub use memory::{LocalHarness, MemoryHarnessStorage};
 #[cfg(feature = "filesystem-local")]
 mod local;
 #[cfg(feature = "filesystem-local")]
+/// Local filesystem-backed Harness storage.
 pub use local::LocalHarnessStorage;
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.

@@ -35,12 +35,17 @@ function To-WslPath([string]$path) {
   $full = [IO.Path]::GetFullPath($path)
   return "/mnt/$($full.Substring(0,1).ToLower())$($full.Substring(2).Replace([char]92,[char]47))"
 }
+function Get-RelativePath([string]$basePath, [string]$path) {
+  $baseUri = [Uri]::new(([IO.Path]::GetFullPath($basePath).TrimEnd([char]92) + [char]92))
+  $pathUri = [Uri]::new([IO.Path]::GetFullPath($path))
+  return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($pathUri).ToString()).Replace([char]92, [char]47)
+}
 $wslGenerated = To-WslPath $generated
 $ghc = '/home/var/.ghcup/bin/ghc'
 $cabal = '/home/var/.ghcup/bin/cabal'
 $linuxRepo = '/home/var/haskell-grapesy-prototype-run'
-$cmd = @"
-set -eu
+$cmd = @'
+set -euo pipefail
 rm -rf '$linuxRepo'
 mkdir -p '$linuxRepo'
 cp -a '$wslGenerated/.' '$linuxRepo/'
@@ -49,7 +54,67 @@ cd '$linuxRepo'
 $cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' all
 $cabal run --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-prototype
 $cabal run --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-full-typed
-"@
+mkdir -p '$linuxRepo/qualification'
+run_proof() {
+  proof_name="$1"
+  shift
+  "$cabal" run --with-compiler="$ghc" --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' "$proof_name" "$@" | tee '$linuxRepo/qualification/'"$proof_name"'.log'
+  echo "proof-hash-$proof_name=$(sha256sum '$linuxRepo/qualification/'"$proof_name"'.log' | cut -d ' ' -f 1)"
+}
+run_proof acyclic-haskell-semantic-types
+run_proof acyclic-haskell-wire-semantics
+if [ -n "${ACYCLIC_HASKELL_GRPC_ENDPOINT:-}" ]; then
+  run_proof acyclic-haskell-canonical-replay
+fi
+'@
+$cmd = $cmd.Replace('$linuxRepo',$linuxRepo).Replace('$wslGenerated',$wslGenerated).Replace('$cabal',$cabal).Replace('$ghc',$ghc)
 $cmd = $cmd -replace ([string][char]13 + [char]10), [string][char]10
-wsl.exe -d Ubuntu -- bash -lc $cmd
-if ($LASTEXITCODE -ne 0) { throw "Haskell prototype failed with exit code $LASTEXITCODE" }
+$prototypeOutput = @(& wsl.exe -d Ubuntu -- bash -lc $cmd 2>&1)
+$prototypeExitCode = $LASTEXITCODE
+$prototypeOutput | Write-Output
+if ($prototypeExitCode -ne 0) { throw "Haskell prototype failed with exit code $prototypeExitCode" }
+
+$proofLines = @($prototypeOutput | Where-Object { "$($_)" -like 'proof-hash-*' })
+$proofHashes = @{}
+foreach ($proofLine in $proofLines) {
+  $parts = "$proofLine" -split '=', 2
+  if ($parts.Count -ne 2 -or $parts[1] -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid proof hash emitted by Haskell runner: $proofLine" }
+  $proofHashes[$parts[0].Substring('proof-hash-'.Length)] = $parts[1].ToLowerInvariant()
+}
+foreach ($requiredProof in @('acyclic-haskell-semantic-types', 'acyclic-haskell-wire-semantics')) {
+  if (-not $proofHashes.ContainsKey($requiredProof)) { throw "Haskell runner did not execute required proof: $requiredProof" }
+}
+$canonicalExecuted = $proofHashes.ContainsKey('acyclic-haskell-canonical-replay')
+$sourceFiles = @(
+  Get-ChildItem -LiteralPath (Join-Path $root 'proto') -Recurse -File -Filter '*.proto'
+  Get-Item -LiteralPath (Join-Path $root 'rust/crates/stream/proto/stream/v2/stream.proto')
+) | Sort-Object FullName
+$sourceFileRecords = @($sourceFiles | ForEach-Object {
+  $relative = Get-RelativePath $root $_.FullName
+  [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+})
+$receipt = [ordered]@{
+  schema = 'acyclic.haskell.local-receipt.v1'
+  status = 'passed'
+  source_revision = $sourceRevision.ToLowerInvariant()
+  source_revision_kind = 'git-oid'
+  source_files = $sourceFileRecords
+  request_manifest = 'research/additional-languages/haskell-grapesy-prototype/request-manifest.json'
+  request_manifest_sha256 = (Get-FileHash -LiteralPath $request -Algorithm SHA256).Hash.ToLowerInvariant()
+  generated_package = [ordered]@{
+    provenance_sha256 = (Get-FileHash -LiteralPath (Join-Path $generated 'provenance.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+    source_bound = $true
+    generated_by = 'Rust typed-request-manifest and proto-lens-protoc 0.9.0.1'
+  }
+  typed_surface = [ordered]@{ active_methods = 106; services = 18; archived_services = 4; proof = 'acyclic-haskell-full-typed' }
+  proofs = [ordered]@{
+    semantic_types_sha256 = $proofHashes['acyclic-haskell-semantic-types']
+    wire_semantics_sha256 = $proofHashes['acyclic-haskell-wire-semantics']
+    canonical_replay_sha256 = if ($canonicalExecuted) { $proofHashes['acyclic-haskell-canonical-replay'] } else { $null }
+    canonical_replay_executed = $canonicalExecuted
+    logs = 'qualification/*.log'
+  }
+}
+$receiptPath = Join-Path $work 'haskell-local-receipt.json'
+$receipt | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $receiptPath -Encoding utf8NoBOM
+Write-Output "Haskell local receipt: $receiptPath"

@@ -23,6 +23,10 @@ pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
     clippy::cognitive_complexity,
     reason = "the linear provider conformance walkthrough keeps each assertion visible"
 )]
+/// Runs the complete provider-independent Stream conformance suite.
+///
+/// The suite exercises validation, idempotency, hierarchy, replay, follow, and coordinated
+/// commit behavior against the supplied provider. It returns the first contract violation.
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     if SUITE.is_empty() {
         return Err("Stream conformance inventory is empty".into());

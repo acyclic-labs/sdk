@@ -102,9 +102,19 @@ async fn endpoint(
         calls: calls.clone(),
     };
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
-    let incoming = futures::stream::unfold(listener, |listener| async {
-        Some((listener.accept().await.map(|(stream, _)| stream), listener))
-    });
+    let (ready, ready_receiver) = tokio::sync::oneshot::channel();
+    let incoming = futures::stream::unfold(
+        (listener, Some(ready)),
+        |(listener, ready)| async move {
+            if let Some(ready) = ready {
+                let _ = ready.send(());
+            }
+            Some((
+                listener.accept().await.map(|(stream, _)| stream),
+                (listener, None),
+            ))
+        },
+    );
     let server = tokio::spawn(async move {
         Server::builder()
             .tls_config(ServerTlsConfig::new().identity(identity))
@@ -120,6 +130,10 @@ async fn endpoint(
             })
             .await
     });
+    // Wait until tonic has entered its accept loop. Without this barrier the
+    // first control probe can race server startup and be mistaken for an
+    // endpoint without gRPC support, causing an HTTP fallback.
+    ready_receiver.await.unwrap();
     (endpoint, pem, calls, shutdown, server)
 }
 

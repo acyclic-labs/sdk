@@ -2,6 +2,15 @@
 # Acyclic's runtime state never belongs to a repository.
 .acyclic/
 /target-*/
+# Keep nested Rust build targets and generator caches out of source control.
+**/target/
+**/.cargo-target-*/
+**/dist-newstyle/
+# These qualification sandboxes contain local package caches and build output.
+/.tmp-dotnet-producer-smoke/
+/.tmp-jvm-producer-smoke/
+**/.nuget/
+**/obj/
 /.tools/
 node_modules/
 /typescript/packages/*/dist/

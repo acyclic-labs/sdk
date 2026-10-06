@@ -10,6 +10,7 @@ library
   hs-source-dirs:      src, generated
   exposed-modules:
       Acyclic.Semantics
+    , Acyclic.Remote.Api
     , Acyclic.Stream.Api
     , Proto.Actors.V1.Actors
     , Proto.Actors.V1.Actors_Fields

@@ -21,6 +21,11 @@ function To-WslPath([string]$path) {
   $full = [IO.Path]::GetFullPath($path)
   return "/mnt/$($full.Substring(0,1).ToLower())$($full.Substring(2).Replace([char]92,[char]47))"
 }
+function Get-RelativePath([string]$basePath, [string]$path) {
+  $baseUri = [Uri]::new(([IO.Path]::GetFullPath($basePath).TrimEnd([char]92) + [char]92))
+  $pathUri = [Uri]::new([IO.Path]::GetFullPath($path))
+  return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($pathUri).ToString()).Replace([char]92, [char]47)
+}
 
 if (-not $RustGrpcFixture) {
   throw 'RustGrpcFixture is required: this runner qualifies an installed Haskell consumer against the Rust fixture.'
@@ -52,7 +57,7 @@ if (-not (Test-Path -LiteralPath $fixtureBinary -PathType Leaf)) { throw "Rust f
 $fixtureStdout = Join-Path $work 'rust-fixture.stdout.json'
 $fixtureStderr = Join-Path $work 'rust-fixture.stderr.log'
 Remove-Item -LiteralPath $fixtureStdout,$fixtureStderr -Force -ErrorAction SilentlyContinue
-$fixtureProcess = Start-Process -FilePath $fixtureBinary -ArgumentList @('--port', '0', '--grpc-port', '0', '--max-requests', '8') -RedirectStandardOutput $fixtureStdout -RedirectStandardError $fixtureStderr -PassThru -WindowStyle Hidden
+$fixtureProcess = Start-Process -FilePath $fixtureBinary -ArgumentList @('--port', '0', '--grpc-port', '0', '--max-requests', '256') -RedirectStandardOutput $fixtureStdout -RedirectStandardError $fixtureStderr -PassThru -WindowStyle Hidden
 try {
   $fixtureMetadata = $null
   for ($attempt = 0; $attempt -lt 100 -and -not $fixtureMetadata; $attempt++) {
@@ -79,12 +84,24 @@ cp -a '$wslGenerated/.' '$linuxRepo/'
 rm -rf '$linuxRepo/dist-newstyle' '$linuxRepo/dist-sdist' '$linuxRepo/installed'
 mkdir -p '$linuxRepo/dist-sdist' '$linuxRepo/installed'
 cd '$linuxRepo'
-$cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' exe:acyclic-haskell-remote exe:acyclic-haskell-full-typed
+$cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' exe:acyclic-haskell-remote exe:acyclic-haskell-full-typed exe:acyclic-haskell-semantic-types exe:acyclic-haskell-canonical-replay exe:acyclic-haskell-wire-semantics
+mkdir -p '$linuxRepo/qualification'
+run_proof() {
+  proof_name="$1"
+  shift
+  "$@" | tee '$linuxRepo/qualification/'"$proof_name"'.log'
+  echo "proof-hash-$proof_name=$(sha256sum '$linuxRepo/qualification/'"$proof_name"'.log' | cut -d ' ' -f 1)"
+}
+run_proof semantic-types "$cabal" run --with-compiler="$ghc" --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-semantic-types
+run_proof wire-semantics "$cabal" run --with-compiler="$ghc" --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-wire-semantics
+run_proof canonical-replay env ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' "$cabal" run --with-compiler="$ghc" --project-file='$linuxRepo/cabal.project' --builddir='$linuxRepo/dist-newstyle' acyclic-haskell-canonical-replay
 tar -czf '$linuxRepo/dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz' --exclude='dist-*' --exclude='installed' -C '$linuxRepo' .
 archive='$linuxRepo/dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz'
 test -n "$archive"
 tar -tzf "$archive" | grep -Eq '(^|/)acyclic-sdk-haskell\.cabal$'
 tar -tzf "$archive" | grep -Eq '(^|/)app/RemoteMain\.hs$'
+tar -tzf "$archive" | grep -Eq '(^|/)app/CanonicalReplayMain\.hs$'
+tar -tzf "$archive" | grep -Eq '(^|/)app/WireSemanticsMain\.hs$'
 tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Semantics\.hs$'
 tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Remote/Api\.hs$'
 tar -tzf "$archive" | grep -Eq '(^|/)provenance\.json$'
@@ -124,22 +141,43 @@ grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
   $remoteOutput | Write-Output
   $artifactLine = $remoteOutput | Where-Object { "$_" -like 'artifact-sha256=*' } | Select-Object -First 1
   $installedLine = $remoteOutput | Where-Object { "$_" -like 'installed-sha256=*' } | Select-Object -First 1
+  $proofHashLines = @($remoteOutput | Where-Object { "$_" -like 'proof-hash-*' })
+  if ($proofHashLines.Count -ne 3) { throw "Expected source-bound semantic, wire, and canonical proof hashes; got $($proofHashLines.Count)" }
+  $proofHashes = @{}
+  foreach ($proofHashLine in $proofHashLines) {
+    $proofParts = "$proofHashLine" -split '=', 2
+    if ($proofParts.Count -ne 2 -or $proofParts[1] -notmatch '^[0-9a-fA-F]{64}$') { throw "Invalid proof hash emitted by Haskell runner: $proofHashLine" }
+    $proofHashes[$proofParts[0].Substring('proof-hash-'.Length)] = $proofParts[1]
+  }
+  foreach ($requiredProof in @('semantic-types', 'wire-semantics', 'canonical-replay')) {
+    if (-not $proofHashes.ContainsKey($requiredProof)) { throw "Haskell remote runner did not execute required proof: $requiredProof" }
+  }
+  $sourceFiles = @(
+    Get-ChildItem -LiteralPath (Join-Path $Root 'proto') -Recurse -File -Filter '*.proto'
+    Get-Item -LiteralPath (Join-Path $Root 'rust/crates/stream/proto/stream/v2/stream.proto')
+  ) | Sort-Object FullName
+  $sourceFileRecords = @($sourceFiles | ForEach-Object {
+    [ordered]@{
+      path = Get-RelativePath $Root $_.FullName
+      sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+  })
   $receipt = [ordered]@{
     schema = 'acyclic.haskell.remote-receipt.v1'
     status = 'passed'
     source = 'Rust contract proto set: proto/**/*.proto plus rust/crates/stream/proto/stream/v2/stream.proto'
-    source_revision = $sourceRevision
-    source_sha256 = @(
-      Get-ChildItem -LiteralPath (Join-Path $Root 'proto') -Recurse -File -Filter '*.proto'
-      Get-Item -LiteralPath (Join-Path $Root 'rust/crates/stream/proto/stream/v2/stream.proto')
-    ) | ForEach-Object { (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+    source_revision = $sourceRevision.ToLowerInvariant()
+    source_revision_kind = 'git-oid'
+    source_files = $sourceFileRecords
+    source_sha256 = @($sourceFileRecords | ForEach-Object { $_.sha256 })
     request_manifest = 'research/additional-languages/haskell-grapesy-prototype/request-manifest.json'
     request_manifest_sha256 = (Get-FileHash -LiteralPath $request -Algorithm SHA256).Hash.ToLowerInvariant()
     generator = [ordered]@{ package = 'proto-lens-protoc'; version = '0.9.0.1'; ghc = '9.2.8'; cabal = '3.10.2.1'; grapesy = '1.2.1' }
     generated_package = [ordered]@{ provenance_sha256 = (Get-FileHash -LiteralPath $provenancePath -Algorithm SHA256).Hash.ToLowerInvariant(); remote_api_sha256 = (Get-FileHash -LiteralPath $remoteApiPath -Algorithm SHA256).Hash.ToLowerInvariant(); source_bound = $true; generated_by = 'Rust typed-request-manifest' }
     transport = [ordered]@{ fixture = 'rust/crates/sdk-examples/src/bin/fixture-server.rs'; protocol = 'HTTP/2 gRPC'; endpoint = $endpoint; tls = $false }
     artifact = [ordered]@{ path = 'dist-sdist/acyclic-sdk-haskell-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' }; archive_contents_verified = $true }
-    installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; sha256 = if ($installedLine) { ($installedLine -split '=',2)[1] } else { '' }; source_bound = $true; typed_rpc_surface = '106 methods across 18 Rust-derived services'; output_proof_verified = $true }
+    installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; sha256 = if ($installedLine) { ($installedLine -split '=',2)[1] } else { '' }; source_bound = $true; typed_rpc_surface = '106 active methods across 18 Rust-derived services (4 archived)'; output_proof_verified = $true }
+    local_proofs = [ordered]@{ semantic_types_sha256 = $proofHashes['semantic-types']; wire_semantics_sha256 = $proofHashes['wire-semantics']; canonical_replay_sha256 = $proofHashes['canonical-replay']; source_bound = $true; generated_from = 'Rust typed-request-manifest and proto-lens-protoc output'; logs = 'qualification/*.log' }
     scenarios = [ordered]@{ typed_surface = 'passed'; append = 'passed'; cancellation = 'deadline probe completed before deadline; cancellation API wired but timeout was not forced by the fixture'; recovery = 'passed on the same live HTTP/2 connection'; tls = 'configured and available through ACYCLIC_HASKELL_GRPC_TLS; no TLS Rust fixture supplied' }
   }
   $receiptJson = $receipt | ConvertTo-Json -Depth 10

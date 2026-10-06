@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
     OperationEnforcement, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
-    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule,
-    WireValueKind, operation_enforcement, resolved_enum_fields, resolved_operation_rules,
+    PublicFieldDirection, ResolvedRequestField, SEMANTIC_TYPES, SemanticRule, WireValueKind,
+    operation_enforcement, resolved_enum_fields, resolved_operation_rules,
     resolved_presence_fields, resolved_request_fields, resolved_response_fields,
     resolved_rpc_methods, semantic_type,
 };
@@ -204,9 +204,7 @@ fn render_union_marker(out: &mut String) {
     // receives its resolved Rust message type and only the Unknown arm keeps
     // raw bytes. A marker interface keeps generic request plumbing open
     // without reintroducing an erased ByteString known arm.
-    out.push_str(
-        "// Rust wire_choice unions use descriptor-bound concrete ADTs below.\n"
-    );
+    out.push_str("// Rust wire_choice unions use descriptor-bound concrete ADTs below.\n");
     out.push_str("public interface WireChoice { }\n\n");
 }
 
@@ -338,12 +336,10 @@ fn full_csharp_field_type(field: &ResolvedRequestField, family: &str) -> String 
             Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
             Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
             Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
-            Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 =>
-            {
+            Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => {
                 "uint".to_owned()
             }
-            Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 =>
-            {
+            Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => {
                 "ulong".to_owned()
             }
             Some(kind)
@@ -399,11 +395,12 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
     let property = response_field_property(field);
     if !field.proto3_optional
         && let Some(binding) = PUBLIC_FIELD_BINDINGS.iter().find(|binding| {
-        binding.family == family
-            && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
-            && binding.wire_field == field.field
-            && binding.direction == PublicFieldDirection::Request
-        }) && upper(binding.field) == property
+            binding.family == family
+                && binding.message == field.root_message.rsplit('.').next().unwrap_or_default()
+                && binding.wire_field == field.field
+                && binding.direction == PublicFieldDirection::Request
+        })
+        && upper(binding.field) == property
         && let Some(assignment) = csharp_wire_assignment(family, binding)
     {
         return assignment;
@@ -443,14 +440,19 @@ fn full_csharp_wire_assignment(field: &ResolvedRequestField, family: &str) -> St
                     )
                 )
             }
-            Some(kind)
-                if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
-                    format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
-                }
-            Some(kind) if kind == FieldType::String as i32 || kind == FieldType::Bytes as i32 => {
-                format!("        if ({property} is not null) wire.{property} = {property}; else\n{clear}")
+            Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+                format!(
+                    "        if ({property} is not null) wire.{property} = {property}; else\n{clear}"
+                )
             }
-            _ => format!("        if ({property}.HasValue) wire.{property} = {property}.Value; else\n{clear}"),
+            Some(kind) if kind == FieldType::String as i32 || kind == FieldType::Bytes as i32 => {
+                format!(
+                    "        if ({property} is not null) wire.{property} = {property}; else\n{clear}"
+                )
+            }
+            _ => format!(
+                "        if ({property}.HasValue) wire.{property} = {property}.Value; else\n{clear}"
+            ),
         };
     }
     if let Some(semantic_id) = field.semantic_type.as_deref() {
@@ -673,9 +675,7 @@ fn descriptor_csharp_prefix(name: &str) -> String {
         .filter(|part| !part.is_empty() && *part != "acyclic")
         .filter(|part| {
             let bytes = part.as_bytes();
-            !(bytes.len() >= 2
-                && bytes[0] == b'v'
-                && bytes[1..].iter().all(u8::is_ascii_digit))
+            !(bytes.len() >= 2 && bytes[0] == b'v' && bytes[1..].iter().all(u8::is_ascii_digit))
         })
         .map(upper)
         .collect::<String>()
@@ -692,15 +692,14 @@ fn response_open_enum_name(type_name: &str, fallback_module: &str) -> String {
     let trimmed = type_name.trim_start_matches('.');
     let short = trimmed.rsplit('.').next().unwrap_or(trimmed);
     let prefix = trimmed
-        .rsplitn(2, '.')
-        .nth(1)
-        .map(descriptor_csharp_prefix)
+        .rsplit_once('.')
+        .map(|(prefix, _)| descriptor_csharp_prefix(prefix))
         .unwrap_or_default();
     if prefix.is_empty() {
         let module = response_module_for_name(trimmed, fallback_module);
         return format!("Rust{}{}Enum", upper(&module), short);
     }
-    format!("Rust{}Enum", format!("{prefix}{short}"))
+    format!("Rust{prefix}{short}Enum")
 }
 
 fn response_oneof_model_name(field: &ResolvedRequestField, family: &str) -> Option<String> {
@@ -726,7 +725,10 @@ fn response_local_message_type(field: &ResolvedRequestField, family: &str) -> Op
         return None;
     }
     let type_name = field.type_name.as_deref()?;
-    if type_name.trim_start_matches('.').starts_with("google.protobuf.") {
+    if type_name
+        .trim_start_matches('.')
+        .starts_with("google.protobuf.")
+    {
         return None;
     }
     Some(response_nested_model_name(type_name, family))
@@ -739,12 +741,16 @@ fn response_map_type(field: &ResolvedRequestField, family: &str) -> String {
     let entries = resolved_response_fields().expect("Rust response descriptors must resolve");
     let key = entries
         .iter()
-        .find(|entry| entry.message_path == type_name.trim_start_matches('.') && entry.field == "key")
+        .find(|entry| {
+            entry.message_path == type_name.trim_start_matches('.') && entry.field == "key"
+        })
         .map(|entry| response_wire_field_type(entry, family))
         .unwrap_or_else(|| "string".to_owned());
     let value = entries
         .iter()
-        .find(|entry| entry.message_path == type_name.trim_start_matches('.') && entry.field == "value")
+        .find(|entry| {
+            entry.message_path == type_name.trim_start_matches('.') && entry.field == "value"
+        })
         .map(|entry| {
             response_local_message_type(entry, family)
                 .unwrap_or_else(|| response_wire_field_type(entry, family))
@@ -758,19 +764,48 @@ fn response_wire_field_type(field: &ResolvedRequestField, family: &str) -> Strin
         Some(kind) if kind == FieldType::String as i32 => "string".to_owned(),
         Some(kind) if kind == FieldType::Bytes as i32 => "ByteString".to_owned(),
         Some(kind) if kind == FieldType::Bool as i32 => "bool".to_owned(),
-        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => "uint".to_owned(),
-        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => "ulong".to_owned(),
-        Some(kind) if kind == FieldType::Int32 as i32 || kind == FieldType::Sint32 as i32 || kind == FieldType::Sfixed32 as i32 => "int".to_owned(),
-        Some(kind) if kind == FieldType::Int64 as i32 || kind == FieldType::Sint64 as i32 || kind == FieldType::Sfixed64 as i32 => "long".to_owned(),
+        Some(kind) if kind == FieldType::Uint32 as i32 || kind == FieldType::Fixed32 as i32 => {
+            "uint".to_owned()
+        }
+        Some(kind) if kind == FieldType::Uint64 as i32 || kind == FieldType::Fixed64 as i32 => {
+            "ulong".to_owned()
+        }
+        Some(kind)
+            if kind == FieldType::Int32 as i32
+                || kind == FieldType::Sint32 as i32
+                || kind == FieldType::Sfixed32 as i32 =>
+        {
+            "int".to_owned()
+        }
+        Some(kind)
+            if kind == FieldType::Int64 as i32
+                || kind == FieldType::Sint64 as i32
+                || kind == FieldType::Sfixed64 as i32 =>
+        {
+            "long".to_owned()
+        }
         Some(kind) if kind == FieldType::Float as i32 => "float".to_owned(),
         Some(kind) if kind == FieldType::Double as i32 => "double".to_owned(),
-        Some(kind) if kind == FieldType::Enum as i32 => qualified_fq_message(field.type_name.as_deref().unwrap_or(""), family),
-        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => qualified_fq_message(field.type_name.as_deref().unwrap_or("google.protobuf.Message"), family),
+        Some(kind) if kind == FieldType::Enum as i32 => {
+            qualified_fq_message(field.type_name.as_deref().unwrap_or(""), family)
+        }
+        Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
+            qualified_fq_message(
+                field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or("google.protobuf.Message"),
+                family,
+            )
+        }
         _ => "IMessage".to_owned(),
     };
     if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
         base = format!("IReadOnlyList<{base}>");
-    } else if field.proto3_optional && !field.oneof_index.is_some() && matches!(field.wire_type, Some(kind) if kind != FieldType::Message as i32 && kind != FieldType::Group as i32 && kind != FieldType::String as i32 && kind != FieldType::Bytes as i32) {
+    } else if field.proto3_optional
+        && !field.oneof_index.is_some()
+        && matches!(field.wire_type, Some(kind) if kind != FieldType::Message as i32 && kind != FieldType::Group as i32 && kind != FieldType::String as i32 && kind != FieldType::Bytes as i32)
+    {
         base.push('?');
     }
     base
@@ -789,7 +824,10 @@ fn response_field_type(field: &ResolvedRequestField, family: &str) -> String {
     }
     if field.wire_type == Some(FieldType::Enum as i32) {
         let enum_name = response_open_enum_name(
-            field.type_name.as_deref().unwrap_or("google.protobuf.NullValue"),
+            field
+                .type_name
+                .as_deref()
+                .unwrap_or("google.protobuf.NullValue"),
             family,
         );
         if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
@@ -831,18 +869,25 @@ fn response_field_accessor(field: &ResolvedRequestField) -> String {
         return format!("ObjectsRequestId.FromWire(Wire.{property})");
     }
     if message == "acyclic.objects.v2.ObjectInfo" && field.field == "last_modified" {
-        return format!("Wire.{property} is null ? null : ObjectsTimestamp.FromWire(Wire.{property})");
+        return format!(
+            "Wire.{property} is null ? null : ObjectsTimestamp.FromWire(Wire.{property})"
+        );
     }
     if field.map_entry {
         return format!("Wire.{property}");
     }
     if field.wire_type == Some(FieldType::Enum as i32) {
         let enum_name = response_open_enum_name(
-            field.type_name.as_deref().unwrap_or("google.protobuf.NullValue"),
+            field
+                .type_name
+                .as_deref()
+                .unwrap_or("google.protobuf.NullValue"),
             "",
         );
         if field.label == Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
-            return format!("Wire.{property}.Select(value => new {enum_name}((int)value)).ToArray()");
+            return format!(
+                "Wire.{property}.Select(value => new {enum_name}((int)value)).ToArray()"
+            );
         }
         return format!("new {enum_name}((int)Wire.{property})");
     }
@@ -869,7 +914,9 @@ fn response_field_accessor(field: &ResolvedRequestField) -> String {
     match semantic.wire_kind {
         WireValueKind::String => format!("new {rust_name}(Wire.{property})"),
         WireValueKind::Bytes => {
-            if field.wire_type == Some(FieldType::Message as i32) || field.wire_type == Some(FieldType::Group as i32) {
+            if field.wire_type == Some(FieldType::Message as i32)
+                || field.wire_type == Some(FieldType::Group as i32)
+            {
                 format!("new {rust_name}(Wire.{property}.Value.ToByteArray())")
             } else {
                 format!("new {rust_name}(Wire.{property}.ToByteArray())")
@@ -897,8 +944,7 @@ fn all_descriptor_fields() -> Vec<ResolvedRequestField> {
         .into_iter()
         .chain(
             resolved_response_fields()
-                .expect("Rust response descriptors must resolve")
-                .into_iter(),
+                .expect("Rust response descriptors must resolve"),
         )
         .collect::<Vec<_>>();
     fields.sort_by(|left, right| {
@@ -929,17 +975,27 @@ fn all_descriptor_fields() -> Vec<ResolvedRequestField> {
 fn render_open_enum_models(out: &mut String) {
     let fields = all_descriptor_fields();
     let mut enums = BTreeMap::<String, (String, String)>::new();
-    for field in fields.iter().filter(|field| field.wire_type == Some(FieldType::Enum as i32)) {
-        let Some(type_name) = field.type_name.as_deref() else { continue };
-        if type_name.trim_start_matches('.').starts_with("google.protobuf.") {
+    for field in fields
+        .iter()
+        .filter(|field| field.wire_type == Some(FieldType::Enum as i32))
+    {
+        let Some(type_name) = field.type_name.as_deref() else {
+            continue;
+        };
+        if type_name
+            .trim_start_matches('.')
+            .starts_with("google.protobuf.")
+        {
             continue;
         }
-        enums.entry(response_open_enum_name(type_name, &field.family)).or_insert_with(|| {
-            (
-                qualified_fq_message(type_name, &field.family),
-                field.family.clone(),
-            )
-        });
+        enums
+            .entry(response_open_enum_name(type_name, &field.family))
+            .or_insert_with(|| {
+                (
+                    qualified_fq_message(type_name, &field.family),
+                    field.family.clone(),
+                )
+            });
     }
     for (model, (wire_enum, _family)) in enums {
         out.push_str(&format!(
@@ -969,17 +1025,25 @@ fn render_oneof_models(out: &mut String) {
         members.dedup_by(|left, right| left.field == right.field && left.number == right.number);
         let first = &members[0];
         let family = &first.family;
-        let Some(model) = response_oneof_model_name(first, family) else { continue };
+        let Some(model) = response_oneof_model_name(first, family) else {
+            continue;
+        };
         let wire = qualified_fq_message(&message, family);
         let case_property = format!("{}Case", upper(&oneof));
-        out.push_str(&format!("public abstract record {model} : WireChoice\n{{\n"));
+        out.push_str(&format!(
+            "public abstract record {model} : WireChoice\n{{\n"
+        ));
         for field in &members {
             let variant = response_field_property(field);
             let value_type = response_field_type(field, family);
-            out.push_str(&format!("    public sealed record {variant}({value_type} Value) : {model};\n"));
+            out.push_str(&format!(
+                "    public sealed record {variant}({value_type} Value) : {model};\n"
+            ));
         }
         out.push_str(&format!("    public sealed record None : {model};\n"));
-        out.push_str(&format!("    public sealed record Unknown(int RawCase, ByteString WireBytes) : {model};\n"));
+        out.push_str(&format!(
+            "    public sealed record Unknown(int RawCase, ByteString WireBytes) : {model};\n"
+        ));
         out.push_str(&format!("    internal static {model} FromWire({wire} wire) => wire.{case_property} switch\n    {{\n"));
         let case = format!("{}OneofCase", upper(&oneof));
         for field in &members {
@@ -1054,7 +1118,10 @@ internal static class RustDescriptorShapes\n{\n",
         out.push_str(&format!(
             "        new({},{}) ,\n",
             csharp_string_literal(&entry.enum_type),
-            csharp_string_literal(&response_open_enum_name(&entry.enum_type, &entry.field.family)),
+            csharp_string_literal(&response_open_enum_name(
+                &entry.enum_type,
+                &entry.field.family
+            )),
         ));
     }
     out.push_str("    };\n\n");
@@ -1062,16 +1129,30 @@ internal static class RustDescriptorShapes\n{\n",
     out.push_str("    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new RustDescriptorOneofShape[] {\n");
     let mut seen_oneofs = BTreeSet::new();
     for field in fields.iter().filter(|field| field.oneof_name.is_some()) {
-        let Some(oneof) = field.oneof_name.as_deref() else { continue };
-        let Some(payload_type) = field.type_name.as_deref() else { continue };
-        if !matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32) {
+        let Some(oneof) = field.oneof_name.as_deref() else {
+            continue;
+        };
+        let Some(payload_type) = field.type_name.as_deref() else {
+            continue;
+        };
+        if !matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32)
+        {
             continue;
         }
         let message = field.message_path.rsplit('.').next().unwrap_or("Message");
-        let package = field.message_path.rsplitn(2, '.').nth(1).unwrap_or_default();
+        let package = field
+            .message_path
+            .rsplit_once('.')
+            .map(|(package, _)| package)
+            .unwrap_or_default();
         let package_prefix = descriptor_csharp_prefix(package);
         let alias = format!("{package_prefix}{message}{}Choice", upper(oneof));
-        let key = (field.family.clone(), field.message_path.clone(), oneof.to_owned(), field.field.clone());
+        let key = (
+            field.family.clone(),
+            field.message_path.clone(),
+            oneof.to_owned(),
+            field.field.clone(),
+        );
         if !seen_oneofs.insert(key) {
             continue;
         }
@@ -1113,7 +1194,9 @@ fn render_oneof_properties(
         }
     }
     for field in groups.values() {
-        let Some(model) = response_oneof_model_name(field, family) else { continue };
+        let Some(model) = response_oneof_model_name(field, family) else {
+            continue;
+        };
         let oneof = field.oneof_name.as_deref().unwrap_or_default();
         out.push_str(&format!(
             "    public {model} {}Choice => {model}.FromWire(Wire);\n",
@@ -1128,16 +1211,21 @@ fn render_oneof_properties(
 /// consumer to depend on a generated protobuf class or lose message identity.
 fn render_nested_response_models(out: &mut String) {
     // Oneof arms can carry Rust-owned messages from either request or response
-    // graphs. Emit the same nominal wrappers for both graphs so every public
-    // choice has a concrete payload type.
+    // graphs.  Emit the same nominal wrappers for both graphs so every public
+    // choice has a concrete payload type instead of falling back to a raw
+    // protobuf message or an undefined generated identifier.
     let fields = all_descriptor_fields();
     let mut nested_messages = BTreeSet::<String>::new();
     for field in &fields {
         if let Some(type_name) = field.type_name.as_deref()
-            && !field.map_entry && matches!(
+            && !field.map_entry
+            && matches!(
                 field.wire_type,
                 Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
-            ) && !type_name.trim_start_matches('.').starts_with("google.protobuf.")
+            )
+            && !type_name
+                .trim_start_matches('.')
+                .starts_with("google.protobuf.")
         {
             nested_messages.insert(type_name.trim_start_matches('.').to_owned());
         }
@@ -1173,15 +1261,21 @@ fn render_nested_response_models(out: &mut String) {
                 response_field_accessor(field)
             ));
             if field.proto3_optional && field.oneof_index.is_none() {
-                out.push_str(&format!("    public bool Has{property} => Wire.Has{property};\n"));
+                out.push_str(&format!(
+                    "    public bool Has{property} => Wire.Has{property};\n"
+                ));
             }
             if field.wire_type == Some(FieldType::Enum as i32)
                 && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
             {
-                out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
+                out.push_str(&format!(
+                    "    public int {property}Number => (int)Wire.{property};\n"
+                ));
             }
             if let Some(oneof) = field.oneof_index {
-                out.push_str(&format!("    public int {property}OneofIndex => {oneof};\n"));
+                out.push_str(&format!(
+                    "    public int {property}OneofIndex => {oneof};\n"
+                ));
             }
         }
         render_oneof_properties(out, &fields, &first.family, &message);
@@ -1203,7 +1297,9 @@ fn render_response_models(out: &mut String) {
         }
     }
     for (family, root) in roots {
-        let Some(model) = response_model_name(&family, &root) else { continue };
+        let Some(model) = response_model_name(&family, &root) else {
+            continue;
+        };
         let wire = qualified_fq_message(&root, &family);
         out.push_str(&format!("public sealed record {model}\n{{\n    private {wire} Wire {{ get; }}\n    private {model}({wire} wire) => Wire = wire;\n"));
         // A response descriptor may be contributed by several Rust-owned
@@ -1213,9 +1309,7 @@ fn render_response_models(out: &mut String) {
         // type and accessor.
         let mut seen = BTreeSet::<String>::new();
         for field in fields.iter().filter(|field| {
-            field.family == family
-                && field.root_message == root
-                && field.message_path == root
+            field.family == family && field.root_message == root && field.message_path == root
         }) {
             if !seen.insert(field.field.clone()) {
                 continue;
@@ -1228,17 +1322,27 @@ fn render_response_models(out: &mut String) {
                 response_field_accessor(field)
             ));
             if field.proto3_optional && field.oneof_index.is_none() {
-                out.push_str(&format!("    public bool Has{property} => Wire.Has{property};\n"));
+                out.push_str(&format!(
+                    "    public bool Has{property} => Wire.Has{property};\n"
+                ));
             }
-            if field.wire_type == Some(FieldType::Enum as i32) && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32) {
-                out.push_str(&format!("    public int {property}Number => (int)Wire.{property};\n"));
+            if field.wire_type == Some(FieldType::Enum as i32)
+                && field.label != Some(prost_types::field_descriptor_proto::Label::Repeated as i32)
+            {
+                out.push_str(&format!(
+                    "    public int {property}Number => (int)Wire.{property};\n"
+                ));
             }
             if let Some(oneof) = field.oneof_index {
-                out.push_str(&format!("    public int {property}OneofIndex => {oneof};\n"));
+                out.push_str(&format!(
+                    "    public int {property}OneofIndex => {oneof};\n"
+                ));
             }
         }
         render_oneof_properties(out, &fields, &family, &root);
-        out.push_str(&format!("    internal static {model} FromWire({wire} message) => new(message);\n}}\n\n"));
+        out.push_str(&format!(
+            "    internal static {model} FromWire({wire} message) => new(message);\n}}\n\n"
+        ));
     }
 }
 fn stream_model_name(family: &str, method: &str) -> String {
@@ -1250,8 +1354,14 @@ fn stream_model_name(family: &str, method: &str) -> String {
 /// call remains private inside the generated adapter.
 fn render_stream_models(out: &mut String) {
     let methods = resolved_rpc_methods().expect("Rust RPC identities must resolve");
-    for method in methods.iter().filter(|method| method.client_streaming || method.server_streaming) {
-        let Some(response_model) = response_model_name(&method.family, &method.output_message) else { continue };
+    for method in methods
+        .iter()
+        .filter(|method| method.client_streaming || method.server_streaming)
+    {
+        let Some(response_model) = response_model_name(&method.family, &method.output_message)
+        else {
+            continue;
+        };
         let name = stream_model_name(&method.family, &method.method);
         let input = qualified_fq_message(&method.input_message, &method.family);
         let output = qualified_fq_message(&method.output_message, &method.family);
@@ -2098,7 +2208,10 @@ mod tests {
                 continue;
             }
             let trimmed = line.trim_start();
-            if !current.contains("Response") || !trimmed.starts_with("public ") || !trimmed.contains("=>") {
+            if !current.contains("Response")
+                || !trimmed.starts_with("public ")
+                || !trimmed.contains("=>")
+            {
                 continue;
             }
             let Some(property) = trimmed
@@ -2148,7 +2261,9 @@ mod tests {
         assert!(source.contains("record Unknown(int RawCase, ByteString WireBytes)"));
         assert!(source.contains("ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))"));
         assert!(source.contains("public interface WireChoice"));
-        assert!(!source.contains("public sealed record KnownOneof(string Tag, ByteString Payload)"));
+        assert!(
+            !source.contains("public sealed record KnownOneof(string Tag, ByteString Payload)")
+        );
         assert!(source.contains(": WireChoice"));
     }
 
@@ -2159,9 +2274,13 @@ mod tests {
         assert!(source.contains("public readonly record struct ObjectsRequestId"));
         assert!(source.contains("public readonly record struct ObjectsTimestamp"));
         assert!(source.contains("ObjectsObjectMetadata? Metadata, ObjectsTimestamp? LastModified"));
-        assert!(source.contains("message.Metadata is null ? null : ObjectsObjectMetadata.FromWire(message.Metadata)"));
+        assert!(source.contains(
+            "message.Metadata is null ? null : ObjectsObjectMetadata.FromWire(message.Metadata)"
+        ));
         assert!(source.contains("ObjectsTimestamp.FromWire(message.LastModified)"));
-        assert!(source.contains("public ObjectsRequestId RequestId => ObjectsRequestId.FromWire(Wire.RequestId);"));
+        assert!(source.contains(
+            "public ObjectsRequestId RequestId => ObjectsRequestId.FromWire(Wire.RequestId);"
+        ));
         assert!(source.contains("public ObjectsTimestamp? LastModified => Wire.LastModified is null ? null : ObjectsTimestamp.FromWire(Wire.LastModified);"));
     }
 
@@ -2184,12 +2303,13 @@ mod tests {
         assert!(source.contains(
             "public sealed record CustomDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;"
         ));
-        assert!(source.contains(
-            "new ManagedDigest(new Sha256Digest(wire.ManagedDigest.ToByteArray()))"
-        ));
-        assert!(source.contains(
-            "new CustomDigest(new Sha256Digest(wire.CustomDigest.ToByteArray()))"
-        ));
+        assert!(
+            source
+                .contains("new ManagedDigest(new Sha256Digest(wire.ManagedDigest.ToByteArray()))")
+        );
+        assert!(
+            source.contains("new CustomDigest(new Sha256Digest(wire.CustomDigest.ToByteArray()))")
+        );
     }
 
     #[test]

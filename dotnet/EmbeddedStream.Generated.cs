@@ -34,43 +34,45 @@ internal EmbeddedStreamOperations(EmbeddedStreamEngine engine) => _engine = engi
         _engine.CallWire("read_commit", request, StreamV2.CommittedEnvelope.Parser);
 
     public async IAsyncEnumerable<StreamV2.ReadResponse> Read(
-StreamV2.ReadRequest request,
-[EnumeratorCancellation] CancellationToken cancellationToken = default)
-{
-await foreach (var record in _engine.ReadAsync(request.Path, request.From, request.Limit, cancellationToken).ConfigureAwait(false))
-{
-yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
-}
-}
+        StreamV2.ReadRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var record in _engine.ReadAsync(request.Path, request.From, request.Limit, cancellationToken).ConfigureAwait(false))
+        {
+            yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
+        }
+    }
 
-public async IAsyncEnumerable<StreamV2.ReadResponse> Follow(
-StreamV2.FollowRequest request,
-[EnumeratorCancellation] CancellationToken cancellationToken = default)
-{
-await foreach (var record in _engine.FollowAsync(request.Path, request.From, cancellationToken).ConfigureAwait(false))
-{
-yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
-}
-}
+    public async IAsyncEnumerable<StreamV2.ReadResponse> Follow(
+        StreamV2.FollowRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var record in _engine.FollowAsync(request.Path, request.From, cancellationToken).ConfigureAwait(false))
+        {
+            yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
+        }
+    }
 
-public async IAsyncEnumerable<StreamV2.ChildrenResponse> Children(
-StreamV2.ChildrenRequest request,
-[EnumeratorCancellation] CancellationToken cancellationToken = default)
-{
-var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
-if (request.HasParent) page.Parent = request.Parent;
-while (true)
-{
-cancellationToken.ThrowIfCancellationRequested();
-var response = ChildrenPage(page);
-foreach (var child in response.Children)
-{
-cancellationToken.ThrowIfCancellationRequested();
-yield return new StreamV2.ChildrenResponse { Child = child.Clone() };
-}
-if (!response.HasNextAfter) yield break;
-page.After = response.NextAfter;
-if (response.HierarchyVersion.Length != 0) page.HierarchyVersion = response.HierarchyVersion;
-}
-}
+    public async IAsyncEnumerable<StreamV2.ChildrenResponse> Children(
+        StreamV2.ChildrenRequest request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+     {
+        await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
+         var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
+        if (request.HasParent) page.Parent = request.Parent;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var response = ChildrenPage(page);
+            foreach (var child in response.Children)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return new StreamV2.ChildrenResponse { Child = child.Clone() };
+            }
+            if (!response.HasNextAfter) yield break;
+            page.After = response.NextAfter;
+            if (response.HierarchyVersion.Length != 0) page.HierarchyVersion = response.HierarchyVersion;
+        }
+    }
+
 }

@@ -14,20 +14,30 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
+export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
 export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+export type RustOwnedRevision = RustOwnedSemanticNumber<"revision">;
+export function makeRustOwnedRevision(value: number): RustOwnedRevision { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedRevision; }
 
 export const HARNESS_PUBLIC_FIELD_BINDINGS = [
-  { family: "harness", field: "path", semanticType: "path", module: "harness", message: "FileRef", wireField: "normalized_path", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "harness", field: "path", semanticType: "path", module: "harness", message: "FileRef", wireField: "normalized_path", direction: "embedded_only", rules: ["NonEmpty", "Utf8"] },
+  { family: "harness", field: "revision", semanticType: "revision", module: "harness", message: "OperationStatus", wireField: "revision", direction: "response", rules: ["NonNegative"] },
+  { family: "harness", field: "generation", semanticType: "opaque_text", module: "harness", message: "Delivery", wireField: "generation", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "harness", field: "from_revision", semanticType: "revision", module: "harness", message: "Delivery", wireField: "from_revision", direction: "response", rules: ["NonNegative"] },
+  { family: "harness", field: "through_revision", semanticType: "revision", module: "harness", message: "Delivery", wireField: "through_revision", direction: "response", rules: ["NonNegative"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const HARNESS_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = Admission | CancelRequest | CancelResponse | CommandEnvelope | Delivery | ObserveRequest | OperationStatus | ResumeRequest | HandshakeRequest | HandshakeResponse;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/harness/v2/harness_pb.js";
@@ -40,9 +50,15 @@ export type RustOwnedPublicAdmission = RustWire.Admission;
 export type RustOwnedPublicCancelRequest = RustWire.CancelRequest;
 export type RustOwnedPublicCancelResponse = RustWire.CancelResponse;
 export type RustOwnedPublicCommandEnvelope = RustWire.CommandEnvelope;
-export type RustOwnedPublicDelivery = RustWire.Delivery;
+export type RustOwnedPublicDelivery = Omit<RustWire.Delivery, "fromRevision" | "generation" | "throughRevision"> & {
+  readonly fromRevision: RustOwnedRevision;
+  readonly generation: RustOwnedOpaqueText;
+  readonly throughRevision: RustOwnedRevision;
+};
 export type RustOwnedPublicObserveRequest = RustWire.ObserveRequest;
-export type RustOwnedPublicOperationStatus = RustWire.OperationStatus;
+export type RustOwnedPublicOperationStatus = Omit<RustWire.OperationStatus, "revision"> & {
+  readonly revision: RustOwnedRevision;
+};
 export type RustOwnedPublicResumeRequest = RustWire.ResumeRequest;
 
 export interface RustOwnedHarnessPublicClient {
@@ -84,7 +100,7 @@ export const HARNESS_OPERATIONS = {
   "acyclic.harness.v2.HarnessService/Cancel": { rpc: "acyclic.harness.v2.HarnessService/Cancel", capabilities: ["operation:cancel"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "owner.required", "operation_id.nonempty", "idempotency_key.nonempty", "scope.required", "scope.capability.operation_cancel", "status.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "186264d272742d0ef690d2c9b9551df0fe90523ffcb5b6d11b29ebb5d12f4b31", sourceModelSha256: "186264d272742d0ef690d2c9b9551df0fe90523ffcb5b6d11b29ebb5d12f4b31", handshakeRoute: "/v1/sdk/harness/handshake", handshakeVersion: "2", handshakeDescriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf", modeledOperations: 5, httpProjection: false } as const;
+export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "aeb034d5b38bc878620e1ce731f264b4b29a280f93e4aa04aaace3dc033e63eb", sourceModelSha256: "aeb034d5b38bc878620e1ce731f264b4b29a280f93e4aa04aaace3dc033e63eb", handshakeRoute: "/v1/sdk/harness/handshake", handshakeVersion: "2", handshakeDescriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf", modeledOperations: 5, httpProjection: false } as const;
 
 export const HARNESS_HANDSHAKE = { family: "harness", route: "/v1/sdk/harness/handshake", version: "2", descriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf" } as const;
 

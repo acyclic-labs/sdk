@@ -38,22 +38,45 @@ export function generationInvocation(operation, rawArgs = [], options = {}) {
   const environment = { ...(options.environment ?? {}) };
   const outputArgument = optionValue(rawArgs, "--output");
   const configuredOutput = outputArgument ?? environment.ACYCLIC_SDK_GENERATION_OUTPUT;
-  const temporaryRoot = resolve(options.temporaryRoot ?? process.env.TEMP ?? process.env.TMP ?? ".");
+  // SDK_BUILD_ROOT is the one caller-owned location for all disposable
+  // generation state.  Keep ACYCLIC_SDK_WORK_ROOT as a compatibility alias
+  // for the PowerShell entrypoint while migrating callers to the canonical
+  // setting.  The launcher deliberately does not invent a repository-local
+  // or OS-specific path: local callers configure this to Q:\\sdk\\work and
+  // CI configures it to the runner's temporary directory.
+  const configuredBuildRoot = options.buildRoot
+    ?? environment.SDK_BUILD_ROOT
+    ?? environment.ACYCLIC_SDK_WORK_ROOT
+    ?? process.env.SDK_BUILD_ROOT
+    ?? process.env.ACYCLIC_SDK_WORK_ROOT;
+  const temporaryRoot = resolve(
+    callerDirectory,
+    options.temporaryRoot
+      ?? configuredBuildRoot
+      ?? process.env.TEMP
+      ?? process.env.TMP
+      ?? ".",
+  );
+  const generationRoot = join(temporaryRoot, "acyclic-sdk-generation");
   const output = configuredOutput
     ? resolve(callerDirectory, configuredOutput)
-    : join(temporaryRoot, "acyclic-sdk-generation", basename(sourceRoot), "output");
+    : join(generationRoot, basename(sourceRoot), "output");
   const sourceToOutput = relative(sourceRoot, output);
   const outputToSource = relative(output, sourceRoot);
   if (sourceToOutput === "" || (!sourceToOutput.startsWith("..") && !isAbsolute(sourceToOutput)) ||
       outputToSource === "" || (!outputToSource.startsWith("..") && !isAbsolute(outputToSource))) {
     throw new Error(`generation output must be outside the Rust source root: ${output}`);
   }
+  // A shared target is safe for the pinned Rust workspace and avoids a full
+  // compiler copy for each operation or checkout. Cargo fingerprints still
+  // bind artifacts to their source/toolchain inputs; callers that need hard
+  // isolation can continue to provide CARGO_TARGET_DIR explicitly.
   const target = resolve(callerDirectory, environment.CARGO_TARGET_DIR ?? join(
-    temporaryRoot,
-    "acyclic-sdk-generation",
-    basename(sourceRoot),
+    generationRoot,
     "cargo-target",
   ));
+  const docsCache = resolve(callerDirectory, environment.SDK_DOCS_RUSTDOC_CACHE_DIR
+    ?? join(generationRoot, "rustdoc-cache"));
   const targetToSource = relative(sourceRoot, target);
   const sourceToTarget = relative(target, sourceRoot);
   if (targetToSource === "" || (!targetToSource.startsWith("..") && !isAbsolute(targetToSource)) ||
@@ -72,7 +95,15 @@ export function generationInvocation(operation, rawArgs = [], options = {}) {
   return {
     program: environment.SDK_CARGO ?? process.env.ACYCLIC_CARGO_BIN ?? "cargo",
     args,
-    options: { cwd: sourceRoot, env: { ...environment, CARGO_TARGET_DIR: target } },
+    options: {
+      cwd: sourceRoot,
+      env: {
+        ...environment,
+        SDK_BUILD_ROOT: temporaryRoot,
+        SDK_DOCS_RUSTDOC_CACHE_DIR: docsCache,
+        CARGO_TARGET_DIR: target,
+      },
+    },
   };
 }
 

@@ -11,6 +11,7 @@ readme = "README.md"
 [workspace]
 
 [dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 blake3 = "1.8.2"
 sdk-source-identity = { path = "../sdk-source-identity" }
 sha2 = "0.10.9"

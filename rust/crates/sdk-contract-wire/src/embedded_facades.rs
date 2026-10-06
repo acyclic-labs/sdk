@@ -21,11 +21,11 @@ pub const JAVA_EMBEDDED_STREAM_PATH: &str =
 pub fn generate_embedded_facades() -> Vec<EmbeddedFacadeOutput> {
     vec![
         EmbeddedFacadeOutput {
-            path: "dotnet/EmbeddedStream.Generated.cs",
+            path: DOTNET_EMBEDDED_STREAM_PATH,
             source: dotnet_source(),
         },
         EmbeddedFacadeOutput {
-            path: "jvm/embedded/src/main/java/dev/acyclic/embedded/GeneratedStreamOperations.java",
+            path: JAVA_EMBEDDED_STREAM_PATH,
             source: java_source(),
         },
     ]
@@ -106,9 +106,9 @@ fn dotnet_stream_method(method: &crate::MethodSpec) -> String {
             r#"    public async IAsyncEnumerable<StreamV2.{output}> {name}(
         StreamV2.{input} request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
-    {
+     {
         await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
-        var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
+         var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
         if (request.HasParent) page.Parent = request.Parent;
         while (true)
         {
@@ -318,4 +318,3 @@ mod tests {
         }
     }
 }
-

@@ -15,7 +15,7 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedActorId = RustOwnedSemanticString<"actor_id">;
 export function makeRustOwnedActorId(value: string): RustOwnedActorId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedActorId; }
@@ -137,7 +137,7 @@ export const ACTORS_OPERATIONS = {
   "acyclic.actors.v1.ActorsService/InvokeActor": { rpc: "acyclic.actors.v1.ActorsService/InvokeActor", capabilities: ["actors.invoke"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_INVALID_ARGUMENT", "ERROR_CODE_CAPABILITY_DENIED", "ERROR_CODE_CAPABILITY_EXPIRED", "ERROR_CODE_ACTOR_NOT_FOUND", "ERROR_CODE_SUBSCRIPTION_NOT_FOUND", "ERROR_CODE_IDEMPOTENCY_MISMATCH", "ERROR_CODE_CONFLICT", "ERROR_CODE_ADMISSION_DENIED", "ERROR_CODE_CHECKPOINT_FAILED", "ERROR_CODE_DEPENDENCY_UNAVAILABLE"], validations: ["actor_id.non_empty_utf8", "method.non_empty_utf8"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const ACTORS_SOURCE = { family: "actors", rustCrate: "acyclic-actors", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::actors_descriptor", descriptorSha256: "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf", sourceContentSha256: "81693620523c13b93494bf0765cce5be538dac9b01d96cbda3b33d4eeb90fa4a", sourceModelSha256: "81693620523c13b93494bf0765cce5be538dac9b01d96cbda3b33d4eeb90fa4a", handshakeRoute: "/v1/sdk/actors/handshake", handshakeVersion: "acyclic.actors.v1", handshakeDescriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c", modeledOperations: 8, httpProjection: true } as const;
+export const ACTORS_SOURCE = { family: "actors", rustCrate: "acyclic-actors", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::actors_descriptor", descriptorSha256: "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf", sourceContentSha256: "e7bb8538ae425c8049fdf84ea0d5f5f794e791bfc38c6f154c381d0fb652ae87", sourceModelSha256: "e7bb8538ae425c8049fdf84ea0d5f5f794e791bfc38c6f154c381d0fb652ae87", handshakeRoute: "/v1/sdk/actors/handshake", handshakeVersion: "acyclic.actors.v1", handshakeDescriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c", modeledOperations: 8, httpProjection: true } as const;
 
 export const ACTORS_HANDSHAKE = { family: "actors", route: "/v1/sdk/actors/handshake", version: "acyclic.actors.v1", descriptorDigest: "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c" } as const;
 

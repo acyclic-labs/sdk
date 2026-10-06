@@ -5,32 +5,37 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
 
-/// HTTP configuration, encoding, or remote service failure.
+/// Error reported by the Workers HTTP client while configuring, encoding, or
+/// sending a canonical request.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    /// Invalid endpoint, credential, bound, or request path.
+    /// The endpoint, credential, response bound, request path, or request body is invalid.
     #[error("invalid HTTP client configuration or request")]
     InvalidArgument,
     /// Network failure.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
-    /// Response exceeded the configured bound.
+    /// The response exceeded the configured byte bound before decoding.
     #[error("HTTP response exceeds configured bound")]
     ResponseTooLarge,
-    /// Malformed canonical response.
+    /// The response content type or Protobuf JSON body is malformed.
     #[error("malformed Protobuf JSON response")]
     MalformedResponse,
-    /// Service rejected the request, with canonical detail when available.
+    /// The service rejected the request, with Rust-owned detail when available.
     #[error("HTTP service returned status {status}")]
     Service {
         /// HTTP response status.
         status: u16,
-        /// Canonical semantic error detail.
+        /// Rust-owned semantic error detail decoded from the response body.
         detail: Option<wire::Error>,
     },
 }
 
-/// Typed HTTP operations with bearer authentication and bounded responses.
+/// Typed Workers v1 HTTP operations with bearer authentication and bounded responses.
+///
+/// Requests and responses are encoded from [`crate::FILE_DESCRIPTOR_SET`], so
+/// the HTTP transport uses the same field names, presence rules, and semantic
+/// error values as the gRPC transport.
 #[derive(Clone)]
 pub struct Client {
     transport: Transport,
@@ -41,11 +46,28 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a client. HTTPS or loopback HTTP is required.
+    /// Create a client for the canonical Workers HTTP service.
+    ///
+    /// HTTPS is accepted for any host; HTTP is accepted only for localhost,
+    /// `127.0.0.1`, or `[::1]`. The endpoint has no user information, query,
+    /// or fragment, and the bearer token must be valid HTTP metadata.
     ///
     /// # Errors
     /// Rejects unsafe endpoints, invalid credentials, or a zero response bound.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
+        Self::new_with_ca(endpoint, token, maximum_response_bytes, None)
+    }
+
+    /// Create a client with an optional additional native trust anchor.
+    ///
+    /// Browser builds cannot install caller-provided trust anchors and reject
+    /// a nonempty CA instead of silently ignoring it.
+    pub fn new_with_ca(
+        endpoint: &str,
+        token: &str,
+        maximum_response_bytes: usize,
+        ca_pem: Option<&[u8]>,
+    ) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
         let loopback = matches!(
             endpoint.host_str(),
@@ -66,10 +88,47 @@ impl Client {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
+        let builder = Transport::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        let builder = {
+            let mut builder = builder.redirect(reqwest::redirect::Policy::none());
+            if let Some(ca_pem) = ca_pem {
+                if ca_pem.is_empty() || ca_pem.len() > 64 * 1024 {
+                    return Err(Error::InvalidArgument);
+                }
+                use rustls::pki_types::pem::PemObject;
+                let parsed_certificates =
+                    rustls::pki_types::CertificateDer::pem_slice_iter(ca_pem)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| Error::InvalidArgument)?;
+                if parsed_certificates.is_empty() {
+                    return Err(Error::InvalidArgument);
+                }
+                let mut roots = rustls::RootCertStore::empty();
+                for certificate in &parsed_certificates {
+                    roots
+                        .add(certificate.clone())
+                        .map_err(|_| Error::InvalidArgument)?;
+                }
+                let certificates = reqwest::Certificate::from_pem_bundle(ca_pem)
+                    .map_err(|_| Error::InvalidArgument)?;
+                if certificates.len() != parsed_certificates.len() {
+                    return Err(Error::InvalidArgument);
+                }
+                for certificate in certificates {
+                    builder = builder.add_root_certificate(certificate);
+                }
+            }
+            builder
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            if ca_pem.is_some() {
+                return Err(Error::InvalidArgument);
+            }
+        }
         Ok(Self {
-            transport: Transport::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()?,
+            transport: builder.build()?,
             endpoint,
             token: token.to_owned(),
             maximum: maximum_response_bytes,
@@ -231,7 +290,7 @@ impl Client {
         message.transcode_to().map_err(|_| Error::MalformedResponse)
     }
 
-    /// Execute the canonical `PublishVersion` operation.
+    /// Execute `POST v1/workers/versions/publish` with canonical Workers JSON mapping.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -248,7 +307,7 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `SelectDeployment` operation.
+    /// Execute `POST v1/workers/deployments/select` with canonical Workers JSON mapping.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -265,7 +324,7 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `SubmitJob` operation.
+    /// Execute `POST v1/workers/jobs/submit` with canonical Workers JSON mapping.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -282,7 +341,7 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `InspectJob` operation.
+    /// Execute `POST v1/workers/jobs/inspect` with canonical Workers JSON mapping.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -299,7 +358,7 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `CancelJob` operation.
+    /// Execute `POST v1/workers/jobs/cancel` with canonical Workers JSON mapping.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -316,7 +375,9 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `InvokeVersion` operation.
+    /// Execute `POST v1/workers/versions/{sha256hex}/invoke` with canonical
+    /// Workers JSON mapping. The path digest is the lowercase hexadecimal form
+    /// of `request.version_sha256`.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -346,7 +407,9 @@ impl Client {
         .await
     }
 
-    /// Execute the canonical `InvokeDeployment` operation.
+    /// Execute `POST v1/workers/deployments/{alias}/invoke` with canonical
+    /// Workers JSON mapping. The alias is validated as a path-safe v1 name
+    /// before interpolation.
     ///
     /// # Errors
     /// Returns configuration, transport, decoding, bound, or canonical service errors.
@@ -377,5 +440,49 @@ impl Client {
             request,
         )
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Client, Error};
+
+    #[test]
+    fn caller_ca_is_validated_instead_of_ignored() {
+        for (name, ca) in [
+            ("plain garbage", Some(b"not a PEM certificate".as_slice())),
+            (
+                "malformed certificate",
+                Some(b"-----BEGIN CERTIFICATE-----\nZ2FyYmFnZQ==\n-----END CERTIFICATE-----".as_slice()),
+            ),
+            ("empty", Some(b"".as_slice())),
+        ] {
+            let result = Client::new_with_ca("https://localhost", "fixture-token", 1024, ca);
+            assert!(
+                matches!(result, Err(Error::InvalidArgument)),
+                "invalid CA fixture: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_caller_ca_is_rejected() {
+        let ca = vec![b'X'; 64 * 1024 + 1];
+        let result = Client::new_with_ca("https://localhost", "fixture-token", 1024, Some(&ca));
+        assert!(matches!(result, Err(Error::InvalidArgument)), "oversized CA fixture");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_client_accepts_a_valid_caller_ca() {
+        let certificate = rcgen::generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+        let pem = certificate.cert.pem();
+        assert!(Client::new_with_ca(
+            "https://localhost",
+            "fixture-token",
+            1024,
+            Some(pem.as_bytes()),
+        )
+        .is_ok());
     }
 }

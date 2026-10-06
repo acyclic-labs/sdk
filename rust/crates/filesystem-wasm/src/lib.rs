@@ -1,4 +1,16 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
+//!
+//! `openBrowserFs` keeps the authority log in IndexedDB. Its `objectAcceleration`
+//! option accepts `"indexeddb"` or `"opfs"`; OPFS changes only where immutable
+//! object bytes are stored, while workspace authority remains in IndexedDB.
+//! `openMemoryFs` uses process-local memory for deterministic, non-durable work.
+//! The exported `BrowserFs` methods operate on the same Rust workspace,
+//! generation, transaction, and work-budget contracts as the native binding.
+//!
+//! `BrowserRemoteFilesystemClient` and the endpoint helpers use the Rust-owned
+//! remote admission and handshake rules. The generated browser binding chooses
+//! its transport from the endpoint and capability response, so JavaScript
+//! callers do not select platform feature flags.
 
 #[cfg(any(test, target_arch = "wasm32"))]
 mod authority_codec;
@@ -251,6 +263,7 @@ mod bindings {
     pub struct BrowserFs {
         engine: Option<BrowserEngine>,
         capabilities: Capabilities,
+        cancellation: CancellationToken,
     }
 
     /// Browser-safe Git-shaped compatibility history over the canonical Rust state machine.
@@ -280,6 +293,7 @@ mod bindings {
         profile: FilesystemProfile,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
+        cancellation: CancellationToken,
     }
 
     /// One immutable-generation checkout with optional private COW mutations.
@@ -289,6 +303,7 @@ mod bindings {
         profile: FilesystemProfile,
         limits: VolumeLimits,
         acquisition_work: acyclic_fs::WorkCounters,
+        cancellation: CancellationToken,
     }
 
     /// One immutable file resolved against a pinned checkout generation.
@@ -3363,8 +3378,17 @@ mod bindings {
             })
         }
 
+        /// Cooperatively cancels this filesystem's in-flight and future operations.
+        ///
+        /// The cancellation is terminal for this handle; open a new filesystem
+        /// handle to start future operations after cancellation.
+        pub fn cancel(&self) {
+            self.cancellation.cancel();
+        }
+
         /// Releases browser handles. Durable state remains in the selected browser stores.
         pub fn close(&mut self) {
+            self.cancellation.cancel();
             if let Some(engine) = self.engine.take() {
                 match engine {
                     BrowserEngine::IndexedDb(fs) => drop(fs),
@@ -3451,7 +3475,7 @@ mod bindings {
             let options: VolumeOptions =
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let config = browser_volume_config(options).map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let (engine, acquisition_work) = match self
                 .engine
                 .as_ref()
@@ -3464,12 +3488,12 @@ mod bindings {
                                 volume_id,
                                 config,
                                 boundary_budget(),
-                                &cancellation,
+                                cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, boundary_budget(), cancellation)
                                 .await
                         }
                     }
@@ -3483,12 +3507,12 @@ mod bindings {
                                 volume_id,
                                 config,
                                 boundary_budget(),
-                                &cancellation,
+                                cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, boundary_budget(), cancellation)
                                 .await
                         }
                     }
@@ -3505,12 +3529,12 @@ mod bindings {
                                 volume_id,
                                 config,
                                 boundary_budget(),
-                                &cancellation,
+                                cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, boundary_budget(), cancellation)
                                 .await
                         }
                     }
@@ -3523,6 +3547,7 @@ mod bindings {
                 profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
+                cancellation: CancellationToken::new(),
             })
         }
 
@@ -3535,18 +3560,18 @@ mod bindings {
         #[wasm_bindgen(js_name = openVolume)]
         pub async fn open_volume(&self, volume_id: Vec<u8>) -> Result<BrowserVolume, JsValue> {
             let volume_id = VolumeId::from_bytes(fixed_16(&volume_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
                 }
                 BrowserEngine::IndexedDbOpfs(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -3556,7 +3581,7 @@ mod bindings {
                 }
                 BrowserEngine::Memory(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
@@ -3572,6 +3597,7 @@ mod bindings {
                 profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
+                cancellation: CancellationToken::new(),
             })
         }
 
@@ -3588,18 +3614,18 @@ mod bindings {
             maximum_bytes: u64,
         ) -> Result<BrowserFileReadResult, JsValue> {
             let object_id = decode_object_id(&object_id)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::Memory(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -3623,18 +3649,18 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let object_id = decode_object_id(&object_id)?;
             let bytes = bytes::Bytes::from(bytes);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::Memory(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -3658,7 +3684,7 @@ mod bindings {
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
                     .export_generation_batch(
@@ -3667,7 +3693,7 @@ mod bindings {
                         maximum_objects,
                         maximum_object_bytes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3678,7 +3704,7 @@ mod bindings {
                         maximum_objects,
                         maximum_object_bytes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3689,7 +3715,7 @@ mod bindings {
                         maximum_objects,
                         maximum_object_bytes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3729,7 +3755,7 @@ mod bindings {
                 .into_iter()
                 .map(bytes::Bytes::from)
                 .collect::<Vec<_>>();
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
                     .import_generation_batch(
@@ -3738,7 +3764,7 @@ mod bindings {
                         &objects,
                         maximum_objects,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3749,7 +3775,7 @@ mod bindings {
                         &objects,
                         maximum_objects,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3760,7 +3786,7 @@ mod bindings {
                         &objects,
                         maximum_objects,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -3788,18 +3814,18 @@ mod bindings {
             let manifest = decode_export_manifest(&manifest)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let config = manifest.config;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
                 }
                 BrowserEngine::IndexedDbOpfs(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -3809,7 +3835,7 @@ mod bindings {
                 }
                 BrowserEngine::Memory(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
@@ -3820,6 +3846,7 @@ mod bindings {
                 profile: config.profile,
                 limits: config.limits,
                 acquisition_work,
+                cancellation: CancellationToken::new(),
             })
         }
     }
@@ -4083,6 +4110,14 @@ mod bindings {
             browser_work(self.acquisition_work)
         }
 
+        /// Cooperatively cancels this volume's in-flight and future operations.
+        ///
+        /// The cancellation is terminal for this handle; create or open a new
+        /// volume handle to start future operations after cancellation.
+        pub fn cancel(&self) {
+            self.cancellation.cancel();
+        }
+
         /// Computes one bounded Merkle-aware semantic generation diff.
         ///
         /// # Errors
@@ -4104,7 +4139,7 @@ mod bindings {
                 &after,
                 "after generation identity",
             )?));
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &self.engine {
                 BrowserVolumeEngine::IndexedDb(volume) => volume
                     .diff_generations(
@@ -4112,7 +4147,7 @@ mod bindings {
                         after,
                         maximum_changes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4122,7 +4157,7 @@ mod bindings {
                         after,
                         maximum_changes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4132,7 +4167,7 @@ mod bindings {
                         after,
                         maximum_changes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4150,7 +4185,7 @@ mod bindings {
             let options: CheckoutOptions =
                 serde_wasm_bindgen::from_value(options).map_err(js_error)?;
             let mode = checkout_mode(&options);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let (engine, acquisition_work) = match &self.engine {
                 BrowserVolumeEngine::IndexedDb(volume) => {
                     let receipt = volume
@@ -4158,7 +4193,7 @@ mod bindings {
                             GenerationSelector::Head,
                             mode,
                             boundary_budget(),
-                            &cancellation,
+                            cancellation,
                         )
                         .await
                         .map_err(js_error)?;
@@ -4173,7 +4208,7 @@ mod bindings {
                             GenerationSelector::Head,
                             mode,
                             boundary_budget(),
-                            &cancellation,
+                            cancellation,
                         )
                         .await
                         .map_err(js_error)?;
@@ -4188,7 +4223,7 @@ mod bindings {
                             GenerationSelector::Head,
                             mode,
                             boundary_budget(),
-                            &cancellation,
+                            cancellation,
                         )
                         .await
                         .map_err(js_error)?;
@@ -4200,6 +4235,7 @@ mod bindings {
                 profile: self.profile,
                 limits: self.limits,
                 acquisition_work,
+                cancellation: CancellationToken::new(),
             })
         }
     }
@@ -4326,6 +4362,14 @@ mod bindings {
             browser_work(self.acquisition_work)
         }
 
+        /// Cooperatively cancels this checkout's in-flight and future operations.
+        ///
+        /// The cancellation is terminal for this handle; acquire a new checkout
+        /// to start future operations after cancellation.
+        pub fn cancel(&self) {
+            self.cancellation.cancel();
+        }
+
         /// Applies one ordered sparse mutation batch atomically within this volume.
         ///
         /// # Errors
@@ -4338,10 +4382,10 @@ mod bindings {
             #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
         ) -> Result<BrowserTransactionResult, JsValue> {
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .apply_authored_transaction(authored, boundary_budget(), &cancellation)
+                    .apply_authored_transaction(authored, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4364,18 +4408,18 @@ mod bindings {
         /// cancellation, storage failure, or bounded-work exhaustion.
         #[wasm_bindgen(js_name = checkpoint)]
         pub async fn checkpoint(&self) -> Result<BrowserCheckpointResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4390,18 +4434,18 @@ mod bindings {
         /// authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshHead)]
         pub async fn refresh_head(&mut self) -> Result<BrowserCheckpointResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4416,18 +4460,18 @@ mod bindings {
         /// cancellation, authentication, or bounded-work failure.
         #[wasm_bindgen(js_name = refreshLive)]
         pub async fn refresh_live(&mut self) -> Result<BrowserCheckpointResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4442,18 +4486,18 @@ mod bindings {
         /// cancellation, storage, serialization, or bounded work.
         #[wasm_bindgen(js_name = exportManifest)]
         pub async fn export_manifest(&self) -> Result<BrowserExportManifestResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4477,7 +4521,7 @@ mod bindings {
                 &theirs,
                 "merge generation identity",
             )?));
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .prepare_merge(
@@ -4485,7 +4529,7 @@ mod bindings {
                         maximum_changes,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4495,7 +4539,7 @@ mod bindings {
                         maximum_changes,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4505,7 +4549,7 @@ mod bindings {
                         maximum_changes,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -4527,18 +4571,18 @@ mod bindings {
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4580,10 +4624,10 @@ mod bindings {
                 .iter()
                 .map(|path| browser_path(path, self.profile, self.limits))
                 .collect::<Result<Vec<_>, _>>()?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .lookup_batch_no_follow(&paths, boundary_budget(), &cancellation)
+                    .lookup_batch_no_follow(&paths, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4615,10 +4659,10 @@ mod bindings {
         #[wasm_bindgen(js_name = statNoFollow)]
         pub async fn stat_no_follow(&mut self, path: String) -> Result<BrowserStatResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .lookup_no_follow_with_metadata(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow_with_metadata(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4649,10 +4693,10 @@ mod bindings {
             file_id: Vec<u8>,
         ) -> Result<BrowserFileRecordReadResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_file_record_by_id(file_id, boundary_budget(), &cancellation)
+                    .read_file_record_by_id(file_id, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4673,10 +4717,10 @@ mod bindings {
             path: String,
         ) -> Result<BrowserMetadataResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_metadata(&path, boundary_budget(), &cancellation)
+                    .read_metadata(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4698,10 +4742,10 @@ mod bindings {
             file_id: Vec<u8>,
         ) -> Result<BrowserMetadataResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_metadata_by_id(file_id, boundary_budget(), &cancellation)
+                    .read_metadata_by_id(file_id, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4726,10 +4770,10 @@ mod bindings {
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .set_metadata(path, metadata, boundary_budget(), &cancellation)
+                    .set_metadata(path, metadata, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4755,10 +4799,10 @@ mod bindings {
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .set_metadata_by_id(file_id, metadata, boundary_budget(), &cancellation)
+                    .set_metadata_by_id(file_id, metadata, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4782,7 +4826,7 @@ mod bindings {
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .set_attributes(
@@ -4790,7 +4834,7 @@ mod bindings {
                         metadata,
                         logical_bytes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -4815,7 +4859,7 @@ mod bindings {
             let metadata =
                 decode_file_metadata(&canonical_bytes, browser_decode_limits(self.limits))
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .set_attributes_by_id(
@@ -4823,7 +4867,7 @@ mod bindings {
                         metadata,
                         logical_bytes,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -4845,10 +4889,10 @@ mod bindings {
         ) -> Result<BrowserNamedAttributeResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_named_attribute(&path, &name, boundary_budget(), &cancellation)
+                    .read_named_attribute(&path, &name, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4880,7 +4924,7 @@ mod bindings {
                 }
                 _ => return Err(JsValue::from_str("named-attribute cursor is incomplete")),
             };
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .list_named_attributes(
@@ -4888,7 +4932,7 @@ mod bindings {
                         after.as_ref(),
                         maximum_entries,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -4925,7 +4969,7 @@ mod bindings {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
             let mode = browser_attribute_write_mode(&mode)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .write_named_attribute(
@@ -4934,7 +4978,7 @@ mod bindings {
                         bytes::Bytes::from(bytes),
                         mode,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -4959,10 +5003,10 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let name = browser_attribute_name(&attribute_class, name, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .remove_named_attribute(path, name, boundary_budget(), &cancellation)
+                    .remove_named_attribute(path, name, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5001,12 +5045,12 @@ mod bindings {
             for path in paths {
                 parsed.push(browser_path(&path, self.profile, self.limits)?);
             }
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let (files, work) = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5025,7 +5069,7 @@ mod bindings {
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5044,7 +5088,7 @@ mod bindings {
                 BrowserCheckoutEngine::Memory(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, boundary_budget(), cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5081,14 +5125,14 @@ mod bindings {
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
                     .map_err(js_error)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .read_file_range(
                         &path,
                         ByteRange { offset, length },
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5097,7 +5141,7 @@ mod bindings {
                         &path,
                         ByteRange { offset, length },
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5106,7 +5150,7 @@ mod bindings {
                         &path,
                         ByteRange { offset, length },
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5131,14 +5175,14 @@ mod bindings {
             length: u64,
         ) -> Result<BrowserFileReadResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .read_file_range_by_id(
                         file_id,
                         ByteRange { offset, length },
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -5164,7 +5208,7 @@ mod bindings {
             maximum_spans: u32,
         ) -> Result<BrowserExtentPlanResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .plan_file_extents(
@@ -5172,7 +5216,7 @@ mod bindings {
                         ByteRange { offset, length },
                         maximum_spans,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -5209,7 +5253,7 @@ mod bindings {
             maximum_spans: u32,
         ) -> Result<BrowserExtentPlanResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .plan_file_extents_by_id(
@@ -5217,7 +5261,7 @@ mod bindings {
                         ByteRange { offset, length },
                         maximum_spans,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -5254,10 +5298,10 @@ mod bindings {
         ) -> Result<BrowserExtentSeekResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let target = extent_seek_target(&target)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .seek_file_extent(&path, offset, target, boundary_budget(), &cancellation)
+                    .seek_file_extent(&path, offset, target, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5282,7 +5326,7 @@ mod bindings {
         ) -> Result<BrowserExtentSeekResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let target = extent_seek_target(&target)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .seek_file_extent_by_id(
@@ -5290,7 +5334,7 @@ mod bindings {
                         offset,
                         target,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -5313,18 +5357,18 @@ mod bindings {
             path: String,
         ) -> Result<BrowserFileReadResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5346,10 +5390,10 @@ mod bindings {
             path: String,
         ) -> Result<BrowserFileReadResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_reparse_point(&path, boundary_budget(), &cancellation)
+                    .read_reparse_point(&path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5380,7 +5424,7 @@ mod bindings {
                 .as_deref()
                 .map(|value| browser_name(value, self.profile, self.limits))
                 .transpose()?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .list_directory(
@@ -5388,7 +5432,7 @@ mod bindings {
                         after.as_ref(),
                         maximum_entries,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5398,7 +5442,7 @@ mod bindings {
                         after.as_ref(),
                         maximum_entries,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5408,7 +5452,7 @@ mod bindings {
                         after.as_ref(),
                         maximum_entries,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5448,7 +5492,7 @@ mod bindings {
                 .as_deref()
                 .map(|value| browser_name(value, self.profile, self.limits))
                 .transpose()?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .list_directory_records(
@@ -5456,7 +5500,7 @@ mod bindings {
                         after.as_ref(),
                         maximum_entries,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -5494,19 +5538,19 @@ mod bindings {
             bytes: Vec<u8>,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create_file(path, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create_file(path, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_file(path, bytes, boundary_budget(), &cancellation)
+                    .create_file(path, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5528,18 +5572,18 @@ mod bindings {
             path: String,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create_directory(path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create_directory(path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_directory(path, boundary_budget(), &cancellation)
+                    .create_directory(path, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5562,19 +5606,19 @@ mod bindings {
             target: Vec<u8>,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let target = bytes::Bytes::from(target);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create_symbolic_link(path, target, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create_symbolic_link(path, target, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_symbolic_link(path, target, boundary_budget(), &cancellation)
+                    .create_symbolic_link(path, target, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5598,18 +5642,18 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = empty_special_kind(&kind)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create_empty_special(path, kind, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create_empty_special(path, kind, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_empty_special(path, kind, boundary_budget(), &cancellation)
+                    .create_empty_special(path, kind, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5632,18 +5676,18 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = device_kind(&kind)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create_device(path, kind, major, minor, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create_device(path, kind, major, minor, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create_device(path, kind, major, minor, boundary_budget(), &cancellation)
+                    .create_device(path, kind, major, minor, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5663,14 +5707,14 @@ mod bindings {
             payload: Vec<u8>,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .create_reparse_point(
                         path,
                         bytes::Bytes::from(payload),
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5679,7 +5723,7 @@ mod bindings {
                         path,
                         bytes::Bytes::from(payload),
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5688,7 +5732,7 @@ mod bindings {
                         path,
                         bytes::Bytes::from(payload),
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5710,19 +5754,19 @@ mod bindings {
             bytes: Vec<u8>,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .write_file(path, offset, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .write_file(path, offset, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .write_file(path, offset, bytes, boundary_budget(), &cancellation)
+                    .write_file(path, offset, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5746,11 +5790,11 @@ mod bindings {
             bytes: Vec<u8>,
         ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let bytes = bytes::Bytes::from(bytes);
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .write_file_by_id(file_id, offset, bytes, boundary_budget(), &cancellation)
+                    .write_file_by_id(file_id, offset, bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5774,18 +5818,18 @@ mod bindings {
                 .map(fixed_16)
                 .transpose()?
                 .map(FileId::from_bytes);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .remove(path, expected, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .remove(path, expected, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .remove(path, expected, boundary_budget(), &cancellation)
+                    .remove(path, expected, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5806,7 +5850,7 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let source = browser_path(&source, self.profile, self.limits)?;
             let destination = browser_path(&destination, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .rename(
@@ -5814,7 +5858,7 @@ mod bindings {
                         destination,
                         replace,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5824,7 +5868,7 @@ mod bindings {
                         destination,
                         replace,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5834,7 +5878,7 @@ mod bindings {
                         destination,
                         replace,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5856,18 +5900,18 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let source = browser_path(&source, self.profile, self.limits)?;
             let destination = browser_path(&destination, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .hard_link(source, destination, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .hard_link(source, destination, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .hard_link(source, destination, boundary_budget(), &cancellation)
+                    .hard_link(source, destination, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5887,18 +5931,18 @@ mod bindings {
             logical_bytes: u64,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .resize_file(path, logical_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .resize_file(path, logical_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .resize_file(path, logical_bytes, boundary_budget(), &cancellation)
+                    .resize_file(path, logical_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5918,10 +5962,10 @@ mod bindings {
             logical_bytes: u64,
         ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .resize_file_by_id(file_id, logical_bytes, boundary_budget(), &cancellation)
+                    .resize_file_by_id(file_id, logical_bytes, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5944,7 +5988,7 @@ mod bindings {
             extend: bool,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .zero_file_range(
@@ -5953,7 +5997,7 @@ mod bindings {
                         allocated,
                         extend,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5964,7 +6008,7 @@ mod bindings {
                         allocated,
                         extend,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5975,7 +6019,7 @@ mod bindings {
                         allocated,
                         extend,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -5999,7 +6043,7 @@ mod bindings {
             extend: bool,
         ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .zero_file_range_by_id(
@@ -6008,7 +6052,7 @@ mod bindings {
                         allocated,
                         extend,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -6031,7 +6075,7 @@ mod bindings {
             keep_size: bool,
         ) -> Result<BrowserMutationResult, JsValue> {
             let path = browser_path(&path, self.profile, self.limits)?;
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .preallocate_file(
@@ -6039,7 +6083,7 @@ mod bindings {
                         ByteRange { offset, length },
                         keep_size,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6049,7 +6093,7 @@ mod bindings {
                         ByteRange { offset, length },
                         keep_size,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6059,7 +6103,7 @@ mod bindings {
                         ByteRange { offset, length },
                         keep_size,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6082,7 +6126,7 @@ mod bindings {
             keep_size: bool,
         ) -> Result<BrowserMutationResult, JsValue> {
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .preallocate_file_by_id(
@@ -6090,7 +6134,7 @@ mod bindings {
                         ByteRange { offset, length },
                         keep_size,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -6120,18 +6164,18 @@ mod bindings {
                 destination_offset,
                 length,
             };
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .clone_file_range(request, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .clone_file_range(request, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .clone_file_range(request, boundary_budget(), &cancellation)
+                    .clone_file_range(request, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6155,7 +6199,7 @@ mod bindings {
         ) -> Result<BrowserMutationResult, JsValue> {
             let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
             let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .clone_file_range_by_id(
@@ -6165,7 +6209,7 @@ mod bindings {
                         destination_offset,
                         length,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -6184,18 +6228,18 @@ mod bindings {
             operation_id: Vec<u8>,
         ) -> Result<BrowserCommitResult, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit(operation_id, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit(operation_id, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit(operation_id, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6219,7 +6263,7 @@ mod bindings {
         ) -> Result<BrowserLiveTransactionResult, JsValue> {
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
                     .apply_authored_live(
@@ -6228,7 +6272,7 @@ mod bindings {
                         maximum_attempts,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?
@@ -6250,7 +6294,7 @@ mod bindings {
             maximum_conflicts: u32,
         ) -> Result<BrowserLiveMutationResult, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
                     .resume_live(
@@ -6258,7 +6302,7 @@ mod bindings {
                         maximum_attempts,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6268,7 +6312,7 @@ mod bindings {
                         maximum_attempts,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6278,7 +6322,7 @@ mod bindings {
                         maximum_attempts,
                         maximum_conflicts,
                         boundary_budget(),
-                        &cancellation,
+                        cancellation,
                     )
                     .await
                     .map_err(js_error)?,
@@ -6297,18 +6341,18 @@ mod bindings {
             &mut self,
             maximum_conflicts: u32,
         ) -> Result<BrowserRebaseResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6344,18 +6388,18 @@ mod bindings {
         ///
         /// Returns a JavaScript error for cancellation, corruption, storage, or work bounds.
         pub async fn discard(&mut self) -> Result<BrowserMutationResult, JsValue> {
-            let cancellation = CancellationToken::default();
+            let cancellation = &self.cancellation;
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(boundary_budget(), cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6415,6 +6459,7 @@ mod bindings {
         };
         Ok(BrowserFs {
             engine: Some(engine),
+            cancellation: CancellationToken::new(),
             capabilities: Capabilities {
                 version: env!("CARGO_PKG_VERSION"),
                 platform: "browser",
@@ -6451,6 +6496,7 @@ mod bindings {
                 options.maximum_memory_bytes,
                 browser_object_cache_options(&options.object_cache),
             )?)),
+            cancellation: CancellationToken::new(),
             capabilities: Capabilities {
                 version: env!("CARGO_PKG_VERSION"),
                 platform: "browser",
@@ -7669,6 +7715,7 @@ mod bindings {
             )?;
             Ok(BrowserFs {
                 engine: Some(BrowserEngine::Memory(engine)),
+                cancellation: CancellationToken::new(),
                 capabilities: Capabilities {
                     version: env!("CARGO_PKG_VERSION"),
                     platform: "browser",

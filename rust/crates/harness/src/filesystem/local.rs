@@ -52,7 +52,7 @@ impl LocalHarnessStorage {
         let host: Arc<LocalHost> = Arc::new(FilesystemHost::new(filesystem, provider.clone())?);
         let volume = VolumeRef::new(
             provider,
-            format!("agent-{}", agent),
+            format!("agent-{agent}"),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
@@ -102,7 +102,7 @@ impl LocalHarnessStorage {
             )?);
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
-                stream.clone(),
+                stream,
                 Arc::clone(&host),
                 volume.clone(),
                 issuer.verifier(),

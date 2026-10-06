@@ -4,13 +4,18 @@
 //! atomic. Service-owned retained bytes are a private service contract, not public history.
 pub mod conformance;
 #[cfg(feature = "http")]
+/// HTTP/JSON transport implementation and handshake verification.
 pub mod http;
 #[cfg(feature = "json")]
+/// Protobuf-to-JSON framing helpers used by the HTTP transport.
 pub mod json;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+/// Durable filesystem-backed provider for embedded and native use.
 pub mod local;
 mod memory;
+/// Request validation, idempotency digests, and upload framing helpers.
 pub mod request;
+/// Response validation and transport error mapping helpers.
 pub mod response;
 #[cfg(any(feature = "grpc", feature = "http"))]
 mod upload;
@@ -56,6 +61,7 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
         "AbortMultipartResponse",
     ),
 ];
+/// In-process reference provider, clocks, and resource limits.
 pub use memory::{Clock, FixedClock, MemoryObjects, MemoryOptions, SystemClock};
 
 /// Native composition capability for filesystem storage over logical Objects.
@@ -81,6 +87,7 @@ pub trait NativeBatchObjects: ObjectsProvider {
     ) -> Vec<Result<Object, Error>>;
 }
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+/// Native gRPC provider with verified protocol negotiation.
 pub mod grpc;
 #[cfg(all(test, feature = "grpc"))]
 mod grpc_tests;

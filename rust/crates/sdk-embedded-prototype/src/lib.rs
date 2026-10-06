@@ -223,6 +223,13 @@ static ENGINES: OnceLock<Mutex<HashMap<u64, Arc<AcyclicEngine>>>> = OnceLock::ne
 static READERS: OnceLock<Mutex<HashMap<u64, Arc<AcyclicReader>>>> = OnceLock::new();
 static BUFFERS: OnceLock<Mutex<HashMap<u64, BufferAllocation>>> = OnceLock::new();
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test fault injection for exercising required output allocation failures without
+    /// perturbing other concurrently running ABI tests.
+    static FORCE_BUFFER_ALLOCATION_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn engines() -> &'static Mutex<HashMap<u64, Arc<AcyclicEngine>>> {
     ENGINES.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -351,12 +358,24 @@ fn empty_buffer() -> AcyclicBuffer {
 }
 
 fn owned_buffer(bytes: impl Into<Vec<u8>>) -> AcyclicBuffer {
+    try_owned_buffer(bytes).unwrap_or_else(|_| empty_buffer())
+}
+
+/// Stores one ABI-owned byte vector and reports failures instead of silently turning a
+/// required success payload into an empty buffer. Diagnostic buffers use [`owned_buffer`]
+/// because preserving the primary status is more useful than replacing an existing error with
+/// a second allocation error.
+fn try_owned_buffer(bytes: impl Into<Vec<u8>>) -> Result<AcyclicBuffer, ()> {
     let mut bytes = bytes.into();
     if bytes.is_empty() {
-        return empty_buffer();
+        return Ok(empty_buffer());
+    }
+    #[cfg(test)]
+    if FORCE_BUFFER_ALLOCATION_FAILURE.with(|failure| failure.get()) {
+        return Err(());
     }
     let Some(id) = next_id() else {
-        return empty_buffer();
+        return Err(());
     };
     let result = AcyclicBuffer {
         id,
@@ -373,9 +392,9 @@ fn owned_buffer(bytes: impl Into<Vec<u8>>) -> AcyclicBuffer {
     if let Ok(mut allocations) = buffers().lock() {
         allocations.insert(id, allocation);
     } else {
-        return empty_buffer();
+        return Err(());
     }
-    result
+    Ok(result)
 }
 
 fn message(text: impl Into<String>) -> AcyclicBuffer {
@@ -757,10 +776,17 @@ pub unsafe extern "C" fn acyclic_embedded_engine_wire_call(
             Ok::<_, StreamError>(encoded)
         });
         match result {
-            Ok(response) => AcyclicWireResult {
-                status: AcyclicStatus::Ok,
-                response: owned_buffer(response),
-                message: empty_buffer(),
+            Ok(response) => match try_owned_buffer(response) {
+                Ok(response) => AcyclicWireResult {
+                    status: AcyclicStatus::Ok,
+                    response,
+                    message: empty_buffer(),
+                },
+                Err(()) => AcyclicWireResult {
+                    status: AcyclicStatus::Panic,
+                    response: empty_buffer(),
+                    message: message("ABI response allocation failed"),
+                },
             },
             Err(error) => provider_wire(error),
         }
@@ -810,6 +836,10 @@ pub extern "C" fn acyclic_embedded_reader_open(
         ) {
             Ok(reader) => {
                 let Some(id) = next_id() else {
+                    // The producer task is already running. Stop it before dropping the
+                    // reader on this internal allocation failure; dropping JoinHandle would
+                    // otherwise detach a live follow task.
+                    cancel_reader(&reader);
                     return invalid_open("reader ID exhausted");
                 };
                 let reader = Arc::new(reader);
@@ -821,6 +851,9 @@ pub extern "C" fn acyclic_embedded_reader_open(
                         message: empty_buffer(),
                     }
                 } else {
+                    // A poisoned registry cannot retain this reader. Cancel before releasing
+                    // the last Arc so the spawned producer cannot outlive the failed open.
+                    cancel_reader(&reader);
                     invalid_open("reader registry unavailable")
                 }
             }
@@ -902,10 +935,23 @@ pub extern "C" fn acyclic_embedded_reader_next(reader: u64) -> AcyclicNextResult
                     drop(delivery);
                     return terminal_result(status);
                 }
+                let value = match try_owned_buffer(record.value.to_vec()) {
+                    Ok(value) => value,
+                    Err(()) => {
+                        let status = publish_terminal(&reader, AcyclicStatus::Panic);
+                        drop(delivery);
+                        return AcyclicNextResult {
+                            status,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("ABI record allocation failed"),
+                        };
+                    }
+                };
                 let result = AcyclicNextResult {
                     status: AcyclicStatus::Ok,
                     sequence: record.sequence,
-                    value: owned_buffer(record.value.to_vec()),
+                    value,
                     message: empty_buffer(),
                 };
                 drop(delivery);
@@ -1196,6 +1242,64 @@ mod tests {
         .expect("tail response remains canonical protobuf");
         assert_eq!(response.tail, 1);
         acyclic_wire_result_release(result);
+        acyclic_embedded_engine_close(engine);
+    }
+
+    #[test]
+    fn abi_wire_call_reports_required_response_allocation_failure() {
+        let engine = acyclic_embedded_engine_open();
+        assert_ne!(engine, 0);
+        let request = acyclic_stream::wire::AppendRequest {
+            path: "wire/allocation".to_owned(),
+            records: vec![b"value".to_vec().into()],
+            if_tail: None,
+            idempotency_key: Some(b"allocation".to_vec().into()),
+        }
+        .encode_to_vec();
+        let operation = b"append";
+        FORCE_BUFFER_ALLOCATION_FAILURE.with(|failure| failure.set(true));
+        let result = unsafe {
+            acyclic_embedded_engine_wire_call(
+                engine,
+                operation.as_ptr(),
+                operation.len(),
+                request.as_ptr(),
+                request.len(),
+            )
+        };
+        FORCE_BUFFER_ALLOCATION_FAILURE.with(|failure| failure.set(false));
+        assert_eq!(result.status, AcyclicStatus::Panic);
+        assert_eq!(result.response.id, 0);
+        assert_eq!(result.response.len, 0);
+        acyclic_wire_result_release(result);
+        acyclic_embedded_engine_close(engine);
+    }
+
+    #[test]
+    fn abi_reader_reports_required_record_allocation_failure_and_stays_terminal() {
+        let engine = acyclic_embedded_engine_open();
+        assert_ne!(engine, 0);
+        let path = b"reader/allocation";
+        let value = b"value";
+        let (path_ptr, path_len) = bytes(path);
+        let (value_ptr, value_len) = bytes(value);
+        let appended =
+            acyclic_embedded_engine_append(engine, path_ptr, path_len, value_ptr, value_len);
+        assert_eq!(appended.status, AcyclicStatus::Ok);
+        acyclic_append_result_release(appended);
+        let opened = acyclic_embedded_reader_open(engine, path_ptr, path_len, 0, 1, READ_MODE);
+        assert_eq!(opened.status, AcyclicStatus::Ok);
+        let reader = opened.reader;
+        FORCE_BUFFER_ALLOCATION_FAILURE.with(|failure| failure.set(true));
+        let next = acyclic_embedded_reader_next(reader);
+        FORCE_BUFFER_ALLOCATION_FAILURE.with(|failure| failure.set(false));
+        assert_eq!(next.status, AcyclicStatus::Panic);
+        assert_eq!(next.value.id, 0);
+        acyclic_next_result_release(next);
+        let terminal = acyclic_embedded_reader_next(reader);
+        assert_eq!(terminal.status, AcyclicStatus::Panic);
+        acyclic_next_result_release(terminal);
+        acyclic_embedded_reader_close(reader);
         acyclic_embedded_engine_close(engine);
     }
 

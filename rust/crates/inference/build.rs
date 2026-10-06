@@ -9,8 +9,10 @@ const MODEL_DESCRIPTOR_ENV: &str = "ACYCLIC_INFERENCE_MODEL_DESCRIPTOR";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let descriptor_path = std::env::var_os(MODEL_DESCRIPTOR_ENV)
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(DOC_DESCRIPTOR));
+        .map_or_else(
+            || std::path::PathBuf::from(DOC_DESCRIPTOR),
+            std::path::PathBuf::from,
+        );
     let descriptors =
         prost_types::FileDescriptorSet::decode(std::fs::read(&descriptor_path)?.as_slice())?;
     let mut descriptors = descriptors;

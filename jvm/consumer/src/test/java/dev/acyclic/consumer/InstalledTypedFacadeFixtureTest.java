@@ -8,8 +8,9 @@ import com.google.protobuf.ByteString;
 import dev.acyclic.transport.RustTypedClients;
 import dev.acyclic.transport.RustTypedRequests;
 import dev.acyclic.transport.RustTypedResponses;
+import dev.acyclic.transport.GeneratedRemotePolicy;
+import dev.acyclic.transport.RemoteClientFactory;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Status;
 import io.grpc.stub.ClientCallStreamObserver;
 import io.grpc.stub.ClientResponseObserver;
@@ -37,10 +38,10 @@ final class InstalledTypedFacadeFixtureTest {
     if (endpoint == null || endpoint.isBlank()) {
       return;
     }
-    String target = endpoint.replaceFirst("^https?://", "");
-    ManagedChannel channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
-    try {
-      ActorsServiceGrpc.ActorsServiceBlockingStub actors = ActorsServiceGrpc.newBlockingStub(channel);
+    var defaults = fixtureDefaults(endpoint);
+    try (var actorsClient = RemoteClientFactory.create("actors", false, defaults, null);
+         var streamClient = RemoteClientFactory.create("stream", true, defaults, null)) {
+      ActorsServiceGrpc.ActorsServiceBlockingStub actors = ActorsServiceGrpc.newBlockingStub(actorsClient.channel());
       RustTypedRequests.ActorsActorsCreateActorRequest actorRequest =
           new RustTypedRequests.ActorsActorsCreateActorRequest(
               Actors.CreateActorRequest.newBuilder()
@@ -58,7 +59,7 @@ final class InstalledTypedFacadeFixtureTest {
       assertEquals("fixture-actor", actorResponse.actorActorId().value());
       assertEquals("fixture", actorResponse.actor().homeRegion());
 
-      StreamServiceGrpc.StreamServiceBlockingStub stream = StreamServiceGrpc.newBlockingStub(channel);
+      StreamServiceGrpc.StreamServiceBlockingStub stream = StreamServiceGrpc.newBlockingStub(streamClient.channel());
       Stream.AppendRequest appendWire = Stream.AppendRequest.newBuilder()
           .setPath("fixture/java-typed-facade")
           .setIfTail(0)
@@ -92,8 +93,8 @@ final class InstalledTypedFacadeFixtureTest {
         assertEquals(Status.Code.FAILED_PRECONDITION, error.getStatus().getCode());
       }
 
-      cancelRead(channel, "fixture/java-typed-facade", false);
-      cancelRead(channel, "fixture/java-typed-facade", true);
+      cancelRead(streamClient.channel(), "fixture/java-typed-facade", false);
+      cancelRead(streamClient.channel(), "fixture/java-typed-facade", true);
 
       Stream.AppendRequest recoveryWire = appendWire.toBuilder()
           .setIfTail(1)
@@ -116,10 +117,13 @@ final class InstalledTypedFacadeFixtureTest {
           RustTypedClients.streamStreamRead(stream, readRequest);
       assertTrue(read.hasNext());
       assertEquals(1L, read.next().record().sequence());
-    } finally {
-      channel.shutdownNow();
-      channel.awaitTermination(5, TimeUnit.SECONDS);
     }
+  }
+
+  private static GeneratedRemotePolicy.Defaults fixtureDefaults(String endpoint) {
+    String token = System.getProperty("acyclic.bearerToken");
+    if (token == null || token.isBlank()) token = System.getenv("ACYCLIC_BEARER_TOKEN");
+    return new GeneratedRemotePolicy.Defaults(endpoint, token == null ? "" : token);
   }
 
   private static void cancelRead(ManagedChannel channel, String path, boolean follow) throws Exception {

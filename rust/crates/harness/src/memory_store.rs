@@ -27,7 +27,7 @@ pub(crate) const DEFAULT_RESIDENT_FILES: u64 = 65_536;
 
 /// Default number of retryable commands retained by a browser outbox.
 ///
-/// The host owns IndexedDB I/O, while this Rust policy owns the default bound
+/// The host owns `IndexedDB` I/O, while this Rust policy owns the default bound
 /// shared by browser and native facades.
 #[allow(dead_code, reason = "exported through the WASM policy boundary")]
 pub(crate) const DEFAULT_OUTBOX_COMMANDS: u64 = 1_024;

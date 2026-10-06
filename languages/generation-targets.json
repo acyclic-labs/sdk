@@ -26,8 +26,81 @@
   "targets": [
     {
       "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-prototype",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "stream",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-filesystem",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "filesystem",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "rust/crates/sdk-embedded-filesystem (harness feature)",
+              "installable": false,
+              "kind": "cargo-crate",
+              "target_identities": []
+            },
+            "binding": "rust-native",
+            "coverage": "rust-implementation",
+            "family": "harness",
+            "installable": false,
+            "language": "rust",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/harness/src/wasm.rs",
+              "scripts/build-harness-wasm.mjs",
+              "typescript/packages/harness/package.json"
+            ]
+          }
+        ],
         "level": "rust-native",
-        "notes": "Canonical Rust implementation and native conformance provider.",
         "qualification": "prototype"
       },
       "evidence": [
@@ -48,18 +121,18 @@
       "language_family": "Rust",
       "maturity": "stable",
       "outstanding": [
-        "Complete the Rust-owned generation entrypoint across every active family and retain deterministic install receipts.",
+        "Retain a clean-checkout Cargo package receipt for the umbrella and each public family at every release.",
         "Run the full active RPC, descriptor digest, cancellation, recovery and embedded conformance suites before calling the new pipeline qualified."
       ],
       "package": {
-        "artifact": "family crates (no umbrella)",
+        "artifact": "acyclic-sdk",
         "ecosystem": "crates.io/Cargo",
-        "installable": false,
-        "notes": "Cargo.toml publishes family-specific crates acyclic-actors, acyclic-fs, acyclic-harness, acyclic-inference, acyclic-machines, acyclic-objects, acyclic-stream and acyclic-workers; the workspace has no complete acyclic-sdk umbrella artifact or install receipt."
+        "installable": true,
+        "notes": "The acyclic-sdk facade installs one dependency and exposes actors, filesystem, harness, inference, machines, objects, stream and workers namespaces; family crates remain independently publishable."
       },
       "remote": {
         "level": "full-grpc",
-        "notes": "Canonical workspace provider and descriptor baseline; this migration has not yet produced an independently qualified Rust SDK artifact for every family.",
+        "notes": "Canonical workspace provider and descriptor baseline; the installable acyclic-sdk facade groups the public family crates without re-exporting internal generators or prototypes.",
         "qualification": "prototype",
         "streaming": [
           "unary",
@@ -73,9 +146,244 @@
     },
     {
       "embedded": {
-        "level": "none",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-        "qualification": "unqualified"
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/stream",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/stream",
+              "installable": true,
+              "kind": "typescript-native-package",
+              "target_identities": [
+                "@acyclic-labs/stream-darwin-arm64",
+                "@acyclic-labs/stream-darwin-x64",
+                "@acyclic-labs/stream-linux-arm64-gnu",
+                "@acyclic-labs/stream-linux-arm64-musl",
+                "@acyclic-labs/stream-linux-x64-gnu",
+                "@acyclic-labs/stream-linux-x64-musl",
+                "@acyclic-labs/stream-win32-arm64",
+                "@acyclic-labs/stream-win32-x64"
+              ]
+            },
+            "binding": "typescript-native",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/fs",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "filesystem",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/fs",
+              "installable": true,
+              "kind": "n-api-package",
+              "target_identities": [
+                "@acyclic-labs/fs-darwin-arm64",
+                "@acyclic-labs/fs-darwin-x64",
+                "@acyclic-labs/fs-linux-arm64",
+                "@acyclic-labs/fs-linux-x64",
+                "@acyclic-labs/fs-win32-arm64",
+                "@acyclic-labs/fs-win32-x64"
+              ]
+            },
+            "binding": "n-api",
+            "coverage": "native-boundary",
+            "family": "filesystem",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/filesystem-wasm/Cargo.toml",
+              "rust/crates/filesystem-napi/Cargo.toml",
+              "rust/crates/filesystem-napi/build.rs",
+              "rust/crates/filesystem-napi/src/lib.rs",
+              "scripts/build-filesystem-wasm.mjs",
+              "scripts/check-filesystem-napi.mjs",
+              "typescript/packages/filesystem/src/native.ts",
+              "typescript/packages/filesystem/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/harness",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "harness",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+              "rust/crates/harness/src/wasm.rs",
+              "scripts/build-harness-wasm.mjs",
+              "typescript/packages/harness/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/objects",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "objects",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/objects-wasm/Cargo.toml",
+              "typescript/packages/objects/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/inference",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "inference",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/inference-wasm/Cargo.toml",
+              "typescript/packages/inference/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/machines",
+              "installable": true,
+              "kind": "wasm-package",
+              "target_identities": []
+            },
+            "binding": "wasm",
+            "coverage": "package-surface",
+            "family": "machines",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/machines-wasm/Cargo.toml",
+              "typescript/packages/machines/package.json"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/actors remote-web WASM",
+              "installable": true,
+              "kind": "remote-web-wasm-package",
+              "target_identities": []
+            },
+            "binding": "remote-web-wasm",
+            "coverage": "package-surface",
+            "family": "actors",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "typescript/packages/actors/package.json",
+              "typescript/packages/workers/package.json",
+              "scripts/build-remote-web-wasm.mjs"
+            ]
+          },
+          {
+            "artifact": {
+              "identity": "@acyclic-labs/workers remote-web WASM",
+              "installable": true,
+              "kind": "remote-web-wasm-package",
+              "target_identities": []
+            },
+            "binding": "remote-web-wasm",
+            "coverage": "package-surface",
+            "family": "workers",
+            "installable": true,
+            "language": "typescript",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "typescript/packages/actors/package.json",
+              "typescript/packages/workers/package.json",
+              "scripts/build-remote-web-wasm.mjs"
+            ]
+          }
+        ],
+        "level": "ffi-or-wasm",
+        "qualification": "prototype"
       },
       "evidence": [
         {
@@ -119,9 +427,35 @@
     },
     {
       "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "acyclic_embedded_prototype shared library (ctypes C ABI)",
+              "installable": false,
+              "kind": "native-library",
+              "target_identities": []
+            },
+            "binding": "c-abi",
+            "coverage": "native-boundary",
+            "family": "stream",
+            "installable": false,
+            "language": "python",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          }
+        ],
         "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-        "qualification": "unqualified"
+        "qualification": "prototype"
       },
       "evidence": [
         {
@@ -165,8 +499,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -246,8 +580,8 @@
         "jvm"
       ],
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -315,9 +649,34 @@
         "dotnet"
       ],
       "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "Acyclic.Sdk.Embedded",
+              "installable": true,
+              "kind": "dotnet-nuget",
+              "target_identities": []
+            },
+            "binding": "dotnet-nuget",
+            "coverage": "package-surface",
+            "family": "stream",
+            "installable": true,
+            "language": "csharp",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/stream-wasm/Cargo.toml",
+              "typescript/packages/stream/package.json",
+              "typescript/packages/stream/scripts/build-wasm.mjs",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm",
+              "dotnet/Acyclic.Sdk.Embedded.csproj",
+              "scripts/build-dotnet-embedded-package.ps1"
+            ]
+          }
+        ],
         "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
-        "qualification": "unqualified"
+        "qualification": "prototype"
       },
       "evidence": [
         {
@@ -381,8 +740,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -454,8 +813,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -527,8 +886,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -596,8 +955,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -665,8 +1024,8 @@
     },
     {
       "embedded": {
-        "level": "ffi-or-wasm",
-        "notes": "Embedded behavior remains Rust-owned; use a narrow FFI/WASM boundary.",
+        "capabilities": [],
+        "level": "none",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -734,8 +1093,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use Rust JNI/JNA or WASM boundary; do not translate embedded behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -802,8 +1161,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use a Rust FFI/WASM boundary only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -885,8 +1244,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Call Rust through NIF only if a separately qualified embedded ABI is requested.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -936,8 +1295,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "No embedded parity without a Rust native/WASM bridge.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -986,8 +1345,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use Rust C ABI for embedded behavior; not a translated Objective-C implementation.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1036,8 +1395,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use a Rust NIF/port only for embedded behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1086,8 +1445,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use Rust C ABI/WASM for embedded behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1137,8 +1496,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Embedded behavior remains Rust-owned.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1183,8 +1542,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust native binding only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1247,9 +1606,35 @@
     },
     {
       "embedded": {
+        "capabilities": [
+          {
+            "artifact": {
+              "identity": "acyclic_embedded_prototype.h + native library",
+              "installable": false,
+              "kind": "native-library",
+              "target_identities": []
+            },
+            "binding": "c-abi",
+            "coverage": "native-boundary",
+            "family": "stream",
+            "installable": false,
+            "language": "c",
+            "qualification": "surface-only",
+            "receipt": null,
+            "source_evidence": [
+              "rust/crates/sdk-embedded-prototype/Cargo.toml",
+              "rust/crates/sdk-embedded-prototype/Cargo.lock",
+              "rust/crates/sdk-embedded-prototype/build.rs",
+              "rust/crates/sdk-embedded-prototype/src/lib.rs",
+              "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+              "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+              "scripts/build-stream-native-package.mjs",
+              "rust/crates/sdk-stream-native/npm"
+            ]
+          }
+        ],
         "level": "ffi-or-wasm",
-        "notes": "C ABI may expose selected Rust embedded APIs, but generated HTTP code is not embedded parity.",
-        "qualification": "unqualified"
+        "qualification": "prototype"
       },
       "evidence": [
         {
@@ -1288,8 +1673,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust interop only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1352,8 +1737,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust native boundary only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1416,8 +1801,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Browser UI can call a Rust/WASM adapter, not embed arbitrary service behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1480,8 +1865,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Use a Rust WASM/native Godot extension for embedded behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1544,8 +1929,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust native/WASM boundary only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1604,8 +1989,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust C ABI only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1668,8 +2053,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust ABI only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1738,8 +2123,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Shell can invoke a Rust CLI but does not embed behavior.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1808,8 +2193,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust native binding not applicable to generated HTTP package.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1872,8 +2257,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Invoke a Rust CLI for embedded behavior instead.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1937,8 +2322,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust FFI remains the only embedded path.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -1967,14 +2352,29 @@
       "language_family": "Haskell",
       "maturity": "stable",
       "outstanding": [
-        "Register generation-only producer and final package identity.",
         "Complete source-bound installed 111-step conformance, streaming, cancellation, recovery and TLS qualification."
       ],
       "package": {
-        "artifact": "acyclic-haskell-grapesy-prototype",
+        "artifact": "acyclic-sdk-haskell",
         "ecosystem": "Hackage",
         "installable": true,
-        "notes": "Cabal source archive and installed typed consumer are produced by the pinned local Haskell toolchain."
+        "notes": "Rust-owned generation-only producer emits an installable Cabal package with generated proto-lens bindings and descriptor-specific semantic types; the grapesy transport facade remains thin and Rust-authority-bound."
+      },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/research/additional-languages/haskell-grapesy-prototype/generate.ps1",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "generated",
+        "program": "powershell.exe"
       },
       "remote": {
         "level": "full-grpc",
@@ -1992,8 +2392,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Rust native/WASM boundary only.",
         "qualification": "unqualified"
       },
       "evidence": [
@@ -2037,8 +2437,8 @@
     },
     {
       "embedded": {
+        "capabilities": [],
         "level": "none",
-        "notes": "Generated docs/examples must call qualified SDKs or the Rust-owned HTTP projection.",
         "qualification": "unqualified"
       },
       "evidence": [

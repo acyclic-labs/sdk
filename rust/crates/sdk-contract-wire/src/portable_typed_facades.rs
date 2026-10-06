@@ -749,14 +749,16 @@ fn ruby_enum(entry: &ResolvedEnumField) -> String {
 }
 
 fn ruby_message(name: &str, fields: &[ResolvedRequestField]) -> String {
-    let mut out = format!(
-        "        class {name}\n          attr_reader {}\n          def initialize(\n",
-        fields
+    let mut out = format!("        class {name}\n");
+    if !fields.is_empty() {
+        let readers = fields
             .iter()
             .map(|f| format!(":{}", ruby_field(f)))
             .collect::<Vec<_>>()
-            .join(", ")
-    );
+            .join(", ");
+        out.push_str(&format!("          attr_reader {readers}\n"));
+    }
+    out.push_str("          def initialize(\n");
     for field in fields {
         out.push_str(&format!(
             "            {}: {},\n",

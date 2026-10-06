@@ -82,9 +82,9 @@
       "umbrella": "github.com/acyclic-labs/sdk/go"
     },
     "haskell": {
-      "implemented": false,
+      "implemented": true,
       "registry": "Hackage",
-      "umbrella": "acyclic-haskell-grapesy-prototype"
+      "umbrella": "acyclic-sdk-haskell"
     },
     "java": {
       "implemented": true,
@@ -154,7 +154,7 @@
     "rust": {
       "implemented": true,
       "registry": "crates.io/Cargo",
-      "umbrella": "family crates (no umbrella)"
+      "umbrella": "acyclic-sdk"
     },
     "scala": {
       "implemented": true,

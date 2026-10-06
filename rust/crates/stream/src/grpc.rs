@@ -128,7 +128,12 @@ impl Client {
         let client = Self::connect_with_tls([endpoint], token, ca)?;
         let family = BindingFamily::Stream;
         let version = control::control_protocol_version(family);
-        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(client.channels[0].clone())
+        let channel = client
+            .channels
+            .first()
+            .cloned()
+            .ok_or(ConnectError::NoEndpoints)?;
+        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel)
             .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
         let mut request = Request::new(HandshakeRequest {
             protocol: Some(ProtocolIdentity {
@@ -1274,7 +1279,6 @@ mod tests {
     use crate::MemoryStream;
     use rcgen::generate_simple_self_signed;
     use tokio::net::TcpListener;
-    use tokio_stream::wrappers::TcpListenerStream;
     use tonic::transport::{Identity, Server, ServerTlsConfig};
     use wire::stream_service_server::{StreamService, StreamServiceServer};
 
@@ -1694,12 +1698,16 @@ mod tests {
     #[tokio::test]
     async fn private_ca_https_connection_preserves_ambient_roots_and_exact_bearer()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certified = generate_simple_self_signed([
+            "localhost".to_owned(),
+            "127.0.0.1".to_owned(),
+        ])?;
         let certificate_pem = certified.cert.pem();
         let private_key_pem = certified.signing_key.serialize_pem();
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let address = listener.local_addr()?;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (ready, ready_receiver) = tokio::sync::oneshot::channel();
         let server_certificate_pem = certificate_pem.clone();
         let service = StreamServiceServer::with_interceptor(
             Service::new(Arc::new(MemoryStream::default())),
@@ -1715,6 +1723,18 @@ mod tests {
                 Ok(request)
             },
         );
+        let incoming = futures::stream::unfold(
+            (listener, Some(ready)),
+            |(listener, ready)| async move {
+                if let Some(ready) = ready {
+                    let _ = ready.send(());
+                }
+                Some((
+                    listener.accept().await.map(|(stream, _)| stream),
+                    (listener, None),
+                ))
+            },
+        );
         let server = tokio::spawn(async move {
             Server::builder()
                 .tls_config(
@@ -1722,13 +1742,14 @@ mod tests {
                         .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
                 )?
                 .add_service(service)
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                .serve_with_incoming_shutdown(incoming, async {
                     let _ = shutdown_rx.await;
                 })
                 .await
         });
 
-        let endpoint = format!("https://localhost:{}", address.port());
+        ready_receiver.await.unwrap();
+        let endpoint = format!("https://127.0.0.1:{}", address.port());
         let path = StreamPath::new("accounts/events")?;
         let ambient = Client::connect(&endpoint, "exact-token").await?;
         let mut ambient_service = Client::service(&ambient.channels, 0);

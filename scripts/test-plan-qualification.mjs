@@ -2,7 +2,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { chooseLanes, ignored, laneKeys, qualificationSchema } from "./plan-qualification.mjs";
+import {
+  chooseLanes,
+  classifyQualificationEvent,
+  ignored,
+  laneKeys,
+  qualificationEventKinds,
+  qualificationSchema,
+  requiresFullQualification,
+} from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
@@ -43,6 +51,58 @@ test("release events force the full downstream qualification path", () => {
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
   assert.match(workflow, /\n  release:\n    types: \[published\]/);
   assert.match(workflow, /github\.event_name == 'release'/);
+});
+
+test("platform qualification is release, manual, or reusable only", () => {
+  for (const name of ["agent-host-qualification.yml", "native-mount-qualification.yml"]) {
+    const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
+    assert.match(workflow, /^  release:\n    types: \[published\]/m, name);
+    assert.match(workflow, /^  workflow_call:\n/m, name);
+    assert.match(workflow, /^  workflow_dispatch:\n/m, name);
+    assert.doesNotMatch(workflow, /^  (pull_request|push):/m, name);
+  }
+});
+
+test("event classification keeps ordinary main and routine manual runs cheap", () => {
+  const cases = [
+    [{ eventName: "pull_request" }, qualificationEventKinds.pullRequest, false],
+    [{ eventName: "push", ref: "refs/heads/main" }, qualificationEventKinds.mainPush, false],
+    [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual, false],
+    [{ eventName: "release" }, qualificationEventKinds.release, true],
+    [{ eventName: "workflow_dispatch", force: true }, qualificationEventKinds.forcedDispatch, true],
+  ];
+  for (const [input, expected, full] of cases) {
+    const event = classifyQualificationEvent(input);
+    assert.equal(event, expected);
+    assert.equal(requiresFullQualification(event), full);
+    const { matrix } = chooseLanes(lanes, {
+      force: full,
+      mainPush: event === qualificationEventKinds.mainPush,
+      pullRequest: event === qualificationEventKinds.pullRequest,
+      coreOnly: !full,
+      trusted: null,
+      marker: () => null,
+      retained: () => "",
+    });
+    assert.deepEqual(
+      matrix.map(lane => lane.lane),
+      full ? lanes.map(lane => lane.lane) : ["gate", "policy"],
+      expected,
+    );
+  }
+});
+
+test("an ordinary main push may reuse only the verified core receipt", () => {
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: false,
+    mainPush: true,
+    coreOnly: true,
+    trusted: source,
+    marker: everywhere,
+    retained: retainedAll,
+  });
+  assert.deepEqual(matrix, []);
+  assert.deepEqual(Object.keys(reused).sort(), ["gate", "policy"]);
 });
 
 test("the PR lane split invalidates pre-gating qualification markers", () => {

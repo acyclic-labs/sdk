@@ -9,8 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::type_policy::{
     PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, ResolvedRequestField,
     SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, field_semantic_type,
-    resolved_enum_fields,
-    resolved_request_fields, resolved_response_fields, resolved_rpc_methods, semantic_type,
+    resolved_enum_fields, resolved_request_fields, resolved_response_fields, resolved_rpc_methods,
+    semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
 
@@ -430,9 +430,9 @@ fn swift_kind(kind: WireValueKind, name: &str) -> String {
 
 fn cpp_kind(kind: WireValueKind, name: &str) -> String {
     match kind {
-        WireValueKind::String
-        | WireValueKind::Bytes
-        | WireValueKind::UnsignedInteger => name.to_owned(),
+        WireValueKind::String | WireValueKind::Bytes | WireValueKind::UnsignedInteger => {
+            name.to_owned()
+        }
         WireValueKind::Message => format!("std::shared_ptr<{name}>"),
         WireValueKind::SignedInteger => "std::int64_t".into(),
         WireValueKind::Boolean => "bool".into(),
@@ -583,9 +583,7 @@ fn descriptor_projection_prefix(path: &str) -> String {
         .filter(|part| !part.is_empty() && *part != "acyclic")
         .filter(|part| {
             let bytes = part.as_bytes();
-            !(bytes.len() >= 2
-                && bytes[0] == b'v'
-                && bytes[1..].iter().all(u8::is_ascii_digit))
+            !(bytes.len() >= 2 && bytes[0] == b'v' && bytes[1..].iter().all(u8::is_ascii_digit))
         })
         .map(camel)
         .collect()
@@ -725,14 +723,14 @@ fn ordinary_descriptor_fields(name: &str) -> Vec<crate::type_policy::ResolvedReq
     for field in resolved_request_fields()
         .expect("Rust request descriptors must resolve")
         .into_iter()
-        .chain(
-            resolved_response_fields().expect("Rust response descriptors must resolve"),
-        )
+        .chain(resolved_response_fields().expect("Rust response descriptors must resolve"))
     {
         if descriptor_owner_name(&field) == name
-            && !fields.iter().any(|existing: &crate::type_policy::ResolvedRequestField| {
-                existing.field == field.field
-            })
+            && !fields
+                .iter()
+                .any(|existing: &crate::type_policy::ResolvedRequestField| {
+                    existing.field == field.field
+                })
         {
             fields.push(field);
         }
@@ -870,8 +868,7 @@ fn swift_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
             descriptor_type_name(field).unwrap_or_else(|| "RustWireEnum".into())
         }
         Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32 => {
-            descriptor_type_name(field)
-                .unwrap_or_else(|| "RustWireMessage".into())
+            descriptor_type_name(field).unwrap_or_else(|| "RustWireMessage".into())
         }
         _ => "Data".into(),
     }
@@ -975,7 +972,10 @@ fn response_oneof_groups() -> BTreeMap<(String, String), Vec<ResolvedRequestFiel
         )
     {
         groups
-            .entry((field.message_path.clone(), field.oneof_name.clone().unwrap()))
+            .entry((
+                field.message_path.clone(),
+                field.oneof_name.clone().unwrap(),
+            ))
             .or_default()
             .push(field);
     }
@@ -1006,7 +1006,9 @@ fn cpp_oneof_arm_type(field: &ResolvedRequestField) -> String {
 
 fn render_swift_oneof_models(out: &mut String) {
     for ((_message, oneof), members) in response_oneof_groups() {
-        let Some(first) = members.first() else { continue };
+        let Some(first) = members.first() else {
+            continue;
+        };
         let name = response_oneof_name(first, &oneof);
         out.push_str(&format!("public enum {name}: Sendable {{\n"));
         for field in members {
@@ -1021,7 +1023,9 @@ fn render_swift_oneof_models(out: &mut String) {
 
 fn render_cpp_oneof_models(out: &mut String) {
     for ((_message, oneof), members) in response_oneof_groups() {
-        let Some(first) = members.first() else { continue };
+        let Some(first) = members.first() else {
+            continue;
+        };
         let name = response_oneof_name(first, &oneof);
         let mut alternatives = Vec::new();
         for field in members {
@@ -1031,12 +1035,17 @@ fn render_cpp_oneof_models(out: &mut String) {
             alternatives.push(arm);
         }
         let unknown = format!("{name}Unknown");
-        out.push_str(&format!("struct {unknown} {{ std::int32_t raw_tag; std::vector<std::uint8_t> payload; }};\n"));
+        out.push_str(&format!(
+            "struct {unknown} {{ std::int32_t raw_tag; std::vector<std::uint8_t> payload; }};\n"
+        ));
         alternatives.push(unknown);
         let none = format!("{name}None");
         out.push_str(&format!("struct {none} {{}};\n"));
         alternatives.push(none);
-        out.push_str(&format!("using {name}Value = std::variant<{}>;\n\n", alternatives.join(", ")));
+        out.push_str(&format!(
+            "using {name}Value = std::variant<{}>;\n\n",
+            alternatives.join(", ")
+        ));
     }
 }
 
@@ -1408,8 +1417,7 @@ fn render_cpp() -> String {
     // RustWireMessage/RustWireEnum solely because of declaration order.
     let mut semantic_message_names = BTreeSet::new();
     for item in SEMANTIC_TYPES {
-        if item.wire_kind == WireValueKind::Message
-            && semantic_message_names.insert(item.rust_name)
+        if item.wire_kind == WireValueKind::Message && semantic_message_names.insert(item.rust_name)
         {
             out.push_str(&format!("struct {};\n", item.rust_name));
         }
@@ -1620,7 +1628,7 @@ fn render_cpp() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
+    use super::{CPP_TYPED_PATH, SWIFT_TYPED_PATH, generate_swift_cpp_typed_facades};
     #[test]
     fn emits_nominal_clients_and_closed_unions_with_unknown_fallback() {
         let files = generate_swift_cpp_typed_facades();

@@ -398,7 +398,11 @@ fn surface_language(relative: &str) -> Option<&'static str> {
     }
     let name = relative.rsplit('/').next()?;
     match name {
-        name if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" => {
+        name
+            if name.ends_with("-metadata.ts")
+                || name == "RustTypedClients.ts"
+                || name.ends_with("_pb.d.ts") =>
+        {
             Some("typescript")
         }
         "remote.py" => Some("python"),

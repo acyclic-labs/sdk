@@ -576,7 +576,6 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
     );
 }
 
-
 #[test]
 fn inference_signed_fields_and_semantic_edits_are_wire_distinct() {
     let canonical = inference_descriptor();

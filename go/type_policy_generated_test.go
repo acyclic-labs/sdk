@@ -4,6 +4,8 @@ package acyclicsdk
 import (
 	"context"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 )
 
 import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
@@ -12,117 +14,78 @@ import inferencev1 "github.com/acyclic-labs/sdk/go/gen/inference/v1"
 import objectsv2 "github.com/acyclic-labs/sdk/go/gen/objects/v2"
 
 func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
-	if _, err := NewActorID("actor"); err != nil {
-		t.Fatal(err)
+	if _, err := NewActorID("actor"); err != nil { t.Fatal(err) }
+	if _, err := NewIdempotencyKeyBytes([]byte("request")); err != nil { t.Fatal(err) }
+	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
+	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
+	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewKnownOneof(newKnownOneofPayloadForTest())); err != nil { t.Fatal(err) }
+	if len(EnumFields) == 0 || len(PresenceFields) == 0 { t.Fatal("Rust enum and presence inventories are empty") }
+	for _, field := range EnumFields { if !field.PreservesUnknownNumeric { t.Fatal("enum unknown values are not preserved") } }
+	for enumType, metadata := range EnumFields {
+		constructor, ok := EnumTypeConstructors[metadata.EnumType]; if !ok || len(metadata.Values) == 0 { t.Fatalf("missing Rust enum projection: %s", enumType) }
+		var first int32; for _, value := range metadata.Values { first = value; break }
+		known := constructor(first); unknown := constructor(2147483647)
+		if !known.IsKnown() || known.IsUnknown() || !unknown.IsUnknown() || unknown.IsKnown() { t.Fatalf("enum projection did not preserve known/unknown values: %s", metadata.EnumType) }
 	}
-	if _, err := NewIdempotencyKeyBytes([]byte("request")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewPageLimit(1); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewSha256Digest(make([]byte, 32)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewWireChoice(NewKnownOneof(map[string]any{"payload": 1})); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil {
-		t.Fatal(err)
-	}
+	unknownEnum := &actorsv1.ActorObservation{State: actorsv1.ActorState(123)}
+	encodedEnum, err := proto.Marshal(unknownEnum); if err != nil { t.Fatal(err) }
+	decodedEnum := &actorsv1.ActorObservation{}; if err := proto.Unmarshal(encodedEnum, decodedEnum); err != nil { t.Fatal(err) }
+	if decodedEnum.GetState() != actorsv1.ActorState(123) { t.Fatalf("unknown enum changed: %v", decodedEnum.GetState()) }
+	presentOneof := &actorsv1.SubscriptionStart{Start: &actorsv1.SubscriptionStart_Cursor{Cursor: 7}}
+	if presentOneof.GetStart() == nil || presentOneof.GetCursor() != 7 { t.Fatal("oneof presence was not retained") }
+	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
 	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
 	decoded, err := DecodeWireChoiceJSON(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if unknown, ok := decoded.(UnknownOneof); !ok || string(unknown.RawPayload) != "future" {
-		t.Fatal("unknown oneof JSON bridge failed")
-	}
+	if err != nil { t.Fatal(err) }
+	if unknown, ok := decoded.(UnknownOneof); !ok || string(unknown.RawPayload) != "future" { t.Fatal("unknown oneof JSON bridge failed") }
 	request, err := (ActorInvokeRequest{ActorID: ActorID("actor"), Method: MethodName("run")}).toWire()
-	if err != nil || request.GetActorId() != "actor" {
-		t.Fatalf("typed request bridge failed: %v", err)
-	}
+	if err != nil || request.GetActorId() != "actor" { t.Fatalf("typed request bridge failed: %v", err) }
 	response := actorInvokeResponseFromWire(&actorsv1.InvokeActorResponse{Status: 200, Body: []byte("ok")})
-	if response.Status != 200 || string(response.Body) != "ok" {
-		t.Fatal("typed response bridge failed")
-	}
+	if response.Status != 200 || string(response.Body) != "ok" { t.Fatal("typed response bridge failed") }
 	actorValue := ActorID("actor")
 	keyValue := IdempotencyKeyBytes([]byte("request"))
 	fields := SemanticFieldValues{ActorsActorID: &actorValue, StreamIdempotencyKey: &keyValue}
-	if _, ok := fields.ToWireFields()["actors.actor_id"]; !ok {
-		t.Fatal("typed field mapping missing")
-	}
+	if _, ok := fields.ToWireFields()["actors.actor_id"]; !ok { t.Fatal("typed field mapping missing") }
 }
 
 func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
-	if _, err := NewActorID(""); err == nil {
-		t.Fatal("empty actor id accepted")
-	}
-	if _, err := NewIdempotencyKeyBytes(nil); err == nil {
-		t.Fatal("empty idempotency key accepted")
-	}
-	if _, err := NewPageLimit(0); err == nil {
-		t.Fatal("zero page limit accepted")
-	}
-	if _, err := NewPageLimit(1001); err == nil {
-		t.Fatal("oversized page limit accepted")
-	}
-	if _, err := NewRevisionDigest([]byte("short")); err == nil {
-		t.Fatal("short revision digest accepted")
-	}
-	if _, err := NewSha256Digest([]byte("short")); err == nil {
-		t.Fatal("short digest accepted")
-	}
-	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil {
-		t.Fatal("invalid known oneof tag accepted")
-	}
-	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil {
-		t.Fatal("unknown oneof discriminant accepted")
-	}
-	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil {
-		t.Fatal("empty actor id accepted by request bridge")
-	}
+	if _, err := NewActorID(""); err == nil { t.Fatal("empty actor id accepted") }
+	if _, err := NewIdempotencyKeyBytes(nil); err == nil { t.Fatal("empty idempotency key accepted") }
+	if _, err := NewPageLimit(0); err == nil { t.Fatal("zero page limit accepted") }
+	if _, err := NewPageLimit(1001); err == nil { t.Fatal("oversized page limit accepted") }
+	if _, err := NewRevisionDigest([]byte("short")); err == nil { t.Fatal("short revision digest accepted") }
+	if _, err := NewSha256Digest([]byte("short")); err == nil { t.Fatal("short digest accepted") }
+	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
+	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil { t.Fatal("unknown oneof discriminant accepted") }
+	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
 }
 
 func TestRustOwnedProductionClientRoutesRejectInvalidRequests(t *testing.T) {
 	ctx := context.Background()
-	if _, err := (&Client{}).InvokeActorActorId(ctx, ActorsInvokeActorRequestActorId{ActorId: ActorID("")}); err == nil {
-		t.Fatal("production actor route accepted empty actor id")
-	}
-	if _, err := (&Client{}).SelectDeploymentAlias(ctx, WorkersSelectDeploymentRequestAlias{Alias: VersionAlias("")}); err == nil {
-		t.Fatal("production workers route accepted empty alias")
-	}
-	if _, err := (&Client{}).ReadLimit(ctx, StreamReadRequestLimit{Limit: StreamPageLimit(0)}); err == nil {
-		t.Fatal("production stream route accepted zero limit")
-	}
-	if _, err := (&Client{}).CreateImage(ctx, MachinesCreateMachineRequestImage{}); err == nil {
-		t.Fatal("production machines route accepted missing image")
-	}
+	if _, err := (&Client{}).InvokeActorActorId(ctx, ActorsInvokeActorRequestActorId{ActorId: ActorID("")}); err == nil { t.Fatal("production actor route accepted empty actor id") }
+	if _, err := (&Client{}).SelectDeploymentAlias(ctx, WorkersSelectDeploymentRequestAlias{Alias: VersionAlias("")}); err == nil { t.Fatal("production workers route accepted empty alias") }
+	if _, err := (&Client{}).ReadLimit(ctx, StreamReadRequestLimit{Limit: StreamPageLimit(0)}); err == nil { t.Fatal("production stream route accepted zero limit") }
+	if _, err := (&Client{}).CreateImage(ctx, MachinesCreateMachineRequestImage{}); err == nil { t.Fatal("production machines route accepted missing image") }
+}
+
+func TestRustOwnedHTTPErrorsAndRoutesPreserveWireContract(t *testing.T) {
+	error := &RustHTTPError{StatusCode: 409, Detail: []byte(`{"code":"conflict"}`)}
+	if error.StatusCode != 409 || string(error.Detail) != `{"code":"conflict"}` { t.Fatal("HTTP error payload was not retained") }
+	if len(HTTPRoutes) == 0 { t.Fatal("Rust-owned HTTP route inventory is empty") }
+	for _, routes := range HTTPRoutes { for _, route := range routes { if route.Method == "" || route.Path == "" { t.Fatal("HTTP route metadata is incomplete") } } }
 }
 
 func TestRustOwnedResponseAndNestedBindingsUseTypedValues(t *testing.T) {
 	objectInfo, err := ObjectsObjectInfoEtagFromWire(&objectsv2.ObjectInfo{Etag: "etag"})
-	if err != nil || string(objectInfo.Etag) != "etag" {
-		t.Fatalf("typed object response failed: %v", err)
-	}
+	if err != nil || string(objectInfo.Etag) != "etag" { t.Fatalf("typed object response failed: %v", err) }
 	fileRef, err := HarnessFileRefPathFromWire(&harnessv2.FileRef{NormalizedPath: "workspace/file"})
-	if err != nil || string(fileRef.Path) != "workspace/file" {
-		t.Fatalf("typed harness response failed: %v", err)
-	}
+	if err != nil || string(fileRef.Path) != "workspace/file" { t.Fatalf("typed harness response failed: %v", err) }
 	nested, err := (ObjectsMutationIdentityIdempotencyKey{IdempotencyKey: IdempotencyKeyText("retry")}).ToWire()
-	if err != nil || nested.GetIdempotencyKey() != "retry" {
-		t.Fatalf("typed object nested field failed: %v", err)
-	}
+	if err != nil || nested.GetIdempotencyKey() != "retry" { t.Fatalf("typed object nested field failed: %v", err) }
 	spec, err := (InferenceEvaluationSpecSpecDigest{SpecDigest: Sha256Digest([32]byte{1})}).ToWire()
-	if err != nil || len(spec.GetSpecDigest()) != 32 {
-		t.Fatalf("typed inference nested field failed: %v", err)
-	}
+	if err != nil || len(spec.GetSpecDigest()) != 32 { t.Fatalf("typed inference nested field failed: %v", err) }
 }
 
 func TestRustOwnedProductionObjectFramesUseTypedResponses(t *testing.T) {
@@ -142,30 +105,34 @@ func TestRustOwnedProductionObjectFramesUseTypedResponses(t *testing.T) {
 	}
 }
 
+func TestRustOwnedGenericResponseExposesDescriptorDiscriminatedChoice(t *testing.T) {
+	response, err := RustObjectsObjectsGetObjectResponseFromWire(&objectsv2.GetObjectResponse{
+		Frame: &objectsv2.GetObjectResponse_Body{Body: []byte("payload")},
+	})
+	if err != nil || response.FrameChoice() == nil || response.FrameChoice().Tag() != "body" {
+		t.Fatalf("generic typed response choice failed: %v", err)
+	}
+	if body, ok := response.FrameChoice().(*RustObjectsObjectsGetObjectResponseFrameBodyChoice); !ok || string(*body.Value) != "payload" {
+		t.Fatal("generic body choice payload was not strongly typed")
+	}
+}
+
 func TestRustOwnedNestedFieldsAreInProductionRequestSignatures(t *testing.T) {
 	bucket := ObjectsCreateBucketRequest{Name: "bucket", IdempotencyKey: IdempotencyKeyText("retry")}
 	bucketWire, err := bucket.ToWire()
-	if err != nil || bucketWire.GetMutation().GetIdempotencyKey() != "retry" {
-		t.Fatalf("typed bucket mutation failed: %v", err)
-	}
+	if err != nil || bucketWire.GetMutation().GetIdempotencyKey() != "retry" { t.Fatalf("typed bucket mutation failed: %v", err) }
 
 	digest, err := NewSha256Digest(make([]byte, 32))
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
 	evaluation := InferenceCreateEvaluationRequest{
-		Identity:   &inferencev1.RequestIdentity{},
-		Spec:       &inferencev1.EvaluationSpec{},
+		Identity: &inferencev1.RequestIdentity{},
+		Spec: &inferencev1.EvaluationSpec{},
 		SpecDigest: digest,
 	}
 	evaluationWire, err := evaluation.ToWire()
-	if err != nil || len(evaluationWire.GetSpec().GetSpecDigest()) != 32 {
-		t.Fatalf("typed evaluation spec failed: %v", err)
-	}
+	if err != nil || len(evaluationWire.GetSpec().GetSpecDigest()) != 32 { t.Fatalf("typed evaluation spec failed: %v", err) }
 
 	if _, err := (&Client{}).CreateBucket(context.Background(), ObjectsCreateBucketRequest{
 		Name: "bucket", IdempotencyKey: IdempotencyKeyText(""),
-	}); err == nil {
-		t.Fatal("production bucket route accepted an invalid nested idempotency key")
-	}
+	}); err == nil { t.Fatal("production bucket route accepted an invalid nested idempotency key") }
 }

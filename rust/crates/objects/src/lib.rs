@@ -6,6 +6,7 @@ mod body;
 pub mod client;
 /// Canonical Objects v2 requests, responses, providers, and transport modules.
 pub mod v2;
+/// Generated native control-plane bindings used for protocol negotiation.
 #[cfg(all(not(target_arch = "wasm32"), feature = "grpc"))]
 pub mod control_wire {
     #![allow(
@@ -36,12 +37,17 @@ mod local_options;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod physical;
 #[cfg(any(feature = "grpc", feature = "http"))]
+/// Native or browser-facing transport-neutral Objects client implementations.
 pub use client::{Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+/// Durability and capacity policies for the durable local provider.
 pub use local_options::{LocalDurability, LocalObjectsGarbageCollection, LocalObjectsLimits};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+/// Verified native gRPC Objects provider.
 pub use v2::grpc::GrpcObjects;
 #[cfg(feature = "http")]
+/// HTTP/JSON Objects provider for browser and HTTP-only environments.
 pub use v2::http::HttpObjects;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+/// Durable filesystem-backed Objects provider and its open errors.
 pub use v2::local::{LocalObjects, LocalOpenError};

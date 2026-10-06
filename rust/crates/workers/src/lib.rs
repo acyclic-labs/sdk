@@ -27,14 +27,15 @@ pub mod control_wire {
     }
 }
 
-/// Transport-neutral Workers client and best-transport connection helper.
+/// Platform-aware Workers client that verifies the service before selecting a transport.
 pub mod client;
 #[cfg(not(target_arch = "wasm32"))]
-/// Native gRPC Workers transport.
+/// Direct authenticated gRPC transport for the Workers v1 service.
 pub mod grpc;
-/// HTTP Workers transport shared by native and browser consumers.
+/// Direct authenticated HTTP transport for the Workers v1 service.
 pub mod http;
 
+/// The platform-aware client and its connection helpers.
 pub use client::{
     Client, ConnectError, Error, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect,
     connect_with_ca_certificate,
@@ -47,13 +48,13 @@ pub mod wire {
     include!("generated/acyclic.workers.v1.rs");
 }
 
-/// Canonical version-one descriptor set.
+/// File descriptor set for the immutable Workers v1 wire contract.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-workers-v1.bin");
-/// Largest inline JavaScript module admitted by the first public contract.
+/// Largest JavaScript module that [`validate_publish`] accepts inline.
 pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
-/// Largest inline job input or result.
+/// Largest inline job input or result accepted by the v1 contract.
 pub const MAX_INLINE_BYTES: usize = 1024 * 1024;
-/// Largest bounded retry count.
+/// Largest retry count accepted by [`validate_submit`].
 pub const MAX_JOB_ATTEMPTS: u32 = 8;
 
 /// Public JavaScript entrypoint declaration emitted into the TypeScript package.
@@ -71,7 +72,11 @@ export interface WorkerModule {
 }
 "#;
 
-/// Rust-owned route names used by the TypeScript transport generator.
+/// Stable operation names and relative HTTP paths for the Workers v1 fallback transport.
+///
+/// Each tuple contains the operation identifier used by generated clients and the
+/// path appended to a configured service endpoint. The two invocation paths carry
+/// a validated deployment alias or lowercase hexadecimal version digest.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("publishVersion", "v1/workers/versions/publish"),
     ("selectDeployment", "v1/workers/deployments/select"),
@@ -85,13 +90,13 @@ pub const HTTP_ROUTES: &[(&str, &str)] = &[
 /// Invalid customer-authored Workers request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ContractError {
-    /// A required field is absent or malformed.
+    /// A required field, name, digest, target, retry policy, or limit is absent or malformed.
     #[error("required field is absent or malformed")]
     InvalidArgument,
-    /// An authored byte payload exceeds its contract bound.
+    /// An inline module, input, or output exceeds its contract bound.
     #[error("inline payload exceeds the Workers v1 limit")]
     LimitExceeded,
-    /// The supplied digest does not identify the exact module bytes.
+    /// The supplied SHA-256 digest does not identify the exact module bytes.
     #[error("module SHA-256 does not match exact bytes")]
     DigestMismatch,
 }
@@ -111,6 +116,10 @@ fn name(value: &str) -> bool {
 }
 
 /// Validates an immutable JavaScript module publication before service admission.
+///
+/// The module must be nonempty and no larger than [`MAX_MODULE_BYTES`]. Its
+/// idempotency key must be a 1–256 byte ASCII name, and `expected_sha256` must
+/// be a nonzero 32-byte digest of the exact module bytes.
 pub fn validate_publish(request: &wire::PublishVersionRequest) -> Result<(), ContractError> {
     if request.javascript_module.is_empty() || !name(&request.idempotency_key) {
         return Err(ContractError::InvalidArgument);
@@ -127,7 +136,10 @@ pub fn validate_publish(request: &wire::PublishVersionRequest) -> Result<(), Con
     Ok(())
 }
 
-/// Validates a compare-and-select deployment alias mutation.
+/// Validates a deployment alias selection mutation.
+///
+/// The alias, version digest, and idempotency key use the v1 name and digest
+/// rules. An expected revision is optional; when supplied it must be positive.
 pub fn validate_select(request: &wire::SelectDeploymentRequest) -> Result<(), ContractError> {
     if !name(&request.alias)
         || !digest(&request.version_sha256)
@@ -140,6 +152,13 @@ pub fn validate_select(request: &wire::SelectDeploymentRequest) -> Result<(), Co
 }
 
 /// Validates a durable job request before authoritative resolution of its target.
+///
+/// The target is either a valid deployment alias or a nonzero 32-byte version
+/// digest. Input may be inline bytes up to [`MAX_INLINE_BYTES`] or an object
+/// reference with a nonempty bucket of at most 63 bytes and a nonempty key of
+/// at most 1024 bytes. Retry attempts are 1 through [`MAX_JOB_ATTEMPTS`], and
+/// timeout, memory, and output limits are positive with output bounded by
+/// [`MAX_INLINE_BYTES`].
 pub fn validate_submit(request: &wire::SubmitJobRequest) -> Result<(), ContractError> {
     let target = request
         .target
@@ -192,6 +211,9 @@ pub fn validate_submit(request: &wire::SubmitJobRequest) -> Result<(), ContractE
 }
 
 /// Validates exact job output against the accepted job's bounded output budget.
+///
+/// The accepted output limit is positive and no larger than [`MAX_INLINE_BYTES`];
+/// the result body must fit within that limit.
 pub fn validate_result(
     result: &wire::JobResult,
     limits: &wire::JobLimits,

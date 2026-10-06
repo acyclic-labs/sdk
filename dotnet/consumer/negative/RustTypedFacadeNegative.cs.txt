@@ -3,9 +3,9 @@ using Acyclic.Sdk.Transport;
 
 public static class RustTypedFacadeNegative
 {
-    // CS1503: empty strings cannot construct a validated semantic value at runtime.
+    // CS1503: a raw string cannot bypass the nominal id wrapper.
     public static ObjectsCreateBucketRequest EmptyKey() =>
-        new("bucket", new IdempotencyKeyText(""));
+        new("bucket", "");
 
     // CS1503: raw string is not assignable to the nominal request field.
     public static ObjectsCreateBucketRequest RawKey() =>

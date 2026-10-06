@@ -43,6 +43,14 @@ struct BrowserResponse {
     body: Vec<u8>,
 }
 
+struct HandshakeResponse {
+    status: u16,
+    final_url: String,
+    content_type: Option<String>,
+    content_length: Option<u64>,
+    body: Vec<u8>,
+}
+
 #[cfg(target_arch = "wasm32")]
 struct BrowserAbortGuard {
     global: JsValue,
@@ -261,24 +269,14 @@ impl HttpStream {
         }
         result
     }
-    /// Prove the canonical contract before selecting this transport.
-    ///
-    /// # Errors
-    /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
-    pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
-        use crate::client::ConnectError;
-        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-        use prost_reflect::{DescriptorPool, DynamicMessage};
-        let malformed = || ConnectError::Negotiation("invalid control handshake response".into());
-        let family = BindingFamily::Stream;
-        let version = control::control_protocol_version(family);
-        let route = control::handshake_http_route(family.name()).ok_or_else(malformed)?;
-        let url = self
-            .endpoint
-            .join(route.trim_start_matches('/'))
-            .map_err(|_| malformed())?;
+    async fn fetch_handshake(
+        &self,
+        url: &Url,
+    ) -> Result<HandshakeResponse, crate::client::ConnectError> {
         #[cfg(not(target_arch = "wasm32"))]
-        let (status, final_url, content_type, content_length, bytes) = {
+        {
+            use acyclic_sdk_contract_wire::transport_control as control;
+            use crate::client::ConnectError;
             let response = self
                 .client
                 .get(url.clone())
@@ -289,7 +287,7 @@ impl HttpStream {
                 .await
                 .map_err(|error| ConnectError::Transport(error.to_string()))?;
             let status = response.status().as_u16();
-            let final_url = response.url().clone();
+            let final_url = response.url().to_string();
             let content_type = response
                 .headers()
                 .get("content-type")
@@ -297,86 +295,62 @@ impl HttpStream {
                 .map(str::to_owned);
             let content_length = response.content_length();
             let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
-            if matches!(status, 404 | 405) {
-                return Ok(false);
-            }
-            if !response.status().is_success() {
-                return Err(ConnectError::HttpStatus(status));
-            }
             if content_length.is_some_and(|length| length > maximum as u64) {
-                return Err(malformed());
+                return Err(ConnectError::Negotiation(
+                    "invalid control handshake response".into(),
+                ));
             }
-            let mut bytes = Vec::new();
+            let mut body = Vec::new();
             let mut chunks = response.bytes_stream();
             while let Some(chunk) = chunks.next().await {
                 let chunk = chunk.map_err(|error| ConnectError::Transport(error.to_string()))?;
-                if chunk.len() > maximum.saturating_sub(bytes.len()) {
-                    return Err(malformed());
+                if chunk.len() > maximum.saturating_sub(body.len()) {
+                    return Err(ConnectError::Negotiation(
+                        "invalid control handshake response".into(),
+                    ));
                 }
-                bytes.extend_from_slice(&chunk);
+                body.extend_from_slice(&chunk);
             }
-            (status, final_url, content_type, content_length, bytes)
-        };
+            Ok(HandshakeResponse {
+                status,
+                final_url,
+                content_type,
+                content_length,
+                body,
+            })
+        }
         #[cfg(target_arch = "wasm32")]
-        let (status, final_url, content_type, content_length, bytes) = {
+        {
             let response = self
-                .browser_fetch(&url, "GET", None, Some("application/json"), None, 10_000)
+                .browser_fetch(url, "GET", None, Some("application/json"), None, 10_000)
                 .await
-                .map_err(ConnectError::Transport)?;
-            let status = response.status;
-            let final_url = response.url;
-            let content_type = response.content_type;
-            let content_length = response.content_length;
-            let bytes = response.body;
-            if matches!(status, 404 | 405) {
-                return Ok(false);
-            }
-            if !(200..300).contains(&status) {
-                return Err(ConnectError::HttpStatus(status));
-            }
-            (status, final_url, content_type, content_length, bytes)
-        };
-        if final_url.as_str() != url.as_str() {
-            return Err(malformed());
+                .map_err(crate::client::ConnectError::Transport)?;
+            Ok(HandshakeResponse {
+                status: response.status,
+                final_url: response.url,
+                content_type: response.content_type,
+                content_length: response.content_length,
+                body: response.body,
+            })
         }
-        if matches!(status, 404 | 405) {
-            return Ok(false);
-        }
-        if !content_type.as_deref().is_some_and(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
-        }) {
-            return Err(malformed());
-        }
-        let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
-        if content_length.is_some_and(|length| length > maximum as u64) || bytes.len() > maximum {
-            return Err(malformed());
-        }
-        let pool = DescriptorPool::decode(
-            acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
-        )
-        .map_err(|_| malformed())?;
-        let descriptor = pool
-            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
-            .ok_or_else(malformed)?;
-        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
-        let decoded =
-            DynamicMessage::deserialize(descriptor, &mut deserializer).map_err(|_| malformed())?;
-        deserializer.end().map_err(|_| malformed())?;
-        control::validate_handshake_response(
-            family,
-            version,
-            &[control::RequiredCapability {
-                name: family.name(),
-                version,
-            }],
-            &decoded.encode_to_vec(),
-            maximum,
-        )
-        .map_err(|_| malformed())?;
-        Ok(true)
+    }
+
+    /// Prove the canonical contract before selecting this transport.
+    ///
+    /// # Errors
+    /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
+    pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
+        use crate::client::ConnectError;
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let malformed = || ConnectError::Negotiation("invalid control handshake response".into());
+        let family = BindingFamily::Stream;
+        let route = control::handshake_http_route(family.name()).ok_or_else(malformed)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| malformed())?;
+        let response = self.fetch_handshake(&url).await?;
+        validate_handshake_response(&response, &url, self.maximum)
     }
 
     async fn request(&self, route: &str, bytes: Vec<u8>) -> Result<Value, StreamError> {
@@ -784,6 +758,68 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
+
+fn validate_handshake_response(
+    response: &HandshakeResponse,
+    url: &Url,
+    maximum_response_bytes: usize,
+) -> Result<bool, crate::client::ConnectError> {
+    use crate::client::ConnectError;
+    use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+    use prost_reflect::{DescriptorPool, DynamicMessage};
+    let malformed = || ConnectError::Negotiation("invalid control handshake response".into());
+    if response.final_url != url.as_str() {
+        return Err(malformed());
+    }
+    if matches!(response.status, 404 | 405) {
+        return Ok(false);
+    }
+    if !(200..300).contains(&response.status) {
+        return Err(ConnectError::HttpStatus(response.status));
+    }
+    if !response.content_type.as_deref().is_some_and(|value| {
+        value
+            .split(';')
+            .next()
+            .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+    }) {
+        return Err(malformed());
+    }
+    let maximum = maximum_response_bytes.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+    if response
+        .content_length
+        .is_some_and(|length| length > maximum as u64)
+        || response.body.len() > maximum
+    {
+        return Err(malformed());
+    }
+    let pool = DescriptorPool::decode(
+        acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
+    )
+    .map_err(|_| malformed())?;
+    let descriptor = pool
+        .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+        .ok_or_else(malformed)?;
+    let mut deserializer = serde_json::Deserializer::from_slice(&response.body);
+    let decoded =
+        DynamicMessage::deserialize(descriptor, &mut deserializer).map_err(|_| malformed())?;
+    deserializer.end().map_err(|_| malformed())?;
+    let family = BindingFamily::Stream;
+    let version = control::control_protocol_version(family);
+    control::validate_handshake_response(
+        family,
+        version,
+        &[control::RequiredCapability {
+            name: family.name(),
+            version,
+        }],
+        &decoded.encode_to_vec(),
+        maximum,
+    )
+    .map_err(|_| malformed())?;
+    Ok(true)
+}
+
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
     value.as_str().ok_or(StreamError::Unavailable)
 }

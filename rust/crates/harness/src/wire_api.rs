@@ -1,9 +1,15 @@
 //! Transport-neutral server port implemented identically by every wire adapter.
 
-pub use crate::wire_validation::{
-    current_protocol, negotiate, validate_admission, validate_cancel_response,
-    validate_operation_status,
-};
+/// Returns the current wire protocol identity.
+pub use crate::wire_validation::current_protocol;
+/// Negotiates a wire protocol with a peer.
+pub use crate::wire_validation::negotiate;
+/// Validates an admission envelope.
+pub use crate::wire_validation::validate_admission;
+/// Validates a cancellation response.
+pub use crate::wire_validation::validate_cancel_response;
+/// Validates an operation-status response.
+pub use crate::wire_validation::validate_operation_status;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result,
     core::{Authority, Scope},

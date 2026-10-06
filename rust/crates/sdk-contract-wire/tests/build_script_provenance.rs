@@ -22,11 +22,12 @@ const EXPECTED_BINDING_AUTHORITY: &[(&str, BindingAuthority)] = &[
     ("filesystem", BindingAuthority::RustModelDescriptor),
     ("inference", BindingAuthority::RustModelDescriptor),
     ("inference-contract", BindingAuthority::RustModelDescriptor),
+    ("remote-web", BindingAuthority::RustModelDescriptor),
 ];
 
 #[test]
 fn public_rust_binding_authority_inventory_is_explicit() {
-    assert_eq!(EXPECTED_BINDING_AUTHORITY.len(), 9);
+    assert_eq!(EXPECTED_BINDING_AUTHORITY.len(), 10);
     assert_eq!(
         EXPECTED_BINDING_AUTHORITY
             .iter()
@@ -40,8 +41,8 @@ fn public_rust_binding_authority_inventory_is_explicit() {
             .iter()
             .filter(|(_, authority)| *authority == BindingAuthority::RustModelDescriptor)
             .count(),
-        6,
-        "Stream, Filesystem, Harness, Inference, inference-contract, and Machines consume the Rust model"
+        7,
+        "Stream, Filesystem, Harness, Inference, inference-contract, Machines, and remote-web consume the Rust model"
     );
 }
 
@@ -55,25 +56,110 @@ fn build_scripts_have_bounded_inputs_and_explicit_authority() {
     let stream_lib = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../stream/src/lib.rs"));
     assert!(stream_lib.contains("stream_descriptor.bin"));
 
-    for script in [
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../filesystem/build.rs"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../inference/build.rs"
-        )),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../inference-contract/build.rs"
-        )),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../machines/build.rs")),
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../harness/build.rs")),
+    let filesystem = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../filesystem/build.rs"
+    ));
+    assert_model_input(
+        "Filesystem",
+        filesystem,
+        &[
+            "BindingFamily::Filesystem",
+            "descriptor_set_with_docs",
+            "include_bytes!(\"src/generated/rust-model-filesystem-v2.bin\")",
+        ],
+    );
+
+    let harness = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../harness/build.rs"));
+    assert_model_input(
+        "Harness",
+        harness,
+        &[
+            "BindingFamily::Harness",
+            "descriptor_set_with_docs",
+            "include_bytes!(\"src/generated/rust-model-harness-v2.bin\")",
+            "include_bytes!(\"src/generated/harness-archived-v2.bin\")",
+        ],
+    );
+
+    let inference = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../inference/build.rs"
+    ));
+    assert_model_input(
+        "Inference",
+        inference,
+        &[
+            "const MODEL_DESCRIPTOR: &str = \"inference_model_descriptor.bin\"",
+            "const DOC_DESCRIPTOR: &str = \"inference_model_descriptor_docs.bin\"",
+            "const MODEL_DESCRIPTOR_ENV: &str = \"ACYCLIC_INFERENCE_MODEL_DESCRIPTOR\"",
+            "unwrap_or_else(|| std::path::PathBuf::from(DOC_DESCRIPTOR))",
+            "std::fs::read(&descriptor_path)",
+        ],
+    );
+
+    let inference_contract = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../inference-contract/build.rs"
+    ));
+    assert_model_input(
+        "Inference contract",
+        inference_contract,
+        &[
+            "const MODEL_DESCRIPTOR: &str = \"inference_model_descriptor.bin\"",
+            "const MODEL_DESCRIPTOR_ENV: &str = \"ACYCLIC_INFERENCE_CONTRACT_MODEL_DESCRIPTOR\"",
+            "unwrap_or_else(|| std::path::PathBuf::from(MODEL_DESCRIPTOR))",
+            "std::fs::read(&descriptor_path)",
+        ],
+    );
+
+    let machines = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../machines/build.rs"));
+    assert_model_input(
+        "Machines",
+        machines,
+        &[
+            "BindingFamily::Machines",
+            "machines_descriptor()",
+            "descriptor_set_with_docs",
+        ],
+    );
+
+    let remote_web = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sdk-remote-web/build.rs"
+    ));
+    assert_model_input(
+        "remote web",
+        remote_web,
+        &[
+            "BindingFamily::Filesystem",
+            "filesystem_family.model_descriptor()",
+            "BindingFamily::Harness",
+            "harness_family.model_descriptor()",
+        ],
+    );
+
+    for (name, script) in [
+        ("Filesystem", filesystem),
+        ("Inference", inference),
+        ("Inference contract", inference_contract),
+        ("Machines", machines),
+        ("Harness", harness),
     ] {
-        assert!(script.contains("compile_fds"));
-        assert!(!script.contains("compile_protos"));
-        assert!(!script.contains("proto/"));
-        assert!(script.contains("MODEL_DESCRIPTOR"));
+        assert!(script.contains("compile_fds"), "{name} must compile descriptors");
+        assert!(
+            !script.contains("compile_protos"),
+            "{name} must not compile an authored proto tree"
+        );
+        assert!(!script.contains("proto/"), "{name} must not read a proto tree");
+    }
+}
+
+fn assert_model_input(name: &str, script: &str, required_tokens: &[&str]) {
+    for token in required_tokens {
+        assert!(
+            script.contains(token),
+            "{name} build script is missing its explicit Rust-owned input: {token}"
+        );
     }
 }

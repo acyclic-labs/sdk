@@ -18,6 +18,7 @@ import qualified Proto.Filesystem.V2.Filesystem as Filesystem
 import qualified Proto.Harness.V2.Harness as Harness
 import qualified Proto.Inference.V1.Inference as Inference
 import qualified Proto.Machines.V1.Machines as Machines
+import qualified Proto.Objects.V1.Objects as ObjectsV1
 import qualified Proto.Objects.V2.Objects as ObjectsV2
 import qualified Proto.Stream.V2.Stream as Stream
 import qualified Proto.Workers.V1.Workers as Workers
@@ -39,7 +40,7 @@ serviceRow name = (name, serviceCount @service)
 
 main :: IO ()
 main = do
-  let rows =
+  let activeRows =
         [ serviceRow @Actors.ActorsService "actors"
         , serviceRow @Filesystem.FilesystemService "filesystem"
         , serviceRow @Harness.HarnessService "harness"
@@ -55,8 +56,18 @@ main = do
         , serviceRow @Workers.WorkersService "workers"
         , serviceRow @Stream.StreamService "stream"
         ]
-      total = sum (map snd rows)
+      archivedRows =
+        [ serviceRow @ObjectsV1.BucketsService "objects.v1.buckets"
+        , serviceRow @ObjectsV1.ObjectsService "objects.v1.objects"
+        , serviceRow @ObjectsV1.MultipartService "objects.v1.multipart"
+        , serviceRow @ObjectsV1.SnapshotsService "objects.v1.snapshots"
+        ]
+      rows = activeRows <> archivedRows
+      activeTotal = sum (map snd activeRows)
+      serviceTotal = length rows
   mapM_ print rows
-  if total == 106
-    then putStrLn "PASS:rust-owned-typed-rpc-surface=106"
-    else fail ("Rust-owned typed RPC surface expected 106 methods, observed " <> show total)
+  if activeTotal == 106 && serviceTotal == 18
+    then do
+      putStrLn "PASS:rust-owned-typed-rpc-surface=106"
+      putStrLn "PASS:rust-owned-typed-rpc-services=18;archived=4"
+    else fail ("Rust-owned typed RPC surface expected 106 active methods across 18 services, observed " <> show activeTotal <> " methods across " <> show serviceTotal <> " services")

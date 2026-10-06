@@ -30,10 +30,3 @@ acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" 
 prost = "0.14.4"
 prost-types = "0.14.4"
 tonic-prost-build = "0.14.6"
-
-[profile.wasm-release]
-inherits = "release"
-opt-level = "s"
-lto = true
-codegen-units = 1
-panic = "abort"

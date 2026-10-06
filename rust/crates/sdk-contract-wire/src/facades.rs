@@ -298,13 +298,13 @@ pub fn facade_operations(
         .operation_policies
         .iter()
         .map(|policy| {
-            let (client_streaming, server_streaming) = method_streaming(family, policy.rpc)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "Rust operation policy has no descriptor method: {}",
-                        policy.rpc
-                    )
-                });
+            let Some((client_streaming, server_streaming)) = method_streaming(family, policy.rpc)
+            else {
+                unreachable!(
+                    "Rust operation policy has no descriptor method: {}",
+                    policy.rpc
+                );
+            };
             let cancellation = if policy.rpc.ends_with("/Cancel") {
                 CancellationKind::Operation
             } else if client_streaming || server_streaming {
@@ -317,15 +317,13 @@ pub fn facade_operations(
                 client_streaming,
                 server_streaming,
                 // Keep operation metadata aligned with the Rust-owned native
-                // adapter. Machines is native gRPC with mTLS and deliberately
-                // does not require the shared bearer credential.
+                // transport option, including its bearer-authentication policy.
                 bearer_auth: family
                     .transport
                     .native
                     .options
                     .first()
-                    .map(|option| option.bearer_auth)
-                    .unwrap_or(true),
+                    .is_none_or(|option| option.bearer_auth),
                 cancellation,
                 capabilities: policy.capabilities,
                 errors: policy.errors,
@@ -344,7 +342,10 @@ fn method_streaming(
         crate::family_registry::FamilyModel::ContractSpec(spec) => spec
             .services
             .iter()
-            .find(|service| format!("{}.{}", spec.package, service.name) == service_path)
+            .find(|service| {
+                format!("{package}.{name}", package = spec.package, name = service.name)
+                    == service_path
+            })
             .and_then(|service| {
                 service
                     .methods
@@ -408,10 +409,11 @@ fn rust_policy_source_binding() -> String {
         include_bytes!("harness.rs").as_slice(),
         include_bytes!("protocol.rs").as_slice(),
         include_bytes!("type_policy.rs").as_slice(),
+        include_bytes!("php_runtime.rs").as_slice(),
     ] {
         digest.update(source);
     }
-    format!("{:X}", digest.finalize())
+    format!("{digest:X}", digest = digest.finalize())
 }
 
 fn options(
@@ -573,8 +575,14 @@ namespace Acyclic\\Runtime;
 final class GeneratedRemotePolicy
 {{
     public const SOURCE_BINDING = {binding:?};
+    public const GRPC = {grpc:?};
+    public const GRPC_WEB = {grpc_web:?};
+    public const HTTP_JSON = {http_json:?};
     public const OPTIONS = [
-"
+" ,
+        grpc = transport_name(TransportKind::Grpc),
+        grpc_web = transport_name(TransportKind::GrpcWeb),
+        http_json = transport_name(TransportKind::HttpJson),
     );
     for (runtime_name, runtime) in [
         ("native", ClientRuntime::Native),
@@ -615,7 +623,48 @@ final class GeneratedRemotePolicy
     output.push_str(&render_php_operations());
     output.push_str(&render_php_shapes());
     output.push_str(
-        r#"    private const ALL = ['grpc' => true, 'grpc_web' => true, 'http_json' => true];
+        r#"    private const ALL = [self::GRPC => true, self::GRPC_WEB => true, self::HTTP_JSON => true];
+
+    /** Return the adapters available in this generated PHP runtime. */
+    public static function installedAvailability(string $runtime = 'native'): array
+    {
+        $runtime = self::resolveRuntime($runtime);
+        if ($runtime === 'browser') {
+            return [self::GRPC => false, self::GRPC_WEB => false, self::HTTP_JSON => true];
+        }
+        return [
+            self::GRPC => extension_loaded('grpc'),
+            self::GRPC_WEB => false,
+            self::HTTP_JSON => true,
+        ];
+    }
+
+    /** Normalize an endpoint declaration into generated transport capabilities. */
+    public static function normalizeEndpoint(array|string|null $endpoint): array
+    {
+        if (is_array($endpoint)) {
+            return $endpoint;
+        }
+        if ($endpoint === null) {
+            $value = getenv('ACYCLIC_ENDPOINT_TRANSPORTS');
+            if ($value === false || trim($value) === '') {
+                return self::ALL;
+            }
+            $kinds = array_fill_keys(array_map('trim', explode(',', strtolower($value))), true);
+            return [
+                self::GRPC => isset($kinds[self::GRPC]),
+                self::GRPC_WEB => isset($kinds[self::GRPC_WEB]),
+                self::HTTP_JSON => isset($kinds[self::HTTP_JSON]),
+            ];
+        }
+        $scheme = strtolower((string) parse_url($endpoint, PHP_URL_SCHEME));
+        return match ($scheme) {
+            'grpc' => [self::GRPC => true, self::GRPC_WEB => false, self::HTTP_JSON => false],
+            'grpc-web' => [self::GRPC => false, self::GRPC_WEB => true, self::HTTP_JSON => false],
+            'http', 'https' => [self::GRPC => false, self::GRPC_WEB => false, self::HTTP_JSON => true],
+            default => self::ALL,
+        };
+    }
 
     public static function select(
         string $family,
@@ -648,6 +697,18 @@ final class GeneratedRemotePolicy
             throw new \InvalidArgumentException("no compatible transport for {$family}/{$runtime}");
         }
         return $compatible[0]['kind'];
+    }
+
+    public static function resolveRuntime(string $runtime = 'auto'): string
+    {
+        $normalized = strtolower(trim($runtime));
+        if ($normalized === '' || $normalized === 'auto' || $normalized === 'native') {
+            return 'native';
+        }
+        if ($normalized === 'browser' || $normalized === 'web' || $normalized === 'wasm') {
+            return 'browser';
+        }
+        throw new \InvalidArgumentException("unknown client runtime: {$runtime}");
     }
 
     public static function validateBearer(string $token): string
@@ -709,7 +770,7 @@ fn render_php_operations() -> String {
 fn php_strings(values: &[&str]) -> String {
     let values = values
         .iter()
-        .map(|value| format!("{:?}", value))
+        .map(|value| format!("{value:?}"))
         .collect::<Vec<_>>()
         .join(", ");
     format!("[{values}]")
@@ -931,7 +992,7 @@ fn java_identifier(value: &str) -> String {
 fn java_strings(values: &[&str]) -> String {
     let values = values
         .iter()
-        .map(|value| format!("{:?}", value))
+        .map(|value| format!("{value:?}"))
         .collect::<Vec<_>>()
         .join(", ");
     format!("List.of({values})")
@@ -1462,11 +1523,15 @@ fn resolved_shape_models() -> (
     Vec<ResolvedRequestField>,
 ) {
     (
-        resolved_rpc_methods().expect("Rust RPC identities must resolve before facade generation"),
-        resolved_request_fields()
-            .expect("Rust request shapes must resolve before facade generation"),
-        resolved_response_fields()
-            .expect("Rust response shapes must resolve before facade generation"),
+        resolved_rpc_methods().unwrap_or_else(|error| {
+            unreachable!("Rust RPC identities must resolve before facade generation: {error}")
+        }),
+        resolved_request_fields().unwrap_or_else(|error| {
+            unreachable!("Rust request shapes must resolve before facade generation: {error}")
+        }),
+        resolved_response_fields().unwrap_or_else(|error| {
+            unreachable!("Rust response shapes must resolve before facade generation: {error}")
+        }),
     )
 }
 
@@ -1563,7 +1628,11 @@ fn ruby_shape_field(field: &ResolvedRequestField) -> String {
     let constraints = ruby_string_list(&shape_constraints(field));
     format!(
         "{{ \"path\" => {:?}, \"field\" => {:?}, \"number\" => {}, \"json_name\" => {:?}, \"type_name\" => {}, \"wire_type\" => {}, \"label\" => {}, \"oneof_index\" => {}, \"presence\" => {}, \"required\" => {}, \"repeated\" => {}, \"proto3_optional\" => {}, \"semantic_type\" => {}, \"validation\" => {:?}, \"constraints\" => [{}], \"preserve_unknown_enum\" => {}, \"preserve_unknown_oneof\" => {} }}",
-        format!("{}.{}", field.message_path, field.field),
+        format!(
+            "{message}.{field}",
+            message = field.message_path,
+            field = field.field
+        ),
         field.field,
         field.number,
         field.json_name,
@@ -1837,9 +1906,15 @@ fn php_string_list(values: &[String]) -> String {
 
 fn php_shape_field(field: &ResolvedRequestField) -> String {
     let constraints = php_string_list(&shape_constraints(field));
+    let path = format!(
+        "{message}.{field}",
+        message = field.message_path,
+        field = field.field
+    );
+    let validation = format!("[{rules}]", rules = php_string_list(&field.validation_rules));
     format!(
         "['path' => {:?}, 'field' => {:?}, 'number' => {}, 'json_name' => {:?}, 'type_name' => {}, 'wire_type' => {}, 'label' => {}, 'oneof_index' => {}, 'presence' => {}, 'required' => {}, 'repeated' => {}, 'proto3_optional' => {}, 'semantic_type' => {}, 'validation' => {}, 'constraints' => [{}], 'preserve_unknown_enum' => {}, 'preserve_unknown_oneof' => {}]",
-        format!("{}.{}", field.message_path, field.field),
+        path,
         field.field,
         field.number,
         field.json_name,
@@ -1852,7 +1927,7 @@ fn php_shape_field(field: &ResolvedRequestField) -> String {
         shape_repeated(field),
         field.proto3_optional,
         shape_optional_string(field.semantic_type.as_deref(), "null"),
-        format!("[{}]", php_string_list(&field.validation_rules)),
+        validation,
         constraints,
         field.wire_type == Some(14),
         field.oneof_index.is_some(),
@@ -2076,7 +2151,11 @@ fn dart_shape_field(field: &ResolvedRequestField) -> String {
     let constraints = dart_string_list(&shape_constraints(field));
     format!(
         "<String, Object?>{{'path': {:?}, 'field': {:?}, 'number': {}, 'jsonName': {:?}, 'typeName': {}, 'wireType': {}, 'label': {}, 'oneofIndex': {}, 'presence': {}, 'required': {}, 'repeated': {}, 'proto3Optional': {}, 'semanticType': {}, 'validation': <String>[{}], 'constraints': <String>[{}], 'preserveUnknownEnum': {}, 'preserveUnknownOneof': {}}}",
-        format!("{}.{}", field.message_path, field.field),
+        format!(
+            "{message}.{field}",
+            message = field.message_path,
+            field = field.field
+        ),
         field.field,
         field.number,
         field.json_name,
@@ -2185,9 +2264,9 @@ const generatedRemoteOperations = <String, Map<String, Map<String, Object?>>>{{
 mod tests {
     use super::{
         CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, all_facade_operations,
-        facade_operations, generate_jvm_typed_clients,
-        generate_jvm_typed_requests, generate_jvm_typed_responses, generate_remote_facade,
-        generate_remote_facades, resolved_shape_models,
+        facade_operations, generate_jvm_typed_clients, generate_jvm_typed_requests,
+        generate_jvm_typed_responses, generate_remote_facade, generate_remote_facades,
+        resolved_shape_models,
     };
     use crate::family_registry::FAMILY_VIEWS;
 
@@ -2215,8 +2294,8 @@ mod tests {
             );
             for family in FAMILY_VIEWS {
                 assert!(
-                    output.source.contains(&format!("'{}'", family.name))
-                        || output.source.contains(&format!("\"{}\"", family.name)),
+                    output.source.contains(&format!("'{name}'", name = family.name))
+                        || output.source.contains(&format!("\"{name}\"", name = family.name)),
                     "{} missing {}",
                     output.language.name(),
                     family.name
@@ -2242,8 +2321,10 @@ mod tests {
                         "{path} missing {}",
                         binding.field
                     );
-                    let semantic = crate::type_policy::semantic_type(binding.semantic_type)
-                        .expect("binding semantic type");
+                    let Some(semantic) = crate::type_policy::semantic_type(binding.semantic_type)
+                    else {
+                        unreachable!("binding semantic type must be registered");
+                    };
                     assert!(
                         source.contains(semantic.rust_name),
                         "{path} missing semantic binding {}",
@@ -2287,8 +2368,10 @@ mod tests {
             );
             for binding in crate::type_policy::PUBLIC_FIELD_BINDINGS {
                 if binding.direction == crate::type_policy::PublicFieldDirection::Request {
-                    let semantic = crate::type_policy::semantic_type(binding.semantic_type)
-                        .expect("binding semantic type");
+                    let Some(semantic) = crate::type_policy::semantic_type(binding.semantic_type)
+                    else {
+                        unreachable!("binding semantic type must be registered");
+                    };
                     assert!(
                         source.contains(semantic.rust_name),
                         "{path} missing semantic client binding {}",
@@ -2299,8 +2382,14 @@ mod tests {
                         "{path} missing client parameter {}",
                         binding.field
                     );
-                    let rpc = binding.rpc().expect("request RPC");
-                    let rpc = rpc[..1].to_ascii_lowercase() + &rpc[1..];
+                    let Some(rpc) = binding.rpc() else {
+                        unreachable!("request field binding must have an RPC");
+                    };
+                    let mut characters = rpc.chars();
+                    let Some(first) = characters.next() else {
+                        unreachable!("request RPC name must not be empty");
+                    };
+                    let rpc = first.to_ascii_lowercase().to_string() + characters.as_str();
                     assert!(
                         source.contains(&rpc),
                         "{path} missing client RPC for {}",
@@ -2337,6 +2426,21 @@ mod tests {
                     language.name()
                 );
             }
+        }
+    }
+
+    #[test]
+    fn php_policy_emits_runtime_capabilities_and_endpoint_normalization() {
+        let output = generate_remote_facade(FacadeLanguage::Php).source;
+        for expected in [
+            "public const GRPC",
+            "public const GRPC_WEB",
+            "public const HTTP_JSON",
+            "installedAvailability",
+            "normalizeEndpoint",
+            "ACYCLIC_ENDPOINT_TRANSPORTS",
+        ] {
+            assert!(output.contains(expected), "PHP policy missing {expected}");
         }
     }
 
@@ -2560,7 +2664,7 @@ mod tests {
             );
             for method in &methods {
                 assert!(
-                    source.contains(&format!("{:?}", method.rpc)),
+                    source.contains(&format!("{rpc:?}", rpc = method.rpc)),
                     "{} omitted {}",
                     language.name(),
                     method.rpc

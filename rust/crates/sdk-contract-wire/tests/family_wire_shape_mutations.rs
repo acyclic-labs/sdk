@@ -1,4 +1,4 @@
-use acyclic_sdk_contract_validation::{compare_bytes, DifferenceKind};
+use acyclic_sdk_contract_validation::{DifferenceKind, compare_bytes};
 use acyclic_sdk_contract_wire::{
     actors_descriptor, filesystem::filesystem_descriptor, harness::harness_descriptor,
     inference::inference_descriptor, machines::machines_descriptor, objects::objects_descriptor,

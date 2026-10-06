@@ -77,6 +77,36 @@ test("configured Rust output defaults also apply through the thin launcher", () 
   assert.equal(value(explicit, "--output"), resolve(options.callerDirectory, "explicit"));
 });
 
+test("SDK_BUILD_ROOT owns output, shared Cargo target, and rustdoc cache", () => {
+  const configured = {
+    ...options,
+    temporaryRoot: undefined,
+    environment: { SDK_BUILD_ROOT: "/configured/sdk-build" },
+  };
+  const first = generationInvocation("generate", [], configured);
+  const second = generationInvocation("drift", ["--source-root", "other"], configured);
+  const buildRoot = resolve(options.callerDirectory, "/configured/sdk-build");
+  const generationRoot = join(buildRoot, "acyclic-sdk-generation");
+  assert.equal(first.options.env.SDK_BUILD_ROOT, buildRoot);
+  assert.equal(first.options.env.CARGO_TARGET_DIR, join(generationRoot, "cargo-target"));
+  assert.equal(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, join(generationRoot, "rustdoc-cache"));
+  assert.equal(first.options.env.CARGO_TARGET_DIR, second.options.env.CARGO_TARGET_DIR);
+  assert.equal(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, second.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR);
+  assert.equal(first.options.env.CARGO_TARGET_DIR.startsWith(first.options.env.SDK_BUILD_ROOT), true);
+});
+
+test("explicit target and docs cache remain caller-owned under SDK_BUILD_ROOT", () => {
+  const environment = {
+    SDK_BUILD_ROOT: "/configured/sdk-build",
+    CARGO_TARGET_DIR: "retained/cargo-target",
+    SDK_DOCS_RUSTDOC_CACHE_DIR: "retained/rustdoc-cache",
+  };
+  const plan = generationInvocation("check", [], { ...options, temporaryRoot: undefined, environment });
+  assert.equal(plan.options.env.CARGO_TARGET_DIR, resolve(options.callerDirectory, "retained/cargo-target"));
+  assert.equal(plan.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, resolve(options.callerDirectory, "retained/rustdoc-cache"));
+  assert.equal(plan.options.env.SDK_BUILD_ROOT, resolve(options.callerDirectory, "/configured/sdk-build"));
+});
+
 test("contract launcher keeps its PowerShell and Node entrypoints source-independent", () => {
   const powershell = readFileSync(new URL("./run-rust-contract-generator.ps1", import.meta.url), "utf8");
   const node = readFileSync(new URL("./run-rust-contract-generator.mjs", import.meta.url), "utf8");

@@ -45,7 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_REMOTE_POLICY } from "./generated-client.js";
+import { INFERENCE_REMOTE_POLICY, selectRustOwnedTransport } from "./generated-client.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
@@ -335,14 +335,18 @@ export interface InferenceEnvironment {
 /**
  * Construct the Rust-qualified remote Inference facade.
  *
- * Rust selects the best qualified transport for the runtime: native clients
- * prefer authenticated gRPC and fall back to Rust-owned HTTP, while browser
- * clients use the browser-safe HTTP projection. An explicit legacy override is
- * compatibility input only and never changes the Rust-owned selection.
+ * Rust selects the best qualified transport for the runtime. The published
+ * package currently exposes the Rust/WASM HTTP projection in both runtimes;
+ * an explicit transport is accepted only when it is present in that generated
+ * package policy.
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
-  void environment.transport;
-  void INFERENCE_REMOTE_POLICY;
+  const runtime = typeof window === "undefined" ? "native" : "browser";
+  // The generated package policy is authoritative about what this package
+  // can actually load.  Today both runtimes use the Rust/WASM HTTP client;
+  // an unavailable native companion must never be implied by the canonical
+  // Rust service policy.
+  selectRustOwnedTransport(INFERENCE_REMOTE_POLICY, runtime, environment.transport, { http: true });
   return new InferenceClient(new RustInferenceTransport(
     environment.endpoint,
     environment.token,

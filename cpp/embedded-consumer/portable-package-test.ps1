@@ -145,7 +145,8 @@ $sourceFiles = @(
     "cpp/embedded-consumer/include/acyclic/embedded.hpp",
     "cpp/embedded-consumer/main.cpp",
     "cpp/embedded-consumer/negative_lifetime_smoke.cpp",
-    "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp"
+    "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+    "cpp/embedded-consumer/raw_header_consumer.cpp"
 )
 
 Invoke-Checked "cargo" @("build", "--locked", "--offline", "--release", "--manifest-path", $manifest, "--target", $RustTarget, "--target-dir", $rustTargetDirectory)
@@ -202,7 +203,8 @@ Invoke-Checked "cmake" @("--build", $cmakeBuild)
 foreach ($executable in @(
     "acyclic_cpp_embedded_consumer.exe",
     "acyclic_cpp_embedded_negative.exe",
-    "acyclic_cpp_embedded_cross_thread.exe"
+    "acyclic_cpp_embedded_cross_thread.exe",
+    "acyclic_cpp_embedded_raw_header.exe"
 )) {
     Assert-PeMachine (Join-Path $cmakeBuild $executable) $RustTarget
 }
@@ -322,7 +324,7 @@ $platformReceipt = [ordered]@{
             source_revision = $sourceRevision; source = "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp"
             source_sha256 = (Get-FileHash -LiteralPath (Join-Path $rootPath "cpp\embedded-consumer\cross_thread_cancel_smoke.cpp") -Algorithm SHA256).Hash.ToLowerInvariant()
             package_artifact = $runtimeArtifact; package_artifact_sha256 = $runtimeArtifactHash
-            checks = @("blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install")
+            checks = @("blocked_pull_wakeup", "cross_thread_cancel", "raw_generated_header", "clean_prefix_install")
         }
     }
     ctest = $consumerStatus

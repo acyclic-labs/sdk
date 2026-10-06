@@ -2,19 +2,22 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stdlib.h>
+#include <string>
 
-// cbindgen currently emits a C header. Keep the import C-compatible while
-// allowing the generated C23 typedef branch to parse as C++.
-#define __STDC_VERSION__ 202311L
-extern "C" {
 #include "acyclic_embedded_prototype.h"
-}
-#undef __STDC_VERSION__
 
 namespace acyclic {
+
+namespace detail {
+
+inline std::string CopyDiagnostic(const AcyclicBuffer& buffer) {
+  if (buffer.ptr == nullptr || buffer.len == 0) {
+    return {};
+  }
+  return std::string(reinterpret_cast<const char*>(buffer.ptr), buffer.len);
+}
+
+}  // namespace detail
 
 class AppendResult {
  public:
@@ -38,6 +41,7 @@ class AppendResult {
   uint64_t start() const { return result_.start; }
   uint64_t end() const { return result_.end; }
   uint64_t tail() const { return result_.tail; }
+  std::string message() const { return detail::CopyDiagnostic(result_.message); }
 
  private:
   AcyclicAppendResult result_{};
@@ -67,9 +71,39 @@ class NextResult {
   uint64_t sequence() const { return result_.sequence; }
   const uint8_t* data() const { return result_.value.ptr; }
   size_t size() const { return result_.value.len; }
+  std::string message() const { return detail::CopyDiagnostic(result_.message); }
 
  private:
-  AcyclicNextResult result_;
+  AcyclicNextResult result_{};
+};
+
+class WireResult {
+ public:
+  explicit WireResult(AcyclicWireResult result) : result_(result) {}
+  ~WireResult() { acyclic_wire_result_release(result_); }
+  WireResult(const WireResult&) = delete;
+  WireResult& operator=(const WireResult&) = delete;
+  WireResult(WireResult&& other) noexcept : result_(other.result_) {
+    other.result_.response = AcyclicBuffer{};
+    other.result_.message = AcyclicBuffer{};
+  }
+  WireResult& operator=(WireResult&& other) noexcept {
+    if (this != &other) {
+      acyclic_wire_result_release(result_);
+      result_ = other.result_;
+      other.result_.response = AcyclicBuffer{};
+      other.result_.message = AcyclicBuffer{};
+    }
+    return *this;
+  }
+
+  AcyclicStatus status() const { return result_.status; }
+  const uint8_t* data() const { return result_.response.ptr; }
+  size_t size() const { return result_.response.len; }
+  std::string message() const { return detail::CopyDiagnostic(result_.message); }
+
+ private:
+  AcyclicWireResult result_{};
 };
 
 class Reader {
@@ -94,7 +128,11 @@ class Reader {
   }
 
   bool valid() const { return result_.reader != 0; }
-  NextResult next() const { return NextResult(acyclic_embedded_reader_next(result_.reader)); }
+  AcyclicStatus status() const { return result_.status; }
+  std::string message() const { return detail::CopyDiagnostic(result_.message); }
+  NextResult next() const {
+    return NextResult(acyclic_embedded_reader_next(result_.reader));
+  }
   void cancel() const { acyclic_embedded_reader_cancel(result_.reader); }
 
  private:
@@ -119,7 +157,6 @@ class Engine {
   }
 
   bool valid() const { return id_ != 0; }
-  uint64_t raw_handle_for_testing() const { return id_; }
   AppendResult append(const uint8_t* path, size_t path_len,
                       const uint8_t* value, size_t value_len) const {
     return AppendResult(acyclic_embedded_engine_append(
@@ -127,11 +164,21 @@ class Engine {
   }
   Reader read(const uint8_t* path, size_t path_len, uint64_t from,
               uint32_t limit) const {
-    return Reader(acyclic_embedded_reader_open(id_, path, path_len, from, limit, 0));
+    return Reader(acyclic_embedded_reader_open(
+        id_, path, path_len, from, limit, 0));
+  }
+  Reader follow(const uint8_t* path, size_t path_len, uint64_t from) const {
+    return Reader(acyclic_embedded_reader_open(
+        id_, path, path_len, from, 0, 1));
+  }
+  WireResult wire_call(const uint8_t* operation, size_t operation_len,
+                       const uint8_t* request, size_t request_len) const {
+    return WireResult(acyclic_embedded_engine_wire_call(
+        id_, operation, operation_len, request, request_len));
   }
 
  private:
-  uint64_t id_;
+  uint64_t id_ = 0;
 };
 
 }  // namespace acyclic

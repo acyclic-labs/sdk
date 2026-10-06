@@ -690,6 +690,7 @@ pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
 /// Validates one provider page against the request-relative hierarchy rules.
 /// This keeps custom providers from reimplementing direct-child, continuation,
 /// ordering, and hierarchy-version semantics in each language binding.
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn validate_children_page_response(
     request: &ChildrenPageRequest,
     page: &ChildrenPage,
@@ -726,6 +727,7 @@ pub(crate) fn validate_children_page_response(
     Ok(())
 }
 
+#[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) fn validate_children_page_request(
     request: &ChildrenPageRequest,
 ) -> Result<(), StreamError> {

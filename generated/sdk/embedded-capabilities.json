@@ -1,0 +1,389 @@
+{
+  "authority": "rust",
+  "capabilities": [
+    {
+      "artifact": {
+        "identity": "rust/crates/sdk-embedded-prototype",
+        "installable": false,
+        "kind": "cargo-crate",
+        "target_identities": []
+      },
+      "binding": "rust-native",
+      "coverage": "rust-implementation",
+      "family": "stream",
+      "installable": false,
+      "language": "rust",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-prototype/Cargo.toml",
+        "rust/crates/sdk-embedded-prototype/Cargo.lock",
+        "rust/crates/sdk-embedded-prototype/build.rs",
+        "rust/crates/sdk-embedded-prototype/src/lib.rs",
+        "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+        "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "acyclic_embedded_prototype.h + native library",
+        "installable": false,
+        "kind": "native-library",
+        "target_identities": []
+      },
+      "binding": "c-abi",
+      "coverage": "native-boundary",
+      "family": "stream",
+      "installable": false,
+      "language": "c",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-prototype/Cargo.toml",
+        "rust/crates/sdk-embedded-prototype/Cargo.lock",
+        "rust/crates/sdk-embedded-prototype/build.rs",
+        "rust/crates/sdk-embedded-prototype/src/lib.rs",
+        "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+        "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "acyclic_embedded_prototype shared library (ctypes C ABI)",
+        "installable": false,
+        "kind": "native-library",
+        "target_identities": []
+      },
+      "binding": "c-abi",
+      "coverage": "native-boundary",
+      "family": "stream",
+      "installable": false,
+      "language": "python",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-prototype/Cargo.toml",
+        "rust/crates/sdk-embedded-prototype/Cargo.lock",
+        "rust/crates/sdk-embedded-prototype/build.rs",
+        "rust/crates/sdk-embedded-prototype/src/lib.rs",
+        "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+        "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/stream",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "stream",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/stream-wasm/Cargo.toml",
+        "typescript/packages/stream/package.json",
+        "typescript/packages/stream/scripts/build-wasm.mjs",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm",
+        "dotnet/Acyclic.Sdk.Embedded.csproj",
+        "scripts/build-dotnet-embedded-package.ps1"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/stream",
+        "installable": true,
+        "kind": "typescript-native-package",
+        "target_identities": [
+          "@acyclic-labs/stream-darwin-arm64",
+          "@acyclic-labs/stream-darwin-x64",
+          "@acyclic-labs/stream-linux-arm64-gnu",
+          "@acyclic-labs/stream-linux-arm64-musl",
+          "@acyclic-labs/stream-linux-x64-gnu",
+          "@acyclic-labs/stream-linux-x64-musl",
+          "@acyclic-labs/stream-win32-arm64",
+          "@acyclic-labs/stream-win32-x64"
+        ]
+      },
+      "binding": "typescript-native",
+      "coverage": "package-surface",
+      "family": "stream",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/stream-wasm/Cargo.toml",
+        "typescript/packages/stream/package.json",
+        "typescript/packages/stream/scripts/build-wasm.mjs",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm",
+        "dotnet/Acyclic.Sdk.Embedded.csproj",
+        "scripts/build-dotnet-embedded-package.ps1"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "Acyclic.Sdk.Embedded",
+        "installable": true,
+        "kind": "dotnet-nuget",
+        "target_identities": []
+      },
+      "binding": "dotnet-nuget",
+      "coverage": "package-surface",
+      "family": "stream",
+      "installable": true,
+      "language": "csharp",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/stream-wasm/Cargo.toml",
+        "typescript/packages/stream/package.json",
+        "typescript/packages/stream/scripts/build-wasm.mjs",
+        "scripts/build-stream-native-package.mjs",
+        "rust/crates/sdk-stream-native/npm",
+        "dotnet/Acyclic.Sdk.Embedded.csproj",
+        "scripts/build-dotnet-embedded-package.ps1"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "rust/crates/sdk-embedded-filesystem",
+        "installable": false,
+        "kind": "cargo-crate",
+        "target_identities": []
+      },
+      "binding": "rust-native",
+      "coverage": "rust-implementation",
+      "family": "filesystem",
+      "installable": false,
+      "language": "rust",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+        "rust/crates/filesystem-wasm/Cargo.toml",
+        "rust/crates/filesystem-napi/Cargo.toml",
+        "rust/crates/filesystem-napi/build.rs",
+        "rust/crates/filesystem-napi/src/lib.rs",
+        "rust/crates/sdk-filesystem-native/npm",
+        "scripts/build-filesystem-wasm.mjs",
+        "scripts/check-filesystem-napi.mjs",
+        "typescript/packages/filesystem/src/native.ts",
+        "typescript/packages/filesystem/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/fs",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "filesystem",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+        "rust/crates/filesystem-wasm/Cargo.toml",
+        "rust/crates/filesystem-napi/Cargo.toml",
+        "rust/crates/filesystem-napi/build.rs",
+        "rust/crates/filesystem-napi/src/lib.rs",
+        "rust/crates/sdk-filesystem-native/npm",
+        "scripts/build-filesystem-wasm.mjs",
+        "scripts/check-filesystem-napi.mjs",
+        "typescript/packages/filesystem/src/native.ts",
+        "typescript/packages/filesystem/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/fs",
+        "installable": true,
+        "kind": "n-api-package",
+        "target_identities": [
+          "@acyclic-labs/fs-darwin-arm64",
+          "@acyclic-labs/fs-darwin-x64",
+          "@acyclic-labs/fs-linux-arm64",
+          "@acyclic-labs/fs-linux-x64",
+          "@acyclic-labs/fs-win32-arm64",
+          "@acyclic-labs/fs-win32-x64"
+        ]
+      },
+      "binding": "n-api",
+      "coverage": "native-boundary",
+      "family": "filesystem",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+        "rust/crates/filesystem-wasm/Cargo.toml",
+        "rust/crates/filesystem-napi/Cargo.toml",
+        "rust/crates/filesystem-napi/build.rs",
+        "rust/crates/filesystem-napi/src/lib.rs",
+        "rust/crates/sdk-filesystem-native/npm",
+        "scripts/build-filesystem-wasm.mjs",
+        "scripts/check-filesystem-napi.mjs",
+        "typescript/packages/filesystem/src/native.ts",
+        "typescript/packages/filesystem/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "rust/crates/sdk-embedded-filesystem (harness feature)",
+        "installable": false,
+        "kind": "cargo-crate",
+        "target_identities": []
+      },
+      "binding": "rust-native",
+      "coverage": "rust-implementation",
+      "family": "harness",
+      "installable": false,
+      "language": "rust",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+        "rust/crates/harness/src/wasm.rs",
+        "scripts/build-harness-wasm.mjs",
+        "typescript/packages/harness/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/harness",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "harness",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/sdk-embedded-filesystem/Cargo.toml",
+        "rust/crates/harness/src/wasm.rs",
+        "scripts/build-harness-wasm.mjs",
+        "typescript/packages/harness/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/objects",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "objects",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/objects-wasm/Cargo.toml",
+        "typescript/packages/objects/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/inference",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "inference",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/inference-wasm/Cargo.toml",
+        "typescript/packages/inference/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/machines",
+        "installable": true,
+        "kind": "wasm-package",
+        "target_identities": []
+      },
+      "binding": "wasm",
+      "coverage": "package-surface",
+      "family": "machines",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "rust/crates/machines-wasm/Cargo.toml",
+        "typescript/packages/machines/package.json"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/actors remote-web WASM",
+        "installable": true,
+        "kind": "remote-web-wasm-package",
+        "target_identities": []
+      },
+      "binding": "remote-web-wasm",
+      "coverage": "package-surface",
+      "family": "actors",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "typescript/packages/actors/package.json",
+        "typescript/packages/workers/package.json",
+        "scripts/build-remote-web-wasm.mjs"
+      ]
+    },
+    {
+      "artifact": {
+        "identity": "@acyclic-labs/workers remote-web WASM",
+        "installable": true,
+        "kind": "remote-web-wasm-package",
+        "target_identities": []
+      },
+      "binding": "remote-web-wasm",
+      "coverage": "package-surface",
+      "family": "workers",
+      "installable": true,
+      "language": "typescript",
+      "qualification": "surface-only",
+      "receipt": null,
+      "source_evidence": [
+        "typescript/packages/actors/package.json",
+        "typescript/packages/workers/package.json",
+        "scripts/build-remote-web-wasm.mjs"
+      ]
+    }
+  ],
+  "schema": "acyclic.sdk.embedded-capabilities.v1"
+}

@@ -1,0 +1,256 @@
+{
+  "artifact_sha256": {
+    "cpp/include/acyclic/rust_typed_clients.hpp": "637182c611ef86feac59a8b18ebc8cdf565e9147f0981a2fa11ab0c6c6e6abba",
+    "dart/lib/src/generated_remote_policy.dart": "58388726e7e2737e01c9813a8e47ef51d957a88863456f0fdafc8f19e4d0eb69",
+    "dart/lib/src/generated_typed.dart": "590f7c3908005b34224fec414c16f7aca3e170c49f3017199b4f99219a933970",
+    "dotnet/EmbeddedStream.Generated.cs": "bb01126292d087bfebe9eee1b30624f60a90851c432a317e1f0e247976b1bf87",
+    "dotnet/GeneratedRemotePolicy.cs": "a63e4d82c38a7975129b57341a6a06140e0ab1598782ddf1784b87e4cfd704de",
+    "dotnet/RustTypedClients.cs": "db91bf68db73d058b0967cfffbd6801519d8e6d51583eab028cc2de9aa988e47",
+    "dotnet/consumer/RustTypedFacadeConsumer.cs": "7b721aaa064d70de060058183fff59ce82e7cfade3e773a24ef6717826ae58c7",
+    "dotnet/consumer/negative/RustTypedFacadeNegative.cs.txt": "d8d931b2b059f77740daafd985a7566a804c536715ffd68d736d7ea534b21177",
+    "dotnet/strong-type-audit-20261005.json": "98ebc7243fd944ae94a802d3a7b234031cd420977b1eddf3c4c8d2652bd81818",
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.rs": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb",
+    "generated/rust/acyclic/actors/v1/acyclic.actors.v1.tonic.rs": "36063b692ed0923d3137b0eac682b942e036e22c14714d6b0651752be335af98",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.rs": "f6d1fb951c17cc36b994131d3f5807eb012cde579786c02ce7c354181c553969",
+    "generated/rust/acyclic/objects/v2/acyclic.objects.v2.tonic.rs": "49223faaca603ab24911aec53750d5efbbf08998e27939af25ba9e6a56ddd1b9",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.rs": "0585fcc914f51fd06ae1fc5e5f153471ab51894ed8555d7af52c8171268945ca",
+    "generated/rust/acyclic/workers/v1/acyclic.workers.v1.tonic.rs": "98db6103a29c75a1958d1f75cfcd6820c62dc97f77ea31ad5526deeadc353c97",
+    "generated/sdk/type-policy.json": "f2c3c4efacdd3b22d5c3530ce30dcb78827216d13eb45de8803e9436db92f049",
+    "go/client.go": "5d7d9ec2d4afbd6bb27ee829352b64b996f53a03f8979fc2bb13a6dbef189897",
+    "go/type_policy_generated_test.go": "88e1d6d10603c898f36c79ef59bcc5d9e4163510cb9a90588d4c29245804df4c",
+    "jvm/embedded/src/main/java/dev/acyclic/embedded/GeneratedStreamOperations.java": "dfec809180d0a756e8f531259ca6e039f3e9e37fc9375926cf6fbb164420243e",
+    "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java": "794bda390e4118f27645c17de61e3e243f3b16bb7bdb417c007b451d079bcbf0",
+    "jvm/src/main/java/dev/acyclic/transport/RustSemanticTypes.java": "dfc593fb0a150369e4f2b03dcaa0d2cfe1746ba9a304b5546a19e0e7c6c45717",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedClients.java": "687d7e8ac009f85c250f84d10759d971c61abf80bc8b5591867342fc405b8e32",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedRequests.java": "cf7d2e4740d3f46f8776677da3e6d779aa047b3f4a8800dc7d7ce620448724ab",
+    "jvm/src/main/java/dev/acyclic/transport/RustTypedResponses.java": "f5779a339d01b44a96eaa6f95a413ee0b1cbb3a15cb42107c08a91f9670329a7",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustSemanticTypes.kt": "4a5f4b0670e4fe2d9a393781d90237da488c1e593b4b421379503e85312efa06",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedClients.kt": "289567c712b2c8ab8d28071fe2319de3ee6a460d50dcbd38d63c10bf639f461b",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedRequests.kt": "e353595c8d45cd7d831b5e4b580ef34235635e9239dc00afc406a194e4a73574",
+    "jvm/src/main/kotlin/dev/acyclic/transport/RustTypedResponses.kt": "ddf22f4c6858c9e4fea6419c6853834747c5e314c32a61a921041af9563db07c",
+    "jvm/src/main/scala/dev/acyclic/transport/RustSemanticTypes.scala": "3e967a3892ab906b72100a74ec973ccf35e0de3510e6736789b4e05bb5a0c620",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedClients.scala": "6557b863f9f79a6cb441e6874a590bca2a37e5216e6a80a0572bc51b0864be1f",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedRequests.scala": "b4d0b395cce141bc7f4423ba57cb79b2adb4b1ea4be4648abef5a685b4c57591",
+    "jvm/src/main/scala/dev/acyclic/transport/RustTypedResponses.scala": "1edb494776060f70b6ef0c77679fbc3638f4084613cc4c5a374bbf2a880ffd2f",
+    "jvm/src/test/java/dev/acyclic/transport/RustSemanticTypesTest.java": "2d5091a2dfe29400b76b5d751e7c3231aea0a17a10b303777718697ba24da922",
+    "php/src/Acyclic/Generated/RustTyped.php": "5773a6d6312cccda21a6e18fa178f0f11fcce1d4f694464e4af272fadb5dabca",
+    "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php": "4b04f4a0d0cba78462071f9cb3f40b188c43092366f3e4d55b8434767e5ee46d",
+    "python/src/acyclic_sdk/__pycache__/remote.cpython-312.pyc": "64a444b17f71dd9847e4bb0962855ac0f1f6b22abed78abbd49a9132761d46c1",
+    "python/src/acyclic_sdk/py.typed": "c4432926a71024a12e35f50392845349bf64c127a8d44814174c4a2938d47212",
+    "python/src/acyclic_sdk/remote.py": "a3eee64466261c63292df5845020c4105b7be085dd0b84d8b42251e529161453",
+    "python/tests/__pycache__/generated_type_policy_test.cpython-312-pytest-8.3.5.pyc": "20b28db513d9685e551ef45f03d230b4ccc12fa0e79768c4107da1a50f8d4a95",
+    "python/tests/__pycache__/generated_type_policy_test.cpython-312.pyc": "29114be0bcac6121fd8178adc6839260a675c7299fdf50f66f73efb4d5728ddd",
+    "python/tests/generated_type_policy_test.py": "346ade4fec10e155de064654a71f1465e275ce0dab5df590406738adff794082",
+    "ruby/lib/acyclic_sdk/generated_remote_policy.rb": "c5f2f33215abbefdfa21897082b4d351e2135a161ee4dd0dc8fbd0263a6ead42",
+    "ruby/lib/acyclic_sdk/generated_typed.rb": "9e39b230497f74207a501b572f057f464292aed1c9f48b4453cafbde2c02363b",
+    "ruby/sig/acyclic_sdk/generated_typed.rbs": "7346beab7c6f2bd4515df0e8616c887e2f4ce527c702204f130680bfb8e11c5b",
+    "ruby/sorbet/rust_generated.rbi": "d40721d95752354fd5839a045968f1d06b68be8a64c0b2b7261673eb356caa74",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.rs": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb",
+    "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs": "36063b692ed0923d3137b0eac682b942e036e22c14714d6b0651752be335af98",
+    "rust/crates/actors/src/generated/acyclic.protocol.v1.rs": "7df572f7dcfd8ba490ec0051c3de75f9d7f412687c7e04233142daa090a1a969",
+    "rust/crates/actors/src/generated/acyclic.transport.v1.rs": "87037f9bbe293bb387cd245c5995267603c2ba4ff32278edc02cd9a01f9b791d",
+    "rust/crates/actors/src/generated/platform-client-methods.rs": "62467ddbd24202a038ee2d5dac6c510b156a213d1c5e15b932f28549d59103f7",
+    "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
+    "rust/crates/harness/src/generated/harness-archived-v2.bin": "b1d721a657f40f652a560769ff440b7a1ca44739765fd3114269b727de5474e4",
+    "rust/crates/harness/src/generated/rust-model-harness-v2.bin": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
+    "rust/crates/inference-contract/inference_model_descriptor.bin": "5f02501c4b99f496ed3acc3276c744569d4c198c091dcca7da71e146e84b4633",
+    "rust/crates/inference-contract/inference_model_descriptor_docs.bin": "95888e12e9be7bd361c570407d3a874db7a352d6ae41fff0ae9f892f72892e61",
+    "rust/crates/inference/inference_descriptor.bin": "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15",
+    "rust/crates/inference/inference_model_descriptor.bin": "5f02501c4b99f496ed3acc3276c744569d4c198c091dcca7da71e146e84b4633",
+    "rust/crates/inference/inference_model_descriptor_docs.bin": "95888e12e9be7bd361c570407d3a874db7a352d6ae41fff0ae9f892f72892e61",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.bin": "68feb507148fbf798a3e05236a4d93d36d216c260db0a6a339db5919c630e758",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin": "548d0b612dc836bcbc8b9ffc10cea78e9470226d7e5f9eb2548dd6def7804122",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.rs": "f6d1fb951c17cc36b994131d3f5807eb012cde579786c02ce7c354181c553969",
+    "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs": "49223faaca603ab24911aec53750d5efbbf08998e27939af25ba9e6a56ddd1b9",
+    "rust/crates/workers/src/generated/acyclic.protocol.v1.rs": "7df572f7dcfd8ba490ec0051c3de75f9d7f412687c7e04233142daa090a1a969",
+    "rust/crates/workers/src/generated/acyclic.transport.v1.rs": "87037f9bbe293bb387cd245c5995267603c2ba4ff32278edc02cd9a01f9b791d",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.rs": "0585fcc914f51fd06ae1fc5e5f153471ab51894ed8555d7af52c8171268945ca",
+    "rust/crates/workers/src/generated/acyclic.workers.v1.tonic.rs": "98db6103a29c75a1958d1f75cfcd6820c62dc97f77ea31ad5526deeadc353c97",
+    "rust/crates/workers/src/generated/platform-client-methods.rs": "6f2f0ef4d7cbb217a4010330fd26fe0ad7a8f279ce5ad3582d3feb3224052fe3",
+    "swift/RustTypedClients.swift": "3720aaf7b4ff77dfeaf460c234f2ad4fb30b1a4642bfd21988279c659f1e61fd"
+  },
+  "check": "generated public source types",
+  "errors": [],
+  "passed": false,
+  "required_languages": [
+    "python",
+    "go",
+    "jvm",
+    "csharp",
+    "swift",
+    "cpp"
+  ],
+  "schema": "acyclic.sdk.generated-public-type-audit.v1",
+  "verifier_sha256": "d5b751b34a3bd4c68104966d457f7d3812246c48deee3adb61b658cc057cb25e",
+  "violations": [
+    {
+      "language": "cpp",
+      "line": 674,
+      "path": "cpp\\include\\acyclic\\rust_typed_clients.hpp",
+      "reason": "C++ known oneof payload is erased to raw bytes"
+    },
+    {
+      "language": "csharp",
+      "line": 531,
+      "path": "dotnet\\RustTypedClients.cs",
+      "reason": "C# known oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "go",
+      "line": 126,
+      "path": "go\\client.go",
+      "reason": "Go oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "go",
+      "line": 134,
+      "path": "go\\client.go",
+      "reason": "Go oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "go",
+      "line": 140,
+      "path": "go\\client.go",
+      "reason": "Go oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "jvm",
+      "line": 12,
+      "path": "jvm\\src\\main\\java\\dev\\acyclic\\transport\\RustSemanticTypes.java",
+      "reason": "JVM known oneof payload is erased to ByteString"
+    },
+    {
+      "language": "jvm",
+      "line": 15,
+      "path": "jvm\\src\\main\\java\\dev\\acyclic\\transport\\RustSemanticTypes.java",
+      "reason": "JVM enum projection exposes only an untyped raw integer"
+    },
+    {
+      "language": "jvm",
+      "line": 11,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustSemanticTypes.kt",
+      "reason": "JVM known oneof payload is erased to ByteString"
+    },
+    {
+      "language": "jvm",
+      "line": 35,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustTypedResponses.kt",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 615,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustTypedResponses.kt",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 616,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustTypedResponses.kt",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 617,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustTypedResponses.kt",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 622,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustTypedResponses.kt",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 10,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustSemanticTypes.scala",
+      "reason": "JVM known oneof payload is erased to ByteString"
+    },
+    {
+      "language": "jvm",
+      "line": 50,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustTypedResponses.scala",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 920,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustTypedResponses.scala",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 921,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustTypedResponses.scala",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 922,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustTypedResponses.scala",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "jvm",
+      "line": 927,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustTypedResponses.scala",
+      "reason": "public JVM response getter exposes a raw protobuf message"
+    },
+    {
+      "language": "python",
+      "line": 38,
+      "path": "python\\src\\acyclic_sdk\\remote.py",
+      "reason": "Python oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "python",
+      "line": 47,
+      "path": "python\\src\\acyclic_sdk\\remote.py",
+      "reason": "Python oneof payload is erased to an opaque wire payload"
+    },
+    {
+      "language": "swift",
+      "line": 2029,
+      "path": "swift\\RustTypedClients.swift",
+      "reason": "Swift known oneof payload is erased to raw bytes"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\java\\dev\\acyclic\\transport\\RustSemanticTypes.java",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\kotlin\\dev\\acyclic\\transport\\RustSemanticTypes.kt",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustSemanticTypes.scala",
+      "reason": "JVM facade lacks explicit presence representation"
+    },
+    {
+      "language": "jvm",
+      "line": 0,
+      "path": "jvm\\src\\main\\scala\\dev\\acyclic\\transport\\RustSemanticTypes.scala",
+      "reason": "JVM facade lacks a discriminated oneof projection"
+    },
+    {
+      "language": "php",
+      "line": 0,
+      "path": "php\\src\\Acyclic\\Generated\\RustTyped.php",
+      "reason": "PHP facade lacks an open unknown-value projection"
+    },
+    {
+      "language": "ruby",
+      "line": 0,
+      "path": "ruby\\lib\\acyclic_sdk\\generated_typed.rb",
+      "reason": "Ruby facade lacks an open unknown-value projection"
+    }
+  ]
+}

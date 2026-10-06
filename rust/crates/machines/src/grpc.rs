@@ -81,6 +81,7 @@ impl tonic::service::Interceptor for Credential {
 type AuthenticatedTransport = tonic::service::interceptor::InterceptedService<Channel, Credential>;
 type GeneratedClient = wire::machines_service_client::MachinesServiceClient<AuthenticatedTransport>;
 
+#[allow(clippy::doc_markdown, reason = "tonic generated protocol service docs are external output")]
 mod control_wire {
     pub mod protocol {
         pub mod v1 {

@@ -12,9 +12,9 @@ require_once __DIR__ . '/GeneratedRemotePolicy.php';
 final class RemotePolicy
 {
     public const SOURCE_BINDING = GeneratedRemotePolicy::SOURCE_BINDING;
-    public const GRPC = 'grpc';
-    public const GRPC_WEB = 'grpc_web';
-    public const HTTP_JSON = 'http_json';
+    public const GRPC = GeneratedRemotePolicy::GRPC;
+    public const GRPC_WEB = GeneratedRemotePolicy::GRPC_WEB;
+    public const HTTP_JSON = GeneratedRemotePolicy::HTTP_JSON;
 
     public static function select(
         string $family,

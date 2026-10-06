@@ -4,15 +4,25 @@ from acyclic_sdk.remote import (
     ActorInvokeRequest,
     ActorInvokeResponse,
     Client,
+    ENUM_FIELDS,
     HarnessFileRefPath,
     InferenceEvaluationSpecSpecDigest,
+    HTTP_ROUTES,
     KnownOneof,
     ObjectsMutationIdentityIdempotencyKey,
     ObjectsObjectInfoEtag,
     ObjectsGetObjectRequestKey,
     ObjectsGetObjectResponse,
+    RustObjectsObjectsGetObjectResponse,
+    RustObjectsObjectsGetObjectResponseFrameBody,
+    RustObjectsObjectsGetObjectResponseFrameHeader,
+    RustObjectsObjectsGetObjectStream,
+    RustHttpError,
     ObjectsCreateBucketRequest,
     InferenceCreateEvaluationRequest,
+    RustInferenceEvaluationsCreateResponse,
+    PRESENCE_FIELDS,
+    ENUM_TYPES,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -22,12 +32,14 @@ from acyclic_sdk.remote import (
     idempotency_key_bytes,
     idempotency_key_text,
     known_oneof,
+    known_oneof_payload_for_test,
     method,
     oneof_arm,
     page_limit,
     revision_digest,
     sha256_digest,
     harness_pb2,
+    actors_pb2,
     inference_pb2,
     objects_pb2,
 )
@@ -39,9 +51,22 @@ def test_rust_owned_refinements_accept_valid_values():
     assert page_limit(1) == 1
     assert revision_digest(b"r" * 32) == b"r" * 32
     assert sha256_digest(b"d" * 32) == b"d" * 32
-    assert oneof_arm(known_oneof({"payload": 1})).tag == "known"
+    assert oneof_arm(known_oneof(known_oneof_payload_for_test())).tag == "known"
     assert oneof_arm(UnknownOneof(raw_payload=b"future")).tag == "unknown"
     assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
+    assert ENUM_FIELDS and all(item.preserves_unknown_numeric for item in ENUM_FIELDS.values())
+    for metadata in ENUM_FIELDS.values():
+        enum_type = ENUM_TYPES[metadata.enum_type]
+        known = enum_type.from_wire(metadata.values[0][1])
+        unknown = enum_type.from_wire(2147483647)
+        assert known.is_known and not known.is_unknown
+        assert unknown.is_unknown and unknown.value == 2147483647
+    unknown_enum = actors_pb2.ActorObservation(state=123)
+    round_tripped_enum = actors_pb2.ActorObservation.FromString(unknown_enum.SerializeToString())
+    assert round_tripped_enum.state == 123
+    present_oneof = actors_pb2.SubscriptionStart(cursor=7)
+    assert present_oneof.WhichOneof("start") == "cursor"
+    assert PRESENCE_FIELDS
     request = ActorInvokeRequest(actor_id=actor_id("actor"), method=method("run"))
     assert request.to_wire().actor_id == "actor"
     fields = SemanticFieldValues(
@@ -109,10 +134,65 @@ def test_rust_owned_production_object_stream_decodes_typed_frames():
         client._objects = ObjectsStub()
         stream = await client.get_object_key(ObjectsGetObjectRequestKey(key="artifact"))
         frames = [frame async for frame in stream]
-        assert isinstance(frames[0], ObjectsGetObjectResponse)
-        assert frames[0].frame == "header" and frames[0].object.etag == "etag"
-        assert frames[1].frame == "body" and frames[1].body == b"payload"
+        assert isinstance(frames[0], RustObjectsObjectsGetObjectResponse)
+        assert isinstance(frames[0].frame, RustObjectsObjectsGetObjectResponseFrameHeader)
+        assert frames[0].frame.value.object.etag == "etag"
+        assert isinstance(frames[1].frame, RustObjectsObjectsGetObjectResponseFrameBody)
+        assert frames[1].frame.value == b"payload"
     asyncio.run(run())
+
+
+def test_rust_owned_generic_response_exposes_descriptor_discriminated_choice():
+    response = RustObjectsObjectsGetObjectResponse.from_wire(
+        objects_pb2.GetObjectResponse(body=b"payload")
+    )
+    assert isinstance(
+        response.frame,
+        RustObjectsObjectsGetObjectResponseFrameBody,
+    )
+    assert response.frame.tag == "body" and response.frame.value == b"payload"
+
+
+def test_rust_owned_generated_stream_forwards_cancellation_and_close():
+    class Call:
+        def __init__(self):
+            self.was_cancelled = False
+
+        def cancel(self):
+            self.was_cancelled = True
+            return True
+
+        def cancelled(self):
+            return self.was_cancelled
+
+        def done(self):
+            return self.was_cancelled
+
+        def __aiter__(self):
+            async def iterate():
+                if False:
+                    yield None
+            return iterate()
+
+    async def run():
+        call = Call()
+        stream = RustObjectsObjectsGetObjectStream(call)
+        assert stream.cancel() and call.was_cancelled
+        assert stream.cancelled() and stream.done()
+        assert stream.close()
+        await stream.aclose()
+
+    asyncio.run(run())
+
+
+def test_rust_owned_http_errors_and_routes_preserve_wire_contract():
+    error = RustHttpError(409, b'{"code":"conflict"}')
+    assert error.status == 409 and error.detail == b'{"code":"conflict"}'
+    assert HTTP_ROUTES and all(
+        route["method"] == "POST"
+        for routes in HTTP_ROUTES.values()
+        for route in routes.values()
+    )
 
 
 def test_rust_owned_production_client_routes_reject_invalid_requests():
@@ -152,8 +232,11 @@ def test_rust_owned_nested_fields_are_in_production_request_signatures():
                 return inference_pb2.EvaluationView()
         client._buckets = Buckets()
         client._inference = type("Inference", (), {"evaluations": Evaluations()})()
-        assert (await client.create_bucket(bucket))._wire.bucket.name == "bucket"
-        assert (await client.create_evaluation(evaluation))._wire is not None
+        assert (await client.create_bucket(bucket)).bucket.name == "bucket"
+        assert isinstance(
+            await client.create_evaluation(evaluation),
+            RustInferenceEvaluationsCreateResponse,
+        )
         try:
             await client.create_bucket(ObjectsCreateBucketRequest(
                 name="bucket",

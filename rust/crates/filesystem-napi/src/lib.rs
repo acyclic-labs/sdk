@@ -1,4 +1,16 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
+//!
+//! The `NativeFs::open` factory opens the durable local engine rooted at the
+//! supplied path. Native watcher and mount behavior is selected by the Rust
+//! target and is reported through `NativeFs::capabilities` and
+//! `native_capabilities`; consumers do not carry platform feature flags.
+//! Methods retain the canonical Rust workspace, generation, transaction, and
+//! bounded-work contracts across the N-API boundary.
+//!
+//! Fixed identities and byte payloads cross N-API as `Buffer` values, while
+//! counters and sizes that can exceed JavaScript's exact integer range cross
+//! as `BigInt`. Inputs that represent bounded `u32` values are validated at
+//! the boundary before entering the Rust engine.
 
 use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
@@ -1512,6 +1524,15 @@ impl NativeResolvedFile {
         encode_file_metadata(self.inner.description().metadata)
             .map(|bytes| Buffer::from(bytes.to_vec()))
             .map_err(napi_error)
+    }
+
+    /// Cooperatively cancels this resolved file's in-flight and future reads.
+    ///
+    /// The cancellation is terminal for this handle; resolve the file again
+    /// to start future reads after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
     }
 
     /// Reads one exact logical range without another namespace lookup.
@@ -4172,6 +4193,15 @@ impl NativeVolume {
         serde_json::to_string(&self.acquisition_work).map_err(napi_error)
     }
 
+    /// Cooperatively cancels this volume's in-flight and future operations.
+    ///
+    /// The cancellation is terminal for this handle; create or open a new
+    /// volume handle to start future operations after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Computes one bounded Merkle-aware semantic generation diff.
     ///
     /// # Errors
@@ -6271,6 +6301,15 @@ impl NativeWatcher {
 
 #[napi]
 impl NativeWatcher {
+    /// Cooperatively cancels this watcher's in-flight and future operations.
+    ///
+    /// The cancellation is terminal for this handle; create a new watcher to
+    /// start future reconciliation or polling after cancellation.
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancellation.cancel();
+    }
+
     /// Establishes an authenticated baseline while preserving events that
     /// arrive during the scan. The watcher owns both checkout and source-root
     /// identity, so callers cannot accidentally reconcile the wrong tree.
@@ -7956,6 +7995,30 @@ mod tests {
             sparse_files: true,
             limits: VolumeLimits::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn native_volume_cancel_is_terminal_for_future_operations()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let fs = LocalFs::local(LocalOptions::new(root.path())).await?;
+        let cancellation = CancellationToken::new();
+        let volume = fs
+            .create_volume(test_config(), WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value;
+        let native = NativeVolume {
+            inner: volume,
+            cancellation: CancellationToken::new(),
+            acquisition_work: acyclic_fs::WorkCounters::default(),
+        };
+
+        native.cancel();
+        assert!(native
+            .diff_generations(Buffer::from(vec![0; 32]), Buffer::from(vec![0; 32]), 1)
+            .await
+            .is_err());
+        Ok(())
     }
 
     #[test]

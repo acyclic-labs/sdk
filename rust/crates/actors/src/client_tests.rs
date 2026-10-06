@@ -9,6 +9,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{
     Request, Response, Status,
     transport::{Identity, Server, ServerTlsConfig},
@@ -209,6 +210,57 @@ async fn endpoint(
             .await
     });
     (endpoint, pem, calls, shutdown, server)
+}
+
+async fn http_endpoint() -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = Vec::new();
+        while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
+            let mut chunk = [0; 1024];
+            let count = stream.read(&mut chunk).await.unwrap();
+            assert!(count > 0 && bytes.len() + count <= 64 * 1024);
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        let request = String::from_utf8(bytes).unwrap();
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fixture-token\r\n"));
+        let family = BindingFamily::Actors;
+        let version = control::control_protocol_version(family);
+        let body = serde_json::json!({
+            "protocol": {
+                "version": version,
+                "descriptorDigest": control::archived_descriptor_digest(family),
+            },
+            "supported": {
+                "capabilities": [{"name": family.name(), "version": version}],
+            },
+        })
+        .to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(), body
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+        stream.shutdown().await.unwrap();
+        vec![request.lines().next().unwrap().to_owned()]
+    });
+    (format!("http://{address}"), server)
+}
+
+#[tokio::test]
+async fn native_chooses_verified_http_without_consumer_feature_flags() {
+    let (endpoint, server) = http_endpoint().await;
+    let client = crate::connect(&endpoint, "fixture-token").await.unwrap();
+    assert_eq!(client.transport(), "http");
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(observed, ["GET /v1/sdk/actors/handshake HTTP/1.1"]);
 }
 
 #[tokio::test]

@@ -74,9 +74,10 @@ for the complete feature and target matrix.
 The `source` module contains the source lifecycle (`SourceMode`, `SourceState`,
 `SourceOptions`, and `ReconcileOutcome`) and is enabled only where its native
 watching prerequisites are available. The `s3` module provides S3 workspace
-types and bounded list cursors. S3 HTTP integration is feature-gated by
-`s3-http`; documentation should label it unavailable when that feature is not
-compiled. It does not turn the embedded backend into an S3 service.
+types and bounded list cursors. The default native profile includes the
+Rust-owned S3 HTTP adapter; disabling default features also disables that
+adapter unless `s3-http` is selected explicitly. It does not turn the embedded
+backend into an S3 service.
 
 ## Reference and verification ([lib.rs](../src/lib.rs), [wire_service.rs](../src/wire_service.rs))
 

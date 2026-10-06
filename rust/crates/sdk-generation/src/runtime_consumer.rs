@@ -1259,10 +1259,6 @@ pub fn collect_runtime_observation_receipt_with_authority(
     Ok(request_count)
 }
 
-pub fn collect_runtime_observation_receipt(project: &Path, output: &Path, source_revision: &str, manifest: &str) -> Result<usize, String> {
-    collect_runtime_observation_receipt_with_authority(project, output, source_revision, manifest, None)
-}
-
 pub fn parse_language(value: &str) -> Result<Language, String> {
     match value {
         "elixir" => Ok(Language::Elixir),

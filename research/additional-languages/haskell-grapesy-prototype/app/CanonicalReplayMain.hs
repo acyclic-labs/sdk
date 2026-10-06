@@ -14,7 +14,8 @@ import qualified Data.ByteString as BS
 import Control.Exception (SomeException, try)
 import Control.Monad (when)
 import Data.Char (isAlphaNum, toUpper)
-import Data.List (isInfixOf)
+import Data.List (isInfixOf, stripPrefix)
+import Data.Maybe (fromMaybe)
 import Data.ProtoLens.Encoding (decodeMessage, encodeMessage)
 import Network.GRPC.Client qualified as Client
 import Network.GRPC.Client.StreamType.IO qualified as Typed
@@ -29,6 +30,8 @@ import qualified Proto.Objects.V2.Objects as ObjectsV2
 import qualified Proto.Protocol.V1.Protocol as Protocol
 import qualified Proto.Stream.V2.Stream as Stream
 import qualified Proto.Workers.V1.Workers as Workers
+import System.Environment (lookupEnv)
+import Text.Read (readMaybe)
 
 type instance RequestMetadata (Protobuf Actors.ActorsService meth) = NoMetadata
 type instance ResponseInitialMetadata (Protobuf Actors.ActorsService meth) = NoMetadata
@@ -119,6 +122,16 @@ expectFrames name wanted actual = when (wanted /= actual) (fail (name ++ " respo
 
 reconnectWait :: Int -> IO ()
 reconnectWait _ = pure ()
+
+data Endpoint = Endpoint String Int
+
+parseEndpoint :: String -> Endpoint
+parseEndpoint raw =
+  let withoutScheme = fromMaybe raw (stripPrefix "http://" raw)
+      withoutTls = fromMaybe withoutScheme (stripPrefix "https://" withoutScheme)
+      (host, portText) = break (== ':') withoutTls
+      port = fromMaybe 80 (readMaybe (drop 1 portText))
+  in Endpoint host port
 type Rpc0 = Protobuf Actors.ActorsService "createActor"
 type Rpc1 = Protobuf Actors.ActorsService "updateActor"
 type Rpc2 = Protobuf Actors.ActorsService "inspectActor"
@@ -233,7 +246,9 @@ type Rpc110 = Protobuf Harness.HarnessService "cancel"
 
 main :: IO ()
 main = do
-  let address = Client.Address "127.0.0.1" 50055 Nothing
+  endpointText <- fromMaybe "http://127.0.0.1:50055" <$> lookupEnv "ACYCLIC_HASKELL_GRPC_ENDPOINT"
+  let Endpoint host port = parseEndpoint endpointText
+      address = Client.Address host (fromIntegral port) Nothing
       server = Client.ServerInsecure address
       params = def { Client.connReconnectPolicy = Client.exponentialBackoff reconnectWait 1.5 (0.05, 0.1) 3 }
   Client.withConnection params server $ \conn -> do

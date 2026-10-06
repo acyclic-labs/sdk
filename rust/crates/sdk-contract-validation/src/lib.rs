@@ -381,12 +381,12 @@ fn validate_field_numbers(
 ) -> Result<(), ValidationError> {
     let mut numbers = BTreeSet::new();
     for field in fields {
-        if let Some(number) = field.number {
-            if !numbers.insert(number) {
-                return Err(ValidationError::Duplicate {
-                    path: format!("{kind}:{parent}#number:{number}"),
-                });
-            }
+        if let Some(number) = field.number
+            && !numbers.insert(number)
+        {
+            return Err(ValidationError::Duplicate {
+                path: format!("{kind}:{parent}#number:{number}"),
+            });
         }
     }
     Ok(())

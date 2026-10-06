@@ -15,7 +15,7 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedAlias = RustOwnedSemanticString<"alias">;
 export function makeRustOwnedAlias(value: string): RustOwnedAlias { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedAlias; }
@@ -25,6 +25,10 @@ export type RustOwnedJobId = RustOwnedSemanticString<"job_id">;
 export function makeRustOwnedJobId(value: string): RustOwnedJobId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedJobId; }
 export type RustOwnedMethod = RustOwnedSemanticString<"method">;
 export function makeRustOwnedMethod(value: string): RustOwnedMethod { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedMethod; }
+export type RustOwnedRevision = RustOwnedSemanticNumber<"revision">;
+export function makeRustOwnedRevision(value: number): RustOwnedRevision { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedRevision; }
+export type RustOwnedSha256Digest = RustOwnedSemanticBytes<"sha256_digest">;
+export function makeRustOwnedSha256Digest(value: Uint8Array): RustOwnedSha256Digest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedSha256Digest; }
 export type RustOwnedVersionSha256 = RustOwnedSemanticBytes<"version_sha256">;
 export function makeRustOwnedVersionSha256(value: Uint8Array): RustOwnedVersionSha256 { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedVersionSha256; }
 
@@ -34,6 +38,8 @@ export const WORKERS_PUBLIC_FIELD_BINDINGS = [
   { family: "workers", field: "idempotency_key", semanticType: "idempotency_key_text", module: "workers", message: "SelectDeploymentRequest", wireField: "idempotency_key", direction: "request", rules: ["NonEmpty", "Utf8"] },
   { family: "workers", field: "job_id", semanticType: "job_id", module: "workers", message: "InspectJobRequest", wireField: "job_id", direction: "request", rules: ["NonEmpty", "Utf8"] },
   { family: "workers", field: "method", semanticType: "method", module: "workers", message: "InvokeVersionRequest", wireField: "method", direction: "request", rules: ["NonEmpty", "Utf8"] },
+  { family: "workers", field: "resolved_sha256", semanticType: "sha256_digest", module: "workers", message: "InvokeResponse", wireField: "resolved_sha256", direction: "response", rules: ["FixedLength(32)", "Sha256Digest"] },
+  { family: "workers", field: "resolved_revision", semanticType: "revision", module: "workers", message: "InvokeResponse", wireField: "resolved_revision", direction: "response", rules: ["NonNegative"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const WORKERS_PUBLIC_NESTED_ROUTES = [
@@ -58,7 +64,10 @@ export type RustOwnedPublicInspectJobRequest = Omit<RustWire.InspectJobRequest, 
 };
 export type RustOwnedPublicInspectJobResponse = RustWire.InspectJobResponse;
 export type RustOwnedPublicInvokeDeploymentRequest = RustWire.InvokeDeploymentRequest;
-export type RustOwnedPublicInvokeResponse = RustWire.InvokeResponse;
+export type RustOwnedPublicInvokeResponse = Omit<RustWire.InvokeResponse, "resolvedRevision" | "resolvedSha256"> & {
+  readonly resolvedRevision: RustOwnedRevision;
+  readonly resolvedSha256: RustOwnedSha256Digest;
+};
 export type RustOwnedPublicInvokeVersionRequest = Omit<RustWire.InvokeVersionRequest, "method"> & {
   readonly method: RustOwnedMethod;
 };
@@ -146,7 +155,7 @@ export const WORKERS_OPERATIONS = {
   "acyclic.workers.v1.WorkersService/InvokeDeployment": { rpc: "acyclic.workers.v1.WorkersService/InvokeDeployment", capabilities: ["workers.invoke"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["alias.non_empty_utf8", "method.non_empty_utf8"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "61e0b4c0d91acb3343699b43bc4de57a54f7e75a69fb2782dd6fd0b921093fca", sourceModelSha256: "61e0b4c0d91acb3343699b43bc4de57a54f7e75a69fb2782dd6fd0b921093fca", handshakeRoute: "/v1/sdk/workers/handshake", handshakeVersion: "acyclic.workers.v1", handshakeDescriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8", modeledOperations: 7, httpProjection: true } as const;
+export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "81159f902a90ae620a3ab5a4978d96fb714e5371c7be6764b5f4d68e5645829a", sourceModelSha256: "81159f902a90ae620a3ab5a4978d96fb714e5371c7be6764b5f4d68e5645829a", handshakeRoute: "/v1/sdk/workers/handshake", handshakeVersion: "acyclic.workers.v1", handshakeDescriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8", modeledOperations: 7, httpProjection: true } as const;
 
 export const WORKERS_HANDSHAKE = { family: "workers", route: "/v1/sdk/workers/handshake", version: "acyclic.workers.v1", descriptorDigest: "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8" } as const;
 

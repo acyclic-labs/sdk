@@ -64,6 +64,8 @@ export interface FsEngine {
   readonly capabilities: EngineCapabilities;
   createWorkspace(name: string): Promise<FsWorkspace>;
   openWorkspace(name: string): Promise<FsWorkspace>;
+  /** Cooperatively cancels this engine's in-flight and future operations when supported. */
+  cancel?(): void;
   close(): void | Promise<void>;
 }
 
@@ -445,6 +447,8 @@ export interface ResolvedFile {
   readonly kind: string;
   readonly logicalBytes: bigint;
   readonly metadataCanonicalBytes: Uint8Array;
+  /** Cooperatively cancels future reads when supported by the backing binding. */
+  cancel?(): void;
   readRange(offset: bigint, length: bigint): Promise<FileReadResult>;
   readSymbolicLink(): Promise<FileReadResult>;
 }
@@ -572,6 +576,8 @@ export type NativeWatchBatch =
     };
 
 export interface NativeWatcher {
+  /** Cooperatively cancels this watcher's in-flight and future operations. */
+  cancel(): void;
   reconcile(maximumPaths: number, maximumExtentSpans: number): Promise<WatchReconcileResult>;
   pollCapture(
     maximumChanges: number,
@@ -849,6 +855,8 @@ export interface FsVolume {
   readonly id: Uint8Array;
   /** Exact bounded work used to create, restore, or open this volume handle. */
   readonly acquisitionWork: WorkCounters;
+  /** Cooperatively cancels this volume's in-flight and future operations. */
+  cancel(): void;
   diffGenerations(
     before: Uint8Array,
     after: Uint8Array,
@@ -1196,7 +1204,7 @@ export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
   diffGenerations: WasmRawGenerationDiff;
 }, {}, {
   readonly acquisitionWork: WasmBinding.BrowserWorkCounters;
-}>;
+}> & { cancel(): void };
 
 export type WasmRawCheckout = WasmTypedClass<
   WasmBinding.BrowserCheckout,
@@ -1272,7 +1280,7 @@ export type WasmRawCheckout = WasmTypedClass<
   },
   {},
   { readonly acquisitionWork: WasmBinding.BrowserWorkCounters }
->;
+> & { cancel(): void };
 
 export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   createSpeculation: [volumeId: Uint8Array, generationId: Uint8Array, options: SpeculationOptions];
@@ -1297,7 +1305,7 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   objectCacheStats: WasmRawObjectCacheStats;
 }, {
   readonly capabilities: EngineCapabilities;
-}>;
+}> & { cancel(): void };
 export type WasmRawResolvedFile = WasmTypedClass<WasmBinding.BrowserResolvedFile, {}, {
   readRange: WasmBinding.BrowserFileReadResult;
   readSymbolicLink: WasmBinding.BrowserFileReadResult;
@@ -1336,13 +1344,13 @@ export type NativeRawLookup = NativeBoundary<NativeBinding.NativeLookup>;
 export type NativeRawMutation = NativeBoundary<NativeBinding.NativeMutationResult>;
 export type NativeRawWatchChange = NativeBoundary<NativeBinding.NativeWatchChange>;
 export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
-export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
+export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher> & { cancel(): void };
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
-export type NativeRawResolvedFile = NativeBoundary<NativeBinding.NativeResolvedFile>;
+export type NativeRawResolvedFile = NativeBoundary<NativeBinding.NativeResolvedFile> & { cancel(): void };
 export type NativeRawResolvedFiles = NativeBoundary<NativeBinding.NativeResolvedFiles>;
 export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
 export type NativeRawCheckpointResult = NativeBoundary<NativeBinding.NativeCheckpointResult>;
-export type NativeRawVolume = NativeBoundary<NativeBinding.NativeVolume>;
+export type NativeRawVolume = NativeBoundary<NativeBinding.NativeVolume> & { cancel(): void };
 export type NativeRawGenerationDiff = NativeBoundary<NativeBinding.NativeGenerationDiff>;
 export type NativeRawMergeConflict = NativeBoundary<NativeBinding.NativeMergeConflict>;
 export type NativeRawMergePreparation = NativeBoundary<NativeBinding.NativeMergePreparation>;

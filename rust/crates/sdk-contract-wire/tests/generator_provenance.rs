@@ -8,12 +8,15 @@ use acyclic_sdk_contract_wire::{
     objects::{objects_descriptor, objects_proto},
     protocol::{protocol_descriptor, protocol_proto},
     stream::{stream_descriptor, stream_proto},
+    transport_control::{control_descriptor, control_proto},
+    type_policy::TypePolicyLanguage,
     workers::{workers_descriptor, workers_proto},
 };
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use sha2::{Digest, Sha256};
 
 fn temporary_output(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("acyclic-sdk-wire-{name}-{}", std::process::id()));
@@ -72,6 +75,8 @@ fn expected_artifacts() -> Vec<(&'static str, Vec<u8>)> {
         ("harness/v2/harness.fds.bin", harness_descriptor()),
         ("protocol/v1/protocol.proto", protocol_proto().into_bytes()),
         ("protocol/v1/protocol.fds.bin", protocol_descriptor()),
+        ("transport/v1/transport.proto", control_proto().into_bytes()),
+        ("transport/v1/transport.fds.bin", control_descriptor()),
         (
             "inference/v1/inference.proto",
             inference_proto().into_bytes(),
@@ -80,6 +85,8 @@ fn expected_artifacts() -> Vec<(&'static str, Vec<u8>)> {
         ("machines/v1/machines.proto", machines_proto().into_bytes()),
         ("machines/v1/machines.fds.bin", machines_descriptor()),
         ("rust-authority.json", Vec::new()),
+        ("rust-family-goldens.json", Vec::new()),
+        ("type-policy.json", Vec::new()),
     ]
 }
 
@@ -99,6 +106,10 @@ fn assert_clean_output(root: &Path) {
             let manifest = fs::read_to_string(root.join(relative)).expect("authority manifest");
             assert!(manifest.contains("\"authority\": \"rust\""));
             assert!(manifest.contains("\"source_revision\""));
+        } else if relative == "rust-family-goldens.json" {
+            assert_rust_family_goldens(root, &fs::read(root.join(relative)).expect("family goldens"));
+        } else if relative == "type-policy.json" {
+            assert_type_policy(&fs::read(root.join(relative)).expect("type policy"));
         } else {
             assert_eq!(
                 fs::read(root.join(relative)).expect("generated artifact"),
@@ -106,6 +117,153 @@ fn assert_clean_output(root: &Path) {
                 "generated artifact drifted: {relative}"
             );
         }
+    }
+}
+
+fn assert_type_policy(bytes: &[u8]) {
+    let document: serde_json::Value =
+        serde_json::from_slice(bytes).expect("Rust type policy must be valid JSON");
+    assert_eq!(document["schema"], "acyclic.sdk.type-policy.v1");
+    assert_eq!(
+        document["source"],
+        "rust/crates/sdk-contract-wire/src/type_policy.rs"
+    );
+    let languages = document["languages"]
+        .as_array()
+        .expect("type policy languages array");
+    let actual_languages = languages
+        .iter()
+        .map(|language| {
+            language["language"]
+                .as_str()
+                .expect("type policy language id")
+                .to_owned()
+        })
+        .collect::<BTreeSet<_>>();
+    let expected_languages = TypePolicyLanguage::ALL
+        .iter()
+        .map(|language| language.id().to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        languages.len(),
+        actual_languages.len(),
+        "type policy language inventory contains duplicates"
+    );
+    assert_eq!(actual_languages, expected_languages);
+    for section in [
+        "semantic_types",
+        "field_mappings",
+        "public_field_bindings",
+        "union_variants",
+        "jvm_union_variants",
+        "rpc_methods",
+        "enum_fields",
+        "oneof_members",
+        "presence_fields",
+        "operation_rules",
+        "public_nested_routes",
+    ] {
+        assert!(
+            document[section].as_array().is_some(),
+            "type policy is missing Rust-owned section {section}"
+        );
+    }
+}
+
+fn assert_rust_family_goldens(root: &Path, bytes: &[u8]) {
+    let authority = fs::read(root.join("rust-authority.json")).expect("authority manifest");
+    let authority_hash = format!("{:x}", Sha256::digest(authority));
+    let goldens: Vec<serde_json::Value> =
+        serde_json::from_slice(bytes).expect("Rust family goldens must be valid JSON");
+    let expected = [
+        (
+            "actors",
+            "acyclic.actors.v1.ActorLimits",
+            "handlerTimeoutMillis",
+            "08ffffffffffffffffff01",
+            r#"{"handlerTimeoutMillis":"18446744073709551615"}"#,
+        ),
+        (
+            "stream",
+            "acyclic.stream.v2.Record",
+            "sequence",
+            "08ffffffffffffffffff01",
+            r#"{"sequence":"18446744073709551615"}"#,
+        ),
+        (
+            "objects",
+            "acyclic.objects.v2.ObjectInfo",
+            "size",
+            "10ffffffffffffffffff01",
+            r#"{"size":"18446744073709551615"}"#,
+        ),
+        (
+            "workers",
+            "acyclic.workers.v1.CodeVersion",
+            "sizeBytes",
+            "10ffffffffffffffffff01",
+            r#"{"sizeBytes":"18446744073709551615"}"#,
+        ),
+        (
+            "filesystem",
+            "acyclic.filesystem.v2.WorkspaceContextSnapshot",
+            "revision",
+            "10ffffffffffffffffff01",
+            r#"{"revision":"18446744073709551615"}"#,
+        ),
+        (
+            "harness",
+            "acyclic.harness.v2.OperationStatus",
+            "revision",
+            "38ffffffffffffffffff01",
+            r#"{"revision":"18446744073709551615"}"#,
+        ),
+        (
+            "inference",
+            "inference.customer.v1.ModelCapability",
+            "maximumContext",
+            "18ffffffffffffffffff01",
+            r#"{"maximumContext":"18446744073709551615"}"#,
+        ),
+        (
+            "machines",
+            "acyclic.machines.v1.SuspensionPolicy",
+            "afterIdleMs",
+            "10ffffffffffffffffff01",
+            r#"{"afterIdleMs":"18446744073709551615"}"#,
+        ),
+        (
+            "protocol",
+            "acyclic.protocol.v1.ProtocolIdentity",
+            "version",
+            "0a0b727573742d676f6c64656e",
+            r#"{"version":"rust-golden"}"#,
+        ),
+    ];
+    assert_eq!(goldens.len(), expected.len(), "Rust family golden count drifted");
+    for (golden, (family, message, field, wire_hex, json)) in goldens.iter().zip(expected) {
+        assert_eq!(golden["family"], family);
+        assert_eq!(
+            golden["kind"],
+            if family == "protocol" {
+                "string"
+            } else {
+                "uint64"
+            }
+        );
+        assert_eq!(golden["authority_manifest_sha256"], authority_hash);
+        assert_eq!(golden["message"], message);
+        assert_eq!(golden["field"], field);
+        assert_eq!(
+            golden["value"],
+            if family == "protocol" {
+                "rust-golden"
+            } else {
+                "18446744073709551615"
+            }
+        );
+        assert_eq!(golden["wire_hex"], wire_hex);
+        assert_eq!(golden["json"], json);
     }
 }
 

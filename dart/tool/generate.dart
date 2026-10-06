@@ -474,7 +474,6 @@ Future<void> main(List<String> arguments) async {
       '    return factory(value);',
       '  }',
       '}',
-      '',
     ]);
     negativeTests.addAll([
       "  test('public remote facade serializes Rust-owned value objects', () async {",
@@ -485,7 +484,7 @@ Future<void> main(List<String> arguments) async {
       '    expect(() => client.call(\'append\', {\'path\': \'\'}), throwsArgumentError);',
       '  });',
     ]);
-    negativeTests.addAll(['}', '']);
+    negativeTests.add('}');
     File('${package.path}${Platform.pathSeparator}lib${Platform.pathSeparator}src${Platform.pathSeparator}type_policy.dart')
         .writeAsStringSync('${policySource.join('\n')}\n');
     File('${package.path}${Platform.pathSeparator}test${Platform.pathSeparator}type_policy_negative_test.dart')

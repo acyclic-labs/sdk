@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import urllib.error
 
 import grpc
+from google.protobuf import json_format
+import pytest
 
 from acyclic_sdk.generated.actors.v1 import actors_pb2, actors_pb2_grpc
+from acyclic_sdk.generated.protocol.v1 import protocol_pb2
 from acyclic_sdk.generated.stream.v2 import stream_pb2, stream_pb2_grpc
+from acyclic_sdk.remote import Client, HANDSHAKE, HTTP_ROUTES, RustHttpError
 
 
 def test_wire_types_preserve_large_values_bytes_oneof_and_presence() -> None:
@@ -127,5 +133,166 @@ def test_real_loopback_server_stream_can_be_cancelled() -> None:
         finally:
             await asyncio.wait_for(server.stop(0), timeout=2)
             await asyncio.wait_for(channel.close(), timeout=2)
+
+    asyncio.run(run())
+
+
+class _HttpFixtureResponse:
+    def __init__(
+        self,
+        body: bytes = b"",
+        *,
+        status: int = 200,
+        url: str = "http://fixture.test",
+        content_type: str = "application/json",
+    ) -> None:
+        self._body = io.BytesIO(body)
+        self.status = status
+        self.url = url
+        self.headers = {"content-type": content_type}
+        self.closed = False
+
+    def geturl(self) -> str:
+        return self.url
+
+    def getcode(self) -> int:
+        return self.status
+
+    def read(self, limit: int = -1) -> bytes:
+        return self._body.read(limit)
+
+    def readline(self, limit: int = -1) -> bytes:
+        return self._body.readline(limit)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def __enter__(self) -> "_HttpFixtureResponse":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def _fixture_client() -> Client:
+    client = object.__new__(Client)
+    client._http_base = "http://fixture.test"
+    client.credentials = type("Credentials", (), {"bearer_token": "fixture-token"})()
+    client._transports = {}
+    return client
+
+
+def _handshake_json(family: str) -> bytes:
+    identity = HANDSHAKE[family]
+    response = protocol_pb2.HandshakeResponse(
+        protocol=protocol_pb2.ProtocolIdentity(
+            version=identity["version"],
+            descriptor_digest=identity["descriptor_digest"],
+        ),
+        supported=protocol_pb2.CapabilitySet(
+            capabilities=[
+                protocol_pb2.Capability(name=family, version=identity["version"]),
+            ]
+        ),
+    )
+    return json_format.MessageToJson(response).encode("utf-8")
+
+
+def test_http_handshake_fixture_is_bodyless_get_with_auth_and_contract_headers() -> None:
+    client = _fixture_client()
+    calls: list[object] = []
+    response = _HttpFixtureResponse(
+        _handshake_json("actors"),
+        url=client._http_base + "/v1/sdk/actors/handshake",
+    )
+
+    def open_http(request: object) -> _HttpFixtureResponse:
+        calls.append(request)
+        return response
+
+    client._open_http = open_http
+    client._http_handshake("actors")
+
+    request = calls[0]
+    assert request.get_method() == "GET"
+    assert request.data is None
+    assert request.get_header("Authorization") == "Bearer fixture-token"
+    assert request.get_header("Accept") == "application/json"
+    assert response.closed
+
+
+def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> None:
+    client = _fixture_client()
+    route = next(iter(HTTP_ROUTES["actors"].values()))
+    request = actors_pb2.CreateActorRequest(home_region="fixture")
+    response = _HttpFixtureResponse(b"{}")
+    calls: list[object] = []
+
+    def open_http(http_request: object) -> _HttpFixtureResponse:
+        calls.append(http_request)
+        return response
+
+    client._open_http = open_http
+    client._http_request("actors", route["method"], route["path"], request)
+    http_request = calls[0]
+    assert http_request.get_method() == route["method"]
+    assert http_request.data == json_format.MessageToJson(request).encode("utf-8")
+    assert http_request.get_header("Content-type") == "application/json"
+    assert http_request.get_header("Authorization") == "Bearer fixture-token"
+
+    error_body = b'{"code":"conflict"}'
+    error = urllib.error.HTTPError(
+        client._http_base + route["path"],
+        409,
+        "conflict",
+        {"content-type": "application/json"},
+        io.BytesIO(error_body),
+    )
+    client._open_http = lambda _request: (_ for _ in ()).throw(error)
+    with pytest.raises(RustHttpError) as raised:
+        client._http_request("actors", route["method"], route["path"], request)
+    assert raised.value.status == 409
+    assert raised.value.detail == error_body
+
+
+def test_http_handshake_fixture_rejects_redirect_and_wrong_content_type() -> None:
+    client = _fixture_client()
+    client._open_http = lambda _request: _HttpFixtureResponse(
+        _handshake_json("actors"), url="http://other.test/v1/sdk/actors/handshake"
+    )
+    with pytest.raises(RuntimeError, match="redirected"):
+        client._http_handshake("actors")
+
+    client._open_http = lambda _request: _HttpFixtureResponse(
+        _handshake_json("actors"),
+        url=client._http_base + "/v1/sdk/actors/handshake",
+        content_type="text/plain",
+    )
+    with pytest.raises(RuntimeError, match="content type"):
+        client._http_handshake("actors")
+
+
+def test_http_stream_fixture_closes_response_when_cancelled() -> None:
+    client = _fixture_client()
+    route_name, route = next(
+        (rpc, item)
+        for family_routes in HTTP_ROUTES.values()
+        for rpc, item in family_routes.items()
+        if item["streaming"]
+    )
+    family = next(family for family, routes in HTTP_ROUTES.items() if route_name in routes)
+    response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
+    client._open_http = lambda _request: response
+
+    async def run() -> None:
+        stream = await client._http_stream(
+            family,
+            route_name,
+            stream_pb2.FollowRequest(path="fixture"),
+            stream_pb2.ReadResponse,
+        )
+        assert stream.cancel()
+        assert stream.cancelled()
+        assert response.closed
 
     asyncio.run(run())

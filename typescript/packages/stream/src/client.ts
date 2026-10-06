@@ -8,7 +8,7 @@ import type {
   StreamProvider,
 } from "./types.js";
 import { StreamError } from "./types.js";
-import { isRustOwnedTransportUnavailable, selectRustOwnedTransport, STREAM_REMOTE_POLICY } from "./generated-client.js";
+import { isRustOwnedNativeLoadError, isRustOwnedTransportUnavailable, selectRustOwnedTransport, STREAM_REMOTE_POLICY } from "./generated-client.js";
 import { ensureStreamWasm, normalizeWireCommit, projectChildrenPage, validateChildrenPageRequest, validatePathValue, validateReadRequest, validateSequenceValue, validateRecordBatch, validateWireAppend, validateWireRequest } from "./contract.js";
 
 export interface Codec<Value> {
@@ -176,7 +176,7 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
         // platform companion is absent. Keep this fallback limited to module
         // availability; endpoint, credential, and handshake failures remain
         // terminal and are never replayed through another transport.
-        if (!isMissingNativeCompanion(error)) throw error;
+        if (!isMissingNativeCompanion(error) && !isRustOwnedNativeLoadError(error)) throw error;
         if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream native transport is unavailable and HTTP fallback requires fetch in this runtime");
         return new StreamClient(new HttpStreamProvider({ endpoint, token }));
       }
@@ -184,7 +184,7 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
       // The default Rust policy prefers native gRPC, but an installation may
       // omit both optional native companions.  In that case the Rust policy's
       // next option is HTTP; explicit gRPC requests still fail clearly.
-      if (requested === undefined && isRustOwnedTransportUnavailable(error)) {
+      if (requested === undefined && (isRustOwnedTransportUnavailable(error) || isRustOwnedNativeLoadError(error))) {
         if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream native transport is unavailable and HTTP fallback requires fetch in this runtime");
         return new StreamClient(new HttpStreamProvider({ endpoint, token }));
       }
@@ -201,10 +201,7 @@ function isNativeRuntime(): boolean {
 }
 
 function isMissingNativeCompanion(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const code = (error as { readonly code?: unknown }).code;
-  const message = (error as { readonly message?: unknown }).message;
-  return code === "ERR_MODULE_NOT_FOUND" || (typeof message === "string" && message.includes("has no native companion"));
+  return isRustOwnedTransportUnavailable(error) || isRustOwnedNativeLoadError(error);
 }
 
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {

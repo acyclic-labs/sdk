@@ -151,3 +151,35 @@ fn every_rendered_operation_preserves_rust_policy_metadata() {
         }
     }
 }
+
+#[test]
+fn generated_python_and_go_transport_fixtures_match_rust_http_contract() {
+    let outputs = generate_remote_facades();
+    let python = outputs
+        .iter()
+        .find(|output| output.language == FacadeLanguage::Python)
+        .expect("Python remote facade must be generated")
+        .source
+        .as_str();
+    let go = outputs
+        .iter()
+        .find(|output| output.language == FacadeLanguage::Go)
+        .expect("Go remote facade must be generated")
+        .source
+        .as_str();
+
+    // The Rust control-plane handshake is a bodyless GET. This assertion
+    // intentionally rejects the former generic POST helper wiring.
+    assert!(python.contains("urllib.request.Request(url, headers=headers, method=\"GET\")"));
+    assert!(python.contains("class _NoRedirect"));
+    assert!(python.contains("content_type != \"application/json\""));
+    assert!(python.contains("self._response.readline"));
+    assert!(python.contains("class RustHttpError"));
+    assert!(!python.contains("\"/v1/sdk/\" + family + \"/handshake\", request"));
+
+    assert!(go.contains("http.NewRequestWithContext(ctx, http.MethodGet, url, nil)"));
+    assert!(go.contains("CheckRedirect: func"));
+    assert!(go.contains("RustHTTPError"));
+    assert!(go.contains("route.Method, route.Path"));
+    assert!(!go.contains("invokeHTTP(ctx, family, \"/v1/sdk/\"+family+\"/handshake\""));
+}

@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Google.Protobuf;
@@ -134,6 +135,26 @@ public readonly record struct OperationId
 {
     private readonly byte[] _value;
     public OperationId(ReadOnlyMemory<byte> value)
+    {
+        var bytes = value.ToArray();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(value));
+        _value = bytes;
+    }
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(Value));
+        if (bytes.Length != 16) throw new ArgumentException("value has the wrong length", nameof(Value));
+        return ByteString.CopyFrom(bytes);
+    }
+}
+
+public readonly record struct WorkspaceId
+{
+    private readonly byte[] _value;
+    public WorkspaceId(ReadOnlyMemory<byte> value)
     {
         var bytes = value.ToArray();
                 if (bytes.Length == 0) throw new ArgumentException("value must be non-empty", nameof(value));
@@ -292,6 +313,21 @@ public readonly record struct Revision
     }
 }
 
+public readonly record struct UInt64
+{
+    public UInt64(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
 public readonly record struct RunId
 {
     private readonly byte[] _value;
@@ -414,6 +450,82 @@ public readonly record struct CommitId
     }
 }
 
+public readonly record struct OpaqueBytes
+{
+    private readonly byte[] _value;
+    public OpaqueBytes(ReadOnlyMemory<byte> value)
+    {
+        var bytes = value.ToArray();
+                _value = bytes;
+    }
+    public ReadOnlyMemory<byte> Value => _value ?? Array.Empty<byte>();
+    internal ByteString ToWire()
+    {
+        var bytes = _value ?? Array.Empty<byte>();
+                return ByteString.CopyFrom(bytes);
+    }
+}
+
+public readonly record struct SequenceNumber
+{
+    public SequenceNumber(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
+public readonly record struct NonNegativeCount
+{
+    public NonNegativeCount(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
+public readonly record struct PositiveCount
+{
+    public PositiveCount(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
+public readonly record struct UnixTimestampMillis
+{
+    public UnixTimestampMillis(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
 public abstract record ImmutableImage
 {
     public sealed record Managed(Sha256Digest Digest) : ImmutableImage;
@@ -429,11 +541,8 @@ public abstract record ImmutableImage
     };
 }
 
-public abstract record wire_choice(string Tag, ByteString Payload)
-{
-    public sealed record KnownOneof(string Tag, ByteString Payload) : wire_choice(Tag, Payload);
-    public sealed record Unknown(int RawTag, ByteString Payload) : wire_choice("unknown", Payload);
-}
+// Rust wire_choice unions use descriptor-bound concrete ADTs below.
+public interface WireChoice { }
 
 public sealed record ActorsInvokeActorRequest(
     ActorId ActorId,
@@ -848,6 +957,64 @@ public sealed record RustActorsUpdateActorRequest(
     }
 }
 
+public sealed record RustFilesystemApplyTransactionRequest(
+    Acyclic.Filesystem.V2.GenerationRef Base,
+    NonNegativeCount MaximumConflicts,
+    IReadOnlyList<Acyclic.Filesystem.V2.Mutation> Mutations,
+    Acyclic.Filesystem.V2.OperationOptions Operation
+)
+{
+    internal Acyclic.Filesystem.V2.ApplyTransactionRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.ApplyTransactionRequest();
+        if (Base is not null) wire.Base = Base;
+        wire.MaximumConflicts = checked((uint)MaximumConflicts.ToWire());
+        wire.Mutations.AddRange(Mutations);
+        RustOperationValidationPolicy.ValidateClientPolicy("operation.idempotency_key.16_bytes", Operation);
+        if (Operation is not null) wire.Operation = Operation;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemDiffRequest(
+    Acyclic.Filesystem.V2.GenerationRef From,
+    NonNegativeCount MaximumChanges,
+    Acyclic.Filesystem.V2.GenerationRef To
+)
+{
+    internal Acyclic.Filesystem.V2.DiffRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.DiffRequest();
+        if (From is not null) wire.From = From;
+        wire.MaximumChanges = checked((uint)MaximumChanges.ToWire());
+        if (To is not null) wire.To = To;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemImportChunk(
+    ByteString Contents,
+    OpaqueBytes Cursor,
+    OpaqueBytes ObjectId,
+    ByteString OperationId,
+    bool Terminal,
+    Acyclic.Filesystem.V2.WorkspaceRef Workspace
+)
+{
+    internal Acyclic.Filesystem.V2.ImportChunk ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.ImportChunk();
+        wire.Contents = Contents;
+        RustOperationValidationPolicy.ValidateClientPolicy("cursor.valid", Cursor);
+        wire.Cursor = Cursor.ToWire();
+        wire.ObjectId = ObjectId.ToWire();
+        wire.OperationId = OperationId;
+        wire.Terminal = Terminal;
+        if (Workspace is not null) wire.Workspace = Workspace;
+        return wire;
+    }
+}
+
 public sealed record RustFilesystemListDirectoryRequest(
     Acyclic.Filesystem.V2.GenerationRef Generation,
     Acyclic.Filesystem.V2.PageOptions Page,
@@ -883,6 +1050,28 @@ public sealed record RustFilesystemPlanExtentsRequest(
         wire.Path = Path.ToWire();
         RustOperationValidationPolicy.ValidateClientPolicy("range.valid", Range);
         if (Range is not null) wire.Range = Range;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemPlanJoinRequest(
+    RustFilesystemJoinHistoryEnum History,
+    NonNegativeCount MaximumChanges,
+    NonNegativeCount MaximumConflicts,
+    NonNegativeCount MaximumGenerations,
+    Acyclic.Filesystem.V2.GenerationRef Source,
+    Acyclic.Filesystem.V2.GenerationRef Target
+)
+{
+    internal Acyclic.Filesystem.V2.PlanJoinRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.PlanJoinRequest();
+        wire.History = (Acyclic.Filesystem.V2.JoinHistory)History.ToWire();
+        wire.MaximumChanges = checked((uint)MaximumChanges.ToWire());
+        wire.MaximumConflicts = checked((uint)MaximumConflicts.ToWire());
+        wire.MaximumGenerations = checked((uint)MaximumGenerations.ToWire());
+        if (Source is not null) wire.Source = Source;
+        if (Target is not null) wire.Target = Target;
         return wire;
     }
 }
@@ -928,6 +1117,64 @@ public sealed record RustFilesystemReadRequest(
     }
 }
 
+public sealed record RustFilesystemRebaseRequest(
+    NonNegativeCount MaximumChanges,
+    NonNegativeCount MaximumConflicts,
+    NonNegativeCount MaximumGenerations,
+    Acyclic.Filesystem.V2.OperationOptions Operation,
+    Acyclic.Filesystem.V2.WorkspaceRef Workspace
+)
+{
+    internal Acyclic.Filesystem.V2.RebaseRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.RebaseRequest();
+        wire.MaximumChanges = checked((uint)MaximumChanges.ToWire());
+        wire.MaximumConflicts = checked((uint)MaximumConflicts.ToWire());
+        wire.MaximumGenerations = checked((uint)MaximumGenerations.ToWire());
+        if (Operation is not null) wire.Operation = Operation;
+        RustOperationValidationPolicy.ValidateClientPolicy("workspace.reference.required", Workspace);
+        if (Workspace is not null) wire.Workspace = Workspace;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemRebaseTransactionRequest(
+    Acyclic.Filesystem.V2.GenerationRef Base,
+    NonNegativeCount MaximumConflicts,
+    IReadOnlyList<Acyclic.Filesystem.V2.Mutation> Mutations,
+    Acyclic.Filesystem.V2.OperationOptions Operation
+)
+{
+    internal Acyclic.Filesystem.V2.RebaseTransactionRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.RebaseTransactionRequest();
+        if (Base is not null) wire.Base = Base;
+        wire.MaximumConflicts = checked((uint)MaximumConflicts.ToWire());
+        wire.Mutations.AddRange(Mutations);
+        RustOperationValidationPolicy.ValidateClientPolicy("operation.idempotency_key.16_bytes", Operation);
+        if (Operation is not null) wire.Operation = Operation;
+        return wire;
+    }
+}
+
+public sealed record RustFilesystemRetainGenerationRequest(
+    Acyclic.Filesystem.V2.GenerationRef Generation,
+    OpaqueText Identity,
+    Acyclic.Filesystem.V2.OperationOptions Operation
+)
+{
+    internal Acyclic.Filesystem.V2.RetainGenerationRequest ToWire()
+    {
+        var wire = new Acyclic.Filesystem.V2.RetainGenerationRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("generation.reference.required", Generation);
+        if (Generation is not null) wire.Generation = Generation;
+        wire.Identity = Identity.ToWire();
+        RustOperationValidationPolicy.ValidateClientPolicy("operation.idempotency_key.16_bytes", Operation);
+        if (Operation is not null) wire.Operation = Operation;
+        return wire;
+    }
+}
+
 public sealed record RustFilesystemStatRequest(
     Acyclic.Filesystem.V2.GenerationRef Generation,
     ResourcePath Path
@@ -940,6 +1187,47 @@ public sealed record RustFilesystemStatRequest(
         if (Generation is not null) wire.Generation = Generation;
         RustOperationValidationPolicy.ValidateClientPolicy("path.valid", Path);
         wire.Path = Path.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceCreateContextRequest(
+    Inference.Customer.V1.RequestIdentity Identity,
+    IReadOnlyList<Inference.Customer.V1.Item> Items,
+    OpaqueText Model
+)
+{
+    internal Inference.Customer.V1.CreateContextRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.CreateContextRequest();
+        if (Identity is not null) wire.Identity = Identity;
+        RustOperationValidationPolicy.ValidateClientPolicy("items.bounded", Items);
+        wire.Items.AddRange(Items);
+        RustOperationValidationPolicy.ValidateClientPolicy("model.non_empty", Model);
+        wire.Model = Model.ToWire();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceGenerateRunRequest(
+    Sha256Digest Context,
+    Inference.Customer.V1.RequestIdentity Identity,
+    Inference.Customer.V1.Item Input,
+    ulong MaximumOutput,
+    ulong? Seed
+)
+{
+    internal Inference.Customer.V1.GenerateRunRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.GenerateRunRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("context.length_32", Context);
+        wire.Context = Context.ToWire();
+        if (Identity is not null) wire.Identity = Identity;
+        if (Input is not null) wire.Input = Input;
+        RustOperationValidationPolicy.ValidateClientPolicy("maximum_output.positive", MaximumOutput);
+        wire.MaximumOutput = MaximumOutput;
+        if (Seed.HasValue) wire.Seed = Seed.Value; else
+        wire.ClearSeed();
         return wire;
     }
 }
@@ -1013,7 +1301,7 @@ public sealed record RustInferenceReleaseWarmRequest(
 
 public sealed record RustInferenceRenewWarmRequest(
     Sha256Digest Commitment,
-    ulong ExpiresAtMs,
+    UnixTimestampMillis ExpiresAtMs,
     Inference.Customer.V1.RequestIdentity Identity,
     ulong? IdleTimeoutMs
 )
@@ -1023,9 +1311,31 @@ public sealed record RustInferenceRenewWarmRequest(
         var wire = new Inference.Customer.V1.RenewWarmRequest();
         RustOperationValidationPolicy.ValidateClientPolicy("commitment.length_32", Commitment);
         wire.Commitment = Commitment.ToWire();
-        wire.ExpiresAtMs = ExpiresAtMs;
+        wire.ExpiresAtMs = checked((uint)ExpiresAtMs.ToWire());
         if (Identity is not null) wire.Identity = Identity;
-        wire.IdleTimeoutMs = IdleTimeoutMs ?? 0;
+        if (IdleTimeoutMs.HasValue) wire.IdleTimeoutMs = IdleTimeoutMs.Value; else
+        wire.ClearIdleTimeoutMs();
+        return wire;
+    }
+}
+
+public sealed record RustInferenceRetainWarmRequest(
+    Sha256Digest Context,
+    UnixTimestampMillis ExpiresAtMs,
+    Inference.Customer.V1.RequestIdentity Identity,
+    Inference.Customer.V1.IdleKvPolicy IdleKv,
+    ByteString LatencyProfile
+)
+{
+    internal Inference.Customer.V1.RetainWarmRequest ToWire()
+    {
+        var wire = new Inference.Customer.V1.RetainWarmRequest();
+        RustOperationValidationPolicy.ValidateClientPolicy("context.length_32", Context);
+        wire.Context = Context.ToWire();
+        wire.ExpiresAtMs = checked((uint)ExpiresAtMs.ToWire());
+        if (Identity is not null) wire.Identity = Identity;
+        if (IdleKv is not null) wire.IdleKv = IdleKv;
+        wire.LatencyProfile = LatencyProfile;
         return wire;
     }
 }
@@ -1294,19 +1604,19 @@ public sealed record RustMachinesSetSuspensionPolicyRequest(
 }
 
 public sealed record RustMachinesUsageRequest(
-    ulong EndUnixMs,
+    UnixTimestampMillis EndUnixMs,
     MachineId Machine,
     Acyclic.Machines.V1.ProtocolVersion Protocol,
-    ulong StartUnixMs
+    UnixTimestampMillis StartUnixMs
 )
 {
     internal Acyclic.Machines.V1.UsageRequest ToWire()
     {
         var wire = new Acyclic.Machines.V1.UsageRequest();
-        wire.EndUnixMs = EndUnixMs;
+        wire.EndUnixMs = checked((uint)EndUnixMs.ToWire());
         wire.Machine = new Acyclic.Machines.V1.MachineId { Value = Machine.ToWire() };
         if (Protocol is not null) wire.Protocol = Protocol;
-        wire.StartUnixMs = StartUnixMs;
+        wire.StartUnixMs = checked((uint)StartUnixMs.ToWire());
         return wire;
     }
 }
@@ -1387,7 +1697,6 @@ public sealed record RustObjectsDeleteObjectRequest(
         if (Bucket is not null) wire.Bucket = Bucket;
         if (Mutation is not null) wire.Mutation = Mutation;
         wire.ObjectKey = ObjectKey.ToWire();
-        RustOperationValidationPolicy.ValidateClientPolicy("preconditions.atomic", Preconditions);
         if (Preconditions is not null) wire.Preconditions = Preconditions;
         return wire;
     }
@@ -1436,7 +1745,7 @@ public sealed record RustObjectsHeadObjectRequest(
 
 public sealed record RustObjectsListObjectsRequest(
     Acyclic.Objects.V2.BucketRef Bucket,
-    string ContinuationToken,
+    OpaqueText ContinuationToken,
     string Delimiter,
     PageLimit PageSize,
     string Prefix
@@ -1447,7 +1756,7 @@ public sealed record RustObjectsListObjectsRequest(
         var wire = new Acyclic.Objects.V2.ListObjectsRequest();
         RustOperationValidationPolicy.ValidateClientPolicy("bucket.name.non_empty", Bucket);
         if (Bucket is not null) wire.Bucket = Bucket;
-        wire.ContinuationToken = ContinuationToken;
+        wire.ContinuationToken = ContinuationToken.ToWire();
         wire.Delimiter = Delimiter;
         wire.PageSize = checked((uint)PageSize.ToWire());
         wire.Prefix = Prefix;
@@ -1477,7 +1786,7 @@ public sealed record RustObjectsListPartsRequest(
 }
 
 public sealed record RustStreamAppendRequest(
-    IdempotencyKeyBytes IdempotencyKey,
+    IdempotencyKeyBytes? IdempotencyKey,
     ulong? IfTail,
     ResourcePath Path,
     IReadOnlyList<ByteString> Records
@@ -1486,8 +1795,10 @@ public sealed record RustStreamAppendRequest(
     internal Acyclic.Stream.V2.AppendRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.AppendRequest();
-        wire.IdempotencyKey = IdempotencyKey.ToWire();
-        wire.IfTail = IfTail ?? 0;
+        if (IdempotencyKey.HasValue) wire.IdempotencyKey = IdempotencyKey.Value.ToWire(); else
+        wire.ClearIdempotencyKey();
+        if (IfTail.HasValue) wire.IfTail = IfTail.Value; else
+        wire.ClearIfTail();
         RustOperationValidationPolicy.ValidateClientPolicy("path.non_empty_utf8", Path);
         wire.Path = Path.ToWire();
         RustOperationValidationPolicy.ValidateClientPolicy("records.max_bytes", Records);
@@ -1497,27 +1808,30 @@ public sealed record RustStreamAppendRequest(
 }
 
 public sealed record RustStreamChildrenPageRequest(
-    string After,
-    ByteString HierarchyVersion,
+    string? After,
+    RevisionDigest? HierarchyVersion,
     StreamPageLimit Limit,
-    string Parent
+    string? Parent
 )
 {
     internal Acyclic.Stream.V2.ChildrenPageRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.ChildrenPageRequest();
-        wire.After = After;
-        wire.HierarchyVersion = HierarchyVersion;
+        if (After is not null) wire.After = After; else
+        wire.ClearAfter();
+        if (HierarchyVersion.HasValue) wire.HierarchyVersion = HierarchyVersion.Value.ToWire(); else
+        wire.ClearHierarchyVersion();
         RustOperationValidationPolicy.ValidateClientPolicy("limit.max_stream_items", Limit);
         wire.Limit = checked((uint)Limit.ToWire());
-        wire.Parent = Parent;
+        if (Parent is not null) wire.Parent = Parent; else
+        wire.ClearParent();
         return wire;
     }
 }
 
 public sealed record RustStreamChildrenRequest(
     StreamPageLimit Limit,
-    string Parent
+    string? Parent
 )
 {
     internal Acyclic.Stream.V2.ChildrenRequest ToWire()
@@ -1525,7 +1839,8 @@ public sealed record RustStreamChildrenRequest(
         var wire = new Acyclic.Stream.V2.ChildrenRequest();
         RustOperationValidationPolicy.ValidateClientPolicy("limit.max_stream_items", Limit);
         wire.Limit = checked((uint)Limit.ToWire());
-        wire.Parent = Parent;
+        if (Parent is not null) wire.Parent = Parent; else
+        wire.ClearParent();
         return wire;
     }
 }
@@ -1541,7 +1856,8 @@ public sealed record RustStreamCommitRequest(
     {
         var wire = new Acyclic.Stream.V2.CommitRequest();
         wire.Conditions.AddRange(Conditions);
-        wire.DeadlineUnixMillis = DeadlineUnixMillis ?? 0;
+        if (DeadlineUnixMillis.HasValue) wire.DeadlineUnixMillis = DeadlineUnixMillis.Value; else
+        wire.ClearDeadlineUnixMillis();
         wire.IdempotencyKey = IdempotencyKey.ToWire();
         RustOperationValidationPolicy.ValidateClientPolicy("mutations.max_command_bytes", Mutations);
         wire.Mutations.AddRange(Mutations);
@@ -1567,17 +1883,19 @@ public sealed record RustStreamFollowRequest(
 public sealed record RustStreamForkRequest(
     ulong? AtTail,
     DestinationName Destination,
-    IdempotencyKeyBytes IdempotencyKey,
+    IdempotencyKeyBytes? IdempotencyKey,
     SourceName Source
 )
 {
     internal Acyclic.Stream.V2.ForkRequest ToWire()
     {
         var wire = new Acyclic.Stream.V2.ForkRequest();
-        wire.AtTail = AtTail ?? 0;
+        if (AtTail.HasValue) wire.AtTail = AtTail.Value; else
+        wire.ClearAtTail();
         RustOperationValidationPolicy.ValidateClientPolicy("destination.non_empty_utf8", Destination);
         wire.Destination = Destination.ToWire();
-        wire.IdempotencyKey = IdempotencyKey.ToWire();
+        if (IdempotencyKey.HasValue) wire.IdempotencyKey = IdempotencyKey.Value.ToWire(); else
+        wire.ClearIdempotencyKey();
         RustOperationValidationPolicy.ValidateClientPolicy("source.non_empty_utf8", Source);
         wire.Source = Source.ToWire();
         return wire;
@@ -1743,7 +2061,8 @@ public sealed record RustWorkersSelectDeploymentRequest(
         var wire = new Acyclic.Workers.V1.SelectDeploymentRequest();
         RustOperationValidationPolicy.ValidateClientPolicy("alias.non_empty_utf8", Alias);
         wire.Alias = Alias.ToWire();
-        wire.ExpectedRevision = ExpectedRevision ?? 0;
+        if (ExpectedRevision.HasValue) wire.ExpectedRevision = ExpectedRevision.Value; else
+        wire.ClearExpectedRevision();
         wire.IdempotencyKey = IdempotencyKey.ToWire();
         RustOperationValidationPolicy.ValidateClientPolicy("version_sha256.length_32", VersionSha256);
         wire.VersionSha256 = VersionSha256.ToWire();
@@ -1792,13 +2111,28 @@ public sealed record ObjectsGetObjectHeader(OpaqueText? Etag)
     internal static ObjectsGetObjectHeader FromWire(Acyclic.Objects.V2.GetObjectHeader message) => new(message.Object is null || string.IsNullOrEmpty(message.Object.Etag) ? null : new OpaqueText(message.Object.Etag));
 }
 
+public readonly record struct ObjectsRequestId
+{
+    public ObjectsRequestId(string value)
+    {
+        if (string.IsNullOrEmpty(value)) throw new ArgumentException("Objects request IDs must be non-empty", nameof(value));
+        Value = value;
+    }
+    public string Value { get; }
+    internal static ObjectsRequestId FromWire(string value) => new(value);
+}
+
+public sealed record ObjectsErrorDetail(RustObjectsErrorCodeEnum Code, ObjectsRequestId RequestId)
+{
+    internal static ObjectsErrorDetail FromWire(Acyclic.Objects.V2.ErrorDetail message) => new(new RustObjectsErrorCodeEnum((int)message.Code), ObjectsRequestId.FromWire(message.RequestId));
+}
+
 public abstract record ObjectsGetObjectFrame
 {
     public sealed record Header(ObjectsGetObjectHeader Value) : ObjectsGetObjectFrame;
     public sealed record Body(ByteString Value) : ObjectsGetObjectFrame;
-    public sealed record Error(Acyclic.Objects.V2.ErrorDetail Value) : ObjectsGetObjectFrame;
-    // Retain the original protobuf message when a newer sender adds an unknown oneof arm.
-    public sealed record Unknown(Acyclic.Objects.V2.GetObjectResponse Wire) : ObjectsGetObjectFrame;
+    public sealed record Error(ObjectsErrorDetail Value) : ObjectsGetObjectFrame;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : ObjectsGetObjectFrame;
     public sealed record Empty : ObjectsGetObjectFrame;
 }
 
@@ -1808,8 +2142,8 @@ public sealed record ObjectsGetObjectResponse(ObjectsGetObjectFrame Frame)
     {
         Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new(new ObjectsGetObjectFrame.Header(ObjectsGetObjectHeader.FromWire(message.Header))),
         Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new(new ObjectsGetObjectFrame.Body(message.Body)),
-        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(message.Error)),
-        _ => new(new ObjectsGetObjectFrame.Unknown(message)),
+        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new(new ObjectsGetObjectFrame.Error(ObjectsErrorDetail.FromWire(message.Error))),
+        _ => new(new ObjectsGetObjectFrame.Unknown((int)message.FrameCase, ByteString.CopyFrom(message.ToByteArray()))),
     };
 }
 
@@ -1823,14 +2157,4299 @@ public sealed class ObjectsGetObjectStream
     }
 }
 
-public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, Acyclic.Objects.V2.ObjectMetadata Metadata, Google.Protobuf.WellKnownTypes.Timestamp LastModified, Acyclic.Objects.V2.ObjectInfo Wire)
+public sealed record ObjectsObjectMetadata(string ContentType, IReadOnlyDictionary<string, string> User, string ContentEncoding, string CacheControl, string ContentDisposition, string ContentLanguage, long? ExpiresUnixSeconds)
+{
+    internal static ObjectsObjectMetadata FromWire(Acyclic.Objects.V2.ObjectMetadata message) => new(message.ContentType, new Dictionary<string, string>(message.User), message.ContentEncoding, message.CacheControl, message.ContentDisposition, message.ContentLanguage, message.HasExpiresUnixSeconds ? message.ExpiresUnixSeconds : null);
+}
+
+public readonly record struct ObjectsTimestamp
+{
+    public ObjectsTimestamp(long seconds, int nanos)
+    {
+        if (nanos is < 0 or > 999999999) throw new ArgumentOutOfRangeException(nameof(nanos));
+        Seconds = seconds;
+        Nanos = nanos;
+    }
+    public long Seconds { get; }
+    public int Nanos { get; }
+    internal static ObjectsTimestamp FromWire(Google.Protobuf.WellKnownTypes.Timestamp value) => new(value.Seconds, value.Nanos);
+}
+
+public sealed record ObjectsObjectInfo(OpaqueText? Etag, ulong Size, ObjectsObjectMetadata? Metadata, ObjectsTimestamp? LastModified)
 {
     internal static ObjectsObjectInfo FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(
         string.IsNullOrEmpty(message.Etag) ? null : new OpaqueText(message.Etag),
         message.Size,
-        message.Metadata,
-        message.LastModified,
-        message);
+        message.Metadata is null ? null : ObjectsObjectMetadata.FromWire(message.Metadata),
+        message.LastModified is null ? null : ObjectsTimestamp.FromWire(message.LastModified));
+}
+
+public sealed class ObjectsPutObjectStream : IDisposable
+{
+    private readonly AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> _inner;
+    internal ObjectsPutObjectStream(AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> inner) => _inner = inner;
+    public IClientStreamWriter<Acyclic.Objects.V2.PutObjectRequest> RequestStream => _inner.RequestStream;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Task<ObjectsObjectInfo> ResponseAsync => MapResponseAsync(_inner.ResponseAsync);
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public void Dispose() => _inner.Dispose();
+    private static async Task<ObjectsObjectInfo> MapResponseAsync(Task<Acyclic.Objects.V2.ObjectInfo> response) => ObjectsObjectInfo.FromWire(await response.ConfigureAwait(false));
+}
+
+public readonly record struct RustActorsActorStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Actors.V1.ActorState), Number);
+    public Acyclic.Actors.V1.ActorState? Known => IsKnown ? (Acyclic.Actors.V1.ActorState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustActorsActorStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustActorsSubscriptionStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Actors.V1.SubscriptionState), Number);
+    public Acyclic.Actors.V1.SubscriptionState? Known => IsKnown ? (Acyclic.Actors.V1.SubscriptionState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustActorsSubscriptionStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemConflictUseEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.ConflictUse), Number);
+    public Acyclic.Filesystem.V2.ConflictUse? Known => IsKnown ? (Acyclic.Filesystem.V2.ConflictUse)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemConflictUseEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemExtentKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.ExtentKind), Number);
+    public Acyclic.Filesystem.V2.ExtentKind? Known => IsKnown ? (Acyclic.Filesystem.V2.ExtentKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemExtentKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemFileKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.FileKind), Number);
+    public Acyclic.Filesystem.V2.FileKind? Known => IsKnown ? (Acyclic.Filesystem.V2.FileKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemFileKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemFilesystemProfileEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.FilesystemProfile), Number);
+    public Acyclic.Filesystem.V2.FilesystemProfile? Known => IsKnown ? (Acyclic.Filesystem.V2.FilesystemProfile)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemFilesystemProfileEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemJoinHistoryEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.JoinHistory), Number);
+    public Acyclic.Filesystem.V2.JoinHistory? Known => IsKnown ? (Acyclic.Filesystem.V2.JoinHistory)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemJoinHistoryEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemJoinStatusEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.JoinStatus), Number);
+    public Acyclic.Filesystem.V2.JoinStatus? Known => IsKnown ? (Acyclic.Filesystem.V2.JoinStatus)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemJoinStatusEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemMutationStatusEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.MutationStatus), Number);
+    public Acyclic.Filesystem.V2.MutationStatus? Known => IsKnown ? (Acyclic.Filesystem.V2.MutationStatus)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemMutationStatusEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemNameEncodingEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.NameEncoding), Number);
+    public Acyclic.Filesystem.V2.NameEncoding? Known => IsKnown ? (Acyclic.Filesystem.V2.NameEncoding)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemNameEncodingEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemRebaseStatusEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.RebaseStatus), Number);
+    public Acyclic.Filesystem.V2.RebaseStatus? Known => IsKnown ? (Acyclic.Filesystem.V2.RebaseStatus)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemRebaseStatusEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemSourceInvalidationReasonEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.SourceInvalidationReason), Number);
+    public Acyclic.Filesystem.V2.SourceInvalidationReason? Known => IsKnown ? (Acyclic.Filesystem.V2.SourceInvalidationReason)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemSourceInvalidationReasonEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemSourceStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.SourceState), Number);
+    public Acyclic.Filesystem.V2.SourceState? Known => IsKnown ? (Acyclic.Filesystem.V2.SourceState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemSourceStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustFilesystemSparseTargetEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Filesystem.V2.SparseTarget), Number);
+    public Acyclic.Filesystem.V2.SparseTarget? Known => IsKnown ? (Acyclic.Filesystem.V2.SparseTarget)Number : null;
+    internal int ToWire() => Number;
+    internal static RustFilesystemSparseTargetEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustHarnessAdmissionStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Harness.V2.AdmissionState), Number);
+    public Acyclic.Harness.V2.AdmissionState? Known => IsKnown ? (Acyclic.Harness.V2.AdmissionState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustHarnessAdmissionStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustHarnessAggregateKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Harness.V2.AggregateKind), Number);
+    public Acyclic.Harness.V2.AggregateKind? Known => IsKnown ? (Acyclic.Harness.V2.AggregateKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustHarnessAggregateKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustHarnessCompletionStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Harness.V2.CompletionState), Number);
+    public Acyclic.Harness.V2.CompletionState? Known => IsKnown ? (Acyclic.Harness.V2.CompletionState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustHarnessCompletionStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustHarnessErrorCodeEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Harness.V2.ErrorCode), Number);
+    public Acyclic.Harness.V2.ErrorCode? Known => IsKnown ? (Acyclic.Harness.V2.ErrorCode)Number : null;
+    internal int ToWire() => Number;
+    internal static RustHarnessErrorCodeEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerEvaluationAggregationEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.EvaluationAggregation), Number);
+    public Inference.Customer.V1.EvaluationAggregation? Known => IsKnown ? (Inference.Customer.V1.EvaluationAggregation)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerEvaluationAggregationEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerEvaluationCaseOutcomeEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.EvaluationCaseOutcome), Number);
+    public Inference.Customer.V1.EvaluationCaseOutcome? Known => IsKnown ? (Inference.Customer.V1.EvaluationCaseOutcome)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerEvaluationCaseOutcomeEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerEvaluationStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.EvaluationState), Number);
+    public Inference.Customer.V1.EvaluationState? Known => IsKnown ? (Inference.Customer.V1.EvaluationState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerEvaluationStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerItemKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.ItemKind), Number);
+    public Inference.Customer.V1.ItemKind? Known => IsKnown ? (Inference.Customer.V1.ItemKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerItemKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerRunTerminalEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.RunTerminal), Number);
+    public Inference.Customer.V1.RunTerminal? Known => IsKnown ? (Inference.Customer.V1.RunTerminal)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerRunTerminalEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustInferenceCustomerWarmStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Inference.Customer.V1.WarmState), Number);
+    public Inference.Customer.V1.WarmState? Known => IsKnown ? (Inference.Customer.V1.WarmState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustInferenceCustomerWarmStateEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesCapabilityEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.Capability), Number);
+    public Acyclic.Machines.V1.Capability? Known => IsKnown ? (Acyclic.Machines.V1.Capability)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesCapabilityEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesCompatibilityModeEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.CompatibilityMode), Number);
+    public Acyclic.Machines.V1.CompatibilityMode? Known => IsKnown ? (Acyclic.Machines.V1.CompatibilityMode)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesCompatibilityModeEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesEventKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.EventKind), Number);
+    public Acyclic.Machines.V1.EventKind? Known => IsKnown ? (Acyclic.Machines.V1.EventKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesEventKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesExpirationKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.ExpirationKind), Number);
+    public Acyclic.Machines.V1.ExpirationKind? Known => IsKnown ? (Acyclic.Machines.V1.ExpirationKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesExpirationKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesForkFidelityEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.ForkFidelity), Number);
+    public Acyclic.Machines.V1.ForkFidelity? Known => IsKnown ? (Acyclic.Machines.V1.ForkFidelity)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesForkFidelityEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesImageKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.ImageKind), Number);
+    public Acyclic.Machines.V1.ImageKind? Known => IsKnown ? (Acyclic.Machines.V1.ImageKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesImageKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesMachineStatusEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.MachineStatus), Number);
+    public Acyclic.Machines.V1.MachineStatus? Known => IsKnown ? (Acyclic.Machines.V1.MachineStatus)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesMachineStatusEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesOperationStatusEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.OperationStatus), Number);
+    public Acyclic.Machines.V1.OperationStatus? Known => IsKnown ? (Acyclic.Machines.V1.OperationStatus)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesOperationStatusEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustMachinesPressureKindEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Machines.V1.PressureKind), Number);
+    public Acyclic.Machines.V1.PressureKind? Known => IsKnown ? (Acyclic.Machines.V1.PressureKind)Number : null;
+    internal int ToWire() => Number;
+    internal static RustMachinesPressureKindEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustObjectsErrorCodeEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Objects.V2.ErrorCode), Number);
+    public Acyclic.Objects.V2.ErrorCode? Known => IsKnown ? (Acyclic.Objects.V2.ErrorCode)Number : null;
+    internal int ToWire() => Number;
+    internal static RustObjectsErrorCodeEnum FromWire(int value) => new(value);
+}
+
+public readonly record struct RustWorkersJobStateEnum(int Number)
+{
+    public bool IsKnown => Enum.IsDefined(typeof(Acyclic.Workers.V1.JobState), Number);
+    public Acyclic.Workers.V1.JobState? Known => IsKnown ? (Acyclic.Workers.V1.JobState)Number : null;
+    internal int ToWire() => Number;
+    internal static RustWorkersJobStateEnum FromWire(int value) => new(value);
+}
+
+public abstract record RustActorsSubscriptionStartStartChoice : WireChoice
+{
+    public sealed record Cursor(ulong Value) : RustActorsSubscriptionStartStartChoice;
+    public sealed record CurrentHead(bool Value) : RustActorsSubscriptionStartStartChoice;
+    public sealed record None : RustActorsSubscriptionStartStartChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustActorsSubscriptionStartStartChoice;
+    internal static RustActorsSubscriptionStartStartChoice FromWire(Acyclic.Actors.V1.SubscriptionStart wire) => wire.StartCase switch
+    {
+        Acyclic.Actors.V1.SubscriptionStart.StartOneofCase.Cursor => new Cursor(wire.Cursor),
+        Acyclic.Actors.V1.SubscriptionStart.StartOneofCase.CurrentHead => new CurrentHead(wire.CurrentHead),
+        Acyclic.Actors.V1.SubscriptionStart.StartOneofCase.None => new None(),
+        _ => new Unknown((int)wire.StartCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemConflictRegionChoice : WireChoice
+{
+    public sealed record FileRecord(RustFilesystemFileConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record Metadata(RustFilesystemFileConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record FileLength(RustFilesystemFileConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record ContentRange(RustFilesystemContentConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record SparseSeek(RustFilesystemSparseConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record DirectoryName(RustFilesystemDirectoryNameConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record DirectoryRange(RustFilesystemDirectoryRangeConflictValue? Value) : RustFilesystemConflictRegionChoice;
+    public sealed record None : RustFilesystemConflictRegionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemConflictRegionChoice;
+    internal static RustFilesystemConflictRegionChoice FromWire(Acyclic.Filesystem.V2.Conflict wire) => wire.RegionCase switch
+    {
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.FileRecord => new FileRecord(wire.FileRecord is null ? null : RustFilesystemFileConflictValue.FromWire(wire.FileRecord)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.Metadata => new Metadata(wire.Metadata is null ? null : RustFilesystemFileConflictValue.FromWire(wire.Metadata)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.FileLength => new FileLength(wire.FileLength is null ? null : RustFilesystemFileConflictValue.FromWire(wire.FileLength)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.ContentRange => new ContentRange(wire.ContentRange is null ? null : RustFilesystemContentConflictValue.FromWire(wire.ContentRange)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.SparseSeek => new SparseSeek(wire.SparseSeek is null ? null : RustFilesystemSparseConflictValue.FromWire(wire.SparseSeek)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.DirectoryName => new DirectoryName(wire.DirectoryName is null ? null : RustFilesystemDirectoryNameConflictValue.FromWire(wire.DirectoryName)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.DirectoryRange => new DirectoryRange(wire.DirectoryRange is null ? null : RustFilesystemDirectoryRangeConflictValue.FromWire(wire.DirectoryRange)),
+        Acyclic.Filesystem.V2.Conflict.RegionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.RegionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemCredentialResponseCredentialChoice : WireChoice
+{
+    public sealed record BearerToken(OpaqueText Value) : RustFilesystemCredentialResponseCredentialChoice;
+    public sealed record S3(RustFilesystemS3CredentialValue? Value) : RustFilesystemCredentialResponseCredentialChoice;
+    public sealed record None : RustFilesystemCredentialResponseCredentialChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemCredentialResponseCredentialChoice;
+    internal static RustFilesystemCredentialResponseCredentialChoice FromWire(Acyclic.Filesystem.V2.CredentialResponse wire) => wire.CredentialCase switch
+    {
+        Acyclic.Filesystem.V2.CredentialResponse.CredentialOneofCase.BearerToken => new BearerToken(new OpaqueText(wire.BearerToken)),
+        Acyclic.Filesystem.V2.CredentialResponse.CredentialOneofCase.S3 => new S3(wire.S3 is null ? null : RustFilesystemS3CredentialValue.FromWire(wire.S3)),
+        Acyclic.Filesystem.V2.CredentialResponse.CredentialOneofCase.None => new None(),
+        _ => new Unknown((int)wire.CredentialCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemMutationMutationChoice : WireChoice
+{
+    public sealed record CreateFile(RustFilesystemCreateFileValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record CreateDirectory(RustFilesystemCreateDirectoryValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record CreateSymbolicLink(RustFilesystemCreateSymbolicLinkValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record Remove(RustFilesystemRemoveValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record Rename(RustFilesystemRenameValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record HardLink(RustFilesystemHardLinkValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record Write(RustFilesystemWriteValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record Resize(RustFilesystemResizeValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record ZeroRange(RustFilesystemZeroRangeValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record Preallocate(RustFilesystemPreallocateValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record CloneRange(RustFilesystemCloneRangeValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record SetMetadata(RustFilesystemSetMetadataValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record CreateDirectories(RustFilesystemCreateDirectoriesValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record PutFile(RustFilesystemPutFileValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record CopyFile(RustFilesystemCopyFileValue? Value) : RustFilesystemMutationMutationChoice;
+    public sealed record None : RustFilesystemMutationMutationChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemMutationMutationChoice;
+    internal static RustFilesystemMutationMutationChoice FromWire(Acyclic.Filesystem.V2.Mutation wire) => wire.MutationCase switch
+    {
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CreateFile => new CreateFile(wire.CreateFile is null ? null : RustFilesystemCreateFileValue.FromWire(wire.CreateFile)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CreateDirectory => new CreateDirectory(wire.CreateDirectory is null ? null : RustFilesystemCreateDirectoryValue.FromWire(wire.CreateDirectory)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CreateSymbolicLink => new CreateSymbolicLink(wire.CreateSymbolicLink is null ? null : RustFilesystemCreateSymbolicLinkValue.FromWire(wire.CreateSymbolicLink)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.Remove => new Remove(wire.Remove is null ? null : RustFilesystemRemoveValue.FromWire(wire.Remove)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.Rename => new Rename(wire.Rename is null ? null : RustFilesystemRenameValue.FromWire(wire.Rename)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.HardLink => new HardLink(wire.HardLink is null ? null : RustFilesystemHardLinkValue.FromWire(wire.HardLink)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.Write => new Write(wire.Write is null ? null : RustFilesystemWriteValue.FromWire(wire.Write)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.Resize => new Resize(wire.Resize is null ? null : RustFilesystemResizeValue.FromWire(wire.Resize)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.ZeroRange => new ZeroRange(wire.ZeroRange is null ? null : RustFilesystemZeroRangeValue.FromWire(wire.ZeroRange)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.Preallocate => new Preallocate(wire.Preallocate is null ? null : RustFilesystemPreallocateValue.FromWire(wire.Preallocate)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CloneRange => new CloneRange(wire.CloneRange is null ? null : RustFilesystemCloneRangeValue.FromWire(wire.CloneRange)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.SetMetadata => new SetMetadata(wire.SetMetadata is null ? null : RustFilesystemSetMetadataValue.FromWire(wire.SetMetadata)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CreateDirectories => new CreateDirectories(wire.CreateDirectories is null ? null : RustFilesystemCreateDirectoriesValue.FromWire(wire.CreateDirectories)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.PutFile => new PutFile(wire.PutFile is null ? null : RustFilesystemPutFileValue.FromWire(wire.PutFile)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.CopyFile => new CopyFile(wire.CopyFile is null ? null : RustFilesystemCopyFileValue.FromWire(wire.CopyFile)),
+        Acyclic.Filesystem.V2.Mutation.MutationOneofCase.None => new None(),
+        _ => new Unknown((int)wire.MutationCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemOpenWorkspaceRequestSelectorChoice : WireChoice
+{
+    public sealed record Workspace(RustFilesystemWorkspaceRefValue? Value) : RustFilesystemOpenWorkspaceRequestSelectorChoice;
+    public sealed record Name(string Value) : RustFilesystemOpenWorkspaceRequestSelectorChoice;
+    public sealed record None : RustFilesystemOpenWorkspaceRequestSelectorChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemOpenWorkspaceRequestSelectorChoice;
+    internal static RustFilesystemOpenWorkspaceRequestSelectorChoice FromWire(Acyclic.Filesystem.V2.OpenWorkspaceRequest wire) => wire.SelectorCase switch
+    {
+        Acyclic.Filesystem.V2.OpenWorkspaceRequest.SelectorOneofCase.Workspace => new Workspace(wire.Workspace is null ? null : RustFilesystemWorkspaceRefValue.FromWire(wire.Workspace)),
+        Acyclic.Filesystem.V2.OpenWorkspaceRequest.SelectorOneofCase.Name => new Name(wire.Name),
+        Acyclic.Filesystem.V2.OpenWorkspaceRequest.SelectorOneofCase.None => new None(),
+        _ => new Unknown((int)wire.SelectorCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemOptionalI64ValueChoice : WireChoice
+{
+    public sealed record Present(long Value) : RustFilesystemOptionalI64ValueChoice;
+    public sealed record Unavailable(bool Value) : RustFilesystemOptionalI64ValueChoice;
+    public sealed record None : RustFilesystemOptionalI64ValueChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemOptionalI64ValueChoice;
+    internal static RustFilesystemOptionalI64ValueChoice FromWire(Acyclic.Filesystem.V2.OptionalI64 wire) => wire.ValueCase switch
+    {
+        Acyclic.Filesystem.V2.OptionalI64.ValueOneofCase.Present => new Present(wire.Present),
+        Acyclic.Filesystem.V2.OptionalI64.ValueOneofCase.Unavailable => new Unavailable(wire.Unavailable),
+        Acyclic.Filesystem.V2.OptionalI64.ValueOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ValueCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemOptionalU32ValueChoice : WireChoice
+{
+    public sealed record Present(uint Value) : RustFilesystemOptionalU32ValueChoice;
+    public sealed record Unavailable(bool Value) : RustFilesystemOptionalU32ValueChoice;
+    public sealed record None : RustFilesystemOptionalU32ValueChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemOptionalU32ValueChoice;
+    internal static RustFilesystemOptionalU32ValueChoice FromWire(Acyclic.Filesystem.V2.OptionalU32 wire) => wire.ValueCase switch
+    {
+        Acyclic.Filesystem.V2.OptionalU32.ValueOneofCase.Present => new Present(wire.Present),
+        Acyclic.Filesystem.V2.OptionalU32.ValueOneofCase.Unavailable => new Unavailable(wire.Unavailable),
+        Acyclic.Filesystem.V2.OptionalU32.ValueOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ValueCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustFilesystemOptionalU64ValueChoice : WireChoice
+{
+    public sealed record Present(ulong Value) : RustFilesystemOptionalU64ValueChoice;
+    public sealed record Unavailable(bool Value) : RustFilesystemOptionalU64ValueChoice;
+    public sealed record None : RustFilesystemOptionalU64ValueChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustFilesystemOptionalU64ValueChoice;
+    internal static RustFilesystemOptionalU64ValueChoice FromWire(Acyclic.Filesystem.V2.OptionalU64 wire) => wire.ValueCase switch
+    {
+        Acyclic.Filesystem.V2.OptionalU64.ValueOneofCase.Present => new Present(wire.Present),
+        Acyclic.Filesystem.V2.OptionalU64.ValueOneofCase.Unavailable => new Unavailable(wire.Unavailable),
+        Acyclic.Filesystem.V2.OptionalU64.ValueOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ValueCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustInferenceContextProvenanceOriginChoice : WireChoice
+{
+    public sealed record Created(RustInferenceEmptyValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record Derived(RustInferenceProvenanceSourceValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record Forked(RustInferenceProvenanceSourceValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record Transferred(RustInferenceTransferProvenanceValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record Generated(RustInferenceGenerationProvenanceValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record RunInput(RustInferenceRunInputProvenanceValue? Value) : RustInferenceContextProvenanceOriginChoice;
+    public sealed record None : RustInferenceContextProvenanceOriginChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustInferenceContextProvenanceOriginChoice;
+    internal static RustInferenceContextProvenanceOriginChoice FromWire(Inference.Customer.V1.ContextProvenance wire) => wire.OriginCase switch
+    {
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.Created => new Created(wire.Created is null ? null : RustInferenceEmptyValue.FromWire(wire.Created)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.Derived => new Derived(wire.Derived is null ? null : RustInferenceProvenanceSourceValue.FromWire(wire.Derived)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.Forked => new Forked(wire.Forked is null ? null : RustInferenceProvenanceSourceValue.FromWire(wire.Forked)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.Transferred => new Transferred(wire.Transferred is null ? null : RustInferenceTransferProvenanceValue.FromWire(wire.Transferred)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.Generated => new Generated(wire.Generated is null ? null : RustInferenceGenerationProvenanceValue.FromWire(wire.Generated)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.RunInput => new RunInput(wire.RunInput is null ? null : RustInferenceRunInputProvenanceValue.FromWire(wire.RunInput)),
+        Inference.Customer.V1.ContextProvenance.OriginOneofCase.None => new None(),
+        _ => new Unknown((int)wire.OriginCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustInferenceEditActionChoice : WireChoice
+{
+    public sealed record Append(RustInferenceItemValue? Value) : RustInferenceEditActionChoice;
+    public sealed record InsertBefore(RustInferenceInsertValue? Value) : RustInferenceEditActionChoice;
+    public sealed record InsertAfter(RustInferenceInsertValue? Value) : RustInferenceEditActionChoice;
+    public sealed record Replace(RustInferenceReplaceValue? Value) : RustInferenceEditActionChoice;
+    public sealed record Delete(ByteString Value) : RustInferenceEditActionChoice;
+    public sealed record None : RustInferenceEditActionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustInferenceEditActionChoice;
+    internal static RustInferenceEditActionChoice FromWire(Inference.Customer.V1.Edit wire) => wire.ActionCase switch
+    {
+        Inference.Customer.V1.Edit.ActionOneofCase.Append => new Append(wire.Append is null ? null : RustInferenceItemValue.FromWire(wire.Append)),
+        Inference.Customer.V1.Edit.ActionOneofCase.InsertBefore => new InsertBefore(wire.InsertBefore is null ? null : RustInferenceInsertValue.FromWire(wire.InsertBefore)),
+        Inference.Customer.V1.Edit.ActionOneofCase.InsertAfter => new InsertAfter(wire.InsertAfter is null ? null : RustInferenceInsertValue.FromWire(wire.InsertAfter)),
+        Inference.Customer.V1.Edit.ActionOneofCase.Replace => new Replace(wire.Replace is null ? null : RustInferenceReplaceValue.FromWire(wire.Replace)),
+        Inference.Customer.V1.Edit.ActionOneofCase.Delete => new Delete(wire.Delete),
+        Inference.Customer.V1.Edit.ActionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ActionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustInferenceMutateContextRequestActionChoice : WireChoice
+{
+    public sealed record Edit(RustInferenceEditsValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Fork(RustInferenceEmptyValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Truncate(RustInferenceTruncateValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Compact(RustInferenceCompactValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Release(RustInferenceEmptyValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Transfer(RustInferenceTransferValue? Value) : RustInferenceMutateContextRequestActionChoice;
+    public sealed record None : RustInferenceMutateContextRequestActionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustInferenceMutateContextRequestActionChoice;
+    internal static RustInferenceMutateContextRequestActionChoice FromWire(Inference.Customer.V1.MutateContextRequest wire) => wire.ActionCase switch
+    {
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Edit => new Edit(wire.Edit is null ? null : RustInferenceEditsValue.FromWire(wire.Edit)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Fork => new Fork(wire.Fork is null ? null : RustInferenceEmptyValue.FromWire(wire.Fork)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Truncate => new Truncate(wire.Truncate is null ? null : RustInferenceTruncateValue.FromWire(wire.Truncate)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Compact => new Compact(wire.Compact is null ? null : RustInferenceCompactValue.FromWire(wire.Compact)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Release => new Release(wire.Release is null ? null : RustInferenceEmptyValue.FromWire(wire.Release)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.Transfer => new Transfer(wire.Transfer is null ? null : RustInferenceTransferValue.FromWire(wire.Transfer)),
+        Inference.Customer.V1.MutateContextRequest.ActionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ActionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustInferenceRunEventEventChoice : WireChoice
+{
+    public sealed record Output(ByteString Value) : RustInferenceRunEventEventChoice;
+    public sealed record Usage(RustInferenceLogicalUsageValue? Value) : RustInferenceRunEventEventChoice;
+    public sealed record Terminal(RustInferenceCustomerRunTerminalEnum Value) : RustInferenceRunEventEventChoice;
+    public sealed record Progress(RustInferenceRunProgressValue? Value) : RustInferenceRunEventEventChoice;
+    public sealed record None : RustInferenceRunEventEventChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustInferenceRunEventEventChoice;
+    internal static RustInferenceRunEventEventChoice FromWire(Inference.Customer.V1.RunEvent wire) => wire.EventCase switch
+    {
+        Inference.Customer.V1.RunEvent.EventOneofCase.Output => new Output(wire.Output),
+        Inference.Customer.V1.RunEvent.EventOneofCase.Usage => new Usage(wire.Usage is null ? null : RustInferenceLogicalUsageValue.FromWire(wire.Usage)),
+        Inference.Customer.V1.RunEvent.EventOneofCase.Terminal => new Terminal(new RustInferenceCustomerRunTerminalEnum((int)wire.Terminal)),
+        Inference.Customer.V1.RunEvent.EventOneofCase.Progress => new Progress(wire.Progress is null ? null : RustInferenceRunProgressValue.FromWire(wire.Progress)),
+        Inference.Customer.V1.RunEvent.EventOneofCase.None => new None(),
+        _ => new Unknown((int)wire.EventCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustMachinesImageImmutableReferenceChoice : WireChoice
+{
+    public sealed record ManagedDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;
+    public sealed record CustomDigest(Sha256Digest Value) : RustMachinesImageImmutableReferenceChoice;
+    public sealed record Checkpoint(RustMachinesCheckpointIdValue? Value) : RustMachinesImageImmutableReferenceChoice;
+    public sealed record None : RustMachinesImageImmutableReferenceChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustMachinesImageImmutableReferenceChoice;
+    internal static RustMachinesImageImmutableReferenceChoice FromWire(Acyclic.Machines.V1.Image wire) => wire.ImmutableReferenceCase switch
+    {
+        Acyclic.Machines.V1.Image.ImmutableReferenceOneofCase.ManagedDigest => new ManagedDigest(new Sha256Digest(wire.ManagedDigest.ToByteArray())),
+        Acyclic.Machines.V1.Image.ImmutableReferenceOneofCase.CustomDigest => new CustomDigest(new Sha256Digest(wire.CustomDigest.ToByteArray())),
+        Acyclic.Machines.V1.Image.ImmutableReferenceOneofCase.Checkpoint => new Checkpoint(wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(wire.Checkpoint)),
+        Acyclic.Machines.V1.Image.ImmutableReferenceOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ImmutableReferenceCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustMachinesRecoveredAdmissionResultChoice : WireChoice
+{
+    public sealed record Create(RustMachinesMachineAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record Checkpoint(RustMachinesCheckpointAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record Fork(RustMachinesForkAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record Suspend(RustMachinesMutationAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record Wake(RustMachinesMutationAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record DestroyMachine(RustMachinesMutationAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record SetSuspensionPolicy(RustMachinesPolicyAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record DestroyCheckpoint(RustMachinesMutationAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record ForkMachine(RustMachinesForkMachineAdmissionValue? Value) : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record None : RustMachinesRecoveredAdmissionResultChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustMachinesRecoveredAdmissionResultChoice;
+    internal static RustMachinesRecoveredAdmissionResultChoice FromWire(Acyclic.Machines.V1.RecoveredAdmission wire) => wire.ResultCase switch
+    {
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.Create => new Create(wire.Create is null ? null : RustMachinesMachineAdmissionValue.FromWire(wire.Create)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.Checkpoint => new Checkpoint(wire.Checkpoint is null ? null : RustMachinesCheckpointAdmissionValue.FromWire(wire.Checkpoint)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.Fork => new Fork(wire.Fork is null ? null : RustMachinesForkAdmissionValue.FromWire(wire.Fork)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.Suspend => new Suspend(wire.Suspend is null ? null : RustMachinesMutationAdmissionValue.FromWire(wire.Suspend)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.Wake => new Wake(wire.Wake is null ? null : RustMachinesMutationAdmissionValue.FromWire(wire.Wake)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.DestroyMachine => new DestroyMachine(wire.DestroyMachine is null ? null : RustMachinesMutationAdmissionValue.FromWire(wire.DestroyMachine)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.SetSuspensionPolicy => new SetSuspensionPolicy(wire.SetSuspensionPolicy is null ? null : RustMachinesPolicyAdmissionValue.FromWire(wire.SetSuspensionPolicy)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.DestroyCheckpoint => new DestroyCheckpoint(wire.DestroyCheckpoint is null ? null : RustMachinesMutationAdmissionValue.FromWire(wire.DestroyCheckpoint)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.ForkMachine => new ForkMachine(wire.ForkMachine is null ? null : RustMachinesForkMachineAdmissionValue.FromWire(wire.ForkMachine)),
+        Acyclic.Machines.V1.RecoveredAdmission.ResultOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ResultCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustMachinesSuspensionPolicyPolicyChoice : WireChoice
+{
+    public sealed record Manual(bool Value) : RustMachinesSuspensionPolicyPolicyChoice;
+    public sealed record AfterIdleMs(ulong Value) : RustMachinesSuspensionPolicyPolicyChoice;
+    public sealed record None : RustMachinesSuspensionPolicyPolicyChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustMachinesSuspensionPolicyPolicyChoice;
+    internal static RustMachinesSuspensionPolicyPolicyChoice FromWire(Acyclic.Machines.V1.SuspensionPolicy wire) => wire.PolicyCase switch
+    {
+        Acyclic.Machines.V1.SuspensionPolicy.PolicyOneofCase.Manual => new Manual(wire.Manual),
+        Acyclic.Machines.V1.SuspensionPolicy.PolicyOneofCase.AfterIdleMs => new AfterIdleMs(wire.AfterIdleMs),
+        Acyclic.Machines.V1.SuspensionPolicy.PolicyOneofCase.None => new None(),
+        _ => new Unknown((int)wire.PolicyCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustObjectsByteRangeSelectionChoice : WireChoice
+{
+    public sealed record Bytes(RustObjectsInclusiveRangeValue? Value) : RustObjectsByteRangeSelectionChoice;
+    public sealed record SuffixLength(ulong Value) : RustObjectsByteRangeSelectionChoice;
+    public sealed record None : RustObjectsByteRangeSelectionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustObjectsByteRangeSelectionChoice;
+    internal static RustObjectsByteRangeSelectionChoice FromWire(Acyclic.Objects.V2.ByteRange wire) => wire.SelectionCase switch
+    {
+        Acyclic.Objects.V2.ByteRange.SelectionOneofCase.Bytes => new Bytes(wire.Bytes is null ? null : RustObjectsInclusiveRangeValue.FromWire(wire.Bytes)),
+        Acyclic.Objects.V2.ByteRange.SelectionOneofCase.SuffixLength => new SuffixLength(wire.SuffixLength),
+        Acyclic.Objects.V2.ByteRange.SelectionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.SelectionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustObjectsGetObjectResponseFrameChoice : WireChoice
+{
+    public sealed record Header(RustObjectsGetObjectHeaderValue? Value) : RustObjectsGetObjectResponseFrameChoice;
+    public sealed record Body(ByteString Value) : RustObjectsGetObjectResponseFrameChoice;
+    public sealed record Error(RustObjectsErrorDetailValue? Value) : RustObjectsGetObjectResponseFrameChoice;
+    public sealed record None : RustObjectsGetObjectResponseFrameChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustObjectsGetObjectResponseFrameChoice;
+    internal static RustObjectsGetObjectResponseFrameChoice FromWire(Acyclic.Objects.V2.GetObjectResponse wire) => wire.FrameCase switch
+    {
+        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Header => new Header(wire.Header is null ? null : RustObjectsGetObjectHeaderValue.FromWire(wire.Header)),
+        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Body => new Body(wire.Body),
+        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.Error => new Error(wire.Error is null ? null : RustObjectsErrorDetailValue.FromWire(wire.Error)),
+        Acyclic.Objects.V2.GetObjectResponse.FrameOneofCase.None => new None(),
+        _ => new Unknown((int)wire.FrameCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustObjectsPreconditionsConditionChoice : WireChoice
+{
+    public sealed record IfAbsent(bool Value) : RustObjectsPreconditionsConditionChoice;
+    public sealed record IfMatch(string Value) : RustObjectsPreconditionsConditionChoice;
+    public sealed record None : RustObjectsPreconditionsConditionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustObjectsPreconditionsConditionChoice;
+    internal static RustObjectsPreconditionsConditionChoice FromWire(Acyclic.Objects.V2.Preconditions wire) => wire.ConditionCase switch
+    {
+        Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfAbsent => new IfAbsent(wire.IfAbsent),
+        Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfMatch => new IfMatch(wire.IfMatch),
+        Acyclic.Objects.V2.Preconditions.ConditionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ConditionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustObjectsPutObjectRequestFrameChoice : WireChoice
+{
+    public sealed record Header(RustObjectsPutObjectHeaderValue? Value) : RustObjectsPutObjectRequestFrameChoice;
+    public sealed record Body(ByteString Value) : RustObjectsPutObjectRequestFrameChoice;
+    public sealed record Complete(bool Value) : RustObjectsPutObjectRequestFrameChoice;
+    public sealed record None : RustObjectsPutObjectRequestFrameChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustObjectsPutObjectRequestFrameChoice;
+    internal static RustObjectsPutObjectRequestFrameChoice FromWire(Acyclic.Objects.V2.PutObjectRequest wire) => wire.FrameCase switch
+    {
+        Acyclic.Objects.V2.PutObjectRequest.FrameOneofCase.Header => new Header(wire.Header is null ? null : RustObjectsPutObjectHeaderValue.FromWire(wire.Header)),
+        Acyclic.Objects.V2.PutObjectRequest.FrameOneofCase.Body => new Body(wire.Body),
+        Acyclic.Objects.V2.PutObjectRequest.FrameOneofCase.Complete => new Complete(wire.Complete),
+        Acyclic.Objects.V2.PutObjectRequest.FrameOneofCase.None => new None(),
+        _ => new Unknown((int)wire.FrameCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustObjectsUploadPartRequestFrameChoice : WireChoice
+{
+    public sealed record Header(RustObjectsUploadPartHeaderValue? Value) : RustObjectsUploadPartRequestFrameChoice;
+    public sealed record Body(ByteString Value) : RustObjectsUploadPartRequestFrameChoice;
+    public sealed record Complete(bool Value) : RustObjectsUploadPartRequestFrameChoice;
+    public sealed record None : RustObjectsUploadPartRequestFrameChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustObjectsUploadPartRequestFrameChoice;
+    internal static RustObjectsUploadPartRequestFrameChoice FromWire(Acyclic.Objects.V2.UploadPartRequest wire) => wire.FrameCase switch
+    {
+        Acyclic.Objects.V2.UploadPartRequest.FrameOneofCase.Header => new Header(wire.Header is null ? null : RustObjectsUploadPartHeaderValue.FromWire(wire.Header)),
+        Acyclic.Objects.V2.UploadPartRequest.FrameOneofCase.Body => new Body(wire.Body),
+        Acyclic.Objects.V2.UploadPartRequest.FrameOneofCase.Complete => new Complete(wire.Complete),
+        Acyclic.Objects.V2.UploadPartRequest.FrameOneofCase.None => new None(),
+        _ => new Unknown((int)wire.FrameCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamAppendResponseOutcomeChoice : WireChoice
+{
+    public sealed record Committed(RustStreamAppendReceiptValue? Value) : RustStreamAppendResponseOutcomeChoice;
+    public sealed record Conflict(RustStreamTailConflictValue? Value) : RustStreamAppendResponseOutcomeChoice;
+    public sealed record None : RustStreamAppendResponseOutcomeChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamAppendResponseOutcomeChoice;
+    internal static RustStreamAppendResponseOutcomeChoice FromWire(Acyclic.Stream.V2.AppendResponse wire) => wire.OutcomeCase switch
+    {
+        Acyclic.Stream.V2.AppendResponse.OutcomeOneofCase.Committed => new Committed(wire.Committed is null ? null : RustStreamAppendReceiptValue.FromWire(wire.Committed)),
+        Acyclic.Stream.V2.AppendResponse.OutcomeOneofCase.Conflict => new Conflict(wire.Conflict is null ? null : RustStreamTailConflictValue.FromWire(wire.Conflict)),
+        Acyclic.Stream.V2.AppendResponse.OutcomeOneofCase.None => new None(),
+        _ => new Unknown((int)wire.OutcomeCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamCommitConditionConditionChoice : WireChoice
+{
+    public sealed record Tail(RustStreamTailConditionValue? Value) : RustStreamCommitConditionConditionChoice;
+    public sealed record Absent(RustStreamAbsentConditionValue? Value) : RustStreamCommitConditionConditionChoice;
+    public sealed record None : RustStreamCommitConditionConditionChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamCommitConditionConditionChoice;
+    internal static RustStreamCommitConditionConditionChoice FromWire(Acyclic.Stream.V2.CommitCondition wire) => wire.ConditionCase switch
+    {
+        Acyclic.Stream.V2.CommitCondition.ConditionOneofCase.Tail => new Tail(wire.Tail is null ? null : RustStreamTailConditionValue.FromWire(wire.Tail)),
+        Acyclic.Stream.V2.CommitCondition.ConditionOneofCase.Absent => new Absent(wire.Absent is null ? null : RustStreamAbsentConditionValue.FromWire(wire.Absent)),
+        Acyclic.Stream.V2.CommitCondition.ConditionOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ConditionCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamCommitConflictConflictChoice : WireChoice
+{
+    public sealed record Tail(RustStreamTailCommitConflictValue? Value) : RustStreamCommitConflictConflictChoice;
+    public sealed record Exists(RustStreamExistsCommitConflictValue? Value) : RustStreamCommitConflictConflictChoice;
+    public sealed record None : RustStreamCommitConflictConflictChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamCommitConflictConflictChoice;
+    internal static RustStreamCommitConflictConflictChoice FromWire(Acyclic.Stream.V2.CommitConflict wire) => wire.ConflictCase switch
+    {
+        Acyclic.Stream.V2.CommitConflict.ConflictOneofCase.Tail => new Tail(wire.Tail is null ? null : RustStreamTailCommitConflictValue.FromWire(wire.Tail)),
+        Acyclic.Stream.V2.CommitConflict.ConflictOneofCase.Exists => new Exists(wire.Exists is null ? null : RustStreamExistsCommitConflictValue.FromWire(wire.Exists)),
+        Acyclic.Stream.V2.CommitConflict.ConflictOneofCase.None => new None(),
+        _ => new Unknown((int)wire.ConflictCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamCommitMutationMutationChoice : WireChoice
+{
+    public sealed record Append(RustStreamAppendMutationValue? Value) : RustStreamCommitMutationMutationChoice;
+    public sealed record Fork(RustStreamForkMutationValue? Value) : RustStreamCommitMutationMutationChoice;
+    public sealed record None : RustStreamCommitMutationMutationChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamCommitMutationMutationChoice;
+    internal static RustStreamCommitMutationMutationChoice FromWire(Acyclic.Stream.V2.CommitMutation wire) => wire.MutationCase switch
+    {
+        Acyclic.Stream.V2.CommitMutation.MutationOneofCase.Append => new Append(wire.Append is null ? null : RustStreamAppendMutationValue.FromWire(wire.Append)),
+        Acyclic.Stream.V2.CommitMutation.MutationOneofCase.Fork => new Fork(wire.Fork is null ? null : RustStreamForkMutationValue.FromWire(wire.Fork)),
+        Acyclic.Stream.V2.CommitMutation.MutationOneofCase.None => new None(),
+        _ => new Unknown((int)wire.MutationCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamCommitResponseOutcomeChoice : WireChoice
+{
+    public sealed record Committed(RustStreamCommittedEnvelopeValue? Value) : RustStreamCommitResponseOutcomeChoice;
+    public sealed record Conflict(RustStreamCommitConflictsValue? Value) : RustStreamCommitResponseOutcomeChoice;
+    public sealed record None : RustStreamCommitResponseOutcomeChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamCommitResponseOutcomeChoice;
+    internal static RustStreamCommitResponseOutcomeChoice FromWire(Acyclic.Stream.V2.CommitResponse wire) => wire.OutcomeCase switch
+    {
+        Acyclic.Stream.V2.CommitResponse.OutcomeOneofCase.Committed => new Committed(wire.Committed is null ? null : RustStreamCommittedEnvelopeValue.FromWire(wire.Committed)),
+        Acyclic.Stream.V2.CommitResponse.OutcomeOneofCase.Conflict => new Conflict(wire.Conflict is null ? null : RustStreamCommitConflictsValue.FromWire(wire.Conflict)),
+        Acyclic.Stream.V2.CommitResponse.OutcomeOneofCase.None => new None(),
+        _ => new Unknown((int)wire.OutcomeCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamCommittedMutationMutationChoice : WireChoice
+{
+    public sealed record Append(RustStreamCommittedAppendValue? Value) : RustStreamCommittedMutationMutationChoice;
+    public sealed record Fork(RustStreamCommittedForkValue? Value) : RustStreamCommittedMutationMutationChoice;
+    public sealed record None : RustStreamCommittedMutationMutationChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamCommittedMutationMutationChoice;
+    internal static RustStreamCommittedMutationMutationChoice FromWire(Acyclic.Stream.V2.CommittedMutation wire) => wire.MutationCase switch
+    {
+        Acyclic.Stream.V2.CommittedMutation.MutationOneofCase.Append => new Append(wire.Append is null ? null : RustStreamCommittedAppendValue.FromWire(wire.Append)),
+        Acyclic.Stream.V2.CommittedMutation.MutationOneofCase.Fork => new Fork(wire.Fork is null ? null : RustStreamCommittedForkValue.FromWire(wire.Fork)),
+        Acyclic.Stream.V2.CommittedMutation.MutationOneofCase.None => new None(),
+        _ => new Unknown((int)wire.MutationCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustStreamIdempotencyObservationOutcomeChoice : WireChoice
+{
+    public sealed record Append(RustStreamAppendResponseValue? Value) : RustStreamIdempotencyObservationOutcomeChoice;
+    public sealed record Fork(RustStreamForkReceiptValue? Value) : RustStreamIdempotencyObservationOutcomeChoice;
+    public sealed record Commit(RustStreamCommitResponseValue? Value) : RustStreamIdempotencyObservationOutcomeChoice;
+    public sealed record None : RustStreamIdempotencyObservationOutcomeChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustStreamIdempotencyObservationOutcomeChoice;
+    internal static RustStreamIdempotencyObservationOutcomeChoice FromWire(Acyclic.Stream.V2.IdempotencyObservation wire) => wire.OutcomeCase switch
+    {
+        Acyclic.Stream.V2.IdempotencyObservation.OutcomeOneofCase.Append => new Append(wire.Append is null ? null : RustStreamAppendResponseValue.FromWire(wire.Append)),
+        Acyclic.Stream.V2.IdempotencyObservation.OutcomeOneofCase.Fork => new Fork(wire.Fork is null ? null : RustStreamForkReceiptValue.FromWire(wire.Fork)),
+        Acyclic.Stream.V2.IdempotencyObservation.OutcomeOneofCase.Commit => new Commit(wire.Commit is null ? null : RustStreamCommitResponseValue.FromWire(wire.Commit)),
+        Acyclic.Stream.V2.IdempotencyObservation.OutcomeOneofCase.None => new None(),
+        _ => new Unknown((int)wire.OutcomeCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustWorkersJobTargetTargetChoice : WireChoice
+{
+    public sealed record DeploymentAlias(string Value) : RustWorkersJobTargetTargetChoice;
+    public sealed record VersionSha256(Sha256Digest Value) : RustWorkersJobTargetTargetChoice;
+    public sealed record None : RustWorkersJobTargetTargetChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustWorkersJobTargetTargetChoice;
+    internal static RustWorkersJobTargetTargetChoice FromWire(Acyclic.Workers.V1.JobTarget wire) => wire.TargetCase switch
+    {
+        Acyclic.Workers.V1.JobTarget.TargetOneofCase.DeploymentAlias => new DeploymentAlias(wire.DeploymentAlias),
+        Acyclic.Workers.V1.JobTarget.TargetOneofCase.VersionSha256 => new VersionSha256(new Sha256Digest(wire.VersionSha256.ToByteArray())),
+        Acyclic.Workers.V1.JobTarget.TargetOneofCase.None => new None(),
+        _ => new Unknown((int)wire.TargetCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+public abstract record RustWorkersPayloadSourceChoice : WireChoice
+{
+    public sealed record InlineBytes(ByteString Value) : RustWorkersPayloadSourceChoice;
+    public sealed record Object(RustWorkersObjectRefValue? Value) : RustWorkersPayloadSourceChoice;
+    public sealed record None : RustWorkersPayloadSourceChoice;
+    public sealed record Unknown(int RawCase, ByteString WireBytes) : RustWorkersPayloadSourceChoice;
+    internal static RustWorkersPayloadSourceChoice FromWire(Acyclic.Workers.V1.Payload wire) => wire.SourceCase switch
+    {
+        Acyclic.Workers.V1.Payload.SourceOneofCase.InlineBytes => new InlineBytes(wire.InlineBytes),
+        Acyclic.Workers.V1.Payload.SourceOneofCase.Object => new Object(wire.Object is null ? null : RustWorkersObjectRefValue.FromWire(wire.Object)),
+        Acyclic.Workers.V1.Payload.SourceOneofCase.None => new None(),
+        _ => new Unknown((int)wire.SourceCase, ByteString.CopyFrom(wire.ToByteArray())),
+    };
+}
+
+internal sealed record RustDescriptorPresenceShape(string Family, string Message, string Field, string JsonName, string Kind);
+internal sealed record RustDescriptorEnumShape(string RustType, string CSharpType);
+internal sealed record RustDescriptorOneofShape(string Family, string Message, string Oneof, string Arm, string PayloadType, string CSharpChoice);
+internal static class RustDescriptorShapes
+{
+    internal static IReadOnlyList<RustDescriptorPresenceShape> Presence { get; } = new RustDescriptorPresenceShape[] {
+        new("actors","acyclic.actors.v1.ActorObservation","checkpoint_unix_millis","checkpointUnixMillis","explicit_optional"),
+        new("actors","acyclic.actors.v1.AddSubscriptionRequest","subscription","subscription","message"),
+        new("actors","acyclic.actors.v1.AddSubscriptionResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.SubscriptionObservation","failed_cursor","failedCursor","explicit_optional"),
+        new("actors","acyclic.actors.v1.SubscriptionSpec","start","start","message"),
+        new("actors","acyclic.actors.v1.SubscriptionStart","cursor","cursor","oneof"),
+        new("actors","acyclic.actors.v1.SubscriptionStart","current_head","currentHead","oneof"),
+        new("actors","acyclic.actors.v1.CheckpointActorResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.CreateActorRequest","limits","limits","message"),
+        new("actors","acyclic.actors.v1.CreateActorResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.InspectActorResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.RemoveSubscriptionResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.ResumeSubscriptionResponse","actor","actor","message"),
+        new("actors","acyclic.actors.v1.UpdateActorRequest","limits","limits","message"),
+        new("actors","acyclic.actors.v1.UpdateActorResponse","actor","actor","message"),
+        new("filesystem","acyclic.filesystem.v2.ApplyJoinRequest","plan","plan","message"),
+        new("filesystem","acyclic.filesystem.v2.ApplyJoinRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","file_record","fileRecord","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","metadata","metadata","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","file_length","fileLength","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","content_range","contentRange","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","sparse_seek","sparseSeek","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","directory_name","directoryName","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","directory_range","directoryRange","oneof"),
+        new("filesystem","acyclic.filesystem.v2.ContentConflict","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryBindingChange","name","name","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryBindingChange","before","before","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryBindingChange","after","after","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryNameConflict","name","name","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryRangeConflict","after","after","message"),
+        new("filesystem","acyclic.filesystem.v2.FileRecordChange","before","before","message"),
+        new("filesystem","acyclic.filesystem.v2.FileRecordChange","after","after","message"),
+        new("filesystem","acyclic.filesystem.v2.FileRecordSnapshot","logical_bytes","logicalBytes","message"),
+        new("filesystem","acyclic.filesystem.v2.FileRecordSnapshot","device_major","deviceMajor","message"),
+        new("filesystem","acyclic.filesystem.v2.FileRecordSnapshot","device_minor","deviceMinor","message"),
+        new("filesystem","acyclic.filesystem.v2.GenerationRef","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.JoinPlan","source","source","message"),
+        new("filesystem","acyclic.filesystem.v2.JoinPlan","expected_target","expectedTarget","message"),
+        new("filesystem","acyclic.filesystem.v2.JoinPlan","common_ancestor","commonAncestor","message"),
+        new("filesystem","acyclic.filesystem.v2.JoinResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.OptionalU32","present","present","oneof"),
+        new("filesystem","acyclic.filesystem.v2.OptionalU32","unavailable","unavailable","oneof"),
+        new("filesystem","acyclic.filesystem.v2.OptionalU64","present","present","oneof"),
+        new("filesystem","acyclic.filesystem.v2.OptionalU64","unavailable","unavailable","oneof"),
+        new("filesystem","acyclic.filesystem.v2.TreeEntrySnapshot","name","name","message"),
+        new("filesystem","acyclic.filesystem.v2.ApplyTransactionRequest","base","base","message"),
+        new("filesystem","acyclic.filesystem.v2.ApplyTransactionRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.CreateDirectory","metadata","metadata","message"),
+        new("filesystem","acyclic.filesystem.v2.CreateFile","metadata","metadata","message"),
+        new("filesystem","acyclic.filesystem.v2.CreateSymbolicLink","metadata","metadata","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","posix_mode","posixMode","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","posix_uid","posixUid","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","posix_gid","posixGid","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","posix_flags","posixFlags","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","windows_attributes","windowsAttributes","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","created_ns","createdNs","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","modified_ns","modifiedNs","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","accessed_ns","accessedNs","message"),
+        new("filesystem","acyclic.filesystem.v2.Metadata","changed_ns","changedNs","message"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","create_file","createFile","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","create_directory","createDirectory","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","create_symbolic_link","createSymbolicLink","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","remove","remove","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","rename","rename","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","hard_link","hardLink","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","write","write","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","resize","resize","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","zero_range","zeroRange","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","preallocate","preallocate","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","clone_range","cloneRange","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","set_metadata","setMetadata","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","create_directories","createDirectories","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","put_file","putFile","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","copy_file","copyFile","oneof"),
+        new("filesystem","acyclic.filesystem.v2.MutationResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.MutationResponse","actual_head","actualHead","message"),
+        new("filesystem","acyclic.filesystem.v2.OptionalI64","present","present","oneof"),
+        new("filesystem","acyclic.filesystem.v2.OptionalI64","unavailable","unavailable","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Preallocate","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.SetMetadata","metadata","metadata","message"),
+        new("filesystem","acyclic.filesystem.v2.ZeroRange","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.CancelRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.CancelResponse","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.ObserveResponse","outcome","outcome","message"),
+        new("filesystem","acyclic.filesystem.v2.RetainGenerationRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.RetainGenerationRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.RetainGenerationResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.CreateWorkspaceRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.Workspace","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.Workspace","head","head","message"),
+        new("filesystem","acyclic.filesystem.v2.WorkspaceResponse","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.DeleteWorkspaceRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.DeleteWorkspaceRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.DiffRequest","from","from","message"),
+        new("filesystem","acyclic.filesystem.v2.DiffRequest","to","to","message"),
+        new("filesystem","acyclic.filesystem.v2.DiffResponse","from","from","message"),
+        new("filesystem","acyclic.filesystem.v2.DiffResponse","to","to","message"),
+        new("filesystem","acyclic.filesystem.v2.DiffResponse","work","work","message"),
+        new("filesystem","acyclic.filesystem.v2.ExportRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.ForkWorkspaceRequest","source","source","message"),
+        new("filesystem","acyclic.filesystem.v2.ForkWorkspaceRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.GenerationResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.GetGenerationRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.GetHeadRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.SourceResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.SourceStateRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.HandshakeRequest","protocol","protocol","message"),
+        new("filesystem","acyclic.filesystem.v2.HandshakeResponse","protocol","protocol","message"),
+        new("filesystem","acyclic.filesystem.v2.HandshakeResponse","capabilities","capabilities","message"),
+        new("filesystem","acyclic.protocol.v1.HandshakeRequest","protocol","protocol","message"),
+        new("filesystem","acyclic.protocol.v1.HandshakeRequest","required","required","message"),
+        new("filesystem","acyclic.protocol.v1.HandshakeResponse","protocol","protocol","message"),
+        new("filesystem","acyclic.protocol.v1.HandshakeResponse","supported","supported","message"),
+        new("filesystem","acyclic.filesystem.v2.ImportChunk","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.ImportResponse","outcome","outcome","message"),
+        new("filesystem","acyclic.filesystem.v2.CredentialRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.CredentialRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.CredentialRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.CredentialResponse","bearer_token","bearerToken","oneof"),
+        new("filesystem","acyclic.filesystem.v2.CredentialResponse","s3","s3","oneof"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryEntry","name","name","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryEntry","stat","stat","message"),
+        new("filesystem","acyclic.filesystem.v2.DirectoryPage","next","next","message"),
+        new("filesystem","acyclic.filesystem.v2.FileStat","logical_bytes","logicalBytes","message"),
+        new("filesystem","acyclic.filesystem.v2.FileStat","metadata","metadata","message"),
+        new("filesystem","acyclic.filesystem.v2.ListDirectoryRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.ListDirectoryRequest","page","page","message"),
+        new("filesystem","acyclic.filesystem.v2.ListDirectoryResponse","page","page","message"),
+        new("filesystem","acyclic.filesystem.v2.PageOptions","after","after","message"),
+        new("filesystem","acyclic.filesystem.v2.ObserveRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.OpenWorkspaceRequest","workspace","workspace","oneof"),
+        new("filesystem","acyclic.filesystem.v2.OpenWorkspaceRequest","name","name","oneof"),
+        new("filesystem","acyclic.filesystem.v2.Extent","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.PlanExtentsRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.PlanExtentsRequest","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.PlanJoinRequest","source","source","message"),
+        new("filesystem","acyclic.filesystem.v2.PlanJoinRequest","target","target","message"),
+        new("filesystem","acyclic.filesystem.v2.ReadRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.ReadRequest","range","range","message"),
+        new("filesystem","acyclic.filesystem.v2.ReadLinkRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseResponse","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseTransactionRequest","base","base","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseTransactionRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.RebaseTransactionResponse","base","base","message"),
+        new("filesystem","acyclic.filesystem.v2.SourceOperationRequest","workspace","workspace","message"),
+        new("filesystem","acyclic.filesystem.v2.SourceOperationRequest","operation","operation","message"),
+        new("filesystem","acyclic.filesystem.v2.StatRequest","generation","generation","message"),
+        new("filesystem","acyclic.filesystem.v2.StatResponse","stat","stat","message"),
+        new("harness","acyclic.harness.v2.CancelRequest","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.CancelRequest","owner","owner","message"),
+        new("harness","acyclic.harness.v2.CancelRequest","scope","scope","message"),
+        new("harness","acyclic.harness.v2.CancelResponse","status","status","message"),
+        new("harness","acyclic.harness.v2.CancelResponse","operation","operation","message"),
+        new("harness","acyclic.harness.v2.OperationStatus","operation","operation","message"),
+        new("harness","acyclic.harness.v2.OperationStatus","error","error","message"),
+        new("harness","acyclic.harness.v2.OperationStatus","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.OperationStatus","owner","owner","message"),
+        new("harness","acyclic.protocol.v1.HandshakeRequest","protocol","protocol","message"),
+        new("harness","acyclic.protocol.v1.HandshakeRequest","required","required","message"),
+        new("harness","acyclic.protocol.v1.HandshakeResponse","protocol","protocol","message"),
+        new("harness","acyclic.protocol.v1.HandshakeResponse","supported","supported","message"),
+        new("harness","acyclic.harness.v2.ObserveRequest","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.ObserveRequest","owner","owner","message"),
+        new("harness","acyclic.harness.v2.ObserveRequest","scope","scope","message"),
+        new("harness","acyclic.harness.v2.Delivery","authority","authority","message"),
+        new("harness","acyclic.harness.v2.EventEnvelope","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.EventEnvelope","authority","authority","message"),
+        new("harness","acyclic.harness.v2.EventEnvelope","scope","scope","message"),
+        new("harness","acyclic.harness.v2.EventEnvelope","causal_parent","causalParent","message"),
+        new("harness","acyclic.harness.v2.EventReference","authority","authority","message"),
+        new("harness","acyclic.harness.v2.ReplayCursor","authority","authority","message"),
+        new("harness","acyclic.harness.v2.ResumeRequest","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.Admission","operation","operation","message"),
+        new("harness","acyclic.harness.v2.Admission","error","error","message"),
+        new("harness","acyclic.harness.v2.CommandEnvelope","protocol","protocol","message"),
+        new("harness","acyclic.harness.v2.CommandEnvelope","authority","authority","message"),
+        new("harness","acyclic.harness.v2.CommandEnvelope","operation","operation","message"),
+        new("harness","acyclic.harness.v2.CommandEnvelope","scope","scope","message"),
+        new("harness","acyclic.harness.v2.CommandEnvelope","causal_parent","causalParent","message"),
+        new("inference","inference.customer.v1.CreateContextRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.ContextProvenance","created","created","oneof"),
+        new("inference","inference.customer.v1.ContextProvenance","derived","derived","oneof"),
+        new("inference","inference.customer.v1.ContextProvenance","forked","forked","oneof"),
+        new("inference","inference.customer.v1.ContextProvenance","transferred","transferred","oneof"),
+        new("inference","inference.customer.v1.ContextProvenance","generated","generated","oneof"),
+        new("inference","inference.customer.v1.ContextProvenance","run_input","runInput","oneof"),
+        new("inference","inference.customer.v1.ContextView","parent","parent","explicit_optional"),
+        new("inference","inference.customer.v1.ContextView","provenance","provenance","message"),
+        new("inference","inference.customer.v1.RunInputProvenance","seed","seed","explicit_optional"),
+        new("inference","inference.customer.v1.Edit","append","append","oneof"),
+        new("inference","inference.customer.v1.Edit","insert_before","insertBefore","oneof"),
+        new("inference","inference.customer.v1.Edit","insert_after","insertAfter","oneof"),
+        new("inference","inference.customer.v1.Edit","replace","replace","oneof"),
+        new("inference","inference.customer.v1.Edit","delete","delete","oneof"),
+        new("inference","inference.customer.v1.Insert","item","item","message"),
+        new("inference","inference.customer.v1.MutateContextRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.MutateContextRequest","edit","edit","oneof"),
+        new("inference","inference.customer.v1.MutateContextRequest","fork","fork","oneof"),
+        new("inference","inference.customer.v1.MutateContextRequest","truncate","truncate","oneof"),
+        new("inference","inference.customer.v1.MutateContextRequest","compact","compact","oneof"),
+        new("inference","inference.customer.v1.MutateContextRequest","release","release","oneof"),
+        new("inference","inference.customer.v1.MutateContextRequest","transfer","transfer","oneof"),
+        new("inference","inference.customer.v1.Truncate","through","through","explicit_optional"),
+        new("inference","inference.customer.v1.CreateEvaluationRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.CreateEvaluationRequest","spec","spec","message"),
+        new("inference","inference.customer.v1.EvaluationAggregate","value","value","message"),
+        new("inference","inference.customer.v1.EvaluationCase","input_artifact_digest","inputArtifactDigest","explicit_optional"),
+        new("inference","inference.customer.v1.EvaluationCaseResult","observation","observation","message"),
+        new("inference","inference.customer.v1.EvaluationMetricValue","value","value","message"),
+        new("inference","inference.customer.v1.EvaluationSpec","suite","suite","message"),
+        new("inference","inference.customer.v1.EvaluationSpec","grader","grader","message"),
+        new("inference","inference.customer.v1.EvaluationView","spec","spec","message"),
+        new("inference","inference.customer.v1.EvaluationView","result","result","explicit_optional"),
+        new("inference","inference.customer.v1.RunResult","context","context","explicit_optional"),
+        new("inference","inference.customer.v1.RunResult","receipt","receipt","explicit_optional"),
+        new("inference","inference.customer.v1.RunView","result","result","explicit_optional"),
+        new("inference","inference.customer.v1.UsageReceipt","usage","usage","message"),
+        new("inference","inference.customer.v1.GenerateRunRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.GenerateRunRequest","input","input","message"),
+        new("inference","inference.customer.v1.GenerateRunRequest","seed","seed","explicit_optional"),
+        new("inference","inference.customer.v1.GenerateRunResponse","run","run","message"),
+        new("inference","inference.customer.v1.RunEvent","output","output","oneof"),
+        new("inference","inference.customer.v1.RunEvent","usage","usage","oneof"),
+        new("inference","inference.customer.v1.RunEvent","terminal","terminal","oneof"),
+        new("inference","inference.customer.v1.RunEvent","progress","progress","oneof"),
+        new("inference","inference.customer.v1.IdleKvRetention","policy","policy","message"),
+        new("inference","inference.customer.v1.IdleKvRetention","last_used_at_ms","lastUsedAtMs","explicit_optional"),
+        new("inference","inference.customer.v1.IdleKvRetention","last_run_id","lastRunId","explicit_optional"),
+        new("inference","inference.customer.v1.WarmView","idle_kv","idleKv","message"),
+        new("inference","inference.customer.v1.ReleaseWarmRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.RenewWarmRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.RenewWarmRequest","idle_timeout_ms","idleTimeoutMs","explicit_optional"),
+        new("inference","inference.customer.v1.RetainWarmRequest","identity","identity","message"),
+        new("inference","inference.customer.v1.RetainWarmRequest","idle_kv","idleKv","message"),
+        new("machines","acyclic.machines.v1.OperationRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.OperationRequest","operation","operation","message"),
+        new("machines","acyclic.machines.v1.OperationState","operation","operation","message"),
+        new("machines","acyclic.machines.v1.CheckpointAdmission","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.CheckpointAdmission","source","source","message"),
+        new("machines","acyclic.machines.v1.CheckpointAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.CheckpointAdmission","contract","contract","message"),
+        new("machines","acyclic.machines.v1.CheckpointMachineRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.CheckpointMachineRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.CheckpointMachineRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.Image","managed_digest","managedDigest","oneof"),
+        new("machines","acyclic.machines.v1.Image","custom_digest","customDigest","oneof"),
+        new("machines","acyclic.machines.v1.Image","checkpoint","checkpoint","oneof"),
+        new("machines","acyclic.machines.v1.MachineContract","image","image","message"),
+        new("machines","acyclic.machines.v1.MachineContract","compatibility","compatibility","message"),
+        new("machines","acyclic.machines.v1.MachineContract","suspension","suspension","message"),
+        new("machines","acyclic.machines.v1.MachineContract","expiration","expiration","message"),
+        new("machines","acyclic.machines.v1.MachineContract","budgets","budgets","message"),
+        new("machines","acyclic.machines.v1.SuspensionPolicy","manual","manual","oneof"),
+        new("machines","acyclic.machines.v1.SuspensionPolicy","after_idle_ms","afterIdleMs","oneof"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","image","image","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","compatibility","compatibility","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","suspension","suspension","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","expiration","expiration","message"),
+        new("machines","acyclic.machines.v1.CreateMachineRequest","budgets","budgets","message"),
+        new("machines","acyclic.machines.v1.MachineAdmission","machine","machine","message"),
+        new("machines","acyclic.machines.v1.MachineAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.MachineAdmission","contract","contract","message"),
+        new("machines","acyclic.machines.v1.CheckpointMutationRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.CheckpointMutationRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.CheckpointMutationRequest","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.MutationAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.MutationAdmission","machine","machine","message"),
+        new("machines","acyclic.machines.v1.MutationAdmission","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.MachineMutationRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.MachineMutationRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.MachineMutationRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.EventsRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.EventsRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.MachineEvent","machine","machine","message"),
+        new("machines","acyclic.machines.v1.ForkAdmission","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.ForkAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.ForkAdmission","contract","contract","message"),
+        new("machines","acyclic.machines.v1.ForkCheckpointRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.ForkCheckpointRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.ForkCheckpointRequest","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.ForkMachineAdmission","source","source","message"),
+        new("machines","acyclic.machines.v1.ForkMachineAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.ForkMachineAdmission","contract","contract","message"),
+        new("machines","acyclic.machines.v1.ForkMachineRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.ForkMachineRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.ForkMachineRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.CheckpointState","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.CheckpointState","source","source","message"),
+        new("machines","acyclic.machines.v1.CheckpointState","contract","contract","message"),
+        new("machines","acyclic.machines.v1.InspectCheckpointRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.InspectCheckpointRequest","checkpoint","checkpoint","message"),
+        new("machines","acyclic.machines.v1.InspectMachineRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.InspectMachineRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.MachineState","machine","machine","message"),
+        new("machines","acyclic.machines.v1.MachineState","contract","contract","message"),
+        new("machines","acyclic.machines.v1.MachineState","last_checkpoint","lastCheckpoint","message"),
+        new("machines","acyclic.machines.v1.ListMachinesRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.ListMachinesRequest","after","after","message"),
+        new("machines","acyclic.machines.v1.MachinePage","next","next","message"),
+        new("machines","acyclic.machines.v1.ImageQualification","image","image","message"),
+        new("machines","acyclic.machines.v1.QualifyImageRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.QualifyImageRequest","image","image","message"),
+        new("machines","acyclic.machines.v1.PolicyAdmission","machine","machine","message"),
+        new("machines","acyclic.machines.v1.PolicyAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.PolicyAdmission","policy","policy","message"),
+        new("machines","acyclic.machines.v1.RecoverRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.RecoverRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","operation","operation","message"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","create","create","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","checkpoint","checkpoint","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","fork","fork","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","suspend","suspend","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","wake","wake","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","destroy_machine","destroyMachine","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","set_suspension_policy","setSuspensionPolicy","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","destroy_checkpoint","destroyCheckpoint","oneof"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","fork_machine","forkMachine","oneof"),
+        new("machines","acyclic.machines.v1.SetSuspensionPolicyRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.SetSuspensionPolicyRequest","idempotency_key","idempotencyKey","message"),
+        new("machines","acyclic.machines.v1.SetSuspensionPolicyRequest","machine","machine","message"),
+        new("machines","acyclic.machines.v1.SetSuspensionPolicyRequest","policy","policy","message"),
+        new("machines","acyclic.machines.v1.UsageReceipt","machine","machine","message"),
+        new("machines","acyclic.machines.v1.UsageRequest","protocol","protocol","message"),
+        new("machines","acyclic.machines.v1.UsageRequest","machine","machine","message"),
+        new("objects","acyclic.objects.v2.Bucket","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.Bucket","created_at","createdAt","message"),
+        new("objects","acyclic.objects.v2.CreateBucketRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.DeleteBucketRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.DeleteBucketRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.HeadBucketRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.AbortMultipartRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.AbortMultipartRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.CompleteMultipartRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.CompleteMultipartRequest","preconditions","preconditions","message"),
+        new("objects","acyclic.objects.v2.CompleteMultipartRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.ObjectInfo","metadata","metadata","message"),
+        new("objects","acyclic.objects.v2.ObjectInfo","last_modified","lastModified","message"),
+        new("objects","acyclic.objects.v2.ObjectMetadata","expires_unix_seconds","expiresUnixSeconds","explicit_optional"),
+        new("objects","acyclic.objects.v2.Preconditions","if_absent","ifAbsent","oneof"),
+        new("objects","acyclic.objects.v2.Preconditions","if_match","ifMatch","oneof"),
+        new("objects","acyclic.objects.v2.CreateMultipartRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.CreateMultipartRequest","metadata","metadata","message"),
+        new("objects","acyclic.objects.v2.CreateMultipartRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.ListPartsRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.UploadPartHeader","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.UploadPartHeader","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.UploadPartRequest","header","header","oneof"),
+        new("objects","acyclic.objects.v2.UploadPartRequest","body","body","oneof"),
+        new("objects","acyclic.objects.v2.UploadPartRequest","complete","complete","oneof"),
+        new("objects","acyclic.objects.v2.DeleteObjectRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.DeleteObjectRequest","preconditions","preconditions","message"),
+        new("objects","acyclic.objects.v2.DeleteObjectRequest","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.ByteRange","bytes","bytes","oneof"),
+        new("objects","acyclic.objects.v2.ByteRange","suffix_length","suffixLength","oneof"),
+        new("objects","acyclic.objects.v2.GetObjectHeader","object","object","message"),
+        new("objects","acyclic.objects.v2.GetObjectHeader","content_range","contentRange","message"),
+        new("objects","acyclic.objects.v2.GetObjectRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.GetObjectRequest","range","range","message"),
+        new("objects","acyclic.objects.v2.GetObjectResponse","header","header","oneof"),
+        new("objects","acyclic.objects.v2.GetObjectResponse","body","body","oneof"),
+        new("objects","acyclic.objects.v2.GetObjectResponse","error","error","oneof"),
+        new("objects","acyclic.objects.v2.InclusiveRange","end","end","explicit_optional"),
+        new("objects","acyclic.objects.v2.HeadObjectRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.HeadObjectResponse","object","object","message"),
+        new("objects","acyclic.objects.v2.ListEntry","object","object","message"),
+        new("objects","acyclic.objects.v2.ListObjectsRequest","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.PutObjectHeader","bucket","bucket","message"),
+        new("objects","acyclic.objects.v2.PutObjectHeader","metadata","metadata","message"),
+        new("objects","acyclic.objects.v2.PutObjectHeader","preconditions","preconditions","message"),
+        new("objects","acyclic.objects.v2.PutObjectHeader","mutation","mutation","message"),
+        new("objects","acyclic.objects.v2.PutObjectRequest","header","header","oneof"),
+        new("objects","acyclic.objects.v2.PutObjectRequest","body","body","oneof"),
+        new("objects","acyclic.objects.v2.PutObjectRequest","complete","complete","oneof"),
+        new("stream","acyclic.stream.v2.AppendRequest","if_tail","ifTail","explicit_optional"),
+        new("stream","acyclic.stream.v2.AppendRequest","idempotency_key","idempotencyKey","explicit_optional"),
+        new("stream","acyclic.stream.v2.AppendResponse","committed","committed","oneof"),
+        new("stream","acyclic.stream.v2.AppendResponse","conflict","conflict","oneof"),
+        new("stream","acyclic.stream.v2.ChildrenRequest","parent","parent","explicit_optional"),
+        new("stream","acyclic.stream.v2.ChildrenResponse","child","child","message"),
+        new("stream","acyclic.stream.v2.ChildrenPageRequest","parent","parent","explicit_optional"),
+        new("stream","acyclic.stream.v2.ChildrenPageRequest","after","after","explicit_optional"),
+        new("stream","acyclic.stream.v2.ChildrenPageRequest","hierarchy_version","hierarchyVersion","explicit_optional"),
+        new("stream","acyclic.stream.v2.ChildrenPageResponse","next_after","nextAfter","explicit_optional"),
+        new("stream","acyclic.stream.v2.CommitCondition","tail","tail","oneof"),
+        new("stream","acyclic.stream.v2.CommitCondition","absent","absent","oneof"),
+        new("stream","acyclic.stream.v2.CommitConflict","tail","tail","oneof"),
+        new("stream","acyclic.stream.v2.CommitConflict","exists","exists","oneof"),
+        new("stream","acyclic.stream.v2.CommitMutation","append","append","oneof"),
+        new("stream","acyclic.stream.v2.CommitMutation","fork","fork","oneof"),
+        new("stream","acyclic.stream.v2.CommitRequest","deadline_unix_millis","deadlineUnixMillis","explicit_optional"),
+        new("stream","acyclic.stream.v2.CommitResponse","committed","committed","oneof"),
+        new("stream","acyclic.stream.v2.CommitResponse","conflict","conflict","oneof"),
+        new("stream","acyclic.stream.v2.CommittedMutation","append","append","oneof"),
+        new("stream","acyclic.stream.v2.CommittedMutation","fork","fork","oneof"),
+        new("stream","acyclic.stream.v2.TailCommitConflict","actual","actual","explicit_optional"),
+        new("stream","acyclic.stream.v2.ReadResponse","record","record","message"),
+        new("stream","acyclic.stream.v2.ForkRequest","at_tail","atTail","explicit_optional"),
+        new("stream","acyclic.stream.v2.ForkRequest","idempotency_key","idempotencyKey","explicit_optional"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","append","append","oneof"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","fork","fork","oneof"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","commit","commit","oneof"),
+        new("stream","acyclic.stream.v2.InspectIdempotencyResponse","observation","observation","explicit_optional"),
+        new("workers","acyclic.workers.v1.CancelJobResponse","job","job","message"),
+        new("workers","acyclic.workers.v1.JobObservation","result","result","message"),
+        new("workers","acyclic.workers.v1.InspectJobResponse","job","job","message"),
+        new("workers","acyclic.workers.v1.InvokeResponse","resolved_revision","resolvedRevision","explicit_optional"),
+        new("workers","acyclic.workers.v1.PublishVersionResponse","version","version","message"),
+        new("workers","acyclic.workers.v1.Deployment","version","version","message"),
+        new("workers","acyclic.workers.v1.SelectDeploymentRequest","expected_revision","expectedRevision","explicit_optional"),
+        new("workers","acyclic.workers.v1.SelectDeploymentResponse","deployment","deployment","message"),
+        new("workers","acyclic.workers.v1.JobTarget","deployment_alias","deploymentAlias","oneof"),
+        new("workers","acyclic.workers.v1.JobTarget","version_sha256","versionSha256","oneof"),
+        new("workers","acyclic.workers.v1.Payload","inline_bytes","inlineBytes","oneof"),
+        new("workers","acyclic.workers.v1.Payload","object","object","oneof"),
+        new("workers","acyclic.workers.v1.SubmitJobRequest","target","target","message"),
+        new("workers","acyclic.workers.v1.SubmitJobRequest","input","input","message"),
+        new("workers","acyclic.workers.v1.SubmitJobRequest","limits","limits","message"),
+        new("workers","acyclic.workers.v1.SubmitJobRequest","retry","retry","message"),
+        new("workers","acyclic.workers.v1.SubmitJobResponse","job","job","message"),
+    };
+
+    internal static IReadOnlyList<RustDescriptorEnumShape> Enums { get; } = new RustDescriptorEnumShape[] {
+        new("acyclic.actors.v1.ActorState","RustActorsActorStateEnum") ,
+        new("acyclic.actors.v1.SubscriptionState","RustActorsSubscriptionStateEnum") ,
+        new("acyclic.filesystem.v2.ConflictUse","RustFilesystemConflictUseEnum") ,
+        new("acyclic.filesystem.v2.FileKind","RustFilesystemFileKindEnum") ,
+        new("acyclic.filesystem.v2.JoinHistory","RustFilesystemJoinHistoryEnum") ,
+        new("acyclic.filesystem.v2.JoinStatus","RustFilesystemJoinStatusEnum") ,
+        new("acyclic.filesystem.v2.NameEncoding","RustFilesystemNameEncodingEnum") ,
+        new("acyclic.filesystem.v2.SparseTarget","RustFilesystemSparseTargetEnum") ,
+        new("acyclic.filesystem.v2.MutationStatus","RustFilesystemMutationStatusEnum") ,
+        new("acyclic.filesystem.v2.FilesystemProfile","RustFilesystemFilesystemProfileEnum") ,
+        new("acyclic.filesystem.v2.SourceState","RustFilesystemSourceStateEnum") ,
+        new("acyclic.filesystem.v2.SourceInvalidationReason","RustFilesystemSourceInvalidationReasonEnum") ,
+        new("acyclic.filesystem.v2.ExtentKind","RustFilesystemExtentKindEnum") ,
+        new("acyclic.filesystem.v2.RebaseStatus","RustFilesystemRebaseStatusEnum") ,
+        new("acyclic.harness.v2.AggregateKind","RustHarnessAggregateKindEnum") ,
+        new("acyclic.harness.v2.ErrorCode","RustHarnessErrorCodeEnum") ,
+        new("acyclic.harness.v2.CompletionState","RustHarnessCompletionStateEnum") ,
+        new("acyclic.harness.v2.AdmissionState","RustHarnessAdmissionStateEnum") ,
+        new("inference.customer.v1.ItemKind","RustInferenceCustomerItemKindEnum") ,
+        new("inference.customer.v1.EvaluationAggregation","RustInferenceCustomerEvaluationAggregationEnum") ,
+        new("inference.customer.v1.EvaluationCaseOutcome","RustInferenceCustomerEvaluationCaseOutcomeEnum") ,
+        new("inference.customer.v1.EvaluationState","RustInferenceCustomerEvaluationStateEnum") ,
+        new("inference.customer.v1.RunTerminal","RustInferenceCustomerRunTerminalEnum") ,
+        new("inference.customer.v1.WarmState","RustInferenceCustomerWarmStateEnum") ,
+        new("acyclic.machines.v1.OperationStatus","RustMachinesOperationStatusEnum") ,
+        new("acyclic.machines.v1.CompatibilityMode","RustMachinesCompatibilityModeEnum") ,
+        new("acyclic.machines.v1.Capability","RustMachinesCapabilityEnum") ,
+        new("acyclic.machines.v1.ExpirationKind","RustMachinesExpirationKindEnum") ,
+        new("acyclic.machines.v1.ImageKind","RustMachinesImageKindEnum") ,
+        new("acyclic.machines.v1.EventKind","RustMachinesEventKindEnum") ,
+        new("acyclic.machines.v1.MachineStatus","RustMachinesMachineStatusEnum") ,
+        new("acyclic.machines.v1.PressureKind","RustMachinesPressureKindEnum") ,
+        new("acyclic.machines.v1.ForkFidelity","RustMachinesForkFidelityEnum") ,
+        new("acyclic.objects.v2.ErrorCode","RustObjectsErrorCodeEnum") ,
+        new("acyclic.workers.v1.JobState","RustWorkersJobStateEnum") ,
+    };
+
+    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new RustDescriptorOneofShape[] {
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","content_range","acyclic.filesystem.v2.ContentConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","directory_name","acyclic.filesystem.v2.DirectoryNameConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","directory_range","acyclic.filesystem.v2.DirectoryRangeConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","file_length","acyclic.filesystem.v2.FileConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","file_record","acyclic.filesystem.v2.FileConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","metadata","acyclic.filesystem.v2.FileConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.Conflict","region","sparse_seek","acyclic.filesystem.v2.SparseConflict","FilesystemConflictRegionChoice"),
+        new("filesystem","acyclic.filesystem.v2.CredentialResponse","credential","s3","acyclic.filesystem.v2.S3Credential","FilesystemCredentialResponseCredentialChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","clone_range","acyclic.filesystem.v2.CloneRange","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","copy_file","acyclic.filesystem.v2.CopyFile","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","create_directories","acyclic.filesystem.v2.CreateDirectories","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","create_directory","acyclic.filesystem.v2.CreateDirectory","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","create_file","acyclic.filesystem.v2.CreateFile","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","create_symbolic_link","acyclic.filesystem.v2.CreateSymbolicLink","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","hard_link","acyclic.filesystem.v2.HardLink","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","preallocate","acyclic.filesystem.v2.Preallocate","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","put_file","acyclic.filesystem.v2.PutFile","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","remove","acyclic.filesystem.v2.Remove","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","rename","acyclic.filesystem.v2.Rename","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","resize","acyclic.filesystem.v2.Resize","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","set_metadata","acyclic.filesystem.v2.SetMetadata","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","write","acyclic.filesystem.v2.Write","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.Mutation","mutation","zero_range","acyclic.filesystem.v2.ZeroRange","FilesystemMutationMutationChoice"),
+        new("filesystem","acyclic.filesystem.v2.OpenWorkspaceRequest","selector","workspace","acyclic.filesystem.v2.WorkspaceRef","FilesystemOpenWorkspaceRequestSelectorChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","created","inference.customer.v1.Empty","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","derived","inference.customer.v1.ProvenanceSource","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","forked","inference.customer.v1.ProvenanceSource","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","generated","inference.customer.v1.GenerationProvenance","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","run_input","inference.customer.v1.RunInputProvenance","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.ContextProvenance","origin","transferred","inference.customer.v1.TransferProvenance","InferenceCustomerContextProvenanceOriginChoice"),
+        new("inference","inference.customer.v1.Edit","action","append","inference.customer.v1.Item","InferenceCustomerEditActionChoice"),
+        new("inference","inference.customer.v1.Edit","action","insert_after","inference.customer.v1.Insert","InferenceCustomerEditActionChoice"),
+        new("inference","inference.customer.v1.Edit","action","insert_before","inference.customer.v1.Insert","InferenceCustomerEditActionChoice"),
+        new("inference","inference.customer.v1.Edit","action","replace","inference.customer.v1.Replace","InferenceCustomerEditActionChoice"),
+        new("inference","inference.customer.v1.EvaluationView","_result","result","inference.customer.v1.EvaluationResult","InferenceCustomerEvaluationViewResultChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","compact","inference.customer.v1.Compact","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","edit","inference.customer.v1.Edits","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","fork","inference.customer.v1.Empty","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","release","inference.customer.v1.Empty","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","transfer","inference.customer.v1.Transfer","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.MutateContextRequest","action","truncate","inference.customer.v1.Truncate","InferenceCustomerMutateContextRequestActionChoice"),
+        new("inference","inference.customer.v1.RunEvent","event","progress","inference.customer.v1.RunProgress","InferenceCustomerRunEventEventChoice"),
+        new("inference","inference.customer.v1.RunEvent","event","usage","inference.customer.v1.LogicalUsage","InferenceCustomerRunEventEventChoice"),
+        new("inference","inference.customer.v1.RunResult","_context","context","inference.customer.v1.ContextView","InferenceCustomerRunResultContextChoice"),
+        new("inference","inference.customer.v1.RunResult","_receipt","receipt","inference.customer.v1.UsageReceipt","InferenceCustomerRunResultReceiptChoice"),
+        new("inference","inference.customer.v1.RunView","_result","result","inference.customer.v1.RunResult","InferenceCustomerRunViewResultChoice"),
+        new("machines","acyclic.machines.v1.Image","immutable_reference","checkpoint","acyclic.machines.v1.CheckpointId","MachinesImageImmutableReferenceChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","checkpoint","acyclic.machines.v1.CheckpointAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","create","acyclic.machines.v1.MachineAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","destroy_checkpoint","acyclic.machines.v1.MutationAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","destroy_machine","acyclic.machines.v1.MutationAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","fork","acyclic.machines.v1.ForkAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","fork_machine","acyclic.machines.v1.ForkMachineAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","set_suspension_policy","acyclic.machines.v1.PolicyAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","suspend","acyclic.machines.v1.MutationAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("machines","acyclic.machines.v1.RecoveredAdmission","result","wake","acyclic.machines.v1.MutationAdmission","MachinesRecoveredAdmissionResultChoice"),
+        new("objects","acyclic.objects.v2.ByteRange","selection","bytes","acyclic.objects.v2.InclusiveRange","ObjectsByteRangeSelectionChoice"),
+        new("objects","acyclic.objects.v2.GetObjectResponse","frame","error","acyclic.objects.v2.ErrorDetail","ObjectsGetObjectResponseFrameChoice"),
+        new("objects","acyclic.objects.v2.GetObjectResponse","frame","header","acyclic.objects.v2.GetObjectHeader","ObjectsGetObjectResponseFrameChoice"),
+        new("objects","acyclic.objects.v2.PutObjectRequest","frame","header","acyclic.objects.v2.PutObjectHeader","ObjectsPutObjectRequestFrameChoice"),
+        new("objects","acyclic.objects.v2.UploadPartRequest","frame","header","acyclic.objects.v2.UploadPartHeader","ObjectsUploadPartRequestFrameChoice"),
+        new("stream","acyclic.stream.v2.AppendResponse","outcome","committed","acyclic.stream.v2.AppendReceipt","StreamAppendResponseOutcomeChoice"),
+        new("stream","acyclic.stream.v2.AppendResponse","outcome","conflict","acyclic.stream.v2.TailConflict","StreamAppendResponseOutcomeChoice"),
+        new("stream","acyclic.stream.v2.CommitCondition","condition","absent","acyclic.stream.v2.AbsentCondition","StreamCommitConditionConditionChoice"),
+        new("stream","acyclic.stream.v2.CommitCondition","condition","tail","acyclic.stream.v2.TailCondition","StreamCommitConditionConditionChoice"),
+        new("stream","acyclic.stream.v2.CommitConflict","conflict","exists","acyclic.stream.v2.ExistsCommitConflict","StreamCommitConflictConflictChoice"),
+        new("stream","acyclic.stream.v2.CommitConflict","conflict","tail","acyclic.stream.v2.TailCommitConflict","StreamCommitConflictConflictChoice"),
+        new("stream","acyclic.stream.v2.CommitMutation","mutation","append","acyclic.stream.v2.AppendMutation","StreamCommitMutationMutationChoice"),
+        new("stream","acyclic.stream.v2.CommitMutation","mutation","fork","acyclic.stream.v2.ForkMutation","StreamCommitMutationMutationChoice"),
+        new("stream","acyclic.stream.v2.CommitResponse","outcome","committed","acyclic.stream.v2.CommittedEnvelope","StreamCommitResponseOutcomeChoice"),
+        new("stream","acyclic.stream.v2.CommitResponse","outcome","conflict","acyclic.stream.v2.CommitConflicts","StreamCommitResponseOutcomeChoice"),
+        new("stream","acyclic.stream.v2.CommittedMutation","mutation","append","acyclic.stream.v2.CommittedAppend","StreamCommittedMutationMutationChoice"),
+        new("stream","acyclic.stream.v2.CommittedMutation","mutation","fork","acyclic.stream.v2.CommittedFork","StreamCommittedMutationMutationChoice"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","outcome","append","acyclic.stream.v2.AppendResponse","StreamIdempotencyObservationOutcomeChoice"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","outcome","commit","acyclic.stream.v2.CommitResponse","StreamIdempotencyObservationOutcomeChoice"),
+        new("stream","acyclic.stream.v2.IdempotencyObservation","outcome","fork","acyclic.stream.v2.ForkReceipt","StreamIdempotencyObservationOutcomeChoice"),
+        new("stream","acyclic.stream.v2.InspectIdempotencyResponse","_observation","observation","acyclic.stream.v2.IdempotencyObservation","StreamInspectIdempotencyResponseObservationChoice"),
+        new("workers","acyclic.workers.v1.Payload","source","object","acyclic.workers.v1.ObjectRef","WorkersPayloadSourceChoice"),
+    };
+}
+
+internal abstract record InferenceCustomerEvaluationViewResultChoice
+{
+    internal sealed record Result(RustInferenceEvaluationResultValue Value) : InferenceCustomerEvaluationViewResultChoice;
+}
+
+internal abstract record InferenceCustomerRunResultContextChoice
+{
+    internal sealed record Context(RustInferenceContextViewValue Value) : InferenceCustomerRunResultContextChoice;
+}
+
+internal abstract record InferenceCustomerRunResultReceiptChoice
+{
+    internal sealed record Receipt(RustInferenceUsageReceiptValue Value) : InferenceCustomerRunResultReceiptChoice;
+}
+
+internal abstract record InferenceCustomerRunViewResultChoice
+{
+    internal sealed record Result(RustInferenceRunResultValue Value) : InferenceCustomerRunViewResultChoice;
+}
+
+internal abstract record StreamInspectIdempotencyResponseObservationChoice
+{
+    internal sealed record Observation(RustStreamIdempotencyObservationValue Value) : StreamInspectIdempotencyResponseObservationChoice;
+}
+
+public sealed record RustActorsActorLimitsValue
+{
+    private Acyclic.Actors.V1.ActorLimits Wire { get; }
+    private RustActorsActorLimitsValue(Acyclic.Actors.V1.ActorLimits wire) => Wire = wire;
+    internal static RustActorsActorLimitsValue FromWire(Acyclic.Actors.V1.ActorLimits message) => new(message);
+    public ulong CheckpointBytes => Wire.CheckpointBytes;
+    public ulong HandlerTimeoutMillis => Wire.HandlerTimeoutMillis;
+    public ulong MemoryBytes => Wire.MemoryBytes;
+}
+
+public sealed record RustActorsActorObservationValue
+{
+    private Acyclic.Actors.V1.ActorObservation Wire { get; }
+    private RustActorsActorObservationValue(Acyclic.Actors.V1.ActorObservation wire) => Wire = wire;
+    internal static RustActorsActorObservationValue FromWire(Acyclic.Actors.V1.ActorObservation message) => new(message);
+    public ActorId ActorId => new ActorId(Wire.ActorId);
+    public ulong CheckpointEpoch => Wire.CheckpointEpoch;
+    public ulong? CheckpointUnixMillis => Wire.CheckpointUnixMillis;
+    public int CheckpointUnixMillisOneofIndex => 0;
+    public ByteString CodeSha256 => Wire.CodeSha256;
+    public ulong ConfigurationRevision => Wire.ConfigurationRevision;
+    public string HomeRegion => Wire.HomeRegion;
+    public RustActorsActorStateEnum State => new RustActorsActorStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public IReadOnlyList<RustActorsSubscriptionObservationValue> Subscriptions => Wire.Subscriptions.Select(value => RustActorsSubscriptionObservationValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustActorsBindingValue
+{
+    private Acyclic.Actors.V1.Binding Wire { get; }
+    private RustActorsBindingValue(Acyclic.Actors.V1.Binding wire) => Wire = wire;
+    internal static RustActorsBindingValue FromWire(Acyclic.Actors.V1.Binding message) => new(message);
+    public string Capability => Wire.Capability;
+    public string Name => Wire.Name;
+    public string Resource => Wire.Resource;
+}
+
+public sealed record RustActorsHeaderValue
+{
+    private Acyclic.Actors.V1.Header Wire { get; }
+    private RustActorsHeaderValue(Acyclic.Actors.V1.Header wire) => Wire = wire;
+    internal static RustActorsHeaderValue FromWire(Acyclic.Actors.V1.Header message) => new(message);
+    public string Name => Wire.Name;
+    public string Value => Wire.Value;
+}
+
+public sealed record RustActorsSubscriptionObservationValue
+{
+    private Acyclic.Actors.V1.SubscriptionObservation Wire { get; }
+    private RustActorsSubscriptionObservationValue(Acyclic.Actors.V1.SubscriptionObservation wire) => Wire = wire;
+    internal static RustActorsSubscriptionObservationValue FromWire(Acyclic.Actors.V1.SubscriptionObservation message) => new(message);
+    public ulong CompletedCursor => Wire.CompletedCursor;
+    public ulong DeliveredCursor => Wire.DeliveredCursor;
+    public ulong? FailedCursor => Wire.FailedCursor;
+    public int FailedCursorOneofIndex => 0;
+    public string FailureCode => Wire.FailureCode;
+    public bool PlacementAnchor => Wire.PlacementAnchor;
+    public ulong RecoverableCursor => Wire.RecoverableCursor;
+    public uint RetryCount => Wire.RetryCount;
+    public RustActorsSubscriptionStateEnum State => new RustActorsSubscriptionStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public string StreamPath => Wire.StreamPath;
+    public string SubscriptionId => Wire.SubscriptionId;
+}
+
+public sealed record RustActorsSubscriptionSpecValue
+{
+    private Acyclic.Actors.V1.SubscriptionSpec Wire { get; }
+    private RustActorsSubscriptionSpecValue(Acyclic.Actors.V1.SubscriptionSpec wire) => Wire = wire;
+    internal static RustActorsSubscriptionSpecValue FromWire(Acyclic.Actors.V1.SubscriptionSpec message) => new(message);
+    public bool PlacementAnchor => Wire.PlacementAnchor;
+    public RustActorsSubscriptionStartValue? Start => Wire.Start is null ? null : RustActorsSubscriptionStartValue.FromWire(Wire.Start);
+    public string StreamPath => Wire.StreamPath;
+    public string SubscriptionId => Wire.SubscriptionId;
+}
+
+public sealed record RustActorsSubscriptionStartValue
+{
+    private Acyclic.Actors.V1.SubscriptionStart Wire { get; }
+    private RustActorsSubscriptionStartValue(Acyclic.Actors.V1.SubscriptionStart wire) => Wire = wire;
+    internal static RustActorsSubscriptionStartValue FromWire(Acyclic.Actors.V1.SubscriptionStart message) => new(message);
+    public bool CurrentHead => Wire.CurrentHead;
+    public int CurrentHeadOneofIndex => 0;
+    public ulong Cursor => Wire.Cursor;
+    public int CursorOneofIndex => 0;
+    public RustActorsSubscriptionStartStartChoice StartChoice => RustActorsSubscriptionStartStartChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemByteRangeValue
+{
+    private Acyclic.Filesystem.V2.ByteRange Wire { get; }
+    private RustFilesystemByteRangeValue(Acyclic.Filesystem.V2.ByteRange wire) => Wire = wire;
+    internal static RustFilesystemByteRangeValue FromWire(Acyclic.Filesystem.V2.ByteRange message) => new(message);
+    public ulong Length => Wire.Length;
+    public ulong Offset => Wire.Offset;
+}
+
+public sealed record RustFilesystemCapabilitiesValue
+{
+    private Acyclic.Filesystem.V2.Capabilities Wire { get; }
+    private RustFilesystemCapabilitiesValue(Acyclic.Filesystem.V2.Capabilities wire) => Wire = wire;
+    internal static RustFilesystemCapabilitiesValue FromWire(Acyclic.Filesystem.V2.Capabilities message) => new(message);
+    public string ContractVersion => Wire.ContractVersion;
+    public uint MaximumPageItems => Wire.MaximumPageItems;
+    public ulong MaximumRequestBytes => Wire.MaximumRequestBytes;
+    public ulong MaximumResponseBytes => Wire.MaximumResponseBytes;
+    public uint MaximumTransactionMutations => Wire.MaximumTransactionMutations;
+    public bool NativeMountCredentials => Wire.NativeMountCredentials;
+    public IReadOnlyList<RustFilesystemFilesystemProfileEnum> Profiles => Wire.Profiles.Select(value => new RustFilesystemFilesystemProfileEnum((int)value)).ToArray();
+    public bool S3Credentials => Wire.S3Credentials;
+    public bool SourceReconciliation => Wire.SourceReconciliation;
+}
+
+public sealed record RustFilesystemCloneRangeValue
+{
+    private Acyclic.Filesystem.V2.CloneRange Wire { get; }
+    private RustFilesystemCloneRangeValue(Acyclic.Filesystem.V2.CloneRange wire) => Wire = wire;
+    internal static RustFilesystemCloneRangeValue FromWire(Acyclic.Filesystem.V2.CloneRange message) => new(message);
+    public string Destination => Wire.Destination;
+    public ulong DestinationOffset => Wire.DestinationOffset;
+    public ulong Length => Wire.Length;
+    public string Source => Wire.Source;
+    public ulong SourceOffset => Wire.SourceOffset;
+}
+
+public sealed record RustFilesystemConflictValue
+{
+    private Acyclic.Filesystem.V2.Conflict Wire { get; }
+    private RustFilesystemConflictValue(Acyclic.Filesystem.V2.Conflict wire) => Wire = wire;
+    internal static RustFilesystemConflictValue FromWire(Acyclic.Filesystem.V2.Conflict message) => new(message);
+    public ByteString ActualDigest => Wire.ActualDigest;
+    public RustFilesystemContentConflictValue? ContentRange => Wire.ContentRange is null ? null : RustFilesystemContentConflictValue.FromWire(Wire.ContentRange);
+    public int ContentRangeOneofIndex => 0;
+    public RustFilesystemDirectoryNameConflictValue? DirectoryName => Wire.DirectoryName is null ? null : RustFilesystemDirectoryNameConflictValue.FromWire(Wire.DirectoryName);
+    public int DirectoryNameOneofIndex => 0;
+    public RustFilesystemDirectoryRangeConflictValue? DirectoryRange => Wire.DirectoryRange is null ? null : RustFilesystemDirectoryRangeConflictValue.FromWire(Wire.DirectoryRange);
+    public int DirectoryRangeOneofIndex => 0;
+    public ByteString ExpectedDigest => Wire.ExpectedDigest;
+    public RustFilesystemFileConflictValue? FileLength => Wire.FileLength is null ? null : RustFilesystemFileConflictValue.FromWire(Wire.FileLength);
+    public int FileLengthOneofIndex => 0;
+    public RustFilesystemFileConflictValue? FileRecord => Wire.FileRecord is null ? null : RustFilesystemFileConflictValue.FromWire(Wire.FileRecord);
+    public int FileRecordOneofIndex => 0;
+    public RustFilesystemFileConflictValue? Metadata => Wire.Metadata is null ? null : RustFilesystemFileConflictValue.FromWire(Wire.Metadata);
+    public int MetadataOneofIndex => 0;
+    public RustFilesystemSparseConflictValue? SparseSeek => Wire.SparseSeek is null ? null : RustFilesystemSparseConflictValue.FromWire(Wire.SparseSeek);
+    public int SparseSeekOneofIndex => 0;
+    public RustFilesystemConflictUseEnum Use => new RustFilesystemConflictUseEnum((int)Wire.Use);
+    public int UseNumber => (int)Wire.Use;
+    public RustFilesystemConflictRegionChoice RegionChoice => RustFilesystemConflictRegionChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemContentConflictValue
+{
+    private Acyclic.Filesystem.V2.ContentConflict Wire { get; }
+    private RustFilesystemContentConflictValue(Acyclic.Filesystem.V2.ContentConflict wire) => Wire = wire;
+    internal static RustFilesystemContentConflictValue FromWire(Acyclic.Filesystem.V2.ContentConflict message) => new(message);
+    public ByteString FileId => Wire.FileId;
+    public RustFilesystemByteRangeValue? Range => Wire.Range is null ? null : RustFilesystemByteRangeValue.FromWire(Wire.Range);
+}
+
+public sealed record RustFilesystemCopyFileValue
+{
+    private Acyclic.Filesystem.V2.CopyFile Wire { get; }
+    private RustFilesystemCopyFileValue(Acyclic.Filesystem.V2.CopyFile wire) => Wire = wire;
+    internal static RustFilesystemCopyFileValue FromWire(Acyclic.Filesystem.V2.CopyFile message) => new(message);
+    public string Destination => Wire.Destination;
+    public string Source => Wire.Source;
+}
+
+public sealed record RustFilesystemCreateDirectoriesValue
+{
+    private Acyclic.Filesystem.V2.CreateDirectories Wire { get; }
+    private RustFilesystemCreateDirectoriesValue(Acyclic.Filesystem.V2.CreateDirectories wire) => Wire = wire;
+    internal static RustFilesystemCreateDirectoriesValue FromWire(Acyclic.Filesystem.V2.CreateDirectories message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemCreateDirectoryValue
+{
+    private Acyclic.Filesystem.V2.CreateDirectory Wire { get; }
+    private RustFilesystemCreateDirectoryValue(Acyclic.Filesystem.V2.CreateDirectory wire) => Wire = wire;
+    internal static RustFilesystemCreateDirectoryValue FromWire(Acyclic.Filesystem.V2.CreateDirectory message) => new(message);
+    public RustFilesystemMetadataValue? Metadata => Wire.Metadata is null ? null : RustFilesystemMetadataValue.FromWire(Wire.Metadata);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemCreateFileValue
+{
+    private Acyclic.Filesystem.V2.CreateFile Wire { get; }
+    private RustFilesystemCreateFileValue(Acyclic.Filesystem.V2.CreateFile wire) => Wire = wire;
+    internal static RustFilesystemCreateFileValue FromWire(Acyclic.Filesystem.V2.CreateFile message) => new(message);
+    public ByteString Contents => Wire.Contents;
+    public RustFilesystemMetadataValue? Metadata => Wire.Metadata is null ? null : RustFilesystemMetadataValue.FromWire(Wire.Metadata);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemCreateSymbolicLinkValue
+{
+    private Acyclic.Filesystem.V2.CreateSymbolicLink Wire { get; }
+    private RustFilesystemCreateSymbolicLinkValue(Acyclic.Filesystem.V2.CreateSymbolicLink wire) => Wire = wire;
+    internal static RustFilesystemCreateSymbolicLinkValue FromWire(Acyclic.Filesystem.V2.CreateSymbolicLink message) => new(message);
+    public RustFilesystemMetadataValue? Metadata => Wire.Metadata is null ? null : RustFilesystemMetadataValue.FromWire(Wire.Metadata);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+    public ByteString Target => Wire.Target;
+}
+
+public sealed record RustFilesystemDirectoryBindingChangeValue
+{
+    private Acyclic.Filesystem.V2.DirectoryBindingChange Wire { get; }
+    private RustFilesystemDirectoryBindingChangeValue(Acyclic.Filesystem.V2.DirectoryBindingChange wire) => Wire = wire;
+    internal static RustFilesystemDirectoryBindingChangeValue FromWire(Acyclic.Filesystem.V2.DirectoryBindingChange message) => new(message);
+    public RustFilesystemTreeEntrySnapshotValue? After => Wire.After is null ? null : RustFilesystemTreeEntrySnapshotValue.FromWire(Wire.After);
+    public RustFilesystemTreeEntrySnapshotValue? Before => Wire.Before is null ? null : RustFilesystemTreeEntrySnapshotValue.FromWire(Wire.Before);
+    public ByteString DirectoryId => Wire.DirectoryId;
+    public RustFilesystemLogicalNameValue? Name => Wire.Name is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.Name);
+}
+
+public sealed record RustFilesystemDirectoryEntryValue
+{
+    private Acyclic.Filesystem.V2.DirectoryEntry Wire { get; }
+    private RustFilesystemDirectoryEntryValue(Acyclic.Filesystem.V2.DirectoryEntry wire) => Wire = wire;
+    internal static RustFilesystemDirectoryEntryValue FromWire(Acyclic.Filesystem.V2.DirectoryEntry message) => new(message);
+    public RustFilesystemLogicalNameValue? Name => Wire.Name is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.Name);
+    public RustFilesystemFileStatValue? Stat => Wire.Stat is null ? null : RustFilesystemFileStatValue.FromWire(Wire.Stat);
+}
+
+public sealed record RustFilesystemDirectoryNameConflictValue
+{
+    private Acyclic.Filesystem.V2.DirectoryNameConflict Wire { get; }
+    private RustFilesystemDirectoryNameConflictValue(Acyclic.Filesystem.V2.DirectoryNameConflict wire) => Wire = wire;
+    internal static RustFilesystemDirectoryNameConflictValue FromWire(Acyclic.Filesystem.V2.DirectoryNameConflict message) => new(message);
+    public ByteString DirectoryId => Wire.DirectoryId;
+    public RustFilesystemLogicalNameValue? Name => Wire.Name is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.Name);
+}
+
+public sealed record RustFilesystemDirectoryPageValue
+{
+    private Acyclic.Filesystem.V2.DirectoryPage Wire { get; }
+    private RustFilesystemDirectoryPageValue(Acyclic.Filesystem.V2.DirectoryPage wire) => Wire = wire;
+    internal static RustFilesystemDirectoryPageValue FromWire(Acyclic.Filesystem.V2.DirectoryPage message) => new(message);
+    public IReadOnlyList<RustFilesystemDirectoryEntryValue> Entries => Wire.Entries.Select(value => RustFilesystemDirectoryEntryValue.FromWire(value)).ToArray();
+    public RustFilesystemLogicalNameValue? Next => Wire.Next is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.Next);
+}
+
+public sealed record RustFilesystemDirectoryRangeConflictValue
+{
+    private Acyclic.Filesystem.V2.DirectoryRangeConflict Wire { get; }
+    private RustFilesystemDirectoryRangeConflictValue(Acyclic.Filesystem.V2.DirectoryRangeConflict wire) => Wire = wire;
+    internal static RustFilesystemDirectoryRangeConflictValue FromWire(Acyclic.Filesystem.V2.DirectoryRangeConflict message) => new(message);
+    public RustFilesystemLogicalNameValue? After => Wire.After is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.After);
+    public ByteString DirectoryId => Wire.DirectoryId;
+    public uint MaximumEntries => Wire.MaximumEntries;
+}
+
+public sealed record RustFilesystemExtentValue
+{
+    private Acyclic.Filesystem.V2.Extent Wire { get; }
+    private RustFilesystemExtentValue(Acyclic.Filesystem.V2.Extent wire) => Wire = wire;
+    internal static RustFilesystemExtentValue FromWire(Acyclic.Filesystem.V2.Extent message) => new(message);
+    public RustFilesystemExtentKindEnum Kind => new RustFilesystemExtentKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public RustFilesystemByteRangeValue? Range => Wire.Range is null ? null : RustFilesystemByteRangeValue.FromWire(Wire.Range);
+}
+
+public sealed record RustFilesystemFileConflictValue
+{
+    private Acyclic.Filesystem.V2.FileConflict Wire { get; }
+    private RustFilesystemFileConflictValue(Acyclic.Filesystem.V2.FileConflict wire) => Wire = wire;
+    internal static RustFilesystemFileConflictValue FromWire(Acyclic.Filesystem.V2.FileConflict message) => new(message);
+    public ByteString FileId => Wire.FileId;
+}
+
+public sealed record RustFilesystemFileRecordChangeValue
+{
+    private Acyclic.Filesystem.V2.FileRecordChange Wire { get; }
+    private RustFilesystemFileRecordChangeValue(Acyclic.Filesystem.V2.FileRecordChange wire) => Wire = wire;
+    internal static RustFilesystemFileRecordChangeValue FromWire(Acyclic.Filesystem.V2.FileRecordChange message) => new(message);
+    public RustFilesystemFileRecordSnapshotValue? After => Wire.After is null ? null : RustFilesystemFileRecordSnapshotValue.FromWire(Wire.After);
+    public RustFilesystemFileRecordSnapshotValue? Before => Wire.Before is null ? null : RustFilesystemFileRecordSnapshotValue.FromWire(Wire.Before);
+    public ByteString FileId => Wire.FileId;
+}
+
+public sealed record RustFilesystemFileRecordSnapshotValue
+{
+    private Acyclic.Filesystem.V2.FileRecordSnapshot Wire { get; }
+    private RustFilesystemFileRecordSnapshotValue(Acyclic.Filesystem.V2.FileRecordSnapshot wire) => Wire = wire;
+    internal static RustFilesystemFileRecordSnapshotValue FromWire(Acyclic.Filesystem.V2.FileRecordSnapshot message) => new(message);
+    public RustFilesystemOptionalU32Value? DeviceMajor => Wire.DeviceMajor is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.DeviceMajor);
+    public RustFilesystemOptionalU32Value? DeviceMinor => Wire.DeviceMinor is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.DeviceMinor);
+    public ByteString FileId => Wire.FileId;
+    public RustFilesystemFileKindEnum FileKind => new RustFilesystemFileKindEnum((int)Wire.FileKind);
+    public int FileKindNumber => (int)Wire.FileKind;
+    public ByteString InlineBytes => Wire.InlineBytes;
+    public ulong LinkCount => Wire.LinkCount;
+    public RustFilesystemOptionalU64Value? LogicalBytes => Wire.LogicalBytes is null ? null : RustFilesystemOptionalU64Value.FromWire(Wire.LogicalBytes);
+    public ByteString MetadataObject => Wire.MetadataObject;
+    public string PayloadKind => Wire.PayloadKind;
+    public ByteString PayloadObject => Wire.PayloadObject;
+}
+
+public sealed record RustFilesystemFileStatValue
+{
+    private Acyclic.Filesystem.V2.FileStat Wire { get; }
+    private RustFilesystemFileStatValue(Acyclic.Filesystem.V2.FileStat wire) => Wire = wire;
+    internal static RustFilesystemFileStatValue FromWire(Acyclic.Filesystem.V2.FileStat message) => new(message);
+    public ByteString FileId => Wire.FileId;
+    public RustFilesystemFileKindEnum Kind => new RustFilesystemFileKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public ulong LinkCount => Wire.LinkCount;
+    public RustFilesystemOptionalU64Value? LogicalBytes => Wire.LogicalBytes is null ? null : RustFilesystemOptionalU64Value.FromWire(Wire.LogicalBytes);
+    public RustFilesystemMetadataValue? Metadata => Wire.Metadata is null ? null : RustFilesystemMetadataValue.FromWire(Wire.Metadata);
+}
+
+public sealed record RustFilesystemGenerationRefValue
+{
+    private Acyclic.Filesystem.V2.GenerationRef Wire { get; }
+    private RustFilesystemGenerationRefValue(Acyclic.Filesystem.V2.GenerationRef wire) => Wire = wire;
+    internal static RustFilesystemGenerationRefValue FromWire(Acyclic.Filesystem.V2.GenerationRef message) => new(message);
+    public ByteString GenerationId => Wire.GenerationId;
+    public RustFilesystemWorkspaceRefValue? Workspace => Wire.Workspace is null ? null : RustFilesystemWorkspaceRefValue.FromWire(Wire.Workspace);
+}
+
+public sealed record RustFilesystemHardLinkValue
+{
+    private Acyclic.Filesystem.V2.HardLink Wire { get; }
+    private RustFilesystemHardLinkValue(Acyclic.Filesystem.V2.HardLink wire) => Wire = wire;
+    internal static RustFilesystemHardLinkValue FromWire(Acyclic.Filesystem.V2.HardLink message) => new(message);
+    public string Destination => Wire.Destination;
+    public string Source => Wire.Source;
+}
+
+public sealed record RustFilesystemJoinPlanValue
+{
+    private Acyclic.Filesystem.V2.JoinPlan Wire { get; }
+    private RustFilesystemJoinPlanValue(Acyclic.Filesystem.V2.JoinPlan wire) => Wire = wire;
+    internal static RustFilesystemJoinPlanValue FromWire(Acyclic.Filesystem.V2.JoinPlan message) => new(message);
+    public IReadOnlyList<RustFilesystemDirectoryBindingChangeValue> BindingChanges => Wire.BindingChanges.Select(value => RustFilesystemDirectoryBindingChangeValue.FromWire(value)).ToArray();
+    public RustFilesystemGenerationRefValue? CommonAncestor => Wire.CommonAncestor is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.CommonAncestor);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public RustFilesystemGenerationRefValue? ExpectedTarget => Wire.ExpectedTarget is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.ExpectedTarget);
+    public IReadOnlyList<RustFilesystemFileRecordChangeValue> FileChanges => Wire.FileChanges.Select(value => RustFilesystemFileRecordChangeValue.FromWire(value)).ToArray();
+    public RustFilesystemJoinHistoryEnum History => new RustFilesystemJoinHistoryEnum((int)Wire.History);
+    public int HistoryNumber => (int)Wire.History;
+    public NonNegativeCount MaximumChanges => new NonNegativeCount(checked((ulong)Wire.MaximumChanges));
+    public NonNegativeCount MaximumConflicts => new NonNegativeCount(checked((ulong)Wire.MaximumConflicts));
+    public NonNegativeCount MaximumGenerations => new NonNegativeCount(checked((ulong)Wire.MaximumGenerations));
+    public OpaqueBytes PlanId => new OpaqueBytes(Wire.PlanId.ToByteArray());
+    public RustFilesystemGenerationRefValue? Source => Wire.Source is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Source);
+    public bool Truncated => Wire.Truncated;
+}
+
+public sealed record RustFilesystemLogicalNameValue
+{
+    private Acyclic.Filesystem.V2.LogicalName Wire { get; }
+    private RustFilesystemLogicalNameValue(Acyclic.Filesystem.V2.LogicalName wire) => Wire = wire;
+    internal static RustFilesystemLogicalNameValue FromWire(Acyclic.Filesystem.V2.LogicalName message) => new(message);
+    public ByteString Bytes => Wire.Bytes;
+    public RustFilesystemNameEncodingEnum Encoding => new RustFilesystemNameEncodingEnum((int)Wire.Encoding);
+    public int EncodingNumber => (int)Wire.Encoding;
+}
+
+public sealed record RustFilesystemMetadataValue
+{
+    private Acyclic.Filesystem.V2.Metadata Wire { get; }
+    private RustFilesystemMetadataValue(Acyclic.Filesystem.V2.Metadata wire) => Wire = wire;
+    internal static RustFilesystemMetadataValue FromWire(Acyclic.Filesystem.V2.Metadata message) => new(message);
+    public RustFilesystemOptionalI64Value? AccessedNs => Wire.AccessedNs is null ? null : RustFilesystemOptionalI64Value.FromWire(Wire.AccessedNs);
+    public RustFilesystemOptionalI64Value? ChangedNs => Wire.ChangedNs is null ? null : RustFilesystemOptionalI64Value.FromWire(Wire.ChangedNs);
+    public RustFilesystemOptionalI64Value? CreatedNs => Wire.CreatedNs is null ? null : RustFilesystemOptionalI64Value.FromWire(Wire.CreatedNs);
+    public bool HasAcl => Wire.HasAcl;
+    public bool HasNamedAttributes => Wire.HasNamedAttributes;
+    public bool HasSecurityDescriptor => Wire.HasSecurityDescriptor;
+    public RustFilesystemOptionalI64Value? ModifiedNs => Wire.ModifiedNs is null ? null : RustFilesystemOptionalI64Value.FromWire(Wire.ModifiedNs);
+    public RustFilesystemOptionalU64Value? PosixFlags => Wire.PosixFlags is null ? null : RustFilesystemOptionalU64Value.FromWire(Wire.PosixFlags);
+    public RustFilesystemOptionalU32Value? PosixGid => Wire.PosixGid is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.PosixGid);
+    public RustFilesystemOptionalU32Value? PosixMode => Wire.PosixMode is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.PosixMode);
+    public RustFilesystemOptionalU32Value? PosixUid => Wire.PosixUid is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.PosixUid);
+    public RustFilesystemOptionalU32Value? WindowsAttributes => Wire.WindowsAttributes is null ? null : RustFilesystemOptionalU32Value.FromWire(Wire.WindowsAttributes);
+}
+
+public sealed record RustFilesystemMutationValue
+{
+    private Acyclic.Filesystem.V2.Mutation Wire { get; }
+    private RustFilesystemMutationValue(Acyclic.Filesystem.V2.Mutation wire) => Wire = wire;
+    internal static RustFilesystemMutationValue FromWire(Acyclic.Filesystem.V2.Mutation message) => new(message);
+    public RustFilesystemCloneRangeValue? CloneRange => Wire.CloneRange is null ? null : RustFilesystemCloneRangeValue.FromWire(Wire.CloneRange);
+    public int CloneRangeOneofIndex => 0;
+    public RustFilesystemCopyFileValue? CopyFile => Wire.CopyFile is null ? null : RustFilesystemCopyFileValue.FromWire(Wire.CopyFile);
+    public int CopyFileOneofIndex => 0;
+    public RustFilesystemCreateDirectoriesValue? CreateDirectories => Wire.CreateDirectories is null ? null : RustFilesystemCreateDirectoriesValue.FromWire(Wire.CreateDirectories);
+    public int CreateDirectoriesOneofIndex => 0;
+    public RustFilesystemCreateDirectoryValue? CreateDirectory => Wire.CreateDirectory is null ? null : RustFilesystemCreateDirectoryValue.FromWire(Wire.CreateDirectory);
+    public int CreateDirectoryOneofIndex => 0;
+    public RustFilesystemCreateFileValue? CreateFile => Wire.CreateFile is null ? null : RustFilesystemCreateFileValue.FromWire(Wire.CreateFile);
+    public int CreateFileOneofIndex => 0;
+    public RustFilesystemCreateSymbolicLinkValue? CreateSymbolicLink => Wire.CreateSymbolicLink is null ? null : RustFilesystemCreateSymbolicLinkValue.FromWire(Wire.CreateSymbolicLink);
+    public int CreateSymbolicLinkOneofIndex => 0;
+    public RustFilesystemHardLinkValue? HardLink => Wire.HardLink is null ? null : RustFilesystemHardLinkValue.FromWire(Wire.HardLink);
+    public int HardLinkOneofIndex => 0;
+    public RustFilesystemPreallocateValue? Preallocate => Wire.Preallocate is null ? null : RustFilesystemPreallocateValue.FromWire(Wire.Preallocate);
+    public int PreallocateOneofIndex => 0;
+    public RustFilesystemPutFileValue? PutFile => Wire.PutFile is null ? null : RustFilesystemPutFileValue.FromWire(Wire.PutFile);
+    public int PutFileOneofIndex => 0;
+    public RustFilesystemRemoveValue? Remove => Wire.Remove is null ? null : RustFilesystemRemoveValue.FromWire(Wire.Remove);
+    public int RemoveOneofIndex => 0;
+    public RustFilesystemRenameValue? Rename => Wire.Rename is null ? null : RustFilesystemRenameValue.FromWire(Wire.Rename);
+    public int RenameOneofIndex => 0;
+    public RustFilesystemResizeValue? Resize => Wire.Resize is null ? null : RustFilesystemResizeValue.FromWire(Wire.Resize);
+    public int ResizeOneofIndex => 0;
+    public RustFilesystemSetMetadataValue? SetMetadata => Wire.SetMetadata is null ? null : RustFilesystemSetMetadataValue.FromWire(Wire.SetMetadata);
+    public int SetMetadataOneofIndex => 0;
+    public RustFilesystemWriteValue? Write => Wire.Write is null ? null : RustFilesystemWriteValue.FromWire(Wire.Write);
+    public int WriteOneofIndex => 0;
+    public RustFilesystemZeroRangeValue? ZeroRange => Wire.ZeroRange is null ? null : RustFilesystemZeroRangeValue.FromWire(Wire.ZeroRange);
+    public int ZeroRangeOneofIndex => 0;
+    public RustFilesystemMutationMutationChoice MutationChoice => RustFilesystemMutationMutationChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemMutationResponseValue
+{
+    private Acyclic.Filesystem.V2.MutationResponse Wire { get; }
+    private RustFilesystemMutationResponseValue(Acyclic.Filesystem.V2.MutationResponse wire) => Wire = wire;
+    internal static RustFilesystemMutationResponseValue FromWire(Acyclic.Filesystem.V2.MutationResponse message) => new(message);
+    public RustFilesystemGenerationRefValue? ActualHead => Wire.ActualHead is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.ActualHead);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public RustFilesystemMutationStatusEnum Status => new RustFilesystemMutationStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    public bool Truncated => Wire.Truncated;
+}
+
+public sealed record RustFilesystemObserveResponseValue
+{
+    private Acyclic.Filesystem.V2.ObserveResponse Wire { get; }
+    private RustFilesystemObserveResponseValue(Acyclic.Filesystem.V2.ObserveResponse wire) => Wire = wire;
+    internal static RustFilesystemObserveResponseValue FromWire(Acyclic.Filesystem.V2.ObserveResponse message) => new(message);
+    public RustFilesystemMutationResponseValue? Outcome => Wire.Outcome is null ? null : RustFilesystemMutationResponseValue.FromWire(Wire.Outcome);
+    public OpaqueText State => new OpaqueText(Wire.State);
+}
+
+public sealed record RustFilesystemOperationOptionsValue
+{
+    private Acyclic.Filesystem.V2.OperationOptions Wire { get; }
+    private RustFilesystemOperationOptionsValue(Acyclic.Filesystem.V2.OperationOptions wire) => Wire = wire;
+    internal static RustFilesystemOperationOptionsValue FromWire(Acyclic.Filesystem.V2.OperationOptions message) => new(message);
+    public ByteString IdempotencyKey => Wire.IdempotencyKey;
+}
+
+public sealed record RustFilesystemOptionalI64Value
+{
+    private Acyclic.Filesystem.V2.OptionalI64 Wire { get; }
+    private RustFilesystemOptionalI64Value(Acyclic.Filesystem.V2.OptionalI64 wire) => Wire = wire;
+    internal static RustFilesystemOptionalI64Value FromWire(Acyclic.Filesystem.V2.OptionalI64 message) => new(message);
+    public long Present => Wire.Present;
+    public int PresentOneofIndex => 0;
+    public bool Unavailable => Wire.Unavailable;
+    public int UnavailableOneofIndex => 0;
+    public RustFilesystemOptionalI64ValueChoice ValueChoice => RustFilesystemOptionalI64ValueChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemOptionalU32Value
+{
+    private Acyclic.Filesystem.V2.OptionalU32 Wire { get; }
+    private RustFilesystemOptionalU32Value(Acyclic.Filesystem.V2.OptionalU32 wire) => Wire = wire;
+    internal static RustFilesystemOptionalU32Value FromWire(Acyclic.Filesystem.V2.OptionalU32 message) => new(message);
+    public uint Present => Wire.Present;
+    public int PresentOneofIndex => 0;
+    public bool Unavailable => Wire.Unavailable;
+    public int UnavailableOneofIndex => 0;
+    public RustFilesystemOptionalU32ValueChoice ValueChoice => RustFilesystemOptionalU32ValueChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemOptionalU64Value
+{
+    private Acyclic.Filesystem.V2.OptionalU64 Wire { get; }
+    private RustFilesystemOptionalU64Value(Acyclic.Filesystem.V2.OptionalU64 wire) => Wire = wire;
+    internal static RustFilesystemOptionalU64Value FromWire(Acyclic.Filesystem.V2.OptionalU64 message) => new(message);
+    public ulong Present => Wire.Present;
+    public int PresentOneofIndex => 0;
+    public bool Unavailable => Wire.Unavailable;
+    public int UnavailableOneofIndex => 0;
+    public RustFilesystemOptionalU64ValueChoice ValueChoice => RustFilesystemOptionalU64ValueChoice.FromWire(Wire);
+}
+
+public sealed record RustFilesystemPageOptionsValue
+{
+    private Acyclic.Filesystem.V2.PageOptions Wire { get; }
+    private RustFilesystemPageOptionsValue(Acyclic.Filesystem.V2.PageOptions wire) => Wire = wire;
+    internal static RustFilesystemPageOptionsValue FromWire(Acyclic.Filesystem.V2.PageOptions message) => new(message);
+    public RustFilesystemLogicalNameValue? After => Wire.After is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.After);
+    public uint MaximumItems => Wire.MaximumItems;
+}
+
+public sealed record RustFilesystemPreallocateValue
+{
+    private Acyclic.Filesystem.V2.Preallocate Wire { get; }
+    private RustFilesystemPreallocateValue(Acyclic.Filesystem.V2.Preallocate wire) => Wire = wire;
+    internal static RustFilesystemPreallocateValue FromWire(Acyclic.Filesystem.V2.Preallocate message) => new(message);
+    public bool KeepSize => Wire.KeepSize;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+    public RustFilesystemByteRangeValue? Range => Wire.Range is null ? null : RustFilesystemByteRangeValue.FromWire(Wire.Range);
+}
+
+public sealed record RustFilesystemPutFileValue
+{
+    private Acyclic.Filesystem.V2.PutFile Wire { get; }
+    private RustFilesystemPutFileValue(Acyclic.Filesystem.V2.PutFile wire) => Wire = wire;
+    internal static RustFilesystemPutFileValue FromWire(Acyclic.Filesystem.V2.PutFile message) => new(message);
+    public ByteString Contents => Wire.Contents;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemRemoveValue
+{
+    private Acyclic.Filesystem.V2.Remove Wire { get; }
+    private RustFilesystemRemoveValue(Acyclic.Filesystem.V2.Remove wire) => Wire = wire;
+    internal static RustFilesystemRemoveValue FromWire(Acyclic.Filesystem.V2.Remove message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemRenameValue
+{
+    private Acyclic.Filesystem.V2.Rename Wire { get; }
+    private RustFilesystemRenameValue(Acyclic.Filesystem.V2.Rename wire) => Wire = wire;
+    internal static RustFilesystemRenameValue FromWire(Acyclic.Filesystem.V2.Rename message) => new(message);
+    public string Destination => Wire.Destination;
+    public bool Replace => Wire.Replace;
+    public string Source => Wire.Source;
+}
+
+public sealed record RustFilesystemResizeValue
+{
+    private Acyclic.Filesystem.V2.Resize Wire { get; }
+    private RustFilesystemResizeValue(Acyclic.Filesystem.V2.Resize wire) => Wire = wire;
+    internal static RustFilesystemResizeValue FromWire(Acyclic.Filesystem.V2.Resize message) => new(message);
+    public ulong LogicalBytes => Wire.LogicalBytes;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemS3CredentialValue
+{
+    private Acyclic.Filesystem.V2.S3Credential Wire { get; }
+    private RustFilesystemS3CredentialValue(Acyclic.Filesystem.V2.S3Credential wire) => Wire = wire;
+    internal static RustFilesystemS3CredentialValue FromWire(Acyclic.Filesystem.V2.S3Credential message) => new(message);
+    public string AccessKeyId => Wire.AccessKeyId;
+    public string Bucket => Wire.Bucket;
+    public string Region => Wire.Region;
+    public string SecretAccessKey => Wire.SecretAccessKey;
+    public string SessionToken => Wire.SessionToken;
+}
+
+public sealed record RustFilesystemSetMetadataValue
+{
+    private Acyclic.Filesystem.V2.SetMetadata Wire { get; }
+    private RustFilesystemSetMetadataValue(Acyclic.Filesystem.V2.SetMetadata wire) => Wire = wire;
+    internal static RustFilesystemSetMetadataValue FromWire(Acyclic.Filesystem.V2.SetMetadata message) => new(message);
+    public RustFilesystemMetadataValue? Metadata => Wire.Metadata is null ? null : RustFilesystemMetadataValue.FromWire(Wire.Metadata);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemSparseConflictValue
+{
+    private Acyclic.Filesystem.V2.SparseConflict Wire { get; }
+    private RustFilesystemSparseConflictValue(Acyclic.Filesystem.V2.SparseConflict wire) => Wire = wire;
+    internal static RustFilesystemSparseConflictValue FromWire(Acyclic.Filesystem.V2.SparseConflict message) => new(message);
+    public ByteString FileId => Wire.FileId;
+    public ulong Offset => Wire.Offset;
+    public RustFilesystemSparseTargetEnum Target => new RustFilesystemSparseTargetEnum((int)Wire.Target);
+    public int TargetNumber => (int)Wire.Target;
+}
+
+public sealed record RustFilesystemTreeEntrySnapshotValue
+{
+    private Acyclic.Filesystem.V2.TreeEntrySnapshot Wire { get; }
+    private RustFilesystemTreeEntrySnapshotValue(Acyclic.Filesystem.V2.TreeEntrySnapshot wire) => Wire = wire;
+    internal static RustFilesystemTreeEntrySnapshotValue FromWire(Acyclic.Filesystem.V2.TreeEntrySnapshot message) => new(message);
+    public ByteString FileId => Wire.FileId;
+    public RustFilesystemFileKindEnum FileKind => new RustFilesystemFileKindEnum((int)Wire.FileKind);
+    public int FileKindNumber => (int)Wire.FileKind;
+    public RustFilesystemLogicalNameValue? Name => Wire.Name is null ? null : RustFilesystemLogicalNameValue.FromWire(Wire.Name);
+}
+
+public sealed record RustFilesystemWorkCountersValue
+{
+    private Acyclic.Filesystem.V2.WorkCounters Wire { get; }
+    private RustFilesystemWorkCountersValue(Acyclic.Filesystem.V2.WorkCounters wire) => Wire = wire;
+    internal static RustFilesystemWorkCountersValue FromWire(Acyclic.Filesystem.V2.WorkCounters message) => new(message);
+    public ulong AllocationOperations => Wire.AllocationOperations;
+    public ulong AuthorityBytesRead => Wire.AuthorityBytesRead;
+    public ulong AuthorityBytesWritten => Wire.AuthorityBytesWritten;
+    public ulong AuthorityRecordsAppended => Wire.AuthorityRecordsAppended;
+    public ulong AuthorityRecordsRead => Wire.AuthorityRecordsRead;
+    public ulong BackendReadOperations => Wire.BackendReadOperations;
+    public ulong BackendWriteOperations => Wire.BackendWriteOperations;
+    public ulong BytesCopied => Wire.BytesCopied;
+    public ulong BytesEncoded => Wire.BytesEncoded;
+    public ulong BytesHashed => Wire.BytesHashed;
+    public ulong DurabilityOperations => Wire.DurabilityOperations;
+    public ulong ItemsExamined => Wire.ItemsExamined;
+    public ulong ItemsReturned => Wire.ItemsReturned;
+    public ulong Materializations => Wire.Materializations;
+    public ulong ObjectBytesRead => Wire.ObjectBytesRead;
+    public ulong ObjectBytesWritten => Wire.ObjectBytesWritten;
+    public ulong ObjectProbes => Wire.ObjectProbes;
+    public ulong OutputBytes => Wire.OutputBytes;
+    public ulong PageReads => Wire.PageReads;
+    public ulong PageWrites => Wire.PageWrites;
+    public ulong PeakAllocationBytes => Wire.PeakAllocationBytes;
+    public ulong SourceBytesRead => Wire.SourceBytesRead;
+    public ulong SourceEntriesVisited => Wire.SourceEntriesVisited;
+    public ulong SourcePathComponents => Wire.SourcePathComponents;
+}
+
+public sealed record RustFilesystemWorkspaceValue
+{
+    private Acyclic.Filesystem.V2.Workspace Wire { get; }
+    private RustFilesystemWorkspaceValue(Acyclic.Filesystem.V2.Workspace wire) => Wire = wire;
+    internal static RustFilesystemWorkspaceValue FromWire(Acyclic.Filesystem.V2.Workspace message) => new(message);
+    public bool Deleted => Wire.Deleted;
+    public RustFilesystemGenerationRefValue? Head => Wire.Head is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Head);
+    public string Name => Wire.Name;
+    public RustFilesystemFilesystemProfileEnum Profile => new RustFilesystemFilesystemProfileEnum((int)Wire.Profile);
+    public int ProfileNumber => (int)Wire.Profile;
+    public RustFilesystemWorkspaceRefValue? Workspace_ => Wire.Workspace_ is null ? null : RustFilesystemWorkspaceRefValue.FromWire(Wire.Workspace_);
+}
+
+public sealed record RustFilesystemWorkspaceRefValue
+{
+    private Acyclic.Filesystem.V2.WorkspaceRef Wire { get; }
+    private RustFilesystemWorkspaceRefValue(Acyclic.Filesystem.V2.WorkspaceRef wire) => Wire = wire;
+    internal static RustFilesystemWorkspaceRefValue FromWire(Acyclic.Filesystem.V2.WorkspaceRef message) => new(message);
+    public string Name => Wire.Name;
+    public ByteString WorkspaceId => Wire.WorkspaceId;
+}
+
+public sealed record RustFilesystemWriteValue
+{
+    private Acyclic.Filesystem.V2.Write Wire { get; }
+    private RustFilesystemWriteValue(Acyclic.Filesystem.V2.Write wire) => Wire = wire;
+    internal static RustFilesystemWriteValue FromWire(Acyclic.Filesystem.V2.Write message) => new(message);
+    public ByteString Contents => Wire.Contents;
+    public ulong Offset => Wire.Offset;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustFilesystemZeroRangeValue
+{
+    private Acyclic.Filesystem.V2.ZeroRange Wire { get; }
+    private RustFilesystemZeroRangeValue(Acyclic.Filesystem.V2.ZeroRange wire) => Wire = wire;
+    internal static RustFilesystemZeroRangeValue FromWire(Acyclic.Filesystem.V2.ZeroRange message) => new(message);
+    public bool Allocated => Wire.Allocated;
+    public bool Extend => Wire.Extend;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+    public RustFilesystemByteRangeValue? Range => Wire.Range is null ? null : RustFilesystemByteRangeValue.FromWire(Wire.Range);
+}
+
+public sealed record RustHarnessAuthorityValue
+{
+    private Acyclic.Harness.V2.Authority Wire { get; }
+    private RustHarnessAuthorityValue(Acyclic.Harness.V2.Authority wire) => Wire = wire;
+    internal static RustHarnessAuthorityValue FromWire(Acyclic.Harness.V2.Authority message) => new(message);
+    public string Id => Wire.Id;
+    public RustHarnessAggregateKindEnum Kind => new RustHarnessAggregateKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+}
+
+public sealed record RustHarnessErrorValue
+{
+    private Acyclic.Harness.V2.Error Wire { get; }
+    private RustHarnessErrorValue(Acyclic.Harness.V2.Error wire) => Wire = wire;
+    internal static RustHarnessErrorValue FromWire(Acyclic.Harness.V2.Error message) => new(message);
+    public RustHarnessErrorCodeEnum Code => new RustHarnessErrorCodeEnum((int)Wire.Code);
+    public int CodeNumber => (int)Wire.Code;
+    public string Message => Wire.Message;
+    public string OperationId => Wire.OperationId;
+}
+
+public sealed record RustHarnessEventEnvelopeValue
+{
+    private Acyclic.Harness.V2.EventEnvelope Wire { get; }
+    private RustHarnessEventEnvelopeValue(Acyclic.Harness.V2.EventEnvelope wire) => Wire = wire;
+    internal static RustHarnessEventEnvelopeValue FromWire(Acyclic.Harness.V2.EventEnvelope message) => new(message);
+    public ByteString Attestation => Wire.Attestation;
+    public RustHarnessAuthorityValue? Authority => Wire.Authority is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Authority);
+    public ByteString CanonicalPayloadJson => Wire.CanonicalPayloadJson;
+    public RustHarnessEventReferenceValue? CausalParent => Wire.CausalParent is null ? null : RustHarnessEventReferenceValue.FromWire(Wire.CausalParent);
+    public string EventType => Wire.EventType;
+    public ByteString IntentDigest => Wire.IntentDigest;
+    public string OperationId => Wire.OperationId;
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public Revision Revision => new Revision(checked((ulong)Wire.Revision));
+    public RustHarnessRecordedScopeValue? Scope => Wire.Scope is null ? null : RustHarnessRecordedScopeValue.FromWire(Wire.Scope);
+}
+
+public sealed record RustHarnessEventReferenceValue
+{
+    private Acyclic.Harness.V2.EventReference Wire { get; }
+    private RustHarnessEventReferenceValue(Acyclic.Harness.V2.EventReference wire) => Wire = wire;
+    internal static RustHarnessEventReferenceValue FromWire(Acyclic.Harness.V2.EventReference message) => new(message);
+    public RustHarnessAuthorityValue? Authority => Wire.Authority is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Authority);
+    public Revision Revision => new Revision(checked((ulong)Wire.Revision));
+}
+
+public sealed record RustHarnessOperationIdentityValue
+{
+    private Acyclic.Harness.V2.OperationIdentity Wire { get; }
+    private RustHarnessOperationIdentityValue(Acyclic.Harness.V2.OperationIdentity wire) => Wire = wire;
+    internal static RustHarnessOperationIdentityValue FromWire(Acyclic.Harness.V2.OperationIdentity message) => new(message);
+    public string IdempotencyKey => Wire.IdempotencyKey;
+    public string OperationId => Wire.OperationId;
+}
+
+public sealed record RustHarnessOperationStatusValue
+{
+    private Acyclic.Harness.V2.OperationStatus Wire { get; }
+    private RustHarnessOperationStatusValue(Acyclic.Harness.V2.OperationStatus wire) => Wire = wire;
+    internal static RustHarnessOperationStatusValue FromWire(Acyclic.Harness.V2.OperationStatus message) => new(message);
+    public bool CancellationRequested => Wire.CancellationRequested;
+    public RustHarnessErrorValue? Error => Wire.Error is null ? null : RustHarnessErrorValue.FromWire(Wire.Error);
+    public RustHarnessOperationIdentityValue? Operation => Wire.Operation is null ? null : RustHarnessOperationIdentityValue.FromWire(Wire.Operation);
+    public RustHarnessAuthorityValue? Owner => Wire.Owner is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Owner);
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public Revision Revision => new Revision(checked((ulong)Wire.Revision));
+    public RustHarnessCompletionStateEnum State => new RustHarnessCompletionStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+}
+
+public sealed record RustHarnessRecordedScopeValue
+{
+    private Acyclic.Harness.V2.RecordedScope Wire { get; }
+    private RustHarnessRecordedScopeValue(Acyclic.Harness.V2.RecordedScope wire) => Wire = wire;
+    internal static RustHarnessRecordedScopeValue FromWire(Acyclic.Harness.V2.RecordedScope message) => new(message);
+    public string AgentId => Wire.AgentId;
+    public IReadOnlyList<string> Capabilities => Wire.Capabilities;
+    public string Id => Wire.Id;
+    public string Issuer => Wire.Issuer;
+}
+
+public sealed record RustHarnessReplayCursorValue
+{
+    private Acyclic.Harness.V2.ReplayCursor Wire { get; }
+    private RustHarnessReplayCursorValue(Acyclic.Harness.V2.ReplayCursor wire) => Wire = wire;
+    internal static RustHarnessReplayCursorValue FromWire(Acyclic.Harness.V2.ReplayCursor message) => new(message);
+    public RustHarnessAuthorityValue? Authority => Wire.Authority is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Authority);
+    public OpaqueText Generation => new OpaqueText(Wire.Generation);
+    public Revision Revision => new Revision(checked((ulong)Wire.Revision));
+}
+
+public sealed record RustHarnessScopeValue
+{
+    private Acyclic.Harness.V2.Scope Wire { get; }
+    private RustHarnessScopeValue(Acyclic.Harness.V2.Scope wire) => Wire = wire;
+    internal static RustHarnessScopeValue FromWire(Acyclic.Harness.V2.Scope message) => new(message);
+    public string AgentId => Wire.AgentId;
+    public IReadOnlyList<string> Capabilities => Wire.Capabilities;
+    public string Id => Wire.Id;
+    public string Issuer => Wire.Issuer;
+    public ByteString ParentProof => Wire.ParentProof;
+    public ByteString Proof => Wire.Proof;
+}
+
+public sealed record RustMachinesBudgetsValue
+{
+    private Acyclic.Machines.V1.Budgets Wire { get; }
+    private RustMachinesBudgetsValue(Acyclic.Machines.V1.Budgets wire) => Wire = wire;
+    internal static RustMachinesBudgetsValue FromWire(Acyclic.Machines.V1.Budgets message) => new(message);
+    public uint Concurrency => Wire.Concurrency;
+    public ulong SpendMicros => Wire.SpendMicros;
+}
+
+public sealed record RustMachinesCheckpointAdmissionValue
+{
+    private Acyclic.Machines.V1.CheckpointAdmission Wire { get; }
+    private RustMachinesCheckpointAdmissionValue(Acyclic.Machines.V1.CheckpointAdmission wire) => Wire = wire;
+    internal static RustMachinesCheckpointAdmissionValue FromWire(Acyclic.Machines.V1.CheckpointAdmission message) => new(message);
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineIdValue? Source => Wire.Source is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Source);
+}
+
+public sealed record RustMachinesCheckpointIdValue
+{
+    private Acyclic.Machines.V1.CheckpointId Wire { get; }
+    private RustMachinesCheckpointIdValue(Acyclic.Machines.V1.CheckpointId wire) => Wire = wire;
+    internal static RustMachinesCheckpointIdValue FromWire(Acyclic.Machines.V1.CheckpointId message) => new(message);
+    public ByteString Value => Wire.Value;
+}
+
+public sealed record RustMachinesCompatibilityPolicyValue
+{
+    private Acyclic.Machines.V1.CompatibilityPolicy Wire { get; }
+    private RustMachinesCompatibilityPolicyValue(Acyclic.Machines.V1.CompatibilityPolicy wire) => Wire = wire;
+    internal static RustMachinesCompatibilityPolicyValue FromWire(Acyclic.Machines.V1.CompatibilityPolicy message) => new(message);
+    public RustMachinesCompatibilityModeEnum Mode => new RustMachinesCompatibilityModeEnum((int)Wire.Mode);
+    public int ModeNumber => (int)Wire.Mode;
+    public IReadOnlyList<RustMachinesCapabilityEnum> Required => Wire.Required.Select(value => new RustMachinesCapabilityEnum((int)value)).ToArray();
+}
+
+public sealed record RustMachinesEndpointValue
+{
+    private Acyclic.Machines.V1.Endpoint Wire { get; }
+    private RustMachinesEndpointValue(Acyclic.Machines.V1.Endpoint wire) => Wire = wire;
+    internal static RustMachinesEndpointValue FromWire(Acyclic.Machines.V1.Endpoint message) => new(message);
+    public string Name => Wire.Name;
+    public string Uri => Wire.Uri;
+}
+
+public sealed record RustMachinesExpirationPolicyValue
+{
+    private Acyclic.Machines.V1.ExpirationPolicy Wire { get; }
+    private RustMachinesExpirationPolicyValue(Acyclic.Machines.V1.ExpirationPolicy wire) => Wire = wire;
+    internal static RustMachinesExpirationPolicyValue FromWire(Acyclic.Machines.V1.ExpirationPolicy message) => new(message);
+    public RustMachinesExpirationKindEnum Kind => new RustMachinesExpirationKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public ulong ValueMs => Wire.ValueMs;
+}
+
+public sealed record RustMachinesForkAdmissionValue
+{
+    private Acyclic.Machines.V1.ForkAdmission Wire { get; }
+    private RustMachinesForkAdmissionValue(Acyclic.Machines.V1.ForkAdmission wire) => Wire = wire;
+    internal static RustMachinesForkAdmissionValue FromWire(Acyclic.Machines.V1.ForkAdmission message) => new(message);
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public IReadOnlyList<RustMachinesMachineIdValue> Children => Wire.Children.Select(value => RustMachinesMachineIdValue.FromWire(value)).ToArray();
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+}
+
+public sealed record RustMachinesForkMachineAdmissionValue
+{
+    private Acyclic.Machines.V1.ForkMachineAdmission Wire { get; }
+    private RustMachinesForkMachineAdmissionValue(Acyclic.Machines.V1.ForkMachineAdmission wire) => Wire = wire;
+    internal static RustMachinesForkMachineAdmissionValue FromWire(Acyclic.Machines.V1.ForkMachineAdmission message) => new(message);
+    public IReadOnlyList<RustMachinesMachineIdValue> Children => Wire.Children.Select(value => RustMachinesMachineIdValue.FromWire(value)).ToArray();
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public RustMachinesForkFidelityEnum Fidelity => new RustMachinesForkFidelityEnum((int)Wire.Fidelity);
+    public int FidelityNumber => (int)Wire.Fidelity;
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineIdValue? Source => Wire.Source is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Source);
+}
+
+public sealed record RustMachinesIdempotencyKeyValue
+{
+    private Acyclic.Machines.V1.IdempotencyKey Wire { get; }
+    private RustMachinesIdempotencyKeyValue(Acyclic.Machines.V1.IdempotencyKey wire) => Wire = wire;
+    internal static RustMachinesIdempotencyKeyValue FromWire(Acyclic.Machines.V1.IdempotencyKey message) => new(message);
+    public ByteString Value => Wire.Value;
+}
+
+public sealed record RustMachinesImageValue
+{
+    private Acyclic.Machines.V1.Image Wire { get; }
+    private RustMachinesImageValue(Acyclic.Machines.V1.Image wire) => Wire = wire;
+    internal static RustMachinesImageValue FromWire(Acyclic.Machines.V1.Image message) => new(message);
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public int CheckpointOneofIndex => 0;
+    public Sha256Digest CustomDigest => new Sha256Digest(Wire.CustomDigest.ToByteArray());
+    public int CustomDigestOneofIndex => 0;
+    public RustMachinesImageKindEnum Kind => new RustMachinesImageKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public Sha256Digest ManagedDigest => new Sha256Digest(Wire.ManagedDigest.ToByteArray());
+    public int ManagedDigestOneofIndex => 0;
+    public RustMachinesImageImmutableReferenceChoice ImmutableReferenceChoice => RustMachinesImageImmutableReferenceChoice.FromWire(Wire);
+}
+
+public sealed record RustMachinesMachineAdmissionValue
+{
+    private Acyclic.Machines.V1.MachineAdmission Wire { get; }
+    private RustMachinesMachineAdmissionValue(Acyclic.Machines.V1.MachineAdmission wire) => Wire = wire;
+    internal static RustMachinesMachineAdmissionValue FromWire(Acyclic.Machines.V1.MachineAdmission message) => new(message);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+}
+
+public sealed record RustMachinesMachineContractValue
+{
+    private Acyclic.Machines.V1.MachineContract Wire { get; }
+    private RustMachinesMachineContractValue(Acyclic.Machines.V1.MachineContract wire) => Wire = wire;
+    internal static RustMachinesMachineContractValue FromWire(Acyclic.Machines.V1.MachineContract message) => new(message);
+    public RustMachinesBudgetsValue? Budgets => Wire.Budgets is null ? null : RustMachinesBudgetsValue.FromWire(Wire.Budgets);
+    public IReadOnlyList<RustMachinesCapabilityEnum> Capabilities => Wire.Capabilities.Select(value => new RustMachinesCapabilityEnum((int)value)).ToArray();
+    public RustMachinesCompatibilityPolicyValue? Compatibility => Wire.Compatibility is null ? null : RustMachinesCompatibilityPolicyValue.FromWire(Wire.Compatibility);
+    public RevisionDigest CompatibilityRevision => new RevisionDigest(Wire.CompatibilityRevision.ToByteArray());
+    public RustMachinesExpirationPolicyValue? Expiration => Wire.Expiration is null ? null : RustMachinesExpirationPolicyValue.FromWire(Wire.Expiration);
+    public RustMachinesImageValue? Image => Wire.Image is null ? null : RustMachinesImageValue.FromWire(Wire.Image);
+    public ByteString NetworkPolicyDigest => Wire.NetworkPolicyDigest;
+    public RustMachinesSuspensionPolicyValue? Suspension => Wire.Suspension is null ? null : RustMachinesSuspensionPolicyValue.FromWire(Wire.Suspension);
+}
+
+public sealed record RustMachinesMachineEventValue
+{
+    private Acyclic.Machines.V1.MachineEvent Wire { get; }
+    private RustMachinesMachineEventValue(Acyclic.Machines.V1.MachineEvent wire) => Wire = wire;
+    internal static RustMachinesMachineEventValue FromWire(Acyclic.Machines.V1.MachineEvent message) => new(message);
+    public RustMachinesEventKindEnum Kind => new RustMachinesEventKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public ulong ObservedAtUnixMs => Wire.ObservedAtUnixMs;
+    public RustMachinesPressureKindEnum Pressure => new RustMachinesPressureKindEnum((int)Wire.Pressure);
+    public int PressureNumber => (int)Wire.Pressure;
+    public ulong Sequence => Wire.Sequence;
+    public RustMachinesMachineStatusEnum State => new RustMachinesMachineStatusEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+}
+
+public sealed record RustMachinesMachineIdValue
+{
+    private Acyclic.Machines.V1.MachineId Wire { get; }
+    private RustMachinesMachineIdValue(Acyclic.Machines.V1.MachineId wire) => Wire = wire;
+    internal static RustMachinesMachineIdValue FromWire(Acyclic.Machines.V1.MachineId message) => new(message);
+    public ByteString Value => Wire.Value;
+}
+
+public sealed record RustMachinesMachineStateValue
+{
+    private Acyclic.Machines.V1.MachineState Wire { get; }
+    private RustMachinesMachineStateValue(Acyclic.Machines.V1.MachineState wire) => Wire = wire;
+    internal static RustMachinesMachineStateValue FromWire(Acyclic.Machines.V1.MachineState message) => new(message);
+    public UnixTimestampMillis ChangedAtUnixMs => new UnixTimestampMillis(checked((ulong)Wire.ChangedAtUnixMs));
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public UnixTimestampMillis CreatedAtUnixMs => new UnixTimestampMillis(checked((ulong)Wire.CreatedAtUnixMs));
+    public IReadOnlyList<RustMachinesEndpointValue> Endpoints => Wire.Endpoints.Select(value => RustMachinesEndpointValue.FromWire(value)).ToArray();
+    public RustMachinesCheckpointIdValue? LastCheckpoint => Wire.LastCheckpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.LastCheckpoint);
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesMachineStatusEnum Status => new RustMachinesMachineStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+}
+
+public sealed record RustMachinesMutationAdmissionValue
+{
+    private Acyclic.Machines.V1.MutationAdmission Wire { get; }
+    private RustMachinesMutationAdmissionValue(Acyclic.Machines.V1.MutationAdmission wire) => Wire = wire;
+    internal static RustMachinesMutationAdmissionValue FromWire(Acyclic.Machines.V1.MutationAdmission message) => new(message);
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+}
+
+public sealed record RustMachinesOperationIdValue
+{
+    private Acyclic.Machines.V1.OperationId Wire { get; }
+    private RustMachinesOperationIdValue(Acyclic.Machines.V1.OperationId wire) => Wire = wire;
+    internal static RustMachinesOperationIdValue FromWire(Acyclic.Machines.V1.OperationId message) => new(message);
+    public ByteString Value => Wire.Value;
+}
+
+public sealed record RustMachinesPolicyAdmissionValue
+{
+    private Acyclic.Machines.V1.PolicyAdmission Wire { get; }
+    private RustMachinesPolicyAdmissionValue(Acyclic.Machines.V1.PolicyAdmission wire) => Wire = wire;
+    internal static RustMachinesPolicyAdmissionValue FromWire(Acyclic.Machines.V1.PolicyAdmission message) => new(message);
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesSuspensionPolicyValue? Policy => Wire.Policy is null ? null : RustMachinesSuspensionPolicyValue.FromWire(Wire.Policy);
+}
+
+public sealed record RustMachinesProtocolVersionValue
+{
+    private Acyclic.Machines.V1.ProtocolVersion Wire { get; }
+    private RustMachinesProtocolVersionValue(Acyclic.Machines.V1.ProtocolVersion wire) => Wire = wire;
+    internal static RustMachinesProtocolVersionValue FromWire(Acyclic.Machines.V1.ProtocolVersion message) => new(message);
+    public uint Major => Wire.Major;
+    public uint Minor => Wire.Minor;
+}
+
+public sealed record RustMachinesSuspensionPolicyValue
+{
+    private Acyclic.Machines.V1.SuspensionPolicy Wire { get; }
+    private RustMachinesSuspensionPolicyValue(Acyclic.Machines.V1.SuspensionPolicy wire) => Wire = wire;
+    internal static RustMachinesSuspensionPolicyValue FromWire(Acyclic.Machines.V1.SuspensionPolicy message) => new(message);
+    public ulong AfterIdleMs => Wire.AfterIdleMs;
+    public int AfterIdleMsOneofIndex => 0;
+    public bool Manual => Wire.Manual;
+    public int ManualOneofIndex => 0;
+    public RustMachinesSuspensionPolicyPolicyChoice PolicyChoice => RustMachinesSuspensionPolicyPolicyChoice.FromWire(Wire);
+}
+
+public sealed record RustObjectsBucketRefValue
+{
+    private Acyclic.Objects.V2.BucketRef Wire { get; }
+    private RustObjectsBucketRefValue(Acyclic.Objects.V2.BucketRef wire) => Wire = wire;
+    internal static RustObjectsBucketRefValue FromWire(Acyclic.Objects.V2.BucketRef message) => new(message);
+    public string Name => Wire.Name;
+}
+
+public sealed record RustObjectsByteRangeValue
+{
+    private Acyclic.Objects.V2.ByteRange Wire { get; }
+    private RustObjectsByteRangeValue(Acyclic.Objects.V2.ByteRange wire) => Wire = wire;
+    internal static RustObjectsByteRangeValue FromWire(Acyclic.Objects.V2.ByteRange message) => new(message);
+    public RustObjectsInclusiveRangeValue? Bytes => Wire.Bytes is null ? null : RustObjectsInclusiveRangeValue.FromWire(Wire.Bytes);
+    public int BytesOneofIndex => 0;
+    public ulong SuffixLength => Wire.SuffixLength;
+    public int SuffixLengthOneofIndex => 0;
+    public RustObjectsByteRangeSelectionChoice SelectionChoice => RustObjectsByteRangeSelectionChoice.FromWire(Wire);
+}
+
+public sealed record RustObjectsContentRangeValue
+{
+    private Acyclic.Objects.V2.ContentRange Wire { get; }
+    private RustObjectsContentRangeValue(Acyclic.Objects.V2.ContentRange wire) => Wire = wire;
+    internal static RustObjectsContentRangeValue FromWire(Acyclic.Objects.V2.ContentRange message) => new(message);
+    public ulong End => Wire.End;
+    public ulong Start => Wire.Start;
+    public ulong Total => Wire.Total;
+}
+
+public sealed record RustObjectsErrorDetailValue
+{
+    private Acyclic.Objects.V2.ErrorDetail Wire { get; }
+    private RustObjectsErrorDetailValue(Acyclic.Objects.V2.ErrorDetail wire) => Wire = wire;
+    internal static RustObjectsErrorDetailValue FromWire(Acyclic.Objects.V2.ErrorDetail message) => new(message);
+    public RustObjectsErrorCodeEnum Code => new RustObjectsErrorCodeEnum((int)Wire.Code);
+    public int CodeNumber => (int)Wire.Code;
+    public ObjectsRequestId RequestId => ObjectsRequestId.FromWire(Wire.RequestId);
+}
+
+public sealed record RustObjectsGetObjectHeaderValue
+{
+    private Acyclic.Objects.V2.GetObjectHeader Wire { get; }
+    private RustObjectsGetObjectHeaderValue(Acyclic.Objects.V2.GetObjectHeader wire) => Wire = wire;
+    internal static RustObjectsGetObjectHeaderValue FromWire(Acyclic.Objects.V2.GetObjectHeader message) => new(message);
+    public RustObjectsContentRangeValue? ContentRange => Wire.ContentRange is null ? null : RustObjectsContentRangeValue.FromWire(Wire.ContentRange);
+    public RustObjectsObjectInfoValue? Object => Wire.Object is null ? null : RustObjectsObjectInfoValue.FromWire(Wire.Object);
+}
+
+public sealed record RustObjectsInclusiveRangeValue
+{
+    private Acyclic.Objects.V2.InclusiveRange Wire { get; }
+    private RustObjectsInclusiveRangeValue(Acyclic.Objects.V2.InclusiveRange wire) => Wire = wire;
+    internal static RustObjectsInclusiveRangeValue FromWire(Acyclic.Objects.V2.InclusiveRange message) => new(message);
+    public ulong? End => Wire.End;
+    public int EndOneofIndex => 0;
+    public ulong Start => Wire.Start;
+}
+
+public sealed record RustObjectsListEntryValue
+{
+    private Acyclic.Objects.V2.ListEntry Wire { get; }
+    private RustObjectsListEntryValue(Acyclic.Objects.V2.ListEntry wire) => Wire = wire;
+    internal static RustObjectsListEntryValue FromWire(Acyclic.Objects.V2.ListEntry message) => new(message);
+    public RustObjectsObjectInfoValue? Object => Wire.Object is null ? null : RustObjectsObjectInfoValue.FromWire(Wire.Object);
+    public ObjectKey ObjectKey => new ObjectKey(Wire.ObjectKey);
+}
+
+public sealed record RustObjectsMutationIdentityValue
+{
+    private Acyclic.Objects.V2.MutationIdentity Wire { get; }
+    private RustObjectsMutationIdentityValue(Acyclic.Objects.V2.MutationIdentity wire) => Wire = wire;
+    internal static RustObjectsMutationIdentityValue FromWire(Acyclic.Objects.V2.MutationIdentity message) => new(message);
+    public IdempotencyKeyText IdempotencyKey => new IdempotencyKeyText(Wire.IdempotencyKey);
+}
+
+public sealed record RustObjectsObjectInfoValue
+{
+    private Acyclic.Objects.V2.ObjectInfo Wire { get; }
+    private RustObjectsObjectInfoValue(Acyclic.Objects.V2.ObjectInfo wire) => Wire = wire;
+    internal static RustObjectsObjectInfoValue FromWire(Acyclic.Objects.V2.ObjectInfo message) => new(message);
+    public OpaqueText Etag => new OpaqueText(Wire.Etag);
+    public ObjectsTimestamp? LastModified => Wire.LastModified is null ? null : ObjectsTimestamp.FromWire(Wire.LastModified);
+    public RustObjectsObjectMetadataValue? Metadata => Wire.Metadata is null ? null : RustObjectsObjectMetadataValue.FromWire(Wire.Metadata);
+    public ulong Size => Wire.Size;
+}
+
+public sealed record RustObjectsObjectMetadataValue
+{
+    private Acyclic.Objects.V2.ObjectMetadata Wire { get; }
+    private RustObjectsObjectMetadataValue(Acyclic.Objects.V2.ObjectMetadata wire) => Wire = wire;
+    internal static RustObjectsObjectMetadataValue FromWire(Acyclic.Objects.V2.ObjectMetadata message) => new(message);
+    public string CacheControl => Wire.CacheControl;
+    public string ContentDisposition => Wire.ContentDisposition;
+    public string ContentEncoding => Wire.ContentEncoding;
+    public string ContentLanguage => Wire.ContentLanguage;
+    public string ContentType => Wire.ContentType;
+    public long? ExpiresUnixSeconds => Wire.ExpiresUnixSeconds;
+    public int ExpiresUnixSecondsOneofIndex => 0;
+    public IReadOnlyDictionary<string, string> User => Wire.User;
+}
+
+public sealed record RustObjectsPreconditionsValue
+{
+    private Acyclic.Objects.V2.Preconditions Wire { get; }
+    private RustObjectsPreconditionsValue(Acyclic.Objects.V2.Preconditions wire) => Wire = wire;
+    internal static RustObjectsPreconditionsValue FromWire(Acyclic.Objects.V2.Preconditions message) => new(message);
+    public bool IfAbsent => Wire.IfAbsent;
+    public int IfAbsentOneofIndex => 0;
+    public string IfMatch => Wire.IfMatch;
+    public int IfMatchOneofIndex => 0;
+    public RustObjectsPreconditionsConditionChoice ConditionChoice => RustObjectsPreconditionsConditionChoice.FromWire(Wire);
+}
+
+public sealed record RustObjectsPutObjectHeaderValue
+{
+    private Acyclic.Objects.V2.PutObjectHeader Wire { get; }
+    private RustObjectsPutObjectHeaderValue(Acyclic.Objects.V2.PutObjectHeader wire) => Wire = wire;
+    internal static RustObjectsPutObjectHeaderValue FromWire(Acyclic.Objects.V2.PutObjectHeader message) => new(message);
+    public RustObjectsBucketRefValue? Bucket => Wire.Bucket is null ? null : RustObjectsBucketRefValue.FromWire(Wire.Bucket);
+    public RustObjectsObjectMetadataValue? Metadata => Wire.Metadata is null ? null : RustObjectsObjectMetadataValue.FromWire(Wire.Metadata);
+    public RustObjectsMutationIdentityValue? Mutation => Wire.Mutation is null ? null : RustObjectsMutationIdentityValue.FromWire(Wire.Mutation);
+    public ObjectKey ObjectKey => new ObjectKey(Wire.ObjectKey);
+    public RustObjectsPreconditionsValue? Preconditions => Wire.Preconditions is null ? null : RustObjectsPreconditionsValue.FromWire(Wire.Preconditions);
+}
+
+public sealed record RustObjectsUploadPartHeaderValue
+{
+    private Acyclic.Objects.V2.UploadPartHeader Wire { get; }
+    private RustObjectsUploadPartHeaderValue(Acyclic.Objects.V2.UploadPartHeader wire) => Wire = wire;
+    internal static RustObjectsUploadPartHeaderValue FromWire(Acyclic.Objects.V2.UploadPartHeader message) => new(message);
+    public RustObjectsBucketRefValue? Bucket => Wire.Bucket is null ? null : RustObjectsBucketRefValue.FromWire(Wire.Bucket);
+    public RustObjectsMutationIdentityValue? Mutation => Wire.Mutation is null ? null : RustObjectsMutationIdentityValue.FromWire(Wire.Mutation);
+    public ObjectKey ObjectKey => new ObjectKey(Wire.ObjectKey);
+    public uint PartNumber => Wire.PartNumber;
+    public UploadId UploadId => new UploadId(Wire.UploadId);
+}
+
+public sealed record RustObjectsUploadedPartValue
+{
+    private Acyclic.Objects.V2.UploadedPart Wire { get; }
+    private RustObjectsUploadedPartValue(Acyclic.Objects.V2.UploadedPart wire) => Wire = wire;
+    internal static RustObjectsUploadedPartValue FromWire(Acyclic.Objects.V2.UploadedPart message) => new(message);
+    public OpaqueText Etag => new OpaqueText(Wire.Etag);
+    public uint PartNumber => Wire.PartNumber;
+    public ulong Size => Wire.Size;
+}
+
+public sealed record RustProtocolCapabilityValue
+{
+    private Acyclic.Protocol.V1.Capability Wire { get; }
+    private RustProtocolCapabilityValue(Acyclic.Protocol.V1.Capability wire) => Wire = wire;
+    internal static RustProtocolCapabilityValue FromWire(Acyclic.Protocol.V1.Capability message) => new(message);
+    public string Name => Wire.Name;
+    public string Version => Wire.Version;
+}
+
+public sealed record RustProtocolCapabilitySetValue
+{
+    private Acyclic.Protocol.V1.CapabilitySet Wire { get; }
+    private RustProtocolCapabilitySetValue(Acyclic.Protocol.V1.CapabilitySet wire) => Wire = wire;
+    internal static RustProtocolCapabilitySetValue FromWire(Acyclic.Protocol.V1.CapabilitySet message) => new(message);
+    public IReadOnlyList<RustProtocolCapabilityValue> Capabilities => Wire.Capabilities.Select(value => RustProtocolCapabilityValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustProtocolHandshakeRequestValue
+{
+    private Acyclic.Protocol.V1.HandshakeRequest Wire { get; }
+    private RustProtocolHandshakeRequestValue(Acyclic.Protocol.V1.HandshakeRequest wire) => Wire = wire;
+    internal static RustProtocolHandshakeRequestValue FromWire(Acyclic.Protocol.V1.HandshakeRequest message) => new(message);
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public RustProtocolCapabilitySetValue? Required => Wire.Required is null ? null : RustProtocolCapabilitySetValue.FromWire(Wire.Required);
+}
+
+public sealed record RustProtocolHandshakeResponseValue
+{
+    private Acyclic.Protocol.V1.HandshakeResponse Wire { get; }
+    private RustProtocolHandshakeResponseValue(Acyclic.Protocol.V1.HandshakeResponse wire) => Wire = wire;
+    internal static RustProtocolHandshakeResponseValue FromWire(Acyclic.Protocol.V1.HandshakeResponse message) => new(message);
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public RustProtocolCapabilitySetValue? Supported => Wire.Supported is null ? null : RustProtocolCapabilitySetValue.FromWire(Wire.Supported);
+}
+
+public sealed record RustProtocolProtocolIdentityValue
+{
+    private Acyclic.Protocol.V1.ProtocolIdentity Wire { get; }
+    private RustProtocolProtocolIdentityValue(Acyclic.Protocol.V1.ProtocolIdentity wire) => Wire = wire;
+    internal static RustProtocolProtocolIdentityValue FromWire(Acyclic.Protocol.V1.ProtocolIdentity message) => new(message);
+    public string DescriptorDigest => Wire.DescriptorDigest;
+    public string Version => Wire.Version;
+}
+
+public sealed record RustStreamAbsentConditionValue
+{
+    private Acyclic.Stream.V2.AbsentCondition Wire { get; }
+    private RustStreamAbsentConditionValue(Acyclic.Stream.V2.AbsentCondition wire) => Wire = wire;
+    internal static RustStreamAbsentConditionValue FromWire(Acyclic.Stream.V2.AbsentCondition message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustStreamAppendMutationValue
+{
+    private Acyclic.Stream.V2.AppendMutation Wire { get; }
+    private RustStreamAppendMutationValue(Acyclic.Stream.V2.AppendMutation wire) => Wire = wire;
+    internal static RustStreamAppendMutationValue FromWire(Acyclic.Stream.V2.AppendMutation message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+    public IReadOnlyList<ByteString> Records => Wire.Records;
+}
+
+public sealed record RustStreamAppendReceiptValue
+{
+    private Acyclic.Stream.V2.AppendReceipt Wire { get; }
+    private RustStreamAppendReceiptValue(Acyclic.Stream.V2.AppendReceipt wire) => Wire = wire;
+    internal static RustStreamAppendReceiptValue FromWire(Acyclic.Stream.V2.AppendReceipt message) => new(message);
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    public ulong End => Wire.End;
+    public ulong Start => Wire.Start;
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+}
+
+public sealed record RustStreamAppendResponseValue
+{
+    private Acyclic.Stream.V2.AppendResponse Wire { get; }
+    private RustStreamAppendResponseValue(Acyclic.Stream.V2.AppendResponse wire) => Wire = wire;
+    internal static RustStreamAppendResponseValue FromWire(Acyclic.Stream.V2.AppendResponse message) => new(message);
+    public RustStreamAppendReceiptValue? Committed => Wire.Committed is null ? null : RustStreamAppendReceiptValue.FromWire(Wire.Committed);
+    public int CommittedOneofIndex => 0;
+    public RustStreamTailConflictValue? Conflict => Wire.Conflict is null ? null : RustStreamTailConflictValue.FromWire(Wire.Conflict);
+    public int ConflictOneofIndex => 0;
+    public RustStreamAppendResponseOutcomeChoice OutcomeChoice => RustStreamAppendResponseOutcomeChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamChildValue
+{
+    private Acyclic.Stream.V2.Child Wire { get; }
+    private RustStreamChildValue(Acyclic.Stream.V2.Child wire) => Wire = wire;
+    internal static RustStreamChildValue FromWire(Acyclic.Stream.V2.Child message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustStreamCommitConditionValue
+{
+    private Acyclic.Stream.V2.CommitCondition Wire { get; }
+    private RustStreamCommitConditionValue(Acyclic.Stream.V2.CommitCondition wire) => Wire = wire;
+    internal static RustStreamCommitConditionValue FromWire(Acyclic.Stream.V2.CommitCondition message) => new(message);
+    public RustStreamAbsentConditionValue? Absent => Wire.Absent is null ? null : RustStreamAbsentConditionValue.FromWire(Wire.Absent);
+    public int AbsentOneofIndex => 0;
+    public RustStreamTailConditionValue? Tail => Wire.Tail is null ? null : RustStreamTailConditionValue.FromWire(Wire.Tail);
+    public int TailOneofIndex => 0;
+    public RustStreamCommitConditionConditionChoice ConditionChoice => RustStreamCommitConditionConditionChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamCommitConflictValue
+{
+    private Acyclic.Stream.V2.CommitConflict Wire { get; }
+    private RustStreamCommitConflictValue(Acyclic.Stream.V2.CommitConflict wire) => Wire = wire;
+    internal static RustStreamCommitConflictValue FromWire(Acyclic.Stream.V2.CommitConflict message) => new(message);
+    public RustStreamExistsCommitConflictValue? Exists => Wire.Exists is null ? null : RustStreamExistsCommitConflictValue.FromWire(Wire.Exists);
+    public int ExistsOneofIndex => 0;
+    public RustStreamTailCommitConflictValue? Tail => Wire.Tail is null ? null : RustStreamTailCommitConflictValue.FromWire(Wire.Tail);
+    public int TailOneofIndex => 0;
+    public RustStreamCommitConflictConflictChoice ConflictChoice => RustStreamCommitConflictConflictChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamCommitConflictsValue
+{
+    private Acyclic.Stream.V2.CommitConflicts Wire { get; }
+    private RustStreamCommitConflictsValue(Acyclic.Stream.V2.CommitConflicts wire) => Wire = wire;
+    internal static RustStreamCommitConflictsValue FromWire(Acyclic.Stream.V2.CommitConflicts message) => new(message);
+    public IReadOnlyList<RustStreamCommitConflictValue> Conflicts => Wire.Conflicts.Select(value => RustStreamCommitConflictValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustStreamCommitMutationValue
+{
+    private Acyclic.Stream.V2.CommitMutation Wire { get; }
+    private RustStreamCommitMutationValue(Acyclic.Stream.V2.CommitMutation wire) => Wire = wire;
+    internal static RustStreamCommitMutationValue FromWire(Acyclic.Stream.V2.CommitMutation message) => new(message);
+    public RustStreamAppendMutationValue? Append => Wire.Append is null ? null : RustStreamAppendMutationValue.FromWire(Wire.Append);
+    public int AppendOneofIndex => 0;
+    public RustStreamForkMutationValue? Fork => Wire.Fork is null ? null : RustStreamForkMutationValue.FromWire(Wire.Fork);
+    public int ForkOneofIndex => 0;
+    public RustStreamCommitMutationMutationChoice MutationChoice => RustStreamCommitMutationMutationChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamCommitResponseValue
+{
+    private Acyclic.Stream.V2.CommitResponse Wire { get; }
+    private RustStreamCommitResponseValue(Acyclic.Stream.V2.CommitResponse wire) => Wire = wire;
+    internal static RustStreamCommitResponseValue FromWire(Acyclic.Stream.V2.CommitResponse message) => new(message);
+    public RustStreamCommittedEnvelopeValue? Committed => Wire.Committed is null ? null : RustStreamCommittedEnvelopeValue.FromWire(Wire.Committed);
+    public int CommittedOneofIndex => 0;
+    public RustStreamCommitConflictsValue? Conflict => Wire.Conflict is null ? null : RustStreamCommitConflictsValue.FromWire(Wire.Conflict);
+    public int ConflictOneofIndex => 0;
+    public RustStreamCommitResponseOutcomeChoice OutcomeChoice => RustStreamCommitResponseOutcomeChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamCommittedAppendValue
+{
+    private Acyclic.Stream.V2.CommittedAppend Wire { get; }
+    private RustStreamCommittedAppendValue(Acyclic.Stream.V2.CommittedAppend wire) => Wire = wire;
+    internal static RustStreamCommittedAppendValue FromWire(Acyclic.Stream.V2.CommittedAppend message) => new(message);
+    public ulong End => Wire.End;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+    public IReadOnlyList<RustStreamRecordValue> Records => Wire.Records.Select(value => RustStreamRecordValue.FromWire(value)).ToArray();
+    public ulong Start => Wire.Start;
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+}
+
+public sealed record RustStreamCommittedEnvelopeValue
+{
+    private Acyclic.Stream.V2.CommittedEnvelope Wire { get; }
+    private RustStreamCommittedEnvelopeValue(Acyclic.Stream.V2.CommittedEnvelope wire) => Wire = wire;
+    internal static RustStreamCommittedEnvelopeValue FromWire(Acyclic.Stream.V2.CommittedEnvelope message) => new(message);
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    public IReadOnlyList<RustStreamCommittedMutationValue> Mutations => Wire.Mutations.Select(value => RustStreamCommittedMutationValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustStreamCommittedForkValue
+{
+    private Acyclic.Stream.V2.CommittedFork Wire { get; }
+    private RustStreamCommittedForkValue(Acyclic.Stream.V2.CommittedFork wire) => Wire = wire;
+    internal static RustStreamCommittedForkValue FromWire(Acyclic.Stream.V2.CommittedFork message) => new(message);
+    public DestinationName Destination => new DestinationName(Wire.Destination);
+    public SequenceNumber ForkedAt => new SequenceNumber(checked((ulong)Wire.ForkedAt));
+    public IReadOnlyList<RustStreamRecordValue> Records => Wire.Records.Select(value => RustStreamRecordValue.FromWire(value)).ToArray();
+    public SourceName Source => new SourceName(Wire.Source);
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+}
+
+public sealed record RustStreamCommittedMutationValue
+{
+    private Acyclic.Stream.V2.CommittedMutation Wire { get; }
+    private RustStreamCommittedMutationValue(Acyclic.Stream.V2.CommittedMutation wire) => Wire = wire;
+    internal static RustStreamCommittedMutationValue FromWire(Acyclic.Stream.V2.CommittedMutation message) => new(message);
+    public RustStreamCommittedAppendValue? Append => Wire.Append is null ? null : RustStreamCommittedAppendValue.FromWire(Wire.Append);
+    public int AppendOneofIndex => 0;
+    public RustStreamCommittedForkValue? Fork => Wire.Fork is null ? null : RustStreamCommittedForkValue.FromWire(Wire.Fork);
+    public int ForkOneofIndex => 0;
+    public RustStreamCommittedMutationMutationChoice MutationChoice => RustStreamCommittedMutationMutationChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamExistsCommitConflictValue
+{
+    private Acyclic.Stream.V2.ExistsCommitConflict Wire { get; }
+    private RustStreamExistsCommitConflictValue(Acyclic.Stream.V2.ExistsCommitConflict wire) => Wire = wire;
+    internal static RustStreamExistsCommitConflictValue FromWire(Acyclic.Stream.V2.ExistsCommitConflict message) => new(message);
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustStreamForkMutationValue
+{
+    private Acyclic.Stream.V2.ForkMutation Wire { get; }
+    private RustStreamForkMutationValue(Acyclic.Stream.V2.ForkMutation wire) => Wire = wire;
+    internal static RustStreamForkMutationValue FromWire(Acyclic.Stream.V2.ForkMutation message) => new(message);
+    public ulong AtTail => Wire.AtTail;
+    public DestinationName Destination => new DestinationName(Wire.Destination);
+    public IReadOnlyList<ByteString> Records => Wire.Records;
+    public SourceName Source => new SourceName(Wire.Source);
+}
+
+public sealed record RustStreamForkReceiptValue
+{
+    private Acyclic.Stream.V2.ForkReceipt Wire { get; }
+    private RustStreamForkReceiptValue(Acyclic.Stream.V2.ForkReceipt wire) => Wire = wire;
+    internal static RustStreamForkReceiptValue FromWire(Acyclic.Stream.V2.ForkReceipt message) => new(message);
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    public DestinationName Destination => new DestinationName(Wire.Destination);
+    public SequenceNumber ForkedAt => new SequenceNumber(checked((ulong)Wire.ForkedAt));
+    public SourceName Source => new SourceName(Wire.Source);
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+}
+
+public sealed record RustStreamIdempotencyObservationValue
+{
+    private Acyclic.Stream.V2.IdempotencyObservation Wire { get; }
+    private RustStreamIdempotencyObservationValue(Acyclic.Stream.V2.IdempotencyObservation wire) => Wire = wire;
+    internal static RustStreamIdempotencyObservationValue FromWire(Acyclic.Stream.V2.IdempotencyObservation message) => new(message);
+    public RustStreamAppendResponseValue? Append => Wire.Append is null ? null : RustStreamAppendResponseValue.FromWire(Wire.Append);
+    public int AppendOneofIndex => 0;
+    public RustStreamCommitResponseValue? Commit => Wire.Commit is null ? null : RustStreamCommitResponseValue.FromWire(Wire.Commit);
+    public int CommitOneofIndex => 0;
+    public RustStreamForkReceiptValue? Fork => Wire.Fork is null ? null : RustStreamForkReceiptValue.FromWire(Wire.Fork);
+    public int ForkOneofIndex => 0;
+    public IdempotencyKeyBytes IdempotencyKey => new IdempotencyKeyBytes(Wire.IdempotencyKey.ToByteArray());
+    public ByteString RequestDigest => Wire.RequestDigest;
+    public RustStreamIdempotencyObservationOutcomeChoice OutcomeChoice => RustStreamIdempotencyObservationOutcomeChoice.FromWire(Wire);
+}
+
+public sealed record RustStreamRecordValue
+{
+    private Acyclic.Stream.V2.Record Wire { get; }
+    private RustStreamRecordValue(Acyclic.Stream.V2.Record wire) => Wire = wire;
+    internal static RustStreamRecordValue FromWire(Acyclic.Stream.V2.Record message) => new(message);
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    public ulong CommittedAtMicros => Wire.CommittedAtMicros;
+    public ulong Sequence => Wire.Sequence;
+    public ByteString Value => Wire.Value;
+}
+
+public sealed record RustStreamTailCommitConflictValue
+{
+    private Acyclic.Stream.V2.TailCommitConflict Wire { get; }
+    private RustStreamTailCommitConflictValue(Acyclic.Stream.V2.TailCommitConflict wire) => Wire = wire;
+    internal static RustStreamTailCommitConflictValue FromWire(Acyclic.Stream.V2.TailCommitConflict message) => new(message);
+    public ulong? Actual => Wire.Actual;
+    public int ActualOneofIndex => 0;
+    public ulong Expected => Wire.Expected;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustStreamTailConditionValue
+{
+    private Acyclic.Stream.V2.TailCondition Wire { get; }
+    private RustStreamTailConditionValue(Acyclic.Stream.V2.TailCondition wire) => Wire = wire;
+    internal static RustStreamTailConditionValue FromWire(Acyclic.Stream.V2.TailCondition message) => new(message);
+    public ulong Expected => Wire.Expected;
+    public ResourcePath Path => new ResourcePath(Wire.Path);
+}
+
+public sealed record RustStreamTailConflictValue
+{
+    private Acyclic.Stream.V2.TailConflict Wire { get; }
+    private RustStreamTailConflictValue(Acyclic.Stream.V2.TailConflict wire) => Wire = wire;
+    internal static RustStreamTailConflictValue FromWire(Acyclic.Stream.V2.TailConflict message) => new(message);
+    public ulong ActualTail => Wire.ActualTail;
+}
+
+public sealed record RustWorkersCodeVersionValue
+{
+    private Acyclic.Workers.V1.CodeVersion Wire { get; }
+    private RustWorkersCodeVersionValue(Acyclic.Workers.V1.CodeVersion wire) => Wire = wire;
+    internal static RustWorkersCodeVersionValue FromWire(Acyclic.Workers.V1.CodeVersion message) => new(message);
+    public ByteString Sha256 => Wire.Sha256;
+    public ulong SizeBytes => Wire.SizeBytes;
+}
+
+public sealed record RustWorkersDeploymentValue
+{
+    private Acyclic.Workers.V1.Deployment Wire { get; }
+    private RustWorkersDeploymentValue(Acyclic.Workers.V1.Deployment wire) => Wire = wire;
+    internal static RustWorkersDeploymentValue FromWire(Acyclic.Workers.V1.Deployment message) => new(message);
+    public VersionAlias Alias => new VersionAlias(Wire.Alias);
+    public ulong Revision => Wire.Revision;
+    public RustWorkersCodeVersionValue? Version => Wire.Version is null ? null : RustWorkersCodeVersionValue.FromWire(Wire.Version);
+}
+
+public sealed record RustWorkersHeaderValue
+{
+    private Acyclic.Workers.V1.Header Wire { get; }
+    private RustWorkersHeaderValue(Acyclic.Workers.V1.Header wire) => Wire = wire;
+    internal static RustWorkersHeaderValue FromWire(Acyclic.Workers.V1.Header message) => new(message);
+    public string Name => Wire.Name;
+    public string Value => Wire.Value;
+}
+
+public sealed record RustWorkersJobLimitsValue
+{
+    private Acyclic.Workers.V1.JobLimits Wire { get; }
+    private RustWorkersJobLimitsValue(Acyclic.Workers.V1.JobLimits wire) => Wire = wire;
+    internal static RustWorkersJobLimitsValue FromWire(Acyclic.Workers.V1.JobLimits message) => new(message);
+    public ulong MemoryBytes => Wire.MemoryBytes;
+    public ulong OutputBytes => Wire.OutputBytes;
+    public ulong TimeoutMillis => Wire.TimeoutMillis;
+}
+
+public sealed record RustWorkersJobObservationValue
+{
+    private Acyclic.Workers.V1.JobObservation Wire { get; }
+    private RustWorkersJobObservationValue(Acyclic.Workers.V1.JobObservation wire) => Wire = wire;
+    internal static RustWorkersJobObservationValue FromWire(Acyclic.Workers.V1.JobObservation message) => new(message);
+    public uint Attempt => Wire.Attempt;
+    public bool CancellationRequested => Wire.CancellationRequested;
+    public string FailureCode => Wire.FailureCode;
+    public JobId JobId => new JobId(Wire.JobId);
+    public Sha256Digest ResolvedSha256 => new Sha256Digest(Wire.ResolvedSha256.ToByteArray());
+    public RustWorkersJobResultValue? Result => Wire.Result is null ? null : RustWorkersJobResultValue.FromWire(Wire.Result);
+    public RustWorkersJobStateEnum State => new RustWorkersJobStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+}
+
+public sealed record RustWorkersJobResultValue
+{
+    private Acyclic.Workers.V1.JobResult Wire { get; }
+    private RustWorkersJobResultValue(Acyclic.Workers.V1.JobResult wire) => Wire = wire;
+    internal static RustWorkersJobResultValue FromWire(Acyclic.Workers.V1.JobResult message) => new(message);
+    public ByteString Body => Wire.Body;
+}
+
+public sealed record RustWorkersJobTargetValue
+{
+    private Acyclic.Workers.V1.JobTarget Wire { get; }
+    private RustWorkersJobTargetValue(Acyclic.Workers.V1.JobTarget wire) => Wire = wire;
+    internal static RustWorkersJobTargetValue FromWire(Acyclic.Workers.V1.JobTarget message) => new(message);
+    public string DeploymentAlias => Wire.DeploymentAlias;
+    public int DeploymentAliasOneofIndex => 0;
+    public Sha256Digest VersionSha256 => new Sha256Digest(Wire.VersionSha256.ToByteArray());
+    public int VersionSha256OneofIndex => 0;
+    public RustWorkersJobTargetTargetChoice TargetChoice => RustWorkersJobTargetTargetChoice.FromWire(Wire);
+}
+
+public sealed record RustWorkersObjectRefValue
+{
+    private Acyclic.Workers.V1.ObjectRef Wire { get; }
+    private RustWorkersObjectRefValue(Acyclic.Workers.V1.ObjectRef wire) => Wire = wire;
+    internal static RustWorkersObjectRefValue FromWire(Acyclic.Workers.V1.ObjectRef message) => new(message);
+    public string Bucket => Wire.Bucket;
+    public string Key => Wire.Key;
+}
+
+public sealed record RustWorkersPayloadValue
+{
+    private Acyclic.Workers.V1.Payload Wire { get; }
+    private RustWorkersPayloadValue(Acyclic.Workers.V1.Payload wire) => Wire = wire;
+    internal static RustWorkersPayloadValue FromWire(Acyclic.Workers.V1.Payload message) => new(message);
+    public ByteString InlineBytes => Wire.InlineBytes;
+    public int InlineBytesOneofIndex => 0;
+    public RustWorkersObjectRefValue? Object => Wire.Object is null ? null : RustWorkersObjectRefValue.FromWire(Wire.Object);
+    public int ObjectOneofIndex => 0;
+    public RustWorkersPayloadSourceChoice SourceChoice => RustWorkersPayloadSourceChoice.FromWire(Wire);
+}
+
+public sealed record RustWorkersRetryPolicyValue
+{
+    private Acyclic.Workers.V1.RetryPolicy Wire { get; }
+    private RustWorkersRetryPolicyValue(Acyclic.Workers.V1.RetryPolicy wire) => Wire = wire;
+    internal static RustWorkersRetryPolicyValue FromWire(Acyclic.Workers.V1.RetryPolicy message) => new(message);
+    public ulong BackoffMillis => Wire.BackoffMillis;
+    public uint MaxAttempts => Wire.MaxAttempts;
+}
+
+public sealed record RustInferenceCompactValue
+{
+    private Inference.Customer.V1.Compact Wire { get; }
+    private RustInferenceCompactValue(Inference.Customer.V1.Compact wire) => Wire = wire;
+    internal static RustInferenceCompactValue FromWire(Inference.Customer.V1.Compact message) => new(message);
+    public IReadOnlyList<RustInferenceItemValue> Replacement => Wire.Replacement.Select(value => RustInferenceItemValue.FromWire(value)).ToArray();
+    public IReadOnlyList<ByteString> Selected => Wire.Selected;
+}
+
+public sealed record RustInferenceContextProvenanceValue
+{
+    private Inference.Customer.V1.ContextProvenance Wire { get; }
+    private RustInferenceContextProvenanceValue(Inference.Customer.V1.ContextProvenance wire) => Wire = wire;
+    internal static RustInferenceContextProvenanceValue FromWire(Inference.Customer.V1.ContextProvenance message) => new(message);
+    public RustInferenceEmptyValue? Created => Wire.Created is null ? null : RustInferenceEmptyValue.FromWire(Wire.Created);
+    public int CreatedOneofIndex => 0;
+    public RustInferenceProvenanceSourceValue? Derived => Wire.Derived is null ? null : RustInferenceProvenanceSourceValue.FromWire(Wire.Derived);
+    public int DerivedOneofIndex => 0;
+    public RustInferenceProvenanceSourceValue? Forked => Wire.Forked is null ? null : RustInferenceProvenanceSourceValue.FromWire(Wire.Forked);
+    public int ForkedOneofIndex => 0;
+    public RustInferenceGenerationProvenanceValue? Generated => Wire.Generated is null ? null : RustInferenceGenerationProvenanceValue.FromWire(Wire.Generated);
+    public int GeneratedOneofIndex => 0;
+    public RustInferenceRunInputProvenanceValue? RunInput => Wire.RunInput is null ? null : RustInferenceRunInputProvenanceValue.FromWire(Wire.RunInput);
+    public int RunInputOneofIndex => 0;
+    public RustInferenceTransferProvenanceValue? Transferred => Wire.Transferred is null ? null : RustInferenceTransferProvenanceValue.FromWire(Wire.Transferred);
+    public int TransferredOneofIndex => 0;
+    public RustInferenceContextProvenanceOriginChoice OriginChoice => RustInferenceContextProvenanceOriginChoice.FromWire(Wire);
+}
+
+public sealed record RustInferenceContextViewValue
+{
+    private Inference.Customer.V1.ContextView Wire { get; }
+    private RustInferenceContextViewValue(Inference.Customer.V1.ContextView wire) => Wire = wire;
+    internal static RustInferenceContextViewValue FromWire(Inference.Customer.V1.ContextView message) => new(message);
+    public Sha256Digest ContentDigest => new Sha256Digest(Wire.ContentDigest.ToByteArray());
+    public OpaqueBytes ExecutionProfile => new OpaqueBytes(Wire.ExecutionProfile.ToByteArray());
+    public IReadOnlyList<RustInferenceItemValue> Items => Wire.Items.Select(value => RustInferenceItemValue.FromWire(value)).ToArray();
+    public OpaqueBytes Lineage => new OpaqueBytes(Wire.Lineage.ToByteArray());
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+    public OpaqueBytes? Parent => new OpaqueBytes(Wire.Parent.ToByteArray());
+    public int ParentOneofIndex => 0;
+    public RustInferenceContextProvenanceValue? Provenance => Wire.Provenance is null ? null : RustInferenceContextProvenanceValue.FromWire(Wire.Provenance);
+    public RevisionDigest Revision => new RevisionDigest(Wire.Revision.ToByteArray());
+}
+
+public sealed record RustInferenceEditValue
+{
+    private Inference.Customer.V1.Edit Wire { get; }
+    private RustInferenceEditValue(Inference.Customer.V1.Edit wire) => Wire = wire;
+    internal static RustInferenceEditValue FromWire(Inference.Customer.V1.Edit message) => new(message);
+    public RustInferenceItemValue? Append => Wire.Append is null ? null : RustInferenceItemValue.FromWire(Wire.Append);
+    public int AppendOneofIndex => 0;
+    public ByteString Delete => Wire.Delete;
+    public int DeleteOneofIndex => 0;
+    public RustInferenceInsertValue? InsertAfter => Wire.InsertAfter is null ? null : RustInferenceInsertValue.FromWire(Wire.InsertAfter);
+    public int InsertAfterOneofIndex => 0;
+    public RustInferenceInsertValue? InsertBefore => Wire.InsertBefore is null ? null : RustInferenceInsertValue.FromWire(Wire.InsertBefore);
+    public int InsertBeforeOneofIndex => 0;
+    public RustInferenceReplaceValue? Replace => Wire.Replace is null ? null : RustInferenceReplaceValue.FromWire(Wire.Replace);
+    public int ReplaceOneofIndex => 0;
+    public RustInferenceEditActionChoice ActionChoice => RustInferenceEditActionChoice.FromWire(Wire);
+}
+
+public sealed record RustInferenceEditsValue
+{
+    private Inference.Customer.V1.Edits Wire { get; }
+    private RustInferenceEditsValue(Inference.Customer.V1.Edits wire) => Wire = wire;
+    internal static RustInferenceEditsValue FromWire(Inference.Customer.V1.Edits message) => new(message);
+    public IReadOnlyList<RustInferenceEditValue> Edits_ => Wire.Edits_.Select(value => RustInferenceEditValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustInferenceEmptyValue
+{
+    private Inference.Customer.V1.Empty Wire { get; }
+    private RustInferenceEmptyValue(Inference.Customer.V1.Empty wire) => Wire = wire;
+    internal static RustInferenceEmptyValue FromWire(Inference.Customer.V1.Empty message) => new(message);
+}
+
+public sealed record RustInferenceEvaluationAggregateValue
+{
+    private Inference.Customer.V1.EvaluationAggregate Wire { get; }
+    private RustInferenceEvaluationAggregateValue(Inference.Customer.V1.EvaluationAggregate wire) => Wire = wire;
+    internal static RustInferenceEvaluationAggregateValue FromWire(Inference.Customer.V1.EvaluationAggregate message) => new(message);
+    public RustInferenceCustomerEvaluationAggregationEnum Aggregation => new RustInferenceCustomerEvaluationAggregationEnum((int)Wire.Aggregation);
+    public int AggregationNumber => (int)Wire.Aggregation;
+    public ByteString CandidateDigest => Wire.CandidateDigest;
+    public string MetricIdentity => Wire.MetricIdentity;
+    public RustInferenceExactRationalValue? Value => Wire.Value is null ? null : RustInferenceExactRationalValue.FromWire(Wire.Value);
+}
+
+public sealed record RustInferenceEvaluationArtifactValue
+{
+    private Inference.Customer.V1.EvaluationArtifact Wire { get; }
+    private RustInferenceEvaluationArtifactValue(Inference.Customer.V1.EvaluationArtifact wire) => Wire = wire;
+    internal static RustInferenceEvaluationArtifactValue FromWire(Inference.Customer.V1.EvaluationArtifact message) => new(message);
+    public ByteString Digest => Wire.Digest;
+    public ulong LogicalSize => Wire.LogicalSize;
+    public string MediaType => Wire.MediaType;
+}
+
+public sealed record RustInferenceEvaluationCaseValue
+{
+    private Inference.Customer.V1.EvaluationCase Wire { get; }
+    private RustInferenceEvaluationCaseValue(Inference.Customer.V1.EvaluationCase wire) => Wire = wire;
+    internal static RustInferenceEvaluationCaseValue FromWire(Inference.Customer.V1.EvaluationCase message) => new(message);
+    public ByteString CaseId => Wire.CaseId;
+    public ByteString Input => Wire.Input;
+    public ByteString? InputArtifactDigest => Wire.InputArtifactDigest;
+    public int InputArtifactDigestOneofIndex => 0;
+}
+
+public sealed record RustInferenceEvaluationCaseResultValue
+{
+    private Inference.Customer.V1.EvaluationCaseResult Wire { get; }
+    private RustInferenceEvaluationCaseResultValue(Inference.Customer.V1.EvaluationCaseResult wire) => Wire = wire;
+    internal static RustInferenceEvaluationCaseResultValue FromWire(Inference.Customer.V1.EvaluationCaseResult message) => new(message);
+    public ByteString CandidateDigest => Wire.CandidateDigest;
+    public ByteString CaseId => Wire.CaseId;
+    public IReadOnlyList<RustInferenceEvaluationMetricValueValue> Metrics => Wire.Metrics.Select(value => RustInferenceEvaluationMetricValueValue.FromWire(value)).ToArray();
+    public RustInferenceEvaluationGraderObservationValue? Observation => Wire.Observation is null ? null : RustInferenceEvaluationGraderObservationValue.FromWire(Wire.Observation);
+    public RustInferenceCustomerEvaluationCaseOutcomeEnum Outcome => new RustInferenceCustomerEvaluationCaseOutcomeEnum((int)Wire.Outcome);
+    public int OutcomeNumber => (int)Wire.Outcome;
+}
+
+public sealed record RustInferenceEvaluationGraderValue
+{
+    private Inference.Customer.V1.EvaluationGrader Wire { get; }
+    private RustInferenceEvaluationGraderValue(Inference.Customer.V1.EvaluationGrader wire) => Wire = wire;
+    internal static RustInferenceEvaluationGraderValue FromWire(Inference.Customer.V1.EvaluationGrader message) => new(message);
+    public ByteString ArtifactDigest => Wire.ArtifactDigest;
+    public ByteString Handle => Wire.Handle;
+}
+
+public sealed record RustInferenceEvaluationGraderObservationValue
+{
+    private Inference.Customer.V1.EvaluationGraderObservation Wire { get; }
+    private RustInferenceEvaluationGraderObservationValue(Inference.Customer.V1.EvaluationGraderObservation wire) => Wire = wire;
+    internal static RustInferenceEvaluationGraderObservationValue FromWire(Inference.Customer.V1.EvaluationGraderObservation message) => new(message);
+    public ByteString BindingDigest => Wire.BindingDigest;
+    public ByteString NativeOutputDigest => Wire.NativeOutputDigest;
+    public ByteString ObservationDigest => Wire.ObservationDigest;
+}
+
+public sealed record RustInferenceEvaluationMetricValue
+{
+    private Inference.Customer.V1.EvaluationMetric Wire { get; }
+    private RustInferenceEvaluationMetricValue(Inference.Customer.V1.EvaluationMetric wire) => Wire = wire;
+    internal static RustInferenceEvaluationMetricValue FromWire(Inference.Customer.V1.EvaluationMetric message) => new(message);
+    public RustInferenceCustomerEvaluationAggregationEnum Aggregation => new RustInferenceCustomerEvaluationAggregationEnum((int)Wire.Aggregation);
+    public int AggregationNumber => (int)Wire.Aggregation;
+    public string Identity => Wire.Identity;
+}
+
+public sealed record RustInferenceEvaluationMetricValueValue
+{
+    private Inference.Customer.V1.EvaluationMetricValue Wire { get; }
+    private RustInferenceEvaluationMetricValueValue(Inference.Customer.V1.EvaluationMetricValue wire) => Wire = wire;
+    internal static RustInferenceEvaluationMetricValueValue FromWire(Inference.Customer.V1.EvaluationMetricValue message) => new(message);
+    public string MetricIdentity => Wire.MetricIdentity;
+    public RustInferenceExactRationalValue? Value => Wire.Value is null ? null : RustInferenceExactRationalValue.FromWire(Wire.Value);
+}
+
+public sealed record RustInferenceEvaluationResultValue
+{
+    private Inference.Customer.V1.EvaluationResult Wire { get; }
+    private RustInferenceEvaluationResultValue(Inference.Customer.V1.EvaluationResult wire) => Wire = wire;
+    internal static RustInferenceEvaluationResultValue FromWire(Inference.Customer.V1.EvaluationResult message) => new(message);
+    public IReadOnlyList<RustInferenceEvaluationAggregateValue> Aggregates => Wire.Aggregates.Select(value => RustInferenceEvaluationAggregateValue.FromWire(value)).ToArray();
+    public IReadOnlyList<RustInferenceEvaluationCaseResultValue> CaseResults => Wire.CaseResults.Select(value => RustInferenceEvaluationCaseResultValue.FromWire(value)).ToArray();
+    public ByteString ResultDigest => Wire.ResultDigest;
+    public Sha256Digest SpecDigest => new Sha256Digest(Wire.SpecDigest.ToByteArray());
+}
+
+public sealed record RustInferenceEvaluationSpecValue
+{
+    private Inference.Customer.V1.EvaluationSpec Wire { get; }
+    private RustInferenceEvaluationSpecValue(Inference.Customer.V1.EvaluationSpec wire) => Wire = wire;
+    internal static RustInferenceEvaluationSpecValue FromWire(Inference.Customer.V1.EvaluationSpec message) => new(message);
+    public IReadOnlyList<RustInferenceEvaluationArtifactValue> Candidates => Wire.Candidates.Select(value => RustInferenceEvaluationArtifactValue.FromWire(value)).ToArray();
+    public RustInferenceEvaluationGraderValue? Grader => Wire.Grader is null ? null : RustInferenceEvaluationGraderValue.FromWire(Wire.Grader);
+    public ulong MaximumCaseResults => Wire.MaximumCaseResults;
+    public IReadOnlyList<RustInferenceEvaluationMetricValue> Metrics => Wire.Metrics.Select(value => RustInferenceEvaluationMetricValue.FromWire(value)).ToArray();
+    public Sha256Digest SpecDigest => new Sha256Digest(Wire.SpecDigest.ToByteArray());
+    public RustInferenceEvaluationSuiteValue? Suite => Wire.Suite is null ? null : RustInferenceEvaluationSuiteValue.FromWire(Wire.Suite);
+}
+
+public sealed record RustInferenceEvaluationSuiteValue
+{
+    private Inference.Customer.V1.EvaluationSuite Wire { get; }
+    private RustInferenceEvaluationSuiteValue(Inference.Customer.V1.EvaluationSuite wire) => Wire = wire;
+    internal static RustInferenceEvaluationSuiteValue FromWire(Inference.Customer.V1.EvaluationSuite message) => new(message);
+    public IReadOnlyList<RustInferenceEvaluationCaseValue> Cases => Wire.Cases.Select(value => RustInferenceEvaluationCaseValue.FromWire(value)).ToArray();
+    public ByteString Digest => Wire.Digest;
+    public string Identity => Wire.Identity;
+}
+
+public sealed record RustInferenceExactRationalValue
+{
+    private Inference.Customer.V1.ExactRational Wire { get; }
+    private RustInferenceExactRationalValue(Inference.Customer.V1.ExactRational wire) => Wire = wire;
+    internal static RustInferenceExactRationalValue FromWire(Inference.Customer.V1.ExactRational message) => new(message);
+    public ulong Denominator => Wire.Denominator;
+    public long Numerator => Wire.Numerator;
+}
+
+public sealed record RustInferenceGenerationProvenanceValue
+{
+    private Inference.Customer.V1.GenerationProvenance Wire { get; }
+    private RustInferenceGenerationProvenanceValue(Inference.Customer.V1.GenerationProvenance wire) => Wire = wire;
+    internal static RustInferenceGenerationProvenanceValue FromWire(Inference.Customer.V1.GenerationProvenance message) => new(message);
+    public RunId RunId => new RunId(Wire.RunId.ToByteArray());
+    public ByteString TerminalReceiptDigest => Wire.TerminalReceiptDigest;
+}
+
+public sealed record RustInferenceIdleKvPolicyValue
+{
+    private Inference.Customer.V1.IdleKvPolicy Wire { get; }
+    private RustInferenceIdleKvPolicyValue(Inference.Customer.V1.IdleKvPolicy wire) => Wire = wire;
+    internal static RustInferenceIdleKvPolicyValue FromWire(Inference.Customer.V1.IdleKvPolicy message) => new(message);
+    public ulong IdleTimeoutMs => Wire.IdleTimeoutMs;
+    public ByteString Profile => Wire.Profile;
+}
+
+public sealed record RustInferenceIdleKvRetentionValue
+{
+    private Inference.Customer.V1.IdleKvRetention Wire { get; }
+    private RustInferenceIdleKvRetentionValue(Inference.Customer.V1.IdleKvRetention wire) => Wire = wire;
+    internal static RustInferenceIdleKvRetentionValue FromWire(Inference.Customer.V1.IdleKvRetention message) => new(message);
+    public ByteString? LastRunId => Wire.LastRunId;
+    public int LastRunIdOneofIndex => 1;
+    public ulong? LastUsedAtMs => Wire.LastUsedAtMs;
+    public int LastUsedAtMsOneofIndex => 0;
+    public RustInferenceIdleKvPolicyValue? Policy => Wire.Policy is null ? null : RustInferenceIdleKvPolicyValue.FromWire(Wire.Policy);
+    public ulong RetainedAtMs => Wire.RetainedAtMs;
+}
+
+public sealed record RustInferenceInsertValue
+{
+    private Inference.Customer.V1.Insert Wire { get; }
+    private RustInferenceInsertValue(Inference.Customer.V1.Insert wire) => Wire = wire;
+    internal static RustInferenceInsertValue FromWire(Inference.Customer.V1.Insert message) => new(message);
+    public RustInferenceItemValue? Item => Wire.Item is null ? null : RustInferenceItemValue.FromWire(Wire.Item);
+    public ByteString Target => Wire.Target;
+}
+
+public sealed record RustInferenceItemValue
+{
+    private Inference.Customer.V1.Item Wire { get; }
+    private RustInferenceItemValue(Inference.Customer.V1.Item wire) => Wire = wire;
+    internal static RustInferenceItemValue FromWire(Inference.Customer.V1.Item message) => new(message);
+    public ByteString ContinuationProfile => Wire.ContinuationProfile;
+    public ByteString Id => Wire.Id;
+    public RustInferenceCustomerItemKindEnum Kind => new RustInferenceCustomerItemKindEnum((int)Wire.Kind);
+    public int KindNumber => (int)Wire.Kind;
+    public ByteString Link => Wire.Link;
+    public ByteString Payload => Wire.Payload;
+}
+
+public sealed record RustInferenceLogicalUsageValue
+{
+    private Inference.Customer.V1.LogicalUsage Wire { get; }
+    private RustInferenceLogicalUsageValue(Inference.Customer.V1.LogicalUsage wire) => Wire = wire;
+    internal static RustInferenceLogicalUsageValue FromWire(Inference.Customer.V1.LogicalUsage message) => new(message);
+    public ulong EffectiveContextReads => Wire.EffectiveContextReads;
+    public ulong GeneratedOutput => Wire.GeneratedOutput;
+    public ulong NewPrefill => Wire.NewPrefill;
+    public ulong RetainedByteMillis => Wire.RetainedByteMillis;
+}
+
+public sealed record RustInferenceModelCapabilityValue
+{
+    private Inference.Customer.V1.ModelCapability Wire { get; }
+    private RustInferenceModelCapabilityValue(Inference.Customer.V1.ModelCapability wire) => Wire = wire;
+    internal static RustInferenceModelCapabilityValue FromWire(Inference.Customer.V1.ModelCapability message) => new(message);
+    public OpaqueBytes ExecutionProfile => new OpaqueBytes(Wire.ExecutionProfile.ToByteArray());
+    public IReadOnlyList<string> Features => Wire.Features;
+    public IReadOnlyList<RustInferenceRetentionProfileValue> IdleKvProfiles => Wire.IdleKvProfiles.Select(value => RustInferenceRetentionProfileValue.FromWire(value)).ToArray();
+    public ulong MaximumContext => Wire.MaximumContext;
+    public ulong MaximumOutput => Wire.MaximumOutput;
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+    public IReadOnlyList<RustInferenceRetentionProfileValue> RetentionProfiles => Wire.RetentionProfiles.Select(value => RustInferenceRetentionProfileValue.FromWire(value)).ToArray();
+}
+
+public sealed record RustInferenceProvenanceSourceValue
+{
+    private Inference.Customer.V1.ProvenanceSource Wire { get; }
+    private RustInferenceProvenanceSourceValue(Inference.Customer.V1.ProvenanceSource wire) => Wire = wire;
+    internal static RustInferenceProvenanceSourceValue FromWire(Inference.Customer.V1.ProvenanceSource message) => new(message);
+    public ByteString Source => Wire.Source;
+}
+
+public sealed record RustInferenceReplaceValue
+{
+    private Inference.Customer.V1.Replace Wire { get; }
+    private RustInferenceReplaceValue(Inference.Customer.V1.Replace wire) => Wire = wire;
+    internal static RustInferenceReplaceValue FromWire(Inference.Customer.V1.Replace message) => new(message);
+    public ByteString Payload => Wire.Payload;
+    public ByteString Target => Wire.Target;
+}
+
+public sealed record RustInferenceRequestIdentityValue
+{
+    private Inference.Customer.V1.RequestIdentity Wire { get; }
+    private RustInferenceRequestIdentityValue(Inference.Customer.V1.RequestIdentity wire) => Wire = wire;
+    internal static RustInferenceRequestIdentityValue FromWire(Inference.Customer.V1.RequestIdentity message) => new(message);
+    public ByteString ClientInstance => Wire.ClientInstance;
+    public ByteString RequestId => Wire.RequestId;
+}
+
+public sealed record RustInferenceRetentionProfileValue
+{
+    private Inference.Customer.V1.RetentionProfile Wire { get; }
+    private RustInferenceRetentionProfileValue(Inference.Customer.V1.RetentionProfile wire) => Wire = wire;
+    internal static RustInferenceRetentionProfileValue FromWire(Inference.Customer.V1.RetentionProfile message) => new(message);
+    public ulong MaximumDurationMs => Wire.MaximumDurationMs;
+    public ulong MinimumDurationMs => Wire.MinimumDurationMs;
+    public ByteString Profile => Wire.Profile;
+}
+
+public sealed record RustInferenceRunInputProvenanceValue
+{
+    private Inference.Customer.V1.RunInputProvenance Wire { get; }
+    private RustInferenceRunInputProvenanceValue(Inference.Customer.V1.RunInputProvenance wire) => Wire = wire;
+    internal static RustInferenceRunInputProvenanceValue FromWire(Inference.Customer.V1.RunInputProvenance message) => new(message);
+    public ulong MaximumOutput => Wire.MaximumOutput;
+    public RunId RunId => new RunId(Wire.RunId.ToByteArray());
+    public ulong? Seed => Wire.Seed;
+    public int SeedOneofIndex => 0;
+    public ByteString Source => Wire.Source;
+}
+
+public sealed record RustInferenceRunProgressValue
+{
+    private Inference.Customer.V1.RunProgress Wire { get; }
+    private RustInferenceRunProgressValue(Inference.Customer.V1.RunProgress wire) => Wire = wire;
+    internal static RustInferenceRunProgressValue FromWire(Inference.Customer.V1.RunProgress message) => new(message);
+    public string Kind => Wire.Kind;
+}
+
+public sealed record RustInferenceRunResultValue
+{
+    private Inference.Customer.V1.RunResult Wire { get; }
+    private RustInferenceRunResultValue(Inference.Customer.V1.RunResult wire) => Wire = wire;
+    internal static RustInferenceRunResultValue FromWire(Inference.Customer.V1.RunResult message) => new(message);
+    public RustInferenceContextViewValue? Context => Wire.Context is null ? null : RustInferenceContextViewValue.FromWire(Wire.Context);
+    public int ContextOneofIndex => 0;
+    public ByteString Output => Wire.Output;
+    public RustInferenceUsageReceiptValue? Receipt => Wire.Receipt is null ? null : RustInferenceUsageReceiptValue.FromWire(Wire.Receipt);
+    public int ReceiptOneofIndex => 1;
+    public RustInferenceCustomerRunTerminalEnum Terminal => new RustInferenceCustomerRunTerminalEnum((int)Wire.Terminal);
+    public int TerminalNumber => (int)Wire.Terminal;
+}
+
+public sealed record RustInferenceRunViewValue
+{
+    private Inference.Customer.V1.RunView Wire { get; }
+    private RustInferenceRunViewValue(Inference.Customer.V1.RunView wire) => Wire = wire;
+    internal static RustInferenceRunViewValue FromWire(Inference.Customer.V1.RunView message) => new(message);
+    public bool CancellationRequested => Wire.CancellationRequested;
+    public ByteString Input => Wire.Input;
+    public SequenceNumber LastSequence => new SequenceNumber(checked((ulong)Wire.LastSequence));
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+    public RustInferenceRunResultValue? Result => Wire.Result is null ? null : RustInferenceRunResultValue.FromWire(Wire.Result);
+    public int ResultOneofIndex => 0;
+    public RunId RunId => new RunId(Wire.RunId.ToByteArray());
+}
+
+public sealed record RustInferenceTransferValue
+{
+    private Inference.Customer.V1.Transfer Wire { get; }
+    private RustInferenceTransferValue(Inference.Customer.V1.Transfer wire) => Wire = wire;
+    internal static RustInferenceTransferValue FromWire(Inference.Customer.V1.Transfer message) => new(message);
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+}
+
+public sealed record RustInferenceTransferProvenanceValue
+{
+    private Inference.Customer.V1.TransferProvenance Wire { get; }
+    private RustInferenceTransferProvenanceValue(Inference.Customer.V1.TransferProvenance wire) => Wire = wire;
+    internal static RustInferenceTransferProvenanceValue FromWire(Inference.Customer.V1.TransferProvenance message) => new(message);
+    public bool ReusedCompatibleState => Wire.ReusedCompatibleState;
+    public ByteString Source => Wire.Source;
+}
+
+public sealed record RustInferenceTruncateValue
+{
+    private Inference.Customer.V1.Truncate Wire { get; }
+    private RustInferenceTruncateValue(Inference.Customer.V1.Truncate wire) => Wire = wire;
+    internal static RustInferenceTruncateValue FromWire(Inference.Customer.V1.Truncate message) => new(message);
+    public ByteString? Through => Wire.Through;
+    public int ThroughOneofIndex => 0;
+}
+
+public sealed record RustInferenceUsageReceiptValue
+{
+    private Inference.Customer.V1.UsageReceipt Wire { get; }
+    private RustInferenceUsageReceiptValue(Inference.Customer.V1.UsageReceipt wire) => Wire = wire;
+    internal static RustInferenceUsageReceiptValue FromWire(Inference.Customer.V1.UsageReceipt message) => new(message);
+    public Sha256Digest MeterRevision => new Sha256Digest(Wire.MeterRevision.ToByteArray());
+    public Sha256Digest ModelProfile => new Sha256Digest(Wire.ModelProfile.ToByteArray());
+    public Sha256Digest RateCardRevision => new Sha256Digest(Wire.RateCardRevision.ToByteArray());
+    public Sha256Digest ReceiptId => new Sha256Digest(Wire.ReceiptId.ToByteArray());
+    public RustInferenceLogicalUsageValue? Usage => Wire.Usage is null ? null : RustInferenceLogicalUsageValue.FromWire(Wire.Usage);
+}
+
+public sealed record RustActorsAddSubscriptionResponseResponse
+{
+    private Acyclic.Actors.V1.AddSubscriptionResponse Wire { get; }
+    private RustActorsAddSubscriptionResponseResponse(Acyclic.Actors.V1.AddSubscriptionResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsAddSubscriptionResponseResponse FromWire(Acyclic.Actors.V1.AddSubscriptionResponse message) => new(message);
+}
+
+public sealed record RustActorsCheckpointActorResponseResponse
+{
+    private Acyclic.Actors.V1.CheckpointActorResponse Wire { get; }
+    private RustActorsCheckpointActorResponseResponse(Acyclic.Actors.V1.CheckpointActorResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsCheckpointActorResponseResponse FromWire(Acyclic.Actors.V1.CheckpointActorResponse message) => new(message);
+}
+
+public sealed record RustActorsCreateActorResponseResponse
+{
+    private Acyclic.Actors.V1.CreateActorResponse Wire { get; }
+    private RustActorsCreateActorResponseResponse(Acyclic.Actors.V1.CreateActorResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsCreateActorResponseResponse FromWire(Acyclic.Actors.V1.CreateActorResponse message) => new(message);
+}
+
+public sealed record RustActorsInspectActorResponseResponse
+{
+    private Acyclic.Actors.V1.InspectActorResponse Wire { get; }
+    private RustActorsInspectActorResponseResponse(Acyclic.Actors.V1.InspectActorResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsInspectActorResponseResponse FromWire(Acyclic.Actors.V1.InspectActorResponse message) => new(message);
+}
+
+public sealed record RustActorsInvokeActorResponseResponse
+{
+    private Acyclic.Actors.V1.InvokeActorResponse Wire { get; }
+    private RustActorsInvokeActorResponseResponse(Acyclic.Actors.V1.InvokeActorResponse wire) => Wire = wire;
+    public uint Status => Wire.Status;
+    public ByteString Body => Wire.Body;
+    public IReadOnlyList<RustActorsHeaderValue> Headers => Wire.Headers.Select(value => RustActorsHeaderValue.FromWire(value)).ToArray();
+    internal static RustActorsInvokeActorResponseResponse FromWire(Acyclic.Actors.V1.InvokeActorResponse message) => new(message);
+}
+
+public sealed record RustActorsRemoveSubscriptionResponseResponse
+{
+    private Acyclic.Actors.V1.RemoveSubscriptionResponse Wire { get; }
+    private RustActorsRemoveSubscriptionResponseResponse(Acyclic.Actors.V1.RemoveSubscriptionResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsRemoveSubscriptionResponseResponse FromWire(Acyclic.Actors.V1.RemoveSubscriptionResponse message) => new(message);
+}
+
+public sealed record RustActorsResumeSubscriptionResponseResponse
+{
+    private Acyclic.Actors.V1.ResumeSubscriptionResponse Wire { get; }
+    private RustActorsResumeSubscriptionResponseResponse(Acyclic.Actors.V1.ResumeSubscriptionResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsResumeSubscriptionResponseResponse FromWire(Acyclic.Actors.V1.ResumeSubscriptionResponse message) => new(message);
+}
+
+public sealed record RustActorsUpdateActorResponseResponse
+{
+    private Acyclic.Actors.V1.UpdateActorResponse Wire { get; }
+    private RustActorsUpdateActorResponseResponse(Acyclic.Actors.V1.UpdateActorResponse wire) => Wire = wire;
+    public RustActorsActorObservationValue? Actor => Wire.Actor is null ? null : RustActorsActorObservationValue.FromWire(Wire.Actor);
+    internal static RustActorsUpdateActorResponseResponse FromWire(Acyclic.Actors.V1.UpdateActorResponse message) => new(message);
+}
+
+public sealed record RustFilesystemCancelResponseResponse
+{
+    private Acyclic.Filesystem.V2.CancelResponse Wire { get; }
+    private RustFilesystemCancelResponseResponse(Acyclic.Filesystem.V2.CancelResponse wire) => Wire = wire;
+    public RustFilesystemObserveResponseValue? Operation => Wire.Operation is null ? null : RustFilesystemObserveResponseValue.FromWire(Wire.Operation);
+    internal static RustFilesystemCancelResponseResponse FromWire(Acyclic.Filesystem.V2.CancelResponse message) => new(message);
+}
+
+public sealed record RustFilesystemCredentialResponseResponse
+{
+    private Acyclic.Filesystem.V2.CredentialResponse Wire { get; }
+    private RustFilesystemCredentialResponseResponse(Acyclic.Filesystem.V2.CredentialResponse wire) => Wire = wire;
+    public OpaqueText Endpoint => new OpaqueText(Wire.Endpoint);
+    public UnixTimestampMillis ExpiresAtUnixSeconds => new UnixTimestampMillis(checked((ulong)Wire.ExpiresAtUnixSeconds));
+    public OpaqueText BearerToken => new OpaqueText(Wire.BearerToken);
+    public int BearerTokenOneofIndex => 0;
+    public RustFilesystemS3CredentialValue? S3 => Wire.S3 is null ? null : RustFilesystemS3CredentialValue.FromWire(Wire.S3);
+    public int S3OneofIndex => 0;
+    public RustFilesystemCredentialResponseCredentialChoice CredentialChoice => RustFilesystemCredentialResponseCredentialChoice.FromWire(Wire);
+    internal static RustFilesystemCredentialResponseResponse FromWire(Acyclic.Filesystem.V2.CredentialResponse message) => new(message);
+}
+
+public sealed record RustFilesystemDiffResponseResponse
+{
+    private Acyclic.Filesystem.V2.DiffResponse Wire { get; }
+    private RustFilesystemDiffResponseResponse(Acyclic.Filesystem.V2.DiffResponse wire) => Wire = wire;
+    public RustFilesystemGenerationRefValue? From => Wire.From is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.From);
+    public RustFilesystemGenerationRefValue? To => Wire.To is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.To);
+    public IReadOnlyList<RustFilesystemFileRecordChangeValue> Files => Wire.Files.Select(value => RustFilesystemFileRecordChangeValue.FromWire(value)).ToArray();
+    public IReadOnlyList<RustFilesystemDirectoryBindingChangeValue> Bindings => Wire.Bindings.Select(value => RustFilesystemDirectoryBindingChangeValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    public RustFilesystemWorkCountersValue? Work => Wire.Work is null ? null : RustFilesystemWorkCountersValue.FromWire(Wire.Work);
+    internal static RustFilesystemDiffResponseResponse FromWire(Acyclic.Filesystem.V2.DiffResponse message) => new(message);
+}
+
+public sealed record RustFilesystemExportChunkResponse
+{
+    private Acyclic.Filesystem.V2.ExportChunk Wire { get; }
+    private RustFilesystemExportChunkResponse(Acyclic.Filesystem.V2.ExportChunk wire) => Wire = wire;
+    public OpaqueBytes Cursor => new OpaqueBytes(Wire.Cursor.ToByteArray());
+    public OpaqueBytes ObjectId => new OpaqueBytes(Wire.ObjectId.ToByteArray());
+    public ByteString Contents => Wire.Contents;
+    public bool Terminal => Wire.Terminal;
+    internal static RustFilesystemExportChunkResponse FromWire(Acyclic.Filesystem.V2.ExportChunk message) => new(message);
+}
+
+public sealed record RustFilesystemGenerationResponseResponse
+{
+    private Acyclic.Filesystem.V2.GenerationResponse Wire { get; }
+    private RustFilesystemGenerationResponseResponse(Acyclic.Filesystem.V2.GenerationResponse wire) => Wire = wire;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public IReadOnlyList<RustFilesystemGenerationRefValue> Parents => Wire.Parents.Select(value => RustFilesystemGenerationRefValue.FromWire(value)).ToArray();
+    internal static RustFilesystemGenerationResponseResponse FromWire(Acyclic.Filesystem.V2.GenerationResponse message) => new(message);
+}
+
+public sealed record RustFilesystemHandshakeResponseResponse
+{
+    private Acyclic.Filesystem.V2.HandshakeResponse Wire { get; }
+    private RustFilesystemHandshakeResponseResponse(Acyclic.Filesystem.V2.HandshakeResponse wire) => Wire = wire;
+    public RustProtocolHandshakeResponseValue? Protocol => Wire.Protocol is null ? null : RustProtocolHandshakeResponseValue.FromWire(Wire.Protocol);
+    public RustFilesystemCapabilitiesValue? Capabilities => Wire.Capabilities is null ? null : RustFilesystemCapabilitiesValue.FromWire(Wire.Capabilities);
+    internal static RustFilesystemHandshakeResponseResponse FromWire(Acyclic.Filesystem.V2.HandshakeResponse message) => new(message);
+}
+
+public sealed record RustFilesystemImportResponseResponse
+{
+    private Acyclic.Filesystem.V2.ImportResponse Wire { get; }
+    private RustFilesystemImportResponseResponse(Acyclic.Filesystem.V2.ImportResponse wire) => Wire = wire;
+    public RustFilesystemMutationResponseValue? Outcome => Wire.Outcome is null ? null : RustFilesystemMutationResponseValue.FromWire(Wire.Outcome);
+    internal static RustFilesystemImportResponseResponse FromWire(Acyclic.Filesystem.V2.ImportResponse message) => new(message);
+}
+
+public sealed record RustFilesystemJoinPlanResponse
+{
+    private Acyclic.Filesystem.V2.JoinPlan Wire { get; }
+    private RustFilesystemJoinPlanResponse(Acyclic.Filesystem.V2.JoinPlan wire) => Wire = wire;
+    public OpaqueBytes PlanId => new OpaqueBytes(Wire.PlanId.ToByteArray());
+    public RustFilesystemGenerationRefValue? Source => Wire.Source is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Source);
+    public RustFilesystemGenerationRefValue? ExpectedTarget => Wire.ExpectedTarget is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.ExpectedTarget);
+    public IReadOnlyList<RustFilesystemFileRecordChangeValue> FileChanges => Wire.FileChanges.Select(value => RustFilesystemFileRecordChangeValue.FromWire(value)).ToArray();
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    public RustFilesystemGenerationRefValue? CommonAncestor => Wire.CommonAncestor is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.CommonAncestor);
+    public NonNegativeCount MaximumGenerations => new NonNegativeCount(checked((ulong)Wire.MaximumGenerations));
+    public NonNegativeCount MaximumChanges => new NonNegativeCount(checked((ulong)Wire.MaximumChanges));
+    public NonNegativeCount MaximumConflicts => new NonNegativeCount(checked((ulong)Wire.MaximumConflicts));
+    public RustFilesystemJoinHistoryEnum History => new RustFilesystemJoinHistoryEnum((int)Wire.History);
+    public int HistoryNumber => (int)Wire.History;
+    public IReadOnlyList<RustFilesystemDirectoryBindingChangeValue> BindingChanges => Wire.BindingChanges.Select(value => RustFilesystemDirectoryBindingChangeValue.FromWire(value)).ToArray();
+    internal static RustFilesystemJoinPlanResponse FromWire(Acyclic.Filesystem.V2.JoinPlan message) => new(message);
+}
+
+public sealed record RustFilesystemJoinResponseResponse
+{
+    private Acyclic.Filesystem.V2.JoinResponse Wire { get; }
+    private RustFilesystemJoinResponseResponse(Acyclic.Filesystem.V2.JoinResponse wire) => Wire = wire;
+    public RustFilesystemJoinStatusEnum Status => new RustFilesystemJoinStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    internal static RustFilesystemJoinResponseResponse FromWire(Acyclic.Filesystem.V2.JoinResponse message) => new(message);
+}
+
+public sealed record RustFilesystemListDirectoryResponseResponse
+{
+    private Acyclic.Filesystem.V2.ListDirectoryResponse Wire { get; }
+    private RustFilesystemListDirectoryResponseResponse(Acyclic.Filesystem.V2.ListDirectoryResponse wire) => Wire = wire;
+    public RustFilesystemDirectoryPageValue? Page => Wire.Page is null ? null : RustFilesystemDirectoryPageValue.FromWire(Wire.Page);
+    internal static RustFilesystemListDirectoryResponseResponse FromWire(Acyclic.Filesystem.V2.ListDirectoryResponse message) => new(message);
+}
+
+public sealed record RustFilesystemMutationResponseResponse
+{
+    private Acyclic.Filesystem.V2.MutationResponse Wire { get; }
+    private RustFilesystemMutationResponseResponse(Acyclic.Filesystem.V2.MutationResponse wire) => Wire = wire;
+    public RustFilesystemMutationStatusEnum Status => new RustFilesystemMutationStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public RustFilesystemGenerationRefValue? ActualHead => Wire.ActualHead is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.ActualHead);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    internal static RustFilesystemMutationResponseResponse FromWire(Acyclic.Filesystem.V2.MutationResponse message) => new(message);
+}
+
+public sealed record RustFilesystemObserveResponseResponse
+{
+    private Acyclic.Filesystem.V2.ObserveResponse Wire { get; }
+    private RustFilesystemObserveResponseResponse(Acyclic.Filesystem.V2.ObserveResponse wire) => Wire = wire;
+    public OpaqueText State => new OpaqueText(Wire.State);
+    public RustFilesystemMutationResponseValue? Outcome => Wire.Outcome is null ? null : RustFilesystemMutationResponseValue.FromWire(Wire.Outcome);
+    internal static RustFilesystemObserveResponseResponse FromWire(Acyclic.Filesystem.V2.ObserveResponse message) => new(message);
+}
+
+public sealed record RustFilesystemPlanExtentsResponseResponse
+{
+    private Acyclic.Filesystem.V2.PlanExtentsResponse Wire { get; }
+    private RustFilesystemPlanExtentsResponseResponse(Acyclic.Filesystem.V2.PlanExtentsResponse wire) => Wire = wire;
+    public IReadOnlyList<RustFilesystemExtentValue> Extents => Wire.Extents.Select(value => RustFilesystemExtentValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    internal static RustFilesystemPlanExtentsResponseResponse FromWire(Acyclic.Filesystem.V2.PlanExtentsResponse message) => new(message);
+}
+
+public sealed record RustFilesystemReadResponseResponse
+{
+    private Acyclic.Filesystem.V2.ReadResponse Wire { get; }
+    private RustFilesystemReadResponseResponse(Acyclic.Filesystem.V2.ReadResponse wire) => Wire = wire;
+    public ByteString Contents => Wire.Contents;
+    internal static RustFilesystemReadResponseResponse FromWire(Acyclic.Filesystem.V2.ReadResponse message) => new(message);
+}
+
+public sealed record RustFilesystemRebaseResponseResponse
+{
+    private Acyclic.Filesystem.V2.RebaseResponse Wire { get; }
+    private RustFilesystemRebaseResponseResponse(Acyclic.Filesystem.V2.RebaseResponse wire) => Wire = wire;
+    public RustFilesystemRebaseStatusEnum Status => new RustFilesystemRebaseStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    internal static RustFilesystemRebaseResponseResponse FromWire(Acyclic.Filesystem.V2.RebaseResponse message) => new(message);
+}
+
+public sealed record RustFilesystemRebaseTransactionResponseResponse
+{
+    private Acyclic.Filesystem.V2.RebaseTransactionResponse Wire { get; }
+    private RustFilesystemRebaseTransactionResponseResponse(Acyclic.Filesystem.V2.RebaseTransactionResponse wire) => Wire = wire;
+    public RustFilesystemGenerationRefValue? Base => Wire.Base is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Base);
+    public IReadOnlyList<RustFilesystemConflictValue> Conflicts => Wire.Conflicts.Select(value => RustFilesystemConflictValue.FromWire(value)).ToArray();
+    public bool Truncated => Wire.Truncated;
+    internal static RustFilesystemRebaseTransactionResponseResponse FromWire(Acyclic.Filesystem.V2.RebaseTransactionResponse message) => new(message);
+}
+
+public sealed record RustFilesystemRetainGenerationResponseResponse
+{
+    private Acyclic.Filesystem.V2.RetainGenerationResponse Wire { get; }
+    private RustFilesystemRetainGenerationResponseResponse(Acyclic.Filesystem.V2.RetainGenerationResponse wire) => Wire = wire;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    public OpaqueText Identity => new OpaqueText(Wire.Identity);
+    public RustFilesystemMutationStatusEnum Status => new RustFilesystemMutationStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    internal static RustFilesystemRetainGenerationResponseResponse FromWire(Acyclic.Filesystem.V2.RetainGenerationResponse message) => new(message);
+}
+
+public sealed record RustFilesystemSourceResponseResponse
+{
+    private Acyclic.Filesystem.V2.SourceResponse Wire { get; }
+    private RustFilesystemSourceResponseResponse(Acyclic.Filesystem.V2.SourceResponse wire) => Wire = wire;
+    public RustFilesystemSourceStateEnum State => new RustFilesystemSourceStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public RustFilesystemSourceInvalidationReasonEnum Reason => new RustFilesystemSourceInvalidationReasonEnum((int)Wire.Reason);
+    public int ReasonNumber => (int)Wire.Reason;
+    public RustFilesystemGenerationRefValue? Generation => Wire.Generation is null ? null : RustFilesystemGenerationRefValue.FromWire(Wire.Generation);
+    internal static RustFilesystemSourceResponseResponse FromWire(Acyclic.Filesystem.V2.SourceResponse message) => new(message);
+}
+
+public sealed record RustFilesystemStatResponseResponse
+{
+    private Acyclic.Filesystem.V2.StatResponse Wire { get; }
+    private RustFilesystemStatResponseResponse(Acyclic.Filesystem.V2.StatResponse wire) => Wire = wire;
+    public RustFilesystemFileStatValue? Stat => Wire.Stat is null ? null : RustFilesystemFileStatValue.FromWire(Wire.Stat);
+    internal static RustFilesystemStatResponseResponse FromWire(Acyclic.Filesystem.V2.StatResponse message) => new(message);
+}
+
+public sealed record RustFilesystemWorkspaceResponseResponse
+{
+    private Acyclic.Filesystem.V2.WorkspaceResponse Wire { get; }
+    private RustFilesystemWorkspaceResponseResponse(Acyclic.Filesystem.V2.WorkspaceResponse wire) => Wire = wire;
+    public RustFilesystemWorkspaceValue? Workspace => Wire.Workspace is null ? null : RustFilesystemWorkspaceValue.FromWire(Wire.Workspace);
+    public RustFilesystemMutationStatusEnum Status => new RustFilesystemMutationStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    internal static RustFilesystemWorkspaceResponseResponse FromWire(Acyclic.Filesystem.V2.WorkspaceResponse message) => new(message);
+}
+
+public sealed record RustHarnessAdmissionResponse
+{
+    private Acyclic.Harness.V2.Admission Wire { get; }
+    private RustHarnessAdmissionResponse(Acyclic.Harness.V2.Admission wire) => Wire = wire;
+    public RustHarnessOperationIdentityValue? Operation => Wire.Operation is null ? null : RustHarnessOperationIdentityValue.FromWire(Wire.Operation);
+    public RustHarnessAdmissionStateEnum State => new RustHarnessAdmissionStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public RustHarnessErrorValue? Error => Wire.Error is null ? null : RustHarnessErrorValue.FromWire(Wire.Error);
+    internal static RustHarnessAdmissionResponse FromWire(Acyclic.Harness.V2.Admission message) => new(message);
+}
+
+public sealed record RustHarnessCancelResponseResponse
+{
+    private Acyclic.Harness.V2.CancelResponse Wire { get; }
+    private RustHarnessCancelResponseResponse(Acyclic.Harness.V2.CancelResponse wire) => Wire = wire;
+    public RustHarnessOperationStatusValue? Status => Wire.Status is null ? null : RustHarnessOperationStatusValue.FromWire(Wire.Status);
+    public RustHarnessOperationIdentityValue? Operation => Wire.Operation is null ? null : RustHarnessOperationIdentityValue.FromWire(Wire.Operation);
+    internal static RustHarnessCancelResponseResponse FromWire(Acyclic.Harness.V2.CancelResponse message) => new(message);
+}
+
+public sealed record RustHarnessDeliveryResponse
+{
+    private Acyclic.Harness.V2.Delivery Wire { get; }
+    private RustHarnessDeliveryResponse(Acyclic.Harness.V2.Delivery wire) => Wire = wire;
+    public RustHarnessAuthorityValue? Authority => Wire.Authority is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Authority);
+    public OpaqueText Generation => new OpaqueText(Wire.Generation);
+    public Revision FromRevision => new Revision(checked((ulong)Wire.FromRevision));
+    public Revision ThroughRevision => new Revision(checked((ulong)Wire.ThroughRevision));
+    public IReadOnlyList<RustHarnessEventEnvelopeValue> Events => Wire.Events.Select(value => RustHarnessEventEnvelopeValue.FromWire(value)).ToArray();
+    public bool Live => Wire.Live;
+    internal static RustHarnessDeliveryResponse FromWire(Acyclic.Harness.V2.Delivery message) => new(message);
+}
+
+public sealed record RustHarnessOperationStatusResponse
+{
+    private Acyclic.Harness.V2.OperationStatus Wire { get; }
+    private RustHarnessOperationStatusResponse(Acyclic.Harness.V2.OperationStatus wire) => Wire = wire;
+    public RustHarnessOperationIdentityValue? Operation => Wire.Operation is null ? null : RustHarnessOperationIdentityValue.FromWire(Wire.Operation);
+    public RustHarnessCompletionStateEnum State => new RustHarnessCompletionStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public RustHarnessErrorValue? Error => Wire.Error is null ? null : RustHarnessErrorValue.FromWire(Wire.Error);
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public RustHarnessAuthorityValue? Owner => Wire.Owner is null ? null : RustHarnessAuthorityValue.FromWire(Wire.Owner);
+    public bool CancellationRequested => Wire.CancellationRequested;
+    public Revision Revision => new Revision(checked((ulong)Wire.Revision));
+    internal static RustHarnessOperationStatusResponse FromWire(Acyclic.Harness.V2.OperationStatus message) => new(message);
+}
+
+public sealed record RustHarnessHandshakeResponseResponse
+{
+    private Acyclic.Protocol.V1.HandshakeResponse Wire { get; }
+    private RustHarnessHandshakeResponseResponse(Acyclic.Protocol.V1.HandshakeResponse wire) => Wire = wire;
+    public RustProtocolProtocolIdentityValue? Protocol => Wire.Protocol is null ? null : RustProtocolProtocolIdentityValue.FromWire(Wire.Protocol);
+    public RustProtocolCapabilitySetValue? Supported => Wire.Supported is null ? null : RustProtocolCapabilitySetValue.FromWire(Wire.Supported);
+    internal static RustHarnessHandshakeResponseResponse FromWire(Acyclic.Protocol.V1.HandshakeResponse message) => new(message);
+}
+
+public sealed record RustInferenceContextViewResponse
+{
+    private Inference.Customer.V1.ContextView Wire { get; }
+    private RustInferenceContextViewResponse(Inference.Customer.V1.ContextView wire) => Wire = wire;
+    public RevisionDigest Revision => new RevisionDigest(Wire.Revision.ToByteArray());
+    public OpaqueBytes? Parent => new OpaqueBytes(Wire.Parent.ToByteArray());
+    public int ParentOneofIndex => 0;
+    public OpaqueBytes Lineage => new OpaqueBytes(Wire.Lineage.ToByteArray());
+    public OpaqueBytes ExecutionProfile => new OpaqueBytes(Wire.ExecutionProfile.ToByteArray());
+    public Sha256Digest ContentDigest => new Sha256Digest(Wire.ContentDigest.ToByteArray());
+    public IReadOnlyList<RustInferenceItemValue> Items => Wire.Items.Select(value => RustInferenceItemValue.FromWire(value)).ToArray();
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+    public RustInferenceContextProvenanceValue? Provenance => Wire.Provenance is null ? null : RustInferenceContextProvenanceValue.FromWire(Wire.Provenance);
+    internal static RustInferenceContextViewResponse FromWire(Inference.Customer.V1.ContextView message) => new(message);
+}
+
+public sealed record RustInferenceEvaluationViewResponse
+{
+    private Inference.Customer.V1.EvaluationView Wire { get; }
+    private RustInferenceEvaluationViewResponse(Inference.Customer.V1.EvaluationView wire) => Wire = wire;
+    public EvaluationId EvaluationId => new EvaluationId(Wire.EvaluationId.ToByteArray());
+    public RustInferenceEvaluationSpecValue? Spec => Wire.Spec is null ? null : RustInferenceEvaluationSpecValue.FromWire(Wire.Spec);
+    public RustInferenceCustomerEvaluationStateEnum State => new RustInferenceCustomerEvaluationStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public RustInferenceEvaluationResultValue? Result => Wire.Result is null ? null : RustInferenceEvaluationResultValue.FromWire(Wire.Result);
+    public int ResultOneofIndex => 0;
+    public SequenceNumber Sequence => new SequenceNumber(checked((ulong)Wire.Sequence));
+    internal static RustInferenceEvaluationViewResponse FromWire(Inference.Customer.V1.EvaluationView message) => new(message);
+}
+
+public sealed record RustInferenceGenerateRunResponseResponse
+{
+    private Inference.Customer.V1.GenerateRunResponse Wire { get; }
+    private RustInferenceGenerateRunResponseResponse(Inference.Customer.V1.GenerateRunResponse wire) => Wire = wire;
+    public RustInferenceRunViewValue? Run => Wire.Run is null ? null : RustInferenceRunViewValue.FromWire(Wire.Run);
+    internal static RustInferenceGenerateRunResponseResponse FromWire(Inference.Customer.V1.GenerateRunResponse message) => new(message);
+}
+
+public sealed record RustInferenceListModelsResponseResponse
+{
+    private Inference.Customer.V1.ListModelsResponse Wire { get; }
+    private RustInferenceListModelsResponseResponse(Inference.Customer.V1.ListModelsResponse wire) => Wire = wire;
+    public IReadOnlyList<RustInferenceModelCapabilityValue> Models => Wire.Models.Select(value => RustInferenceModelCapabilityValue.FromWire(value)).ToArray();
+    internal static RustInferenceListModelsResponseResponse FromWire(Inference.Customer.V1.ListModelsResponse message) => new(message);
+}
+
+public sealed record RustInferenceMutationReceiptResponse
+{
+    private Inference.Customer.V1.MutationReceipt Wire { get; }
+    private RustInferenceMutationReceiptResponse(Inference.Customer.V1.MutationReceipt wire) => Wire = wire;
+    public RevisionDigest Revision => new RevisionDigest(Wire.Revision.ToByteArray());
+    public Sha256Digest CommandDigest => new Sha256Digest(Wire.CommandDigest.ToByteArray());
+    public SequenceNumber Sequence => new SequenceNumber(checked((ulong)Wire.Sequence));
+    public bool Retained => Wire.Retained;
+    internal static RustInferenceMutationReceiptResponse FromWire(Inference.Customer.V1.MutationReceipt message) => new(message);
+}
+
+public sealed record RustInferenceRunEventResponse
+{
+    private Inference.Customer.V1.RunEvent Wire { get; }
+    private RustInferenceRunEventResponse(Inference.Customer.V1.RunEvent wire) => Wire = wire;
+    public SequenceNumber Sequence => new SequenceNumber(checked((ulong)Wire.Sequence));
+    public ByteString Output => Wire.Output;
+    public int OutputOneofIndex => 0;
+    public RustInferenceLogicalUsageValue? Usage => Wire.Usage is null ? null : RustInferenceLogicalUsageValue.FromWire(Wire.Usage);
+    public int UsageOneofIndex => 0;
+    public RustInferenceCustomerRunTerminalEnum Terminal => new RustInferenceCustomerRunTerminalEnum((int)Wire.Terminal);
+    public int TerminalNumber => (int)Wire.Terminal;
+    public int TerminalOneofIndex => 0;
+    public RustInferenceRunProgressValue? Progress => Wire.Progress is null ? null : RustInferenceRunProgressValue.FromWire(Wire.Progress);
+    public int ProgressOneofIndex => 0;
+    public RustInferenceRunEventEventChoice EventChoice => RustInferenceRunEventEventChoice.FromWire(Wire);
+    internal static RustInferenceRunEventResponse FromWire(Inference.Customer.V1.RunEvent message) => new(message);
+}
+
+public sealed record RustInferenceRunViewResponse
+{
+    private Inference.Customer.V1.RunView Wire { get; }
+    private RustInferenceRunViewResponse(Inference.Customer.V1.RunView wire) => Wire = wire;
+    public RunId RunId => new RunId(Wire.RunId.ToByteArray());
+    public ByteString Input => Wire.Input;
+    public OpaqueText Model => new OpaqueText(Wire.Model);
+    public SequenceNumber LastSequence => new SequenceNumber(checked((ulong)Wire.LastSequence));
+    public bool CancellationRequested => Wire.CancellationRequested;
+    public RustInferenceRunResultValue? Result => Wire.Result is null ? null : RustInferenceRunResultValue.FromWire(Wire.Result);
+    public int ResultOneofIndex => 0;
+    internal static RustInferenceRunViewResponse FromWire(Inference.Customer.V1.RunView message) => new(message);
+}
+
+public sealed record RustInferenceWarmViewResponse
+{
+    private Inference.Customer.V1.WarmView Wire { get; }
+    private RustInferenceWarmViewResponse(Inference.Customer.V1.WarmView wire) => Wire = wire;
+    public Sha256Digest Commitment => new Sha256Digest(Wire.Commitment.ToByteArray());
+    public Sha256Digest Context => new Sha256Digest(Wire.Context.ToByteArray());
+    public Sha256Digest ModelProfile => new Sha256Digest(Wire.ModelProfile.ToByteArray());
+    public ByteString LatencyProfile => Wire.LatencyProfile;
+    public UnixTimestampMillis ExpiresAtMs => new UnixTimestampMillis(checked((ulong)Wire.ExpiresAtMs));
+    public RustInferenceCustomerWarmStateEnum State => new RustInferenceCustomerWarmStateEnum((int)Wire.State);
+    public int StateNumber => (int)Wire.State;
+    public Sha256Digest EvidenceDigest => new Sha256Digest(Wire.EvidenceDigest.ToByteArray());
+    public OpaqueBytes AdmissionReceiptId => new OpaqueBytes(Wire.AdmissionReceiptId.ToByteArray());
+    public SequenceNumber Sequence => new SequenceNumber(checked((ulong)Wire.Sequence));
+    public RustInferenceIdleKvRetentionValue? IdleKv => Wire.IdleKv is null ? null : RustInferenceIdleKvRetentionValue.FromWire(Wire.IdleKv);
+    internal static RustInferenceWarmViewResponse FromWire(Inference.Customer.V1.WarmView message) => new(message);
+}
+
+public sealed record RustMachinesCheckpointAdmissionResponse
+{
+    private Acyclic.Machines.V1.CheckpointAdmission Wire { get; }
+    private RustMachinesCheckpointAdmissionResponse(Acyclic.Machines.V1.CheckpointAdmission wire) => Wire = wire;
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public RustMachinesMachineIdValue? Source => Wire.Source is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Source);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    internal static RustMachinesCheckpointAdmissionResponse FromWire(Acyclic.Machines.V1.CheckpointAdmission message) => new(message);
+}
+
+public sealed record RustMachinesCheckpointStateResponse
+{
+    private Acyclic.Machines.V1.CheckpointState Wire { get; }
+    private RustMachinesCheckpointStateResponse(Acyclic.Machines.V1.CheckpointState wire) => Wire = wire;
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public RustMachinesMachineIdValue? Source => Wire.Source is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Source);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public bool Forkable => Wire.Forkable;
+    public UnixTimestampMillis CreatedAtUnixMs => new UnixTimestampMillis(checked((ulong)Wire.CreatedAtUnixMs));
+    internal static RustMachinesCheckpointStateResponse FromWire(Acyclic.Machines.V1.CheckpointState message) => new(message);
+}
+
+public sealed record RustMachinesEventPageResponse
+{
+    private Acyclic.Machines.V1.EventPage Wire { get; }
+    private RustMachinesEventPageResponse(Acyclic.Machines.V1.EventPage wire) => Wire = wire;
+    public IReadOnlyList<RustMachinesMachineEventValue> Events => Wire.Events.Select(value => RustMachinesMachineEventValue.FromWire(value)).ToArray();
+    public SequenceNumber NextSequence => new SequenceNumber(checked((ulong)Wire.NextSequence));
+    internal static RustMachinesEventPageResponse FromWire(Acyclic.Machines.V1.EventPage message) => new(message);
+}
+
+public sealed record RustMachinesForkAdmissionResponse
+{
+    private Acyclic.Machines.V1.ForkAdmission Wire { get; }
+    private RustMachinesForkAdmissionResponse(Acyclic.Machines.V1.ForkAdmission wire) => Wire = wire;
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    public IReadOnlyList<RustMachinesMachineIdValue> Children => Wire.Children.Select(value => RustMachinesMachineIdValue.FromWire(value)).ToArray();
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    internal static RustMachinesForkAdmissionResponse FromWire(Acyclic.Machines.V1.ForkAdmission message) => new(message);
+}
+
+public sealed record RustMachinesForkMachineAdmissionResponse
+{
+    private Acyclic.Machines.V1.ForkMachineAdmission Wire { get; }
+    private RustMachinesForkMachineAdmissionResponse(Acyclic.Machines.V1.ForkMachineAdmission wire) => Wire = wire;
+    public RustMachinesMachineIdValue? Source => Wire.Source is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Source);
+    public IReadOnlyList<RustMachinesMachineIdValue> Children => Wire.Children.Select(value => RustMachinesMachineIdValue.FromWire(value)).ToArray();
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public RustMachinesForkFidelityEnum Fidelity => new RustMachinesForkFidelityEnum((int)Wire.Fidelity);
+    public int FidelityNumber => (int)Wire.Fidelity;
+    internal static RustMachinesForkMachineAdmissionResponse FromWire(Acyclic.Machines.V1.ForkMachineAdmission message) => new(message);
+}
+
+public sealed record RustMachinesImageQualificationResponse
+{
+    private Acyclic.Machines.V1.ImageQualification Wire { get; }
+    private RustMachinesImageQualificationResponse(Acyclic.Machines.V1.ImageQualification wire) => Wire = wire;
+    public RustMachinesImageValue? Image => Wire.Image is null ? null : RustMachinesImageValue.FromWire(Wire.Image);
+    public IReadOnlyList<RustMachinesCapabilityEnum> Capabilities => Wire.Capabilities.Select(value => new RustMachinesCapabilityEnum((int)value)).ToArray();
+    public RevisionDigest CompatibilityRevision => new RevisionDigest(Wire.CompatibilityRevision.ToByteArray());
+    internal static RustMachinesImageQualificationResponse FromWire(Acyclic.Machines.V1.ImageQualification message) => new(message);
+}
+
+public sealed record RustMachinesMachineAdmissionResponse
+{
+    private Acyclic.Machines.V1.MachineAdmission Wire { get; }
+    private RustMachinesMachineAdmissionResponse(Acyclic.Machines.V1.MachineAdmission wire) => Wire = wire;
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    internal static RustMachinesMachineAdmissionResponse FromWire(Acyclic.Machines.V1.MachineAdmission message) => new(message);
+}
+
+public sealed record RustMachinesMachinePageResponse
+{
+    private Acyclic.Machines.V1.MachinePage Wire { get; }
+    private RustMachinesMachinePageResponse(Acyclic.Machines.V1.MachinePage wire) => Wire = wire;
+    public IReadOnlyList<RustMachinesMachineStateValue> Machines => Wire.Machines.Select(value => RustMachinesMachineStateValue.FromWire(value)).ToArray();
+    public RustMachinesMachineIdValue? Next => Wire.Next is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Next);
+    internal static RustMachinesMachinePageResponse FromWire(Acyclic.Machines.V1.MachinePage message) => new(message);
+}
+
+public sealed record RustMachinesMachineStateResponse
+{
+    private Acyclic.Machines.V1.MachineState Wire { get; }
+    private RustMachinesMachineStateResponse(Acyclic.Machines.V1.MachineState wire) => Wire = wire;
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesMachineStatusEnum Status => new RustMachinesMachineStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    public RustMachinesMachineContractValue? Contract => Wire.Contract is null ? null : RustMachinesMachineContractValue.FromWire(Wire.Contract);
+    public IReadOnlyList<RustMachinesEndpointValue> Endpoints => Wire.Endpoints.Select(value => RustMachinesEndpointValue.FromWire(value)).ToArray();
+    public RustMachinesCheckpointIdValue? LastCheckpoint => Wire.LastCheckpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.LastCheckpoint);
+    public UnixTimestampMillis CreatedAtUnixMs => new UnixTimestampMillis(checked((ulong)Wire.CreatedAtUnixMs));
+    public UnixTimestampMillis ChangedAtUnixMs => new UnixTimestampMillis(checked((ulong)Wire.ChangedAtUnixMs));
+    internal static RustMachinesMachineStateResponse FromWire(Acyclic.Machines.V1.MachineState message) => new(message);
+}
+
+public sealed record RustMachinesMutationAdmissionResponse
+{
+    private Acyclic.Machines.V1.MutationAdmission Wire { get; }
+    private RustMachinesMutationAdmissionResponse(Acyclic.Machines.V1.MutationAdmission wire) => Wire = wire;
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesCheckpointIdValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointIdValue.FromWire(Wire.Checkpoint);
+    internal static RustMachinesMutationAdmissionResponse FromWire(Acyclic.Machines.V1.MutationAdmission message) => new(message);
+}
+
+public sealed record RustMachinesOperationStateResponse
+{
+    private Acyclic.Machines.V1.OperationState Wire { get; }
+    private RustMachinesOperationStateResponse(Acyclic.Machines.V1.OperationState wire) => Wire = wire;
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesOperationStatusEnum Status => new RustMachinesOperationStatusEnum((int)Wire.Status);
+    public int StatusNumber => (int)Wire.Status;
+    internal static RustMachinesOperationStateResponse FromWire(Acyclic.Machines.V1.OperationState message) => new(message);
+}
+
+public sealed record RustMachinesPolicyAdmissionResponse
+{
+    private Acyclic.Machines.V1.PolicyAdmission Wire { get; }
+    private RustMachinesPolicyAdmissionResponse(Acyclic.Machines.V1.PolicyAdmission wire) => Wire = wire;
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesSuspensionPolicyValue? Policy => Wire.Policy is null ? null : RustMachinesSuspensionPolicyValue.FromWire(Wire.Policy);
+    internal static RustMachinesPolicyAdmissionResponse FromWire(Acyclic.Machines.V1.PolicyAdmission message) => new(message);
+}
+
+public sealed record RustMachinesRecoveredAdmissionResponse
+{
+    private Acyclic.Machines.V1.RecoveredAdmission Wire { get; }
+    private RustMachinesRecoveredAdmissionResponse(Acyclic.Machines.V1.RecoveredAdmission wire) => Wire = wire;
+    public RustMachinesOperationIdValue? Operation => Wire.Operation is null ? null : RustMachinesOperationIdValue.FromWire(Wire.Operation);
+    public RustMachinesMachineAdmissionValue? Create => Wire.Create is null ? null : RustMachinesMachineAdmissionValue.FromWire(Wire.Create);
+    public int CreateOneofIndex => 0;
+    public RustMachinesCheckpointAdmissionValue? Checkpoint => Wire.Checkpoint is null ? null : RustMachinesCheckpointAdmissionValue.FromWire(Wire.Checkpoint);
+    public int CheckpointOneofIndex => 0;
+    public RustMachinesForkAdmissionValue? Fork => Wire.Fork is null ? null : RustMachinesForkAdmissionValue.FromWire(Wire.Fork);
+    public int ForkOneofIndex => 0;
+    public RustMachinesMutationAdmissionValue? Suspend => Wire.Suspend is null ? null : RustMachinesMutationAdmissionValue.FromWire(Wire.Suspend);
+    public int SuspendOneofIndex => 0;
+    public RustMachinesMutationAdmissionValue? Wake => Wire.Wake is null ? null : RustMachinesMutationAdmissionValue.FromWire(Wire.Wake);
+    public int WakeOneofIndex => 0;
+    public RustMachinesMutationAdmissionValue? DestroyMachine => Wire.DestroyMachine is null ? null : RustMachinesMutationAdmissionValue.FromWire(Wire.DestroyMachine);
+    public int DestroyMachineOneofIndex => 0;
+    public RustMachinesPolicyAdmissionValue? SetSuspensionPolicy => Wire.SetSuspensionPolicy is null ? null : RustMachinesPolicyAdmissionValue.FromWire(Wire.SetSuspensionPolicy);
+    public int SetSuspensionPolicyOneofIndex => 0;
+    public RustMachinesMutationAdmissionValue? DestroyCheckpoint => Wire.DestroyCheckpoint is null ? null : RustMachinesMutationAdmissionValue.FromWire(Wire.DestroyCheckpoint);
+    public int DestroyCheckpointOneofIndex => 0;
+    public RustMachinesForkMachineAdmissionValue? ForkMachine => Wire.ForkMachine is null ? null : RustMachinesForkMachineAdmissionValue.FromWire(Wire.ForkMachine);
+    public int ForkMachineOneofIndex => 0;
+    public RustMachinesRecoveredAdmissionResultChoice ResultChoice => RustMachinesRecoveredAdmissionResultChoice.FromWire(Wire);
+    internal static RustMachinesRecoveredAdmissionResponse FromWire(Acyclic.Machines.V1.RecoveredAdmission message) => new(message);
+}
+
+public sealed record RustMachinesUsageReceiptResponse
+{
+    private Acyclic.Machines.V1.UsageReceipt Wire { get; }
+    private RustMachinesUsageReceiptResponse(Acyclic.Machines.V1.UsageReceipt wire) => Wire = wire;
+    public RustMachinesMachineIdValue? Machine => Wire.Machine is null ? null : RustMachinesMachineIdValue.FromWire(Wire.Machine);
+    public UnixTimestampMillis StartUnixMs => new UnixTimestampMillis(checked((ulong)Wire.StartUnixMs));
+    public UnixTimestampMillis EndUnixMs => new UnixTimestampMillis(checked((ulong)Wire.EndUnixMs));
+    public ulong ElasticCpuNs => Wire.ElasticCpuNs;
+    public ulong DedicatedCpuNs => Wire.DedicatedCpuNs;
+    public ulong PrivateResidentByteSeconds => Wire.PrivateResidentByteSeconds;
+    public ulong DurablePrivateBytes => Wire.DurablePrivateBytes;
+    public ulong EgressBytes => Wire.EgressBytes;
+    public OpaqueBytes Receipt => new OpaqueBytes(Wire.Receipt.ToByteArray());
+    public Sha256Digest LineageReceiptSha256 => new Sha256Digest(Wire.LineageReceiptSha256.ToByteArray());
+    internal static RustMachinesUsageReceiptResponse FromWire(Acyclic.Machines.V1.UsageReceipt message) => new(message);
+}
+
+public sealed record RustObjectsAbortMultipartResponseResponse
+{
+    private Acyclic.Objects.V2.AbortMultipartResponse Wire { get; }
+    private RustObjectsAbortMultipartResponseResponse(Acyclic.Objects.V2.AbortMultipartResponse wire) => Wire = wire;
+    public bool Existed => Wire.Existed;
+    internal static RustObjectsAbortMultipartResponseResponse FromWire(Acyclic.Objects.V2.AbortMultipartResponse message) => new(message);
+}
+
+public sealed record RustObjectsBucketResponse
+{
+    private Acyclic.Objects.V2.Bucket Wire { get; }
+    private RustObjectsBucketResponse(Acyclic.Objects.V2.Bucket wire) => Wire = wire;
+    public RustObjectsBucketRefValue? Bucket_ => Wire.Bucket_ is null ? null : RustObjectsBucketRefValue.FromWire(Wire.Bucket_);
+    public Google.Protobuf.WellKnownTypes.Timestamp CreatedAt => Wire.CreatedAt;
+    internal static RustObjectsBucketResponse FromWire(Acyclic.Objects.V2.Bucket message) => new(message);
+}
+
+public sealed record RustObjectsDeleteBucketResponseResponse
+{
+    private Acyclic.Objects.V2.DeleteBucketResponse Wire { get; }
+    private RustObjectsDeleteBucketResponseResponse(Acyclic.Objects.V2.DeleteBucketResponse wire) => Wire = wire;
+    public bool Existed => Wire.Existed;
+    internal static RustObjectsDeleteBucketResponseResponse FromWire(Acyclic.Objects.V2.DeleteBucketResponse message) => new(message);
+}
+
+public sealed record RustObjectsDeleteObjectResponseResponse
+{
+    private Acyclic.Objects.V2.DeleteObjectResponse Wire { get; }
+    private RustObjectsDeleteObjectResponseResponse(Acyclic.Objects.V2.DeleteObjectResponse wire) => Wire = wire;
+    public bool Existed => Wire.Existed;
+    internal static RustObjectsDeleteObjectResponseResponse FromWire(Acyclic.Objects.V2.DeleteObjectResponse message) => new(message);
+}
+
+public sealed record RustObjectsHeadObjectResponseResponse
+{
+    private Acyclic.Objects.V2.HeadObjectResponse Wire { get; }
+    private RustObjectsHeadObjectResponseResponse(Acyclic.Objects.V2.HeadObjectResponse wire) => Wire = wire;
+    public RustObjectsObjectInfoValue? Object => Wire.Object is null ? null : RustObjectsObjectInfoValue.FromWire(Wire.Object);
+    internal static RustObjectsHeadObjectResponseResponse FromWire(Acyclic.Objects.V2.HeadObjectResponse message) => new(message);
+}
+
+public sealed record RustObjectsListObjectsResponseResponse
+{
+    private Acyclic.Objects.V2.ListObjectsResponse Wire { get; }
+    private RustObjectsListObjectsResponseResponse(Acyclic.Objects.V2.ListObjectsResponse wire) => Wire = wire;
+    public IReadOnlyList<RustObjectsListEntryValue> Entries => Wire.Entries.Select(value => RustObjectsListEntryValue.FromWire(value)).ToArray();
+    public IReadOnlyList<string> CommonPrefixes => Wire.CommonPrefixes;
+    public OpaqueText ContinuationToken => new OpaqueText(Wire.ContinuationToken);
+    public bool IsTruncated => Wire.IsTruncated;
+    internal static RustObjectsListObjectsResponseResponse FromWire(Acyclic.Objects.V2.ListObjectsResponse message) => new(message);
+}
+
+public sealed record RustObjectsListPartsResponseResponse
+{
+    private Acyclic.Objects.V2.ListPartsResponse Wire { get; }
+    private RustObjectsListPartsResponseResponse(Acyclic.Objects.V2.ListPartsResponse wire) => Wire = wire;
+    public IReadOnlyList<RustObjectsUploadedPartValue> Parts => Wire.Parts.Select(value => RustObjectsUploadedPartValue.FromWire(value)).ToArray();
+    public PositiveCount NextPartNumber => new PositiveCount(checked((ulong)Wire.NextPartNumber));
+    public bool IsTruncated => Wire.IsTruncated;
+    internal static RustObjectsListPartsResponseResponse FromWire(Acyclic.Objects.V2.ListPartsResponse message) => new(message);
+}
+
+public sealed record RustObjectsMultipartUploadResponse
+{
+    private Acyclic.Objects.V2.MultipartUpload Wire { get; }
+    private RustObjectsMultipartUploadResponse(Acyclic.Objects.V2.MultipartUpload wire) => Wire = wire;
+    public UploadId UploadId => new UploadId(Wire.UploadId);
+    internal static RustObjectsMultipartUploadResponse FromWire(Acyclic.Objects.V2.MultipartUpload message) => new(message);
+}
+
+public sealed record RustObjectsUploadedPartResponse
+{
+    private Acyclic.Objects.V2.UploadedPart Wire { get; }
+    private RustObjectsUploadedPartResponse(Acyclic.Objects.V2.UploadedPart wire) => Wire = wire;
+    public uint PartNumber => Wire.PartNumber;
+    public OpaqueText Etag => new OpaqueText(Wire.Etag);
+    public ulong Size => Wire.Size;
+    internal static RustObjectsUploadedPartResponse FromWire(Acyclic.Objects.V2.UploadedPart message) => new(message);
+}
+
+public sealed record RustStreamAppendResponseResponse
+{
+    private Acyclic.Stream.V2.AppendResponse Wire { get; }
+    private RustStreamAppendResponseResponse(Acyclic.Stream.V2.AppendResponse wire) => Wire = wire;
+    public RustStreamAppendReceiptValue? Committed => Wire.Committed is null ? null : RustStreamAppendReceiptValue.FromWire(Wire.Committed);
+    public int CommittedOneofIndex => 0;
+    public RustStreamTailConflictValue? Conflict => Wire.Conflict is null ? null : RustStreamTailConflictValue.FromWire(Wire.Conflict);
+    public int ConflictOneofIndex => 0;
+    public RustStreamAppendResponseOutcomeChoice OutcomeChoice => RustStreamAppendResponseOutcomeChoice.FromWire(Wire);
+    internal static RustStreamAppendResponseResponse FromWire(Acyclic.Stream.V2.AppendResponse message) => new(message);
+}
+
+public sealed record RustStreamChildrenPageResponseResponse
+{
+    private Acyclic.Stream.V2.ChildrenPageResponse Wire { get; }
+    private RustStreamChildrenPageResponseResponse(Acyclic.Stream.V2.ChildrenPageResponse wire) => Wire = wire;
+    public RevisionDigest HierarchyVersion => new RevisionDigest(Wire.HierarchyVersion.ToByteArray());
+    public IReadOnlyList<RustStreamChildValue> Children => Wire.Children.Select(value => RustStreamChildValue.FromWire(value)).ToArray();
+    public OpaqueText? NextAfter => new OpaqueText(Wire.NextAfter);
+    public int NextAfterOneofIndex => 0;
+    internal static RustStreamChildrenPageResponseResponse FromWire(Acyclic.Stream.V2.ChildrenPageResponse message) => new(message);
+}
+
+public sealed record RustStreamChildrenResponseResponse
+{
+    private Acyclic.Stream.V2.ChildrenResponse Wire { get; }
+    private RustStreamChildrenResponseResponse(Acyclic.Stream.V2.ChildrenResponse wire) => Wire = wire;
+    public RustStreamChildValue? Child => Wire.Child is null ? null : RustStreamChildValue.FromWire(Wire.Child);
+    internal static RustStreamChildrenResponseResponse FromWire(Acyclic.Stream.V2.ChildrenResponse message) => new(message);
+}
+
+public sealed record RustStreamCommitResponseResponse
+{
+    private Acyclic.Stream.V2.CommitResponse Wire { get; }
+    private RustStreamCommitResponseResponse(Acyclic.Stream.V2.CommitResponse wire) => Wire = wire;
+    public RustStreamCommittedEnvelopeValue? Committed => Wire.Committed is null ? null : RustStreamCommittedEnvelopeValue.FromWire(Wire.Committed);
+    public int CommittedOneofIndex => 0;
+    public RustStreamCommitConflictsValue? Conflict => Wire.Conflict is null ? null : RustStreamCommitConflictsValue.FromWire(Wire.Conflict);
+    public int ConflictOneofIndex => 0;
+    public RustStreamCommitResponseOutcomeChoice OutcomeChoice => RustStreamCommitResponseOutcomeChoice.FromWire(Wire);
+    internal static RustStreamCommitResponseResponse FromWire(Acyclic.Stream.V2.CommitResponse message) => new(message);
+}
+
+public sealed record RustStreamCommittedEnvelopeResponse
+{
+    private Acyclic.Stream.V2.CommittedEnvelope Wire { get; }
+    private RustStreamCommittedEnvelopeResponse(Acyclic.Stream.V2.CommittedEnvelope wire) => Wire = wire;
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    public IReadOnlyList<RustStreamCommittedMutationValue> Mutations => Wire.Mutations.Select(value => RustStreamCommittedMutationValue.FromWire(value)).ToArray();
+    internal static RustStreamCommittedEnvelopeResponse FromWire(Acyclic.Stream.V2.CommittedEnvelope message) => new(message);
+}
+
+public sealed record RustStreamForkReceiptResponse
+{
+    private Acyclic.Stream.V2.ForkReceipt Wire { get; }
+    private RustStreamForkReceiptResponse(Acyclic.Stream.V2.ForkReceipt wire) => Wire = wire;
+    public SourceName Source => new SourceName(Wire.Source);
+    public DestinationName Destination => new DestinationName(Wire.Destination);
+    public SequenceNumber ForkedAt => new SequenceNumber(checked((ulong)Wire.ForkedAt));
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+    public CommitId CommitId => new CommitId(Wire.CommitId.ToByteArray());
+    internal static RustStreamForkReceiptResponse FromWire(Acyclic.Stream.V2.ForkReceipt message) => new(message);
+}
+
+public sealed record RustStreamInspectIdempotencyResponseResponse
+{
+    private Acyclic.Stream.V2.InspectIdempotencyResponse Wire { get; }
+    private RustStreamInspectIdempotencyResponseResponse(Acyclic.Stream.V2.InspectIdempotencyResponse wire) => Wire = wire;
+    public RustStreamIdempotencyObservationValue? Observation => Wire.Observation is null ? null : RustStreamIdempotencyObservationValue.FromWire(Wire.Observation);
+    public int ObservationOneofIndex => 0;
+    internal static RustStreamInspectIdempotencyResponseResponse FromWire(Acyclic.Stream.V2.InspectIdempotencyResponse message) => new(message);
+}
+
+public sealed record RustStreamReadResponseResponse
+{
+    private Acyclic.Stream.V2.ReadResponse Wire { get; }
+    private RustStreamReadResponseResponse(Acyclic.Stream.V2.ReadResponse wire) => Wire = wire;
+    public RustStreamRecordValue? Record => Wire.Record is null ? null : RustStreamRecordValue.FromWire(Wire.Record);
+    internal static RustStreamReadResponseResponse FromWire(Acyclic.Stream.V2.ReadResponse message) => new(message);
+}
+
+public sealed record RustStreamTailResponseResponse
+{
+    private Acyclic.Stream.V2.TailResponse Wire { get; }
+    private RustStreamTailResponseResponse(Acyclic.Stream.V2.TailResponse wire) => Wire = wire;
+    public SequenceNumber Tail => new SequenceNumber(checked((ulong)Wire.Tail));
+    internal static RustStreamTailResponseResponse FromWire(Acyclic.Stream.V2.TailResponse message) => new(message);
+}
+
+public sealed record RustWorkersCancelJobResponseResponse
+{
+    private Acyclic.Workers.V1.CancelJobResponse Wire { get; }
+    private RustWorkersCancelJobResponseResponse(Acyclic.Workers.V1.CancelJobResponse wire) => Wire = wire;
+    public RustWorkersJobObservationValue? Job => Wire.Job is null ? null : RustWorkersJobObservationValue.FromWire(Wire.Job);
+    internal static RustWorkersCancelJobResponseResponse FromWire(Acyclic.Workers.V1.CancelJobResponse message) => new(message);
+}
+
+public sealed record RustWorkersInspectJobResponseResponse
+{
+    private Acyclic.Workers.V1.InspectJobResponse Wire { get; }
+    private RustWorkersInspectJobResponseResponse(Acyclic.Workers.V1.InspectJobResponse wire) => Wire = wire;
+    public RustWorkersJobObservationValue? Job => Wire.Job is null ? null : RustWorkersJobObservationValue.FromWire(Wire.Job);
+    internal static RustWorkersInspectJobResponseResponse FromWire(Acyclic.Workers.V1.InspectJobResponse message) => new(message);
+}
+
+public sealed record RustWorkersInvokeResponseResponse
+{
+    private Acyclic.Workers.V1.InvokeResponse Wire { get; }
+    private RustWorkersInvokeResponseResponse(Acyclic.Workers.V1.InvokeResponse wire) => Wire = wire;
+    public uint Status => Wire.Status;
+    public IReadOnlyList<RustWorkersHeaderValue> Headers => Wire.Headers.Select(value => RustWorkersHeaderValue.FromWire(value)).ToArray();
+    public ByteString Body => Wire.Body;
+    public Sha256Digest ResolvedSha256 => new Sha256Digest(Wire.ResolvedSha256.ToByteArray());
+    public Revision? ResolvedRevision => new Revision(checked((ulong)Wire.ResolvedRevision));
+    public int ResolvedRevisionOneofIndex => 0;
+    internal static RustWorkersInvokeResponseResponse FromWire(Acyclic.Workers.V1.InvokeResponse message) => new(message);
+}
+
+public sealed record RustWorkersPublishVersionResponseResponse
+{
+    private Acyclic.Workers.V1.PublishVersionResponse Wire { get; }
+    private RustWorkersPublishVersionResponseResponse(Acyclic.Workers.V1.PublishVersionResponse wire) => Wire = wire;
+    public RustWorkersCodeVersionValue? Version => Wire.Version is null ? null : RustWorkersCodeVersionValue.FromWire(Wire.Version);
+    internal static RustWorkersPublishVersionResponseResponse FromWire(Acyclic.Workers.V1.PublishVersionResponse message) => new(message);
+}
+
+public sealed record RustWorkersSelectDeploymentResponseResponse
+{
+    private Acyclic.Workers.V1.SelectDeploymentResponse Wire { get; }
+    private RustWorkersSelectDeploymentResponseResponse(Acyclic.Workers.V1.SelectDeploymentResponse wire) => Wire = wire;
+    public RustWorkersDeploymentValue? Deployment => Wire.Deployment is null ? null : RustWorkersDeploymentValue.FromWire(Wire.Deployment);
+    internal static RustWorkersSelectDeploymentResponseResponse FromWire(Acyclic.Workers.V1.SelectDeploymentResponse message) => new(message);
+}
+
+public sealed record RustWorkersSubmitJobResponseResponse
+{
+    private Acyclic.Workers.V1.SubmitJobResponse Wire { get; }
+    private RustWorkersSubmitJobResponseResponse(Acyclic.Workers.V1.SubmitJobResponse wire) => Wire = wire;
+    public RustWorkersJobObservationValue? Job => Wire.Job is null ? null : RustWorkersJobObservationValue.FromWire(Wire.Job);
+    internal static RustWorkersSubmitJobResponseResponse FromWire(Acyclic.Workers.V1.SubmitJobResponse message) => new(message);
+}
+
+public sealed class RustFilesystemExportStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Filesystem.V2.ExportChunk> _inner;
+    internal RustFilesystemExportStream(AsyncServerStreamingCall<Acyclic.Filesystem.V2.ExportChunk> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustFilesystemExportChunkResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustFilesystemExportChunkResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustFilesystemImportStream : IDisposable
+{
+    private readonly AsyncClientStreamingCall<Acyclic.Filesystem.V2.ImportChunk, Acyclic.Filesystem.V2.ImportResponse> _inner;
+    internal RustFilesystemImportStream(AsyncClientStreamingCall<Acyclic.Filesystem.V2.ImportChunk, Acyclic.Filesystem.V2.ImportResponse> inner) => _inner = inner;
+    public IClientStreamWriter<Acyclic.Filesystem.V2.ImportChunk> RequestStream => _inner.RequestStream;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Task<RustFilesystemImportResponseResponse> ResponseAsync => MapResponseAsync(_inner.ResponseAsync);
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public void Dispose() => _inner.Dispose();
+    private static async Task<RustFilesystemImportResponseResponse> MapResponseAsync(Task<Acyclic.Filesystem.V2.ImportResponse> response) => RustFilesystemImportResponseResponse.FromWire(await response.ConfigureAwait(false));
+}
+
+public sealed class RustHarnessReplayStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Harness.V2.Delivery> _inner;
+    internal RustHarnessReplayStream(AsyncServerStreamingCall<Acyclic.Harness.V2.Delivery> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustHarnessDeliveryResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustHarnessDeliveryResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustMachinesWatchOperationStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Machines.V1.OperationState> _inner;
+    internal RustMachinesWatchOperationStream(AsyncServerStreamingCall<Acyclic.Machines.V1.OperationState> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustMachinesOperationStateResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustMachinesOperationStateResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustObjectsUploadPartStream : IDisposable
+{
+    private readonly AsyncClientStreamingCall<Acyclic.Objects.V2.UploadPartRequest, Acyclic.Objects.V2.UploadedPart> _inner;
+    internal RustObjectsUploadPartStream(AsyncClientStreamingCall<Acyclic.Objects.V2.UploadPartRequest, Acyclic.Objects.V2.UploadedPart> inner) => _inner = inner;
+    public IClientStreamWriter<Acyclic.Objects.V2.UploadPartRequest> RequestStream => _inner.RequestStream;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Task<RustObjectsUploadedPartResponse> ResponseAsync => MapResponseAsync(_inner.ResponseAsync);
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public void Dispose() => _inner.Dispose();
+    private static async Task<RustObjectsUploadedPartResponse> MapResponseAsync(Task<Acyclic.Objects.V2.UploadedPart> response) => RustObjectsUploadedPartResponse.FromWire(await response.ConfigureAwait(false));
+}
+
+public sealed class RustStreamChildrenStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Stream.V2.ChildrenResponse> _inner;
+    internal RustStreamChildrenStream(AsyncServerStreamingCall<Acyclic.Stream.V2.ChildrenResponse> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustStreamChildrenResponseResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustStreamChildrenResponseResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustStreamFollowStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> _inner;
+    internal RustStreamFollowStream(AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustStreamReadResponseResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustStreamReadResponseResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustStreamReadStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> _inner;
+    internal RustStreamReadStream(AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustStreamReadResponseResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustStreamReadResponseResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
+}
+
+public sealed class RustInferenceWatchStream : IDisposable
+{
+    private readonly AsyncServerStreamingCall<Inference.Customer.V1.RunEvent> _inner;
+    internal RustInferenceWatchStream(AsyncServerStreamingCall<Inference.Customer.V1.RunEvent> inner) => _inner = inner;
+    public Task<Metadata> ResponseHeadersAsync => _inner.ResponseHeadersAsync;
+    public Status GetStatus() => _inner.GetStatus();
+    public Metadata GetTrailers() => _inner.GetTrailers();
+    public async IAsyncEnumerable<RustInferenceRunEventResponse> ReadAllAsync([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        while (await _inner.ResponseStream.MoveNext(cancellationToken).ConfigureAwait(false)) yield return RustInferenceRunEventResponse.FromWire(_inner.ResponseStream.Current);
+    }
+    public void Dispose() => _inner.Dispose();
 }
 
 internal static class RustOperationValidation
@@ -2056,7 +6675,7 @@ internal static class RustOperationPolicies
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
-        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "preconditions.atomic", "preconditions", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/DeleteObject", "preconditions.atomic", "preconditions", RustOperationEnforcement.ProviderState),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/GetObject", "range.valid", "range.valid", RustOperationEnforcement.ClientLocal),
@@ -2068,7 +6687,7 @@ internal static class RustOperationPolicies
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "bucket.name.non_empty", "bucket.name", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "idempotency_key.non_empty", "idempotency_key.non_empty", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "object.key.non_empty", "object.key", RustOperationEnforcement.ClientLocal),
-        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "preconditions.atomic", "preconditions", RustOperationEnforcement.ClientLocal),
+        new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "preconditions.atomic", "preconditions", RustOperationEnforcement.ProviderState),
         new RustOperationPolicy("objects", "acyclic.objects.v2.ObjectsService/PutObject", "upload.completion_frame", "upload.completion_frame", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Append", "path.non_empty_utf8", "path.non_empty_utf8", RustOperationEnforcement.ClientLocal),
         new RustOperationPolicy("stream", "acyclic.stream.v2.StreamService/Append", "records.max_bytes", "records", RustOperationEnforcement.ClientLocal),
@@ -2191,14 +6810,131 @@ internal static class RustOperationValidationPolicy
                 throw new ArgumentException($"{validation} must contain a nonzero value", nameof(value));
             return;
         }
-        if (unwrapped is IConvertible number && number.ToInt64(System.Globalization.CultureInfo.InvariantCulture) == 0)
-            throw new ArgumentException($"{validation} must be nonzero", nameof(value));
+        if (unwrapped is IConvertible number)
+        {
+            if (number.ToInt64(System.Globalization.CultureInfo.InvariantCulture) == 0)
+                throw new ArgumentException($"{validation} must be nonzero", nameof(value));
+            return;
+        }
+        throw new ArgumentException($"{validation} requires a supported Rust identity value", nameof(value));
     }
 
-    private static void RequireSelectedMessage(string validation, object? value)
+    private static void RequireFilesystemMutations(string validation, object? value)
     {
-        if (value is not IMessage message || message.CalculateSize() == 0)
-            throw new ArgumentException($"{validation} requires a selected non-empty wire value", nameof(value));
+        if (value is Acyclic.Filesystem.V2.Mutation mutation)
+        {
+            if (mutation.MutationCase == Acyclic.Filesystem.V2.Mutation.MutationOneofCase.None)
+                throw new ArgumentException($"{validation} requires a selected mutation", nameof(value));
+            return;
+        }
+        if (value is System.Collections.IEnumerable sequence)
+        {
+            foreach (var item in sequence)
+            {
+                if (item is not Acyclic.Filesystem.V2.Mutation selected
+                    || selected.MutationCase == Acyclic.Filesystem.V2.Mutation.MutationOneofCase.None)
+                    throw new ArgumentException($"{validation} requires selected filesystem mutation arms", nameof(value));
+            }
+            return;
+        }
+        throw new ArgumentException($"{validation} requires filesystem mutation values", nameof(value));
+    }
+
+    private static void RequirePreconditions(object? value)
+    {
+        // Rust objects::request::preconditions accepts an omitted condition.
+        if (value is null) return;
+        if (value is not Acyclic.Objects.V2.Preconditions preconditions)
+            throw new ArgumentException("preconditions.atomic requires Objects.V2.Preconditions", nameof(value));
+        switch (preconditions.ConditionCase)
+        {
+            case Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfAbsent:
+                if (!preconditions.IfAbsent) throw new ArgumentException("preconditions.atomic requires if_absent=true", nameof(value));
+                return;
+            case Acyclic.Objects.V2.Preconditions.ConditionOneofCase.IfMatch:
+                var etag = preconditions.IfMatch;
+                if (string.IsNullOrEmpty(etag) || etag.Length > 8192 || etag.Contains('\r') || etag.Contains('\n') || etag.Contains('\0'))
+                    throw new ArgumentException("preconditions.atomic requires a valid If-Match ETag", nameof(value));
+                return;
+            default:
+                throw new ArgumentException("preconditions.atomic requires if_absent=true or a valid If-Match ETag", nameof(value));
+        }
+    }
+
+    private static void RequireOrderedParts(string validation, object? value)
+    {
+        if (value is not System.Collections.IEnumerable sequence)
+            throw new ArgumentException($"{validation} requires uploaded part receipts", nameof(value));
+
+        var count = 0;
+        uint previous = 0;
+        foreach (var item in sequence)
+        {
+            if (item is not Acyclic.Objects.V2.UploadedPart part)
+                throw new ArgumentException($"{validation} requires uploaded part receipts", nameof(value));
+
+            var number = part.PartNumber;
+            if (++count > RustOperationValidation.MaxMultipartParts
+                || number == 0
+                || number > RustOperationValidation.MaxMultipartParts
+                || (count > 1 && number <= previous))
+                throw new ArgumentOutOfRangeException(nameof(value), validation);
+            previous = number;
+        }
+    }
+
+    private static void RequireValidRange(string validation, object? value)
+    {
+        // Rust objects::ByteRange permits an omitted selection, an inclusive
+        // range with start <= end, or a positive suffix length.
+        if (value is null) return;
+        if (value is not Acyclic.Objects.V2.ByteRange range)
+            throw new ArgumentException($"{validation} requires an object byte range", nameof(value));
+
+        switch (range.SelectionCase)
+        {
+            case Acyclic.Objects.V2.ByteRange.SelectionOneofCase.Bytes:
+                var bytes = range.Bytes;
+                if (bytes is null || (bytes.HasEnd && bytes.End < bytes.Start))
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                return;
+            case Acyclic.Objects.V2.ByteRange.SelectionOneofCase.SuffixLength:
+                if (range.SuffixLength == 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                return;
+            default:
+                throw new ArgumentException($"{validation} requires bytes or a positive suffix length", nameof(value));
+        }
+    }
+
+    private static void RequireRecordBytes(string validation, object? value)
+    {
+        if (value is not System.Collections.IEnumerable sequence)
+            throw new ArgumentException($"{validation} requires byte records", nameof(value));
+        foreach (var item in sequence)
+        {
+            if (item is not ByteString record || record.Length > RustOperationValidation.MaxRecordBytes)
+                throw new ArgumentOutOfRangeException(nameof(value), validation);
+        }
+    }
+
+    private static void RequireCommandMutations(string validation, object? value)
+    {
+        if (value is not System.Collections.IEnumerable sequence)
+            throw new ArgumentException($"{validation} requires commit mutations", nameof(value));
+
+        var encodedBytes = 0;
+        foreach (var item in sequence)
+        {
+            if (item is not IMessage mutation)
+                throw new ArgumentException($"{validation} requires commit mutations", nameof(value));
+            var messageBytes = mutation.CalculateSize();
+            encodedBytes += Google.Protobuf.CodedOutputStream.ComputeTagSize(4)
+                + Google.Protobuf.CodedOutputStream.ComputeLengthSize(messageBytes)
+                + messageBytes;
+            if (encodedBytes > RustOperationValidation.MaxCommandBytes)
+                throw new ArgumentOutOfRangeException(nameof(value), validation);
+        }
     }
 
     internal static void ValidateClientPolicy(string validation, object? value)
@@ -2215,11 +6951,17 @@ internal static class RustOperationValidationPolicy
                 if (value is not ImmutableImage) throw new ArgumentException($"{validation} requires an immutable image variant", nameof(value));
                 break;
             case "mutation.oneof":
-                RequireSelectedMessage(validation, value);
+                RequireFilesystemMutations(validation, value);
                 break;
             case "protocol.version.exact":
-                if (value is IMessage protocol)
+                // Filesystem handshake uses protocol.v1 ProtocolIdentity.version == "1".
+                if (value is Acyclic.Protocol.V1.ProtocolIdentity identity)
                 {
+                    if (identity.Version != "1") throw new ArgumentOutOfRangeException(nameof(value), validation);
+                }
+                else if (value is IMessage protocol)
+                {
+                    // Keep the Machines ProtocolVersion rule distinct: major 1, minor <= 1.
                     var major = protocol.Descriptor.FindFieldByName("major")?.Accessor.GetValue(protocol);
                     var minor = protocol.Descriptor.FindFieldByName("minor")?.Accessor.GetValue(protocol);
                     if (major is not IConvertible majorValue || minor is not IConvertible minorValue
@@ -2245,7 +6987,19 @@ internal static class RustOperationValidationPolicy
                 if (RequireNumber(validation, value) <= 0 || RequireNumber(validation, value) > 1024) throw new ArgumentOutOfRangeException(nameof(value), validation);
                 break;
             case "preconditions.atomic":
-                RequireSelectedMessage(validation, value);
+                RequirePreconditions(value);
+                break;
+            case "parts.ordered_exact":
+                RequireOrderedParts(validation, value);
+                break;
+            case "range.valid":
+                RequireValidRange(validation, value);
+                break;
+            case "records.max_bytes":
+                RequireRecordBytes(validation, value);
+                break;
+            case "mutations.max_command_bytes":
+                RequireCommandMutations(validation, value);
                 break;
             case "expected_configuration_revision.non_negative":
                 if (RequireNumber(validation, value) < 0) throw new ArgumentOutOfRangeException(nameof(value), validation);
@@ -2266,22 +7020,20 @@ internal static class RustOperationValidationPolicy
                     RequireNonzero(validation, value);
                     break;
                 }
-                if (validation.EndsWith(".length_16", StringComparison.Ordinal) && RequireLength(validation, value) != 16)
-                    throw new ArgumentException($"{validation} must have length 16", nameof(value));
-                if (validation.EndsWith(".length_32", StringComparison.Ordinal) && RequireLength(validation, value) != 32)
-                    throw new ArgumentException($"{validation} must have length 32", nameof(value));
-                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
-                    throw new ArgumentOutOfRangeException(nameof(value), validation);
-                if (validation.EndsWith(".valid", StringComparison.Ordinal)
-                    || validation.EndsWith(".bounded", StringComparison.Ordinal)
-                    || validation.EndsWith(".supported", StringComparison.Ordinal)
-                    || validation.EndsWith(".exact", StringComparison.Ordinal)
-                    || validation.EndsWith(".preserving", StringComparison.Ordinal)
-                    || validation.EndsWith(".monotonic", StringComparison.Ordinal))
+                if (validation.EndsWith(".length_16", StringComparison.Ordinal))
                 {
-                    RequirePresent(validation, value);
+                    if (RequireLength(validation, value) != 16) throw new ArgumentException($"{validation} must have length 16", nameof(value));
                     break;
                 }
+                if (validation.EndsWith(".length_32", StringComparison.Ordinal))
+                {
+                    if (RequireLength(validation, value) != 32) throw new ArgumentException($"{validation} must have length 32", nameof(value));
+                    break;
+                }
+                if (validation.EndsWith(".positive", StringComparison.Ordinal) && RequireNumber(validation, value) <= 0)
+                    throw new ArgumentOutOfRangeException(nameof(value), validation);
+                // Rust-owned rules without an explicit C# AST projection fail closed.
+
                 throw new NotSupportedException($"Rust policy '{validation}' has no C# client projection");
         }
     }
@@ -2294,14 +7046,14 @@ public sealed class ActorsClient
     {
         _actors = actors;
     }
-    public Acyclic.Actors.V1.AddSubscriptionResponse AddSubscription(RustActorsAddSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.AddSubscription(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.CheckpointActorResponse CheckpointActor(RustActorsCheckpointActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.CheckpointActor(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.CreateActorResponse CreateActor(Acyclic.Actors.V1.CreateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.CreateActor(request, headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.InspectActorResponse InspectActor(RustActorsInspectActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.InspectActor(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.InvokeActorResponse InvokeActor(RustActorsInvokeActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.InvokeActor(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.RemoveSubscriptionResponse RemoveSubscription(RustActorsRemoveSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.RemoveSubscription(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.ResumeSubscriptionResponse ResumeSubscription(RustActorsResumeSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.ResumeSubscription(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Actors.V1.UpdateActorResponse UpdateActor(RustActorsUpdateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _actors.UpdateActor(request.ToWire(), headers, deadline, cancellationToken);
+    public RustActorsAddSubscriptionResponseResponse AddSubscription(RustActorsAddSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsAddSubscriptionResponseResponse.FromWire(_actors.AddSubscription(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsCheckpointActorResponseResponse CheckpointActor(RustActorsCheckpointActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsCheckpointActorResponseResponse.FromWire(_actors.CheckpointActor(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsCreateActorResponseResponse CreateActor(Acyclic.Actors.V1.CreateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsCreateActorResponseResponse.FromWire(_actors.CreateActor(request, headers, deadline, cancellationToken));
+    public RustActorsInspectActorResponseResponse InspectActor(RustActorsInspectActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsInspectActorResponseResponse.FromWire(_actors.InspectActor(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsInvokeActorResponseResponse InvokeActor(RustActorsInvokeActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsInvokeActorResponseResponse.FromWire(_actors.InvokeActor(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsRemoveSubscriptionResponseResponse RemoveSubscription(RustActorsRemoveSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsRemoveSubscriptionResponseResponse.FromWire(_actors.RemoveSubscription(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsResumeSubscriptionResponseResponse ResumeSubscription(RustActorsResumeSubscriptionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsResumeSubscriptionResponseResponse.FromWire(_actors.ResumeSubscription(request.ToWire(), headers, deadline, cancellationToken));
+    public RustActorsUpdateActorResponseResponse UpdateActor(RustActorsUpdateActorRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustActorsUpdateActorResponseResponse.FromWire(_actors.UpdateActor(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class WorkersClient
@@ -2311,13 +7063,13 @@ public sealed class WorkersClient
     {
         _workers = workers;
     }
-    public Acyclic.Workers.V1.CancelJobResponse CancelJob(RustWorkersCancelJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.CancelJob(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.InspectJobResponse InspectJob(RustWorkersInspectJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InspectJob(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.InvokeResponse InvokeDeployment(RustWorkersInvokeDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InvokeDeployment(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.InvokeResponse InvokeVersion(RustWorkersInvokeVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.InvokeVersion(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.PublishVersionResponse PublishVersion(RustWorkersPublishVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.PublishVersion(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.SelectDeploymentResponse SelectDeployment(RustWorkersSelectDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.SelectDeployment(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Workers.V1.SubmitJobResponse SubmitJob(RustWorkersSubmitJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _workers.SubmitJob(request.ToWire(), headers, deadline, cancellationToken);
+    public RustWorkersCancelJobResponseResponse CancelJob(RustWorkersCancelJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersCancelJobResponseResponse.FromWire(_workers.CancelJob(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersInspectJobResponseResponse InspectJob(RustWorkersInspectJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersInspectJobResponseResponse.FromWire(_workers.InspectJob(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersInvokeResponseResponse InvokeDeployment(RustWorkersInvokeDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersInvokeResponseResponse.FromWire(_workers.InvokeDeployment(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersInvokeResponseResponse InvokeVersion(RustWorkersInvokeVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersInvokeResponseResponse.FromWire(_workers.InvokeVersion(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersPublishVersionResponseResponse PublishVersion(RustWorkersPublishVersionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersPublishVersionResponseResponse.FromWire(_workers.PublishVersion(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersSelectDeploymentResponseResponse SelectDeployment(RustWorkersSelectDeploymentRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersSelectDeploymentResponseResponse.FromWire(_workers.SelectDeployment(request.ToWire(), headers, deadline, cancellationToken));
+    public RustWorkersSubmitJobResponseResponse SubmitJob(RustWorkersSubmitJobRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustWorkersSubmitJobResponseResponse.FromWire(_workers.SubmitJob(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class ObjectsClient
@@ -2331,19 +7083,19 @@ public sealed class ObjectsClient
         _multipart = multipart;
         _objects = objects;
     }
-    public Acyclic.Objects.V2.Bucket CreateBucket(ObjectsCreateBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.CreateBucket(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.DeleteBucketResponse DeleteBucket(Acyclic.Objects.V2.DeleteBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.DeleteBucket(request, headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.Bucket HeadBucket(Acyclic.Objects.V2.HeadBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _buckets.HeadBucket(request, headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.AbortMultipartResponse AbortMultipart(RustObjectsAbortMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.AbortMultipart(request.ToWire(), headers, deadline, cancellationToken);
+    public RustObjectsBucketResponse CreateBucket(ObjectsCreateBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsBucketResponse.FromWire(_buckets.CreateBucket(request.ToWire(), headers, deadline, cancellationToken));
+    public RustObjectsDeleteBucketResponseResponse DeleteBucket(Acyclic.Objects.V2.DeleteBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsDeleteBucketResponseResponse.FromWire(_buckets.DeleteBucket(request, headers, deadline, cancellationToken));
+    public RustObjectsBucketResponse HeadBucket(Acyclic.Objects.V2.HeadBucketRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsBucketResponse.FromWire(_buckets.HeadBucket(request, headers, deadline, cancellationToken));
+    public RustObjectsAbortMultipartResponseResponse AbortMultipart(RustObjectsAbortMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsAbortMultipartResponseResponse.FromWire(_multipart.AbortMultipart(request.ToWire(), headers, deadline, cancellationToken));
     public ObjectsObjectInfo CompleteMultipart(RustObjectsCompleteMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateOrderedPartNumbers(System.Linq.Enumerable.Select(request.Parts, part => part.PartNumber)); return ObjectsObjectInfo.FromWire(_multipart.CompleteMultipart(request.ToWire(), headers, deadline, cancellationToken)); }
-    public Acyclic.Objects.V2.MultipartUpload CreateMultipart(RustObjectsCreateMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.CreateMultipart(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.ListPartsResponse ListParts(RustObjectsListPartsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.ListParts(request.ToWire(), headers, deadline, cancellationToken);
-    public AsyncClientStreamingCall<Acyclic.Objects.V2.UploadPartRequest, Acyclic.Objects.V2.UploadedPart> UploadPart(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _multipart.UploadPart(headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.DeleteObjectResponse DeleteObject(RustObjectsDeleteObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.DeleteObject(request.ToWire(), headers, deadline, cancellationToken);
+    public RustObjectsMultipartUploadResponse CreateMultipart(RustObjectsCreateMultipartRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsMultipartUploadResponse.FromWire(_multipart.CreateMultipart(request.ToWire(), headers, deadline, cancellationToken));
+    public RustObjectsListPartsResponseResponse ListParts(RustObjectsListPartsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsListPartsResponseResponse.FromWire(_multipart.ListParts(request.ToWire(), headers, deadline, cancellationToken));
+    public RustObjectsUploadPartStream UploadPart(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_multipart.UploadPart(headers, deadline, cancellationToken));
+    public RustObjectsDeleteObjectResponseResponse DeleteObject(RustObjectsDeleteObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsDeleteObjectResponseResponse.FromWire(_objects.DeleteObject(request.ToWire(), headers, deadline, cancellationToken));
     public ObjectsGetObjectStream GetObject(RustObjectsGetObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.GetObject(request.ToWire(), headers, deadline, cancellationToken));
-    public Acyclic.Objects.V2.HeadObjectResponse HeadObject(RustObjectsHeadObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.HeadObject(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Objects.V2.ListObjectsResponse ListObjects(RustObjectsListObjectsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.ListObjects(request.ToWire(), headers, deadline, cancellationToken);
-    public AsyncClientStreamingCall<Acyclic.Objects.V2.PutObjectRequest, Acyclic.Objects.V2.ObjectInfo> PutObject(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _objects.PutObject(headers, deadline, cancellationToken);
+    public RustObjectsHeadObjectResponseResponse HeadObject(RustObjectsHeadObjectRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsHeadObjectResponseResponse.FromWire(_objects.HeadObject(request.ToWire(), headers, deadline, cancellationToken));
+    public RustObjectsListObjectsResponseResponse ListObjects(RustObjectsListObjectsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustObjectsListObjectsResponseResponse.FromWire(_objects.ListObjects(request.ToWire(), headers, deadline, cancellationToken));
+    public ObjectsPutObjectStream PutObject(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_objects.PutObject(headers, deadline, cancellationToken));
 }
 
 public sealed class StreamClient
@@ -2353,16 +7105,16 @@ public sealed class StreamClient
     {
         _stream = stream;
     }
-    public Acyclic.Stream.V2.AppendResponse Append(RustStreamAppendRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateRecordBytes(request.Records); return _stream.Append(request.ToWire(), headers, deadline, cancellationToken); }
-    public AsyncServerStreamingCall<Acyclic.Stream.V2.ChildrenResponse> Children(RustStreamChildrenRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Children(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.ChildrenPageResponse ChildrenPage(RustStreamChildrenPageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.ChildrenPage(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.CommitResponse Commit(RustStreamCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateCommandSize(request.ToWire()); return _stream.Commit(request.ToWire(), headers, deadline, cancellationToken); }
-    public AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> Follow(RustStreamFollowRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Follow(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.ForkReceipt Fork(RustStreamForkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Fork(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.InspectIdempotencyResponse InspectIdempotency(RustStreamInspectIdempotencyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.InspectIdempotency(request.ToWire(), headers, deadline, cancellationToken);
-    public AsyncServerStreamingCall<Acyclic.Stream.V2.ReadResponse> Read(RustStreamReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Read(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.CommittedEnvelope ReadCommit(RustStreamReadCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.ReadCommit(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Stream.V2.TailResponse Tail(RustStreamTailRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _stream.Tail(request.ToWire(), headers, deadline, cancellationToken);
+    public RustStreamAppendResponseResponse Append(RustStreamAppendRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateRecordBytes(request.Records); return RustStreamAppendResponseResponse.FromWire(_stream.Append(request.ToWire(), headers, deadline, cancellationToken)); }
+    public RustStreamChildrenStream Children(RustStreamChildrenRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_stream.Children(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamChildrenPageResponseResponse ChildrenPage(RustStreamChildrenPageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustStreamChildrenPageResponseResponse.FromWire(_stream.ChildrenPage(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamCommitResponseResponse Commit(RustStreamCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) { RustOperationValidation.ValidateCommandSize(request.ToWire()); return RustStreamCommitResponseResponse.FromWire(_stream.Commit(request.ToWire(), headers, deadline, cancellationToken)); }
+    public RustStreamFollowStream Follow(RustStreamFollowRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_stream.Follow(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamForkReceiptResponse Fork(RustStreamForkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustStreamForkReceiptResponse.FromWire(_stream.Fork(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamInspectIdempotencyResponseResponse InspectIdempotency(RustStreamInspectIdempotencyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustStreamInspectIdempotencyResponseResponse.FromWire(_stream.InspectIdempotency(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamReadStream Read(RustStreamReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_stream.Read(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamCommittedEnvelopeResponse ReadCommit(RustStreamReadCommitRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustStreamCommittedEnvelopeResponse.FromWire(_stream.ReadCommit(request.ToWire(), headers, deadline, cancellationToken));
+    public RustStreamTailResponseResponse Tail(RustStreamTailRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustStreamTailResponseResponse.FromWire(_stream.Tail(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class InferenceClient
@@ -2380,20 +7132,20 @@ public sealed class InferenceClient
         _runs = runs;
         _warmContexts = warmContexts;
     }
-    public Inference.Customer.V1.MutationReceipt CreateContext(Inference.Customer.V1.CreateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Create(request, headers, deadline, cancellationToken);
-    public Inference.Customer.V1.ContextView Inspect(RustInferenceInspectContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Inspect(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.MutationReceipt Mutate(Inference.Customer.V1.MutateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _contexts.Mutate(request, headers, deadline, cancellationToken);
-    public Inference.Customer.V1.EvaluationView CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Create(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.EvaluationView Inspect(RustInferenceInspectEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _evaluations.Inspect(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.ListModelsResponse List(Inference.Customer.V1.ListModelsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _models.List(request, headers, deadline, cancellationToken);
-    public Inference.Customer.V1.RunView Cancel(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Cancel(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.GenerateRunResponse Generate(Inference.Customer.V1.GenerateRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Generate(request, headers, deadline, cancellationToken);
-    public Inference.Customer.V1.RunView Inspect(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Inspect(request.ToWire(), headers, deadline, cancellationToken);
-    public AsyncServerStreamingCall<Inference.Customer.V1.RunEvent> Watch(RustInferenceWatchRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _runs.Watch(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.WarmView Inspect(RustInferenceInspectWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Inspect(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.WarmView Release(RustInferenceReleaseWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Release(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.WarmView Renew(RustInferenceRenewWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Renew(request.ToWire(), headers, deadline, cancellationToken);
-    public Inference.Customer.V1.WarmView Retain(Inference.Customer.V1.RetainWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _warmContexts.Retain(request, headers, deadline, cancellationToken);
+    public RustInferenceMutationReceiptResponse CreateContext(Inference.Customer.V1.CreateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceMutationReceiptResponse.FromWire(_contexts.Create(request, headers, deadline, cancellationToken));
+    public RustInferenceContextViewResponse Inspect(RustInferenceInspectContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceContextViewResponse.FromWire(_contexts.Inspect(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceMutationReceiptResponse Mutate(Inference.Customer.V1.MutateContextRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceMutationReceiptResponse.FromWire(_contexts.Mutate(request, headers, deadline, cancellationToken));
+    public RustInferenceEvaluationViewResponse CreateEvaluation(InferenceCreateEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceEvaluationViewResponse.FromWire(_evaluations.Create(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceEvaluationViewResponse Inspect(RustInferenceInspectEvaluationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceEvaluationViewResponse.FromWire(_evaluations.Inspect(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceListModelsResponseResponse List(Inference.Customer.V1.ListModelsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceListModelsResponseResponse.FromWire(_models.List(request, headers, deadline, cancellationToken));
+    public RustInferenceRunViewResponse Cancel(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceRunViewResponse.FromWire(_runs.Cancel(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceGenerateRunResponseResponse Generate(RustInferenceGenerateRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceGenerateRunResponseResponse.FromWire(_runs.Generate(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceRunViewResponse Inspect(RustInferenceInspectRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceRunViewResponse.FromWire(_runs.Inspect(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceWatchStream Watch(RustInferenceWatchRunRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_runs.Watch(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceWarmViewResponse Inspect(RustInferenceInspectWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceWarmViewResponse.FromWire(_warmContexts.Inspect(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceWarmViewResponse Release(RustInferenceReleaseWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceWarmViewResponse.FromWire(_warmContexts.Release(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceWarmViewResponse Renew(RustInferenceRenewWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceWarmViewResponse.FromWire(_warmContexts.Renew(request.ToWire(), headers, deadline, cancellationToken));
+    public RustInferenceWarmViewResponse Retain(RustInferenceRetainWarmRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustInferenceWarmViewResponse.FromWire(_warmContexts.Retain(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class MachinesClient
@@ -2403,25 +7155,25 @@ public sealed class MachinesClient
     {
         _machines = machines;
     }
-    public Acyclic.Machines.V1.OperationState Cancel(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Cancel(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.CheckpointAdmission Checkpoint(RustMachinesCheckpointMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Checkpoint(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MachineAdmission Create(RustMachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Create(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MutationAdmission DestroyCheckpoint(RustMachinesCheckpointMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.DestroyCheckpoint(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MutationAdmission DestroyMachine(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.DestroyMachine(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.EventPage Events(RustMachinesEventsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Events(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.ForkAdmission Fork(RustMachinesForkCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Fork(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.ForkMachineAdmission ForkMachine(RustMachinesForkMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.ForkMachine(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.CheckpointState InspectCheckpoint(RustMachinesInspectCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectCheckpoint(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MachineState InspectMachine(RustMachinesInspectMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectMachine(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.OperationState InspectOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.InspectOperation(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MachinePage ListMachines(RustMachinesListMachinesRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.ListMachines(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.ImageQualification QualifyImage(RustMachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.RecoveredAdmission Recover(RustMachinesRecoverRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Recover(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.PolicyAdmission SetSuspensionPolicy(RustMachinesSetSuspensionPolicyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.SetSuspensionPolicy(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MutationAdmission Suspend(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Suspend(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.UsageReceipt Usage(RustMachinesUsageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Usage(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Machines.V1.MutationAdmission Wake(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.Wake(request.ToWire(), headers, deadline, cancellationToken);
-    public AsyncServerStreamingCall<Acyclic.Machines.V1.OperationState> WatchOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _machines.WatchOperation(request.ToWire(), headers, deadline, cancellationToken);
+    public RustMachinesOperationStateResponse Cancel(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesOperationStateResponse.FromWire(_machines.Cancel(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesCheckpointAdmissionResponse Checkpoint(RustMachinesCheckpointMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesCheckpointAdmissionResponse.FromWire(_machines.Checkpoint(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMachineAdmissionResponse Create(RustMachinesCreateMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMachineAdmissionResponse.FromWire(_machines.Create(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMutationAdmissionResponse DestroyCheckpoint(RustMachinesCheckpointMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMutationAdmissionResponse.FromWire(_machines.DestroyCheckpoint(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMutationAdmissionResponse DestroyMachine(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMutationAdmissionResponse.FromWire(_machines.DestroyMachine(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesEventPageResponse Events(RustMachinesEventsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesEventPageResponse.FromWire(_machines.Events(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesForkAdmissionResponse Fork(RustMachinesForkCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesForkAdmissionResponse.FromWire(_machines.Fork(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesForkMachineAdmissionResponse ForkMachine(RustMachinesForkMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesForkMachineAdmissionResponse.FromWire(_machines.ForkMachine(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesCheckpointStateResponse InspectCheckpoint(RustMachinesInspectCheckpointRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesCheckpointStateResponse.FromWire(_machines.InspectCheckpoint(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMachineStateResponse InspectMachine(RustMachinesInspectMachineRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMachineStateResponse.FromWire(_machines.InspectMachine(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesOperationStateResponse InspectOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesOperationStateResponse.FromWire(_machines.InspectOperation(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMachinePageResponse ListMachines(RustMachinesListMachinesRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMachinePageResponse.FromWire(_machines.ListMachines(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesImageQualificationResponse QualifyImage(RustMachinesQualifyImageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesImageQualificationResponse.FromWire(_machines.QualifyImage(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesRecoveredAdmissionResponse Recover(RustMachinesRecoverRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesRecoveredAdmissionResponse.FromWire(_machines.Recover(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesPolicyAdmissionResponse SetSuspensionPolicy(RustMachinesSetSuspensionPolicyRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesPolicyAdmissionResponse.FromWire(_machines.SetSuspensionPolicy(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMutationAdmissionResponse Suspend(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMutationAdmissionResponse.FromWire(_machines.Suspend(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesUsageReceiptResponse Usage(RustMachinesUsageRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesUsageReceiptResponse.FromWire(_machines.Usage(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesMutationAdmissionResponse Wake(RustMachinesMachineMutationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustMachinesMutationAdmissionResponse.FromWire(_machines.Wake(request.ToWire(), headers, deadline, cancellationToken));
+    public RustMachinesWatchOperationStream WatchOperation(RustMachinesOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_machines.WatchOperation(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class FilesystemClient
@@ -2431,36 +7183,36 @@ public sealed class FilesystemClient
     {
         _filesystem = filesystem;
     }
-    public Acyclic.Filesystem.V2.JoinResponse ApplyJoin(Acyclic.Filesystem.V2.ApplyJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ApplyJoin(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.MutationResponse ApplyTransaction(Acyclic.Filesystem.V2.ApplyTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ApplyTransaction(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.CancelResponse Cancel(Acyclic.Filesystem.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Cancel(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.RetainGenerationResponse Checkpoint(Acyclic.Filesystem.V2.RetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Checkpoint(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.WorkspaceResponse CreateWorkspace(Acyclic.Filesystem.V2.CreateWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.CreateWorkspace(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.MutationResponse DeleteWorkspace(Acyclic.Filesystem.V2.DeleteWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.DeleteWorkspace(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.DiffResponse Diff(Acyclic.Filesystem.V2.DiffRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Diff(request, headers, deadline, cancellationToken);
-    public AsyncServerStreamingCall<Acyclic.Filesystem.V2.ExportChunk> Export(Acyclic.Filesystem.V2.ExportRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Export(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.WorkspaceResponse ForkWorkspace(Acyclic.Filesystem.V2.ForkWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ForkWorkspace(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.GenerationResponse GetGeneration(Acyclic.Filesystem.V2.GetGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetGeneration(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.GenerationResponse GetHead(Acyclic.Filesystem.V2.GetHeadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetHead(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.SourceResponse GetSourceState(Acyclic.Filesystem.V2.SourceStateRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.GetSourceState(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.HandshakeResponse Handshake(Acyclic.Filesystem.V2.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Handshake(request, headers, deadline, cancellationToken);
-    public AsyncClientStreamingCall<Acyclic.Filesystem.V2.ImportChunk, Acyclic.Filesystem.V2.ImportResponse> Import(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Import(headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.CredentialResponse IssueMountCredential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.IssueMountCredential(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.CredentialResponse IssueS3Credential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.IssueS3Credential(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.ListDirectoryResponse ListDirectory(RustFilesystemListDirectoryRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ListDirectory(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.ObserveResponse Observe(Acyclic.Filesystem.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Observe(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.WorkspaceResponse OpenWorkspace(Acyclic.Filesystem.V2.OpenWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.OpenWorkspace(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.RetainGenerationResponse Pin(Acyclic.Filesystem.V2.RetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Pin(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.PlanExtentsResponse PlanExtents(RustFilesystemPlanExtentsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.PlanExtents(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.JoinPlan PlanJoin(Acyclic.Filesystem.V2.PlanJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.PlanJoin(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.ReadResponse Read(RustFilesystemReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Read(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.ReadResponse ReadLink(RustFilesystemReadLinkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ReadLink(request.ToWire(), headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.RebaseResponse Rebase(Acyclic.Filesystem.V2.RebaseRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Rebase(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.RebaseTransactionResponse RebaseTransaction(Acyclic.Filesystem.V2.RebaseTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.RebaseTransaction(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.SourceResponse ReconcileSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.ReconcileSource(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.SourceResponse RescanSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.RescanSource(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.SourceResponse SealSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.SealSource(request, headers, deadline, cancellationToken);
-    public Acyclic.Filesystem.V2.StatResponse Stat(RustFilesystemStatRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _filesystem.Stat(request.ToWire(), headers, deadline, cancellationToken);
+    public RustFilesystemJoinResponseResponse ApplyJoin(Acyclic.Filesystem.V2.ApplyJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemJoinResponseResponse.FromWire(_filesystem.ApplyJoin(request, headers, deadline, cancellationToken));
+    public RustFilesystemMutationResponseResponse ApplyTransaction(RustFilesystemApplyTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemMutationResponseResponse.FromWire(_filesystem.ApplyTransaction(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemCancelResponseResponse Cancel(Acyclic.Filesystem.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemCancelResponseResponse.FromWire(_filesystem.Cancel(request, headers, deadline, cancellationToken));
+    public RustFilesystemRetainGenerationResponseResponse Checkpoint(RustFilesystemRetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemRetainGenerationResponseResponse.FromWire(_filesystem.Checkpoint(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemWorkspaceResponseResponse CreateWorkspace(Acyclic.Filesystem.V2.CreateWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemWorkspaceResponseResponse.FromWire(_filesystem.CreateWorkspace(request, headers, deadline, cancellationToken));
+    public RustFilesystemMutationResponseResponse DeleteWorkspace(Acyclic.Filesystem.V2.DeleteWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemMutationResponseResponse.FromWire(_filesystem.DeleteWorkspace(request, headers, deadline, cancellationToken));
+    public RustFilesystemDiffResponseResponse Diff(RustFilesystemDiffRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemDiffResponseResponse.FromWire(_filesystem.Diff(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemExportStream Export(Acyclic.Filesystem.V2.ExportRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_filesystem.Export(request, headers, deadline, cancellationToken));
+    public RustFilesystemWorkspaceResponseResponse ForkWorkspace(Acyclic.Filesystem.V2.ForkWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemWorkspaceResponseResponse.FromWire(_filesystem.ForkWorkspace(request, headers, deadline, cancellationToken));
+    public RustFilesystemGenerationResponseResponse GetGeneration(Acyclic.Filesystem.V2.GetGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemGenerationResponseResponse.FromWire(_filesystem.GetGeneration(request, headers, deadline, cancellationToken));
+    public RustFilesystemGenerationResponseResponse GetHead(Acyclic.Filesystem.V2.GetHeadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemGenerationResponseResponse.FromWire(_filesystem.GetHead(request, headers, deadline, cancellationToken));
+    public RustFilesystemSourceResponseResponse GetSourceState(Acyclic.Filesystem.V2.SourceStateRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemSourceResponseResponse.FromWire(_filesystem.GetSourceState(request, headers, deadline, cancellationToken));
+    public RustFilesystemHandshakeResponseResponse Handshake(Acyclic.Filesystem.V2.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemHandshakeResponseResponse.FromWire(_filesystem.Handshake(request, headers, deadline, cancellationToken));
+    public RustFilesystemImportStream Import(Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_filesystem.Import(headers, deadline, cancellationToken));
+    public RustFilesystemCredentialResponseResponse IssueMountCredential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemCredentialResponseResponse.FromWire(_filesystem.IssueMountCredential(request, headers, deadline, cancellationToken));
+    public RustFilesystemCredentialResponseResponse IssueS3Credential(Acyclic.Filesystem.V2.CredentialRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemCredentialResponseResponse.FromWire(_filesystem.IssueS3Credential(request, headers, deadline, cancellationToken));
+    public RustFilesystemListDirectoryResponseResponse ListDirectory(RustFilesystemListDirectoryRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemListDirectoryResponseResponse.FromWire(_filesystem.ListDirectory(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemObserveResponseResponse Observe(Acyclic.Filesystem.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemObserveResponseResponse.FromWire(_filesystem.Observe(request, headers, deadline, cancellationToken));
+    public RustFilesystemWorkspaceResponseResponse OpenWorkspace(Acyclic.Filesystem.V2.OpenWorkspaceRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemWorkspaceResponseResponse.FromWire(_filesystem.OpenWorkspace(request, headers, deadline, cancellationToken));
+    public RustFilesystemRetainGenerationResponseResponse Pin(RustFilesystemRetainGenerationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemRetainGenerationResponseResponse.FromWire(_filesystem.Pin(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemPlanExtentsResponseResponse PlanExtents(RustFilesystemPlanExtentsRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemPlanExtentsResponseResponse.FromWire(_filesystem.PlanExtents(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemJoinPlanResponse PlanJoin(RustFilesystemPlanJoinRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemJoinPlanResponse.FromWire(_filesystem.PlanJoin(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemReadResponseResponse Read(RustFilesystemReadRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemReadResponseResponse.FromWire(_filesystem.Read(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemReadResponseResponse ReadLink(RustFilesystemReadLinkRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemReadResponseResponse.FromWire(_filesystem.ReadLink(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemRebaseResponseResponse Rebase(RustFilesystemRebaseRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemRebaseResponseResponse.FromWire(_filesystem.Rebase(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemRebaseTransactionResponseResponse RebaseTransaction(RustFilesystemRebaseTransactionRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemRebaseTransactionResponseResponse.FromWire(_filesystem.RebaseTransaction(request.ToWire(), headers, deadline, cancellationToken));
+    public RustFilesystemSourceResponseResponse ReconcileSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemSourceResponseResponse.FromWire(_filesystem.ReconcileSource(request, headers, deadline, cancellationToken));
+    public RustFilesystemSourceResponseResponse RescanSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemSourceResponseResponse.FromWire(_filesystem.RescanSource(request, headers, deadline, cancellationToken));
+    public RustFilesystemSourceResponseResponse SealSource(Acyclic.Filesystem.V2.SourceOperationRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemSourceResponseResponse.FromWire(_filesystem.SealSource(request, headers, deadline, cancellationToken));
+    public RustFilesystemStatResponseResponse Stat(RustFilesystemStatRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustFilesystemStatResponseResponse.FromWire(_filesystem.Stat(request.ToWire(), headers, deadline, cancellationToken));
 }
 
 public sealed class HarnessClient
@@ -2470,10 +7222,10 @@ public sealed class HarnessClient
     {
         _harness = harness;
     }
-    public Acyclic.Harness.V2.CancelResponse Cancel(Acyclic.Harness.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Cancel(request, headers, deadline, cancellationToken);
-    public Acyclic.Protocol.V1.HandshakeResponse Handshake(Acyclic.Protocol.V1.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Handshake(request, headers, deadline, cancellationToken);
-    public Acyclic.Harness.V2.OperationStatus Observe(Acyclic.Harness.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Observe(request, headers, deadline, cancellationToken);
-    public AsyncServerStreamingCall<Acyclic.Harness.V2.Delivery> Replay(Acyclic.Harness.V2.ResumeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Replay(request, headers, deadline, cancellationToken);
-    public Acyclic.Harness.V2.Admission Submit(Acyclic.Harness.V2.CommandEnvelope request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => _harness.Submit(request, headers, deadline, cancellationToken);
+    public RustHarnessCancelResponseResponse Cancel(Acyclic.Harness.V2.CancelRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustHarnessCancelResponseResponse.FromWire(_harness.Cancel(request, headers, deadline, cancellationToken));
+    public RustHarnessHandshakeResponseResponse Handshake(Acyclic.Protocol.V1.HandshakeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustHarnessHandshakeResponseResponse.FromWire(_harness.Handshake(request, headers, deadline, cancellationToken));
+    public RustHarnessOperationStatusResponse Observe(Acyclic.Harness.V2.ObserveRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustHarnessOperationStatusResponse.FromWire(_harness.Observe(request, headers, deadline, cancellationToken));
+    public RustHarnessReplayStream Replay(Acyclic.Harness.V2.ResumeRequest request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => new(_harness.Replay(request, headers, deadline, cancellationToken));
+    public RustHarnessAdmissionResponse Submit(Acyclic.Harness.V2.CommandEnvelope request, Metadata? headers = null, DateTime? deadline = null, CancellationToken cancellationToken = default) => RustHarnessAdmissionResponse.FromWire(_harness.Submit(request, headers, deadline, cancellationToken));
 }
 

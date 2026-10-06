@@ -53,7 +53,7 @@ export interface InferenceOperations {
 export class Inference {
   readonly #clientInstance = randomIdentity();
   constructor(readonly client: InferenceOperations) {}
-  static async fromEnv(environment: Readonly<Record<string, string | undefined>> = runtimeEnvironment()): Promise<Inference> { const endpoint = requiredEnvironment(environment, "ACYCLIC_INFERENCE_ENDPOINT"); const token = requiredEnvironment(environment, "ACYCLIC_API_KEY"); const { HttpInferenceTransport, InferenceClient } = await import("./index.js"); return new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` })))); }
+  static async fromEnv(environment: Readonly<Record<string, string | undefined>> = runtimeEnvironment()): Promise<Inference> { const endpoint = requiredEnvironment(environment, "ACYCLIC_INFERENCE_ENDPOINT"); const token = requiredEnvironment(environment, "ACYCLIC_API_KEY"); const { fromEnv } = await import("./index.js"); return new Inference(fromEnv({ endpoint, token })); }
   models(): Promise<{ readonly models: ModelCapability[] }> { return this.client.listModels(); }
   async create(model: string, items: readonly Item[], options: MutationOptions = {}): Promise<Context> { const receipt = await this.client.createContext(create(CreateContextRequestSchema, { identity: wireIdentity(options.identity ?? this.identity()), model, items: [...items] })); return new Context(this, brandedBytes<ContextRevision>(receipt.revision, "context revision", INFERENCE_FIXED_WIDTHS.mutationRevision)); }
   /** A revision identifies an immutable context; items are described by the generated contract. */

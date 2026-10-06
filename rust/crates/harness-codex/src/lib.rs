@@ -6,7 +6,7 @@
 //! through a local Responses proxy, the consumer's tool registry over MCP, a
 //! private `CODEX_HOME`, step and deadline limits, and journal records.
 //!
-//! The supported Codex version is pinned in [`CODEX_VERSION`]; the recorded
+//! The supported Codex version is pinned in [`crate::CODEX_VERSION`]; the recorded
 //! fixtures under `fixtures/codex-<version>` are the contract the parser is
 //! tested against. See `DESIGN.md` for the full plan and phase gates.
 

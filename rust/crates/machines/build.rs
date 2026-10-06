@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .compile_fds_with_config(descriptors, tonic_prost_build::Config::new())?;
     }
     acyclic_sdk_contract_wire::transport_control::generate_control_bindings(
-        &out_dir.join("control"),
+        out_dir.join("control"),
         acyclic_sdk_contract_wire::BindingTransport::Tonic {
             client: true,
             server: std::env::var("CARGO_CFG_TARGET_ARCH")? != "wasm32",

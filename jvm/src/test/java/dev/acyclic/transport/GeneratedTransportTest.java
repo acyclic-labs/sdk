@@ -10,7 +10,6 @@ import acyclic.harness.v2.Harness;
 import acyclic.stream.v2.Stream;
 import com.google.protobuf.ByteString;
 import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
 import io.grpc.Server;
 import io.grpc.inprocess.InProcessChannelBuilder;
 import io.grpc.inprocess.InProcessServerBuilder;
@@ -171,9 +170,9 @@ class GeneratedTransportTest {
       return;
     }
 
-    String target = endpoint.replaceFirst("^https?://", "");
-    ManagedChannel channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
-    try {
+    var defaults = fixtureDefaults(endpoint);
+    try (var actorsClient = RemoteClientFactory.create("actors", false, defaults, null);
+         var streamClient = RemoteClientFactory.create("stream", true, defaults, null)) {
       var request = Actors.CreateActorRequest.newBuilder()
           .setCodeSha256(ByteString.copyFrom(new byte[] {
               1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
@@ -190,10 +189,10 @@ class GeneratedTransportTest {
               .setStreamPath("fixture/events")
               .setStart(Actors.SubscriptionStart.newBuilder().setCursor(0)))
           .build();
-      var actor = acyclic.actors.v1.ActorsServiceGrpc.newBlockingStub(channel).createActor(request);
+      var actor = acyclic.actors.v1.ActorsServiceGrpc.newBlockingStub(actorsClient.channel()).createActor(request);
       assertNotNull(actor);
 
-      var streamBlocking = acyclic.stream.v2.StreamServiceGrpc.newBlockingStub(channel);
+      var streamBlocking = acyclic.stream.v2.StreamServiceGrpc.newBlockingStub(streamClient.channel());
       var recoveryKey = ByteString.copyFromUtf8("jvm-recovery-key");
       var firstAppend = Stream.AppendRequest.newBuilder()
           .setPath("fixture/recovery")
@@ -232,7 +231,7 @@ class GeneratedTransportTest {
         @Override public void onError(Throwable error) { terminal.countDown(); }
         @Override public void onCompleted() { terminal.countDown(); }
       };
-      acyclic.stream.v2.StreamServiceGrpc.newStub(channel).read(
+      acyclic.stream.v2.StreamServiceGrpc.newStub(streamClient.channel()).read(
           Stream.ReadRequest.newBuilder().setPath("fixture/recovery").setLimit(16).build(), observer);
       assertTrue(firstRecord.await(5, TimeUnit.SECONDS));
       assertNotNull(call.get());
@@ -250,7 +249,7 @@ class GeneratedTransportTest {
         @Override public void onError(Throwable error) { followTerminal.countDown(); }
         @Override public void onCompleted() { followTerminal.countDown(); }
       };
-      acyclic.stream.v2.StreamServiceGrpc.newStub(channel).follow(
+      acyclic.stream.v2.StreamServiceGrpc.newStub(streamClient.channel()).follow(
           Stream.FollowRequest.newBuilder().setPath("fixture/recovery").setFrom(0).build(), followObserver);
       assertTrue(followFirst.await(5, TimeUnit.SECONDS));
       assertNotNull(followCall.get());
@@ -270,8 +269,12 @@ class GeneratedTransportTest {
       assertTrue(resumed.hasNext());
       assertEquals(1, resumed.next().getRecord().getSequence());
       System.out.println("Rust fixture idempotency replay, mismatch, follow cancellation, and resume checks passed.");
-    } finally {
-      channel.shutdownNow();
     }
+  }
+
+  private static GeneratedRemotePolicy.Defaults fixtureDefaults(String endpoint) {
+    String token = System.getProperty("acyclic.bearerToken");
+    if (token == null || token.isBlank()) token = System.getenv("ACYCLIC_BEARER_TOKEN");
+    return new GeneratedRemotePolicy.Defaults(endpoint, token == null ? "" : token);
   }
 }

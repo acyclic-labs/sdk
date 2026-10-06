@@ -34,8 +34,10 @@ use prost::Message;
 pub mod bindings;
 pub mod credential;
 pub mod csharp_typed_facades;
+pub mod embedded_cpp;
 pub mod embedded_capabilities;
 pub mod embedded_facades;
+pub mod embedded_swift;
 pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
@@ -65,10 +67,17 @@ pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 pub use embedded_capabilities::{
     EMBEDDED_CAPABILITIES, EmbeddedArtifact, EmbeddedArtifactKind, EmbeddedBinding,
     EmbeddedCapability, EmbeddedCoverage, EmbeddedEvidence, EmbeddedFamily, EmbeddedLanguage,
-    EmbeddedQualification, embedded_capabilities, embedded_capabilities_json,
-    embedded_capability, embedded_family_table_json,
+    EmbeddedQualification, embedded_capabilities, embedded_capabilities_for,
+    embedded_capabilities_json, embedded_capability, embedded_capability_with_binding,
+    embedded_family_table_json,
 };
+pub use embedded_cpp::{CPP_EMBEDDED_PATH, EmbeddedCppOutput, generate_embedded_cpp};
 pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
+pub use embedded_swift::{
+    EmbeddedSwiftOutput, SWIFT_EMBEDDED_MODULEMAP_PATH, SWIFT_EMBEDDED_PACKAGE_PATH,
+    SWIFT_EMBEDDED_PATH, generate_embedded_swift, generate_embedded_swift_module_map,
+    generate_embedded_swift_package,
+};
 
 pub use csharp_typed_facades::{
     CSHARP_TYPED_PATH, generate_csharp_type_policy_tests, generate_csharp_typed_facade,

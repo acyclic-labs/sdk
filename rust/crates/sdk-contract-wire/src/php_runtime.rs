@@ -209,7 +209,6 @@ final class UInt64 implements JsonSerializable, Stringable
         return [$quotient === '' ? '0' : $quotient, $carry];
     }
 }
-
 "###.to_owned()
 }
 

@@ -65,6 +65,19 @@ fn explicit_output_routing_keeps_frozen_source_checkout_untouched() {
         );
     }
 
+    let embedded_projection_paths = [
+        "swift/embedded/Package.swift",
+        "swift/embedded/Sources/AcyclicEmbedded/AcyclicEmbedded.swift",
+        "swift/embedded/Sources/AcyclicEmbeddedABI/module.modulemap",
+        "cpp/embedded-consumer/include/acyclic/embedded.hpp",
+    ];
+    for relative in embedded_projection_paths {
+        assert!(
+            output.join(relative).is_file(),
+            "missing Rust-owned embedded projection: {relative}"
+        );
+    }
+
     let checked = run_product_command("check-products", &source, &output);
     assert!(
         checked.status.success(),

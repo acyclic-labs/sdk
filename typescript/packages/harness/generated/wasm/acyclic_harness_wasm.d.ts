@@ -450,45 +450,17 @@ export class BrowserFilesystemClient {
 
 /**
  * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
- *
- * Harness has no HTTP/JSON projection. Browser consumers use the same
- * generated protobuf service through gRPC-Web, with all protocol checks
- * and operation-control semantics retained in Rust.
  */
 export class BrowserHarnessClient {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Cancels an encoded Rust Harness operation request.
-     */
     cancel(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Returns the negotiated Harness protocol identity.
-     */
     capabilities(): any;
-    /**
-     * Connects from JavaScript using the Rust-owned authenticated
-     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
-     */
     static connect(endpoint: string, bearer_token: string): Promise<BrowserHarnessClient>;
-    /**
-     * Connects with explicit request and response bounds.
-     */
     static connectWithLimits(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserHarnessClient>;
-    /**
-     * Observes an encoded Rust Harness operation request.
-     */
     observe(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Collects a bounded replay page into encoded deliveries. The Rust
-     * API remains streaming for callers that need a live follow stream.
-     */
     replay(request: Uint8Array): Promise<Array<any>>;
-    /**
-     * Submits an encoded Rust Harness command and returns its encoded
-     * admission. The protobuf bytes preserve the generated wire types.
-     */
     submit(request: Uint8Array): Promise<Uint8Array>;
 }
 
@@ -1170,10 +1142,7 @@ export function validateOfflineCommand(value: any): any;
 export function validatePath(path: string): string;
 
 /**
- * Validates an encoded Filesystem handshake response and returns the
- * canonical negotiated capabilities. Keeping decoding and admission in
- * this Rust boundary prevents hosted TypeScript clients from re-owning
- * protocol identity or capability validation.
+ * Validate a wire handshake and return its canonical Rust-owned capabilities.
  */
 export function validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
 
@@ -1313,6 +1282,11 @@ export function validate_remote_web_ca_certificate(certificate: string): void;
  * Checks an HTTP content-length without first narrowing it through a JS number.
  */
 export function validate_remote_web_content_length(content_length: string, maximum: bigint): void;
+
+/**
+ * Validates one bearer credential according to the shared Rust policy.
+ */
+export function validate_remote_web_credential(token: string): void;
 
 /**
  * Validates the HTTPS or loopback-HTTP endpoint shared by Actors and Workers.
@@ -1480,6 +1454,7 @@ export interface InitOutput {
     readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
     readonly validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];
+    readonly validate_remote_web_credential: (a: number, b: number) => [number, number];
     readonly validate_remote_web_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_grpc_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_message_limit: (a: bigint) => [number, number];

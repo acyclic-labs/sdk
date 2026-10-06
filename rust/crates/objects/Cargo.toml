@@ -21,7 +21,7 @@ http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc"]
 
 [dependencies]
-acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 async-trait.workspace = true
 blake3 = "1.8.2"
 bytes.workspace = true
@@ -53,7 +53,7 @@ tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optio
 tonic-prost = { workspace = true, optional = true }
 
 [build-dependencies]
-acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 
 [lints]
 workspace = true

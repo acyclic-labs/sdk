@@ -58,7 +58,7 @@ function Resolve-PinnedTool([string] $Name, [string[]] $Candidates, [string] $Ex
         ruby = '522bec55ce15ae724222207930222c4fd85b9688fec155093067872872e9b7bb'
         php = '2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96'
         dart = 'cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c'
-        protoc = '5a1b5350308309c9729ce4484a798981f281c10909144c4bdeFd6a37688e4b1f'.ToLowerInvariant()
+        protoc = 'f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3'
         grpc_cpp_plugin = 'db8dc820af0e37a4adb410876148fb0b205c858a6d36ecee337b0b4a2d166a4a'
         grpc_php_plugin = '3f8afe91e921b9ff0c35aa7baaf755b6241d954552d1222beaf4eef2d87f32ee'
         'protoc-gen-dart' = 'abd4c73ecff068bfea97a1315c65a2f5b9aa64ca22c263ce568dea95d4161fc5'

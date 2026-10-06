@@ -34,6 +34,32 @@ const standaloneProjects = path => path.startsWith("arena/") || path.startsWith(
 // release or explicitly forced dispatch runs.
 export const pullRequestCoreLanes = new Set(["gate", "policy"]);
 
+// Event classification is kept explicit so a routine push cannot accidentally
+// inherit the full hosted matrix. Only a published release or a manual run
+// that explicitly requests force qualification may schedule downstream lanes.
+export const qualificationEventKinds = Object.freeze({
+  pullRequest: "pull_request",
+  mainPush: "main_push",
+  release: "release",
+  forcedDispatch: "forced_dispatch",
+  manual: "manual",
+  other: "other",
+});
+
+export function classifyQualificationEvent({ eventName, ref, force = false }) {
+  if (eventName === "pull_request") return qualificationEventKinds.pullRequest;
+  if (eventName === "release") return qualificationEventKinds.release;
+  if (eventName === "workflow_dispatch") {
+    return force ? qualificationEventKinds.forcedDispatch : qualificationEventKinds.manual;
+  }
+  if (eventName === "push" && ref === "refs/heads/main") return qualificationEventKinds.mainPush;
+  return qualificationEventKinds.other;
+}
+
+export function requiresFullQualification(event) {
+  return event === qualificationEventKinds.release || event === qualificationEventKinds.forcedDispatch;
+}
+
 // Each predicate returns true for paths the lane can never observe.
 export const ignored = {
   // Cargo, Rust sources, protocol and conformance data, scripts, release metadata.
@@ -184,14 +210,20 @@ function recordedMarker(lane) {
 
 function select() {
   const force = process.env.FORCE === "true";
-  const pullRequest = process.env.GITHUB_EVENT_NAME === "pull_request";
-  const mainPush = process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/main";
+  const event = classifyQualificationEvent({
+    eventName: process.env.GITHUB_EVENT_NAME,
+    ref: process.env.GITHUB_REF,
+    force,
+  });
+  const pullRequest = event === qualificationEventKinds.pullRequest;
+  const mainPush = event === qualificationEventKinds.mainPush;
+  const fullQualification = requiresFullQualification(event);
   const trusted = !force && mainPush ? qualifiedPullRequestRun() : null;
   const { matrix, reused } = chooseLanes(readLanes(), {
     force,
     mainPush,
     pullRequest,
-    coreOnly: !force,
+    coreOnly: !fullQualification,
     trusted,
     marker: recordedMarker,
     retained: retainedArtifact,
@@ -201,7 +233,7 @@ function select() {
   }
   // The separate Windows job is consulted only for an eligible pull-request
   // lane; downstream lanes are otherwise carried by the regular matrix.
-  const early = process.env.GITHUB_EVENT_NAME === "pull_request"
+  const early = event === qualificationEventKinds.pullRequest
     ? matrix.filter(lane => lane.early_start)
     : [];
   output("matrix", matrix.filter(lane => !early.includes(lane)));
