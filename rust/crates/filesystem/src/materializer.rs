@@ -6,17 +6,15 @@
 //! capture every preimage before the first mutation, record progress after each
 //! operation, and complete or roll back deterministically after interruption.
 
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::{GenerationId, OperationId};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use thiserror::Error;
 
 const JOURNAL_VERSION: u32 = 2;
-const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 
 /// One declarative pathwise checkout edit.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -472,8 +470,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         mut journal: MaterializationJournal,
     ) -> Result<MaterializationJournal, MaterializationError<S::Error, B::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
-            let expected = journal.revision;
-            journal.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut journal.revision);
             if self
                 .store
                 .compare_and_swap(journal.plan.operation_id, expected, journal.clone())
@@ -1911,7 +1908,7 @@ pub enum NativeWorkspacePublicationError {
 /// Process-local materialization journal adapter.
 #[derive(Default)]
 pub struct MemoryMaterializationJournalStore {
-    journals: Mutex<BTreeMap<OperationId, MaterializationJournal>>,
+    journals: MemoryRecords<OperationId, MaterializationJournal>,
 }
 
 impl MaterializationJournalStore for MemoryMaterializationJournalStore {
@@ -1922,9 +1919,8 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
         self.journals
-            .lock()
+            .load(&operation_id)
             .map_err(|_| MemoryMaterializationJournalStoreError)
-            .map(|journals| journals.get(&operation_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -1933,18 +1929,9 @@ impl MaterializationJournalStore for MemoryMaterializationJournalStore {
         expected_revision: u64,
         replacement: MaterializationJournal,
     ) -> Result<bool, Self::Error> {
-        let mut journals = self
-            .journals
-            .lock()
-            .map_err(|_| MemoryMaterializationJournalStoreError)?;
-        let revision = journals
-            .get(&operation_id)
-            .map_or(0, |journal| journal.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        journals.insert(operation_id, replacement);
-        Ok(true)
+        self.journals
+            .compare_and_swap(operation_id, expected_revision, replacement)
+            .map_err(|_| MemoryMaterializationJournalStoreError)
     }
 }
 
@@ -1958,6 +1945,7 @@ pub struct MemoryMaterializationJournalStoreError;
 mod tests {
     use super::*;
     use crate::Digest;
+    use std::sync::Mutex;
 
     #[derive(Default)]
     struct Backend(Mutex<Vec<Vec<u8>>>);
