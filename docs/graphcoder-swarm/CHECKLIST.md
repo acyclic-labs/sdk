@@ -5,7 +5,7 @@ do not substitute for full acceptance gates.
 
 - [x] Managed worktree and codex/graphcoder-sdk from the pinned base, without merging.
 - [x] Active full-scope goal and recorded Harness baseline.
-- [x] Shared exact request and manifest admission matches frozen native/WASM vectors.
+- [ ] Shared exact request and manifest admission matches frozen native/WASM vectors on current qualified source. Focused native input cases pass; fresh WASM evidence remains missing.
 - [ ] Immutable completed prefixes through production recursive forks and cold restart on current source.
 - [x] Durable single-agent local storage composition and replay.
 - [ ] Complete batch publication admission and safe reconciliation (source 7fb3b1e99 faults pass 2/6; immutable-boundary recovery repair is integrated but unqualified).

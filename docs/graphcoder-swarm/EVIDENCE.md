@@ -10,6 +10,7 @@ source; see `q-cutover-2026-10-05.json` and the evidence-loss checkpoint.
 - [Unified compilation failures](checkpoint-q-unified-compilation-2026-10-06.json): neither attempt executed a test.
 - [Recursive diagnostic stack failure](checkpoint-q-recursive-diagnostic-stack-2026-10-06.json): build succeeded but the test process overflowed before recording its journal.
 - [Executed runtime failures](checkpoint-q-runtime-failures-2026-10-06.json): unified scenario compiles but returns Indeterminate; the copied recursive executable's stack trace reaches fork allocation after parent authorization and boundary verification.
+- [Owned Windows process-output readers](checkpoint-q-process-output-pass-2026-10-06.json): all six selected native cases pass, including Drop with a live writer and joining before receiving. Completed process-tree cleanup and the other 46 filtered native-runtime cases remain outside this evidence.
 
 Final source, installed artifacts, process cleanup, runtime integration and the
 locked 68-entry matrix remain unqualified.

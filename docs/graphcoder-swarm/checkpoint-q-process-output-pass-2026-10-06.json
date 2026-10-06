@@ -1,0 +1,18 @@
+{
+  "kind": "passing-native-process-output-checkpoint",
+  "source_commit": "65d072afee26dc0cb0d248de60438b5376d112ce",
+  "platform": "Windows native",
+  "descriptor": "cargo test -p acyclic-native-runtime --lib process_output -j1",
+  "build_jobs": 1,
+  "stack_override": false,
+  "exit_code": 0,
+  "tests": {"passed": 6, "failed": 0, "ignored": 0, "filtered": 46},
+  "evidence_directory": "target/graphcoder-qualification/65d072afe-process-output",
+  "artifacts": [
+    {"path": "source.tar", "sha256": "bc4554f25572d72d8ad1bd0e28ffad5b6d949c49bdaa8048ccb982395f6e5b36"},
+    {"path": "native.log", "sha256": "c1f926d1092960c805adc9f4c80f3d87e04a9f3bf5ec8e4cd7378292bce60e78"},
+    {"path": "native-runtime.exe", "sha256": "c7e576b9ad8e06fee9fa468929a8fcc6df846c4b3cd72a8bf0130313bbb8111e"},
+    {"path": "exit-code.txt", "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"}
+  ],
+  "qualification_scope": "Six actual anonymous-pipe Windows reader cases only: cancellation before read, cancellation between chunks, peeked-byte reads, non-pipe rejection, joining before receive, and dropping with a live writer. No subprocess, completed descendant termination, Harness host execution, installed application, Unix or full cleanup matrix qualification claimed."
+}
