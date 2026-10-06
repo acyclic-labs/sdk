@@ -40,6 +40,10 @@ for (let index = 0; index < optionArgs.length; index += 1) {
   const value = optionArgs[index];
   if (!value.startsWith("--")) usage(`unexpected argument ${value}`);
   const key = value.slice(2);
+  if (key === "require-source-binding") {
+    options.set(key, true);
+    continue;
+  }
   const next = optionArgs[index + 1];
   if (!next || next.startsWith("--")) usage(`${value} requires a value`);
   options.set(key, next);
@@ -50,6 +54,7 @@ const manifestPath = resolve(options.get("manifest") ?? "");
 const language = options.get("language");
 const fixturePath = resolve(options.get("fixture") ?? defaultFixture);
 const receiptPath = resolve(options.get("receipt") ?? join(repo, "work", "rust-fixture-session.json"));
+const buildReceiptPath = options.get("build-receipt") ? resolve(options.get("build-receipt")) : null;
 const maxRequests = options.get("max-requests") ?? "512";
 if (!options.get("manifest")) usage("--manifest is required");
 if (!language) usage("--language is required");
@@ -65,6 +70,18 @@ if (manifest.execution_plan_count !== manifest.execution_plan.length) {
   usage("manifest execution_plan_count does not match execution_plan length");
 }
 if (!existsSync(fixturePath)) usage(`fixture binary does not exist: ${fixturePath}`);
+const fixtureBinarySha256 = `sha256:${createHash("sha256").update(readFileSync(fixturePath)).digest("hex")}`;
+let buildReceipt = null;
+if (buildReceiptPath) {
+  if (!existsSync(buildReceiptPath)) usage(`build receipt does not exist: ${buildReceiptPath}`);
+  buildReceipt = JSON.parse(readFileSync(buildReceiptPath, "utf8"));
+  const boundRevision = buildReceipt.source_revision ?? buildReceipt.source?.revision;
+  const boundBinary = buildReceipt.binary_sha256 ?? buildReceipt.fixture_binary_sha256;
+  if (boundRevision !== manifest.source_revision) usage("build receipt source_revision does not match the Rust manifest");
+  if (boundBinary !== fixtureBinarySha256) usage("build receipt binary_sha256 does not match the fixture executable");
+} else if (options.has("require-source-binding")) {
+  usage("--require-source-binding requires --build-receipt");
+}
 
 function hostPort(address) {
   return String(address).replace(/^https?:\/\//, "");
@@ -113,6 +130,18 @@ async function waitForPort(port) {
   throw new Error(`fixture server did not open port ${port}`);
 }
 
+async function readReadiness(address) {
+  const response = await fetch(`${address}/health`);
+  if (!response.ok) {
+    throw new Error(`fixture health probe failed with HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (payload?.schema !== "acyclic.sdk.fixture-response.v1" || payload?.status !== "ready") {
+    throw new Error("fixture health probe did not return the Rust readiness envelope");
+  }
+  return payload;
+}
+
 let fixture;
 let consumer;
 let readiness;
@@ -126,6 +155,8 @@ const finish = (exitCode) => {
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     fixture_binary: fixturePath,
+    fixture_binary_sha256: fixtureBinarySha256,
+    build_receipt: buildReceiptPath,
     fixture_pid: fixture?.pid ?? null,
     consumer_command: commandArgs,
     consumer_exit_code: exitCode,
@@ -136,6 +167,22 @@ const finish = (exitCode) => {
       source_revision: manifest.source_revision ?? null,
       execution_plan_count: manifest.execution_plan_count,
       execution_plan_sha256: manifest.execution_plan_sha256 ?? null,
+    },
+    fixture_provenance: {
+      source_revision: manifest.source_revision ?? null,
+      source_sha256: readiness?.source?.sha256 ?? null,
+      binary_sha256: fixtureBinarySha256,
+      manifest_sha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
+      build_receipt: buildReceipt
+        ? {
+            source_revision: buildReceipt.source_revision ?? buildReceipt.source?.revision ?? null,
+            binary_sha256: buildReceipt.binary_sha256 ?? buildReceipt.fixture_binary_sha256 ?? null,
+          }
+        : null,
+      readiness: {
+        source_sha256: readiness?.source?.sha256 ?? null,
+        binary_sha256: fixtureBinarySha256,
+      },
     },
     fixture_stderr: fixtureStderr.slice(-4000),
   };
@@ -183,6 +230,12 @@ try {
 
   const grpcUrl = readiness.grpc_address;
   const httpUrl = readiness.address;
+  const health = await readReadiness(httpUrl);
+  readiness = {
+    ...readiness,
+    source: health.source ?? null,
+    binary_sha256: fixtureBinarySha256,
+  };
   const urlLanguage = new Set(["typescript", "csharp"]).has(language);
   const grpcAddress = urlLanguage ? grpcUrl : hostPort(grpcUrl);
   const env = {
@@ -194,6 +247,8 @@ try {
     ACYCLIC_RUST_FIXTURE_HTTP_URL: httpUrl,
     ACYCLIC_RUST_FIXTURE_LANGUAGE: language,
     ACYCLIC_RUST_FIXTURE_FRESH: "1",
+    ACYCLIC_RUST_FIXTURE_BINARY_SHA256: fixtureBinarySha256,
+    ACYCLIC_RUST_FIXTURE_BUILD_RECEIPT: buildReceiptPath ?? "",
     ACYCLIC_RUST_TYPED_REQUEST_MANIFEST: manifestPath,
     ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST: manifestPath,
   };
@@ -217,6 +272,8 @@ try {
     status: "failed_to_start",
     language,
     fixture_binary: fixturePath,
+    fixture_binary_sha256: fixtureBinarySha256,
+    build_receipt: buildReceiptPath,
     manifest: manifestPath,
     error: String(error?.stack ?? error),
   });
