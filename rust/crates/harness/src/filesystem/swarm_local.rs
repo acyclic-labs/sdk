@@ -1251,21 +1251,26 @@ impl LocalFilesystemForkResolver {
         context: Box<LocalForkResolveContext>,
     ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
         Box::pin(async move {
-            if let Some(plan) = self
-                .resolve_existing_child(
-                    intent.clone(),
-                    publication.clone(),
-                    swarm.clone(),
-                    context.as_ref(),
-                )
-                .await?
-            {
+            crate::stack_diagnostics::marker("fork-physical-postauthority-enter");
+            crate::stack_diagnostics::marker("fork-physical-postauthority-before-existing-future");
+            let existing = self.resolve_existing_child(
+                intent.clone(),
+                publication.clone(),
+                swarm.clone(),
+                context.as_ref(),
+            );
+            crate::stack_diagnostics::marker("fork-physical-postauthority-after-existing-future");
+            if let Some(plan) = existing.await? {
                 return Ok(plan);
             }
-            self.resolve_fresh_child(intent, publication, swarm, context)
-                .await
+            crate::stack_diagnostics::marker("fork-physical-postauthority-after-existing-poll");
+            crate::stack_diagnostics::marker("fork-physical-postauthority-before-fresh-future");
+            let fresh = self.resolve_fresh_child(intent, publication, swarm, context);
+            crate::stack_diagnostics::marker("fork-physical-postauthority-after-fresh-future");
+            fresh.await
         })
     }
+
 }
 
 impl LocalModelForkResolver for LocalFilesystemForkResolver {
@@ -1375,6 +1380,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             }
             crate::stack_diagnostics::marker("fork-physical-after-parent-authority");
 
+            crate::stack_diagnostics::marker("fork-physical-before-context-box");
             let context = Box::new(LocalForkResolveContext {
                 parent_harness,
                 parent_session,
@@ -1383,6 +1389,8 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 parent_revision,
                 issuer_secret,
             });
+            crate::stack_diagnostics::marker("fork-physical-after-context-box");
+            crate::stack_diagnostics::marker("fork-physical-before-postauthority-dispatch");
             self.resolve_after_parent_authority(intent, publication, swarm, context)
                 .await
         })
