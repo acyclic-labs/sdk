@@ -38,6 +38,17 @@ export interface GraphCoderProcessExit {
   readonly signal: NodeJS.Signals | null;
 }
 
+/**
+ * Reports a process that was created but could not be attached to the bridge.
+ * The caller can await cleanup to retain the owner outcome instead of losing
+ * it behind a synchronous constructor exception.
+ */
+export class GraphCoderProcessStartError extends GraphCoderError {
+  constructor(message: string, readonly cleanup: Promise<OwnedProcessTermination>) {
+    super("transport", message);
+  }
+}
+
 interface PendingRequest {
   readonly resolve: (response: GraphCoderWireResponse) => void;
   readonly reject: (error: GraphCoderError) => void;
@@ -90,8 +101,18 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     };
-    const child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
-    if (child.stdin === null || child.stdout === null || child.stderr === null) throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
+    let child: ReturnType<OwnedProcessOwner["spawn"]>;
+    try {
+      child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
+    } catch (error) {
+      throw new GraphCoderError("transport", `failed to start bridge process: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (child.stdin === null || child.stdout === null || child.stderr === null) {
+      throw new GraphCoderProcessStartError(
+        "bridge process did not expose piped stdio",
+        requestOwnedTermination(this.#processOwner, child),
+      );
+    }
     this.#child = child as ChildProcessWithoutNullStreams;
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.#child.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
@@ -297,13 +318,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #requestTermination(): void {
     if (this.#termination !== undefined) return;
     this.#terminationDone = false;
-    this.#termination = this.#processOwner.terminate(this.#child).catch(error => {
-      return {
-        kind: "unknown",
-        pid: this.#child.pid ?? -1,
-        reason: error instanceof Error ? error.message : String(error),
-      } satisfies OwnedProcessTermination;
-    });
+    this.#termination = requestOwnedTermination(this.#processOwner, this.#child);
     void this.#termination.then(outcome => {
       this.#terminationDone = true;
       // The helper reports an explicit typed outcome through the diagnostic
@@ -366,6 +381,16 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
     }
   }
+}
+
+function requestOwnedTermination(owner: OwnedProcessOwner, child: ReturnType<OwnedProcessOwner["spawn"]>): Promise<OwnedProcessTermination> {
+  return Promise.resolve().then(() => owner.terminate(child)).catch(error => {
+    return {
+      kind: "unknown",
+      pid: child.pid ?? -1,
+      reason: error instanceof Error ? error.message : String(error),
+    } satisfies OwnedProcessTermination;
+  });
 }
 
 function waitWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

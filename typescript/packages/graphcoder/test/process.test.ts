@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { spawn as spawnChild } from "node:child_process";
+import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, openNativeGraphCoderConnection, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
+import { createNodeGraphCoderConnection as createConnection, GraphCoderProcessStartError, JsonLineGraphCoderBridge, openNativeGraphCoderConnection, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
 import { GraphCoderTerminal } from "../src/terminal.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
 
@@ -274,6 +275,58 @@ describe("JSON-lines process bridge", () => {
     bridge.close("native owner delegation");
     await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
     expect(spawned).toBe(1);
+    expect(terminated).toBe(1);
+  });
+
+  test("settles synchronous owner termination failures", async () => {
+    if (process.platform === "win32") return;
+    const command = longRunningCommand();
+    let terminated = 0;
+    const processOwner = {
+      spawn(executable: string, args: readonly string[], options: Parameters<typeof spawnOwnedProcess>[2]) {
+        return spawnOwnedProcess(executable, args, options);
+      },
+      terminate(child: ReturnType<typeof spawnOwnedProcess>) {
+        terminated += 1;
+        child.kill();
+        throw new Error("synchronous owner failure");
+      },
+    };
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const bridge = ownBridge({ executable: command.executable, args: command.args, env: env(), processOwner, onDiagnostic: event => diagnostics.push(event) });
+    bridge.close("sync owner failure");
+    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(terminated).toBe(1);
+    expect(diagnostics).toContainEqual({ kind: "termination", outcome: { kind: "unknown", pid: expect.any(Number), reason: "synchronous owner failure" } });
+  });
+
+  test("retains cleanup for a child with invalid bridge stdio", async () => {
+    const invalidChild = new EventEmitter() as unknown as ChildProcess & {
+      pid: number;
+      stdin: null;
+      stdout: null;
+      stderr: null;
+    };
+    invalidChild.pid = 4182;
+    invalidChild.stdin = null;
+    invalidChild.stdout = null;
+    invalidChild.stderr = null;
+    let terminated = 0;
+    const processOwner = {
+      spawn() { return invalidChild; },
+      terminate(_child: ChildProcess) {
+        terminated += 1;
+        return Promise.resolve<OwnedProcessTermination>({ kind: "unknown", pid: invalidChild.pid, reason: "invalid bridge stdio" });
+      },
+    };
+    let thrown: unknown;
+    try {
+      new JsonLineGraphCoderBridge({ executable: "fixture", env: env(), processOwner });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(GraphCoderProcessStartError);
+    await expect((thrown as GraphCoderProcessStartError).cleanup).resolves.toEqual({ kind: "unknown", pid: 4182, reason: "invalid bridge stdio" });
     expect(terminated).toBe(1);
   });
 

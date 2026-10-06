@@ -42,7 +42,11 @@ async function run(): Promise<void> {
   let cleanupPromise: Promise<NativeProcessTermination> | undefined;
   let cleanupReported = false;
   const cleanup = (): Promise<NativeProcessTermination> => {
-    cleanupPromise ??= owner.terminate(child);
+    cleanupPromise ??= Promise.resolve().then(() => owner.terminate(child)).catch(error => ({
+      kind: "unknown",
+      pid: child.pid ?? -1,
+      reason: error instanceof Error ? error.message : String(error),
+    } satisfies NativeProcessTermination));
     return cleanupPromise;
   };
   const surfaceCleanup = (outcome: NativeProcessTermination): void => {
@@ -62,6 +66,7 @@ async function run(): Promise<void> {
     finished = true;
     process.stderr.write(`failed to start graphcoder-runtime: ${error.message}\n`);
     process.exitCode = 1;
+    void cleanup().then(surfaceCleanup);
   });
   child.once("close", async (code, signal) => {
     finished = true;
