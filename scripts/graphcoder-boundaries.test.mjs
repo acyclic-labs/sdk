@@ -8,6 +8,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageRoot = join(root, "typescript", "packages", "graphcoder");
 const sourceRoot = join(packageRoot, "src");
 const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+const allowedHostPackageImports = new Set(["@acyclic-labs/fs/native-process-node"]);
 
 function sourceInventory(directory = sourceRoot) {
   const files = new Map();
@@ -104,7 +105,7 @@ test("GraphCoder package exposes the contract and explicit host entry points", (
   });
   assert.ok(sources.has(join(sourceRoot, "cli.ts")), "GraphCoder CLI bin has no source");
   assert.ok(sources.has(join(sourceRoot, "native-cli.ts")), "native CLI bin has no source");
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), [], "GraphCoder must not eagerly pull a runtime package");
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@acyclic-labs/fs"], "GraphCoder may depend only on the shared filesystem host adapter");
   assert.deepEqual(Object.keys(manifest.optionalDependencies ?? {}), [], "optional runtime dependencies must stay host supplied");
   assert.deepEqual(Object.keys(manifest.peerDependencies ?? {}), [], "host integrations must remain injected adapters");
 });
@@ -140,7 +141,7 @@ test("host subpaths are lazy and own the only process integration", () => {
       assert.ok(/(?:^|\/)(?:terminal|process|node|node-dispatcher|native-cli|cli|owned-process)\.ts$/u.test(file), file + " owns a Node import outside the host adapter");
     }
     assert.deepEqual(
-      graph.externalImports.filter(({ specifier }) => !specifier.startsWith("node:")),
+      graph.externalImports.filter(({ specifier }) => !specifier.startsWith("node:") && !allowedHostPackageImports.has(specifier)),
       [],
       entry + " imports an undeclared package instead of an injected host",
     );
@@ -179,7 +180,11 @@ test("GraphCoder source has no web, cloud, production-model, or sandbox imports"
   for (const [path, source] of sources) {
     for (const specifier of importedSpecifiers(source)) {
       assert.equal(forbidden.test(specifier), false, modulePath(path) + " imports forbidden capability " + specifier);
-      assert.equal(specifier.startsWith("@acyclic-labs/"), false, modulePath(path) + " reaches another product package directly");
+      assert.equal(
+        specifier.startsWith("@acyclic-labs/") && !(path.endsWith("owned-process.ts") && allowedHostPackageImports.has(specifier)),
+        false,
+        modulePath(path) + " reaches an undeclared product package directly",
+      );
     }
   }
 });

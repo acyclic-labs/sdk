@@ -124,7 +124,9 @@ concurrent requests, rejects pending requests on process errors or EOF, bounds
 one line, and reports stderr, malformed lines, unmatched responses, and exit
 status through `onDiagnostic`. Pass `executable`, `args`, `cwd`, and `env`
 explicitly; an omitted environment is empty and does not inherit host
-credentials.
+credentials. Its default owner is supplied by the lazy
+`@acyclic-labs/fs/native-process-node` host adapter; a native host can inject
+the versioned owner from `@acyclic-labs/fs/native` instead.
 
 `createNodeGraphCoderConnection(options)` composes that bridge with
 `HarnessGraphCoderTransport` and returns both objects. The host must call

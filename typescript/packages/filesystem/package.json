@@ -40,6 +40,11 @@
       "node": "./dist/native-process.js",
       "default": "./dist/native-process.js"
     },
+    "./native-process-node": {
+      "types": "./dist/native-process-node.d.ts",
+      "node": "./dist/native-process-node.js",
+      "default": "./dist/native-process-node.js"
+    },
     "./proto": {
       "types": "./generated/proto/filesystem/v2/filesystem_pb.d.ts",
       "default": "./generated/proto/filesystem/v2/filesystem_pb.js"

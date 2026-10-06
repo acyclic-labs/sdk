@@ -48,6 +48,9 @@
         "graphcoder": "dist/cli.js",
         "graphcoder-native": "dist/native-cli.js",
       },
+      "dependencies": {
+        "@acyclic-labs/fs": "0.2.0",
+      },
       "devDependencies": {
         "@types/node": "26.4.1",
         "bun-types": "1.4.0",
