@@ -27,6 +27,11 @@ function To-WslPath([string]$path) {
   $full = [IO.Path]::GetFullPath($path)
   return "/mnt/$($full.Substring(0,1).ToLower())$($full.Substring(2).Replace([char]92,[char]47))"
 }
+function Get-RelativePath([string]$basePath, [string]$path) {
+  $baseUri = [Uri]::new(([IO.Path]::GetFullPath($basePath).TrimEnd([char]92) + [char]92))
+  $pathUri = [Uri]::new([IO.Path]::GetFullPath($path))
+  return [Uri]::UnescapeDataString($baseUri.MakeRelativeUri($pathUri).ToString()).Replace([char]92, [char]47)
+}
 $wslRoot = To-WslPath $root
 $wslOutput = To-WslPath $outputPath
 $contractProto = Join-Path $root 'proto'
@@ -68,7 +73,7 @@ Remove-Item -LiteralPath $linuxScript -Force
 $files = @(Get-ChildItem -LiteralPath $outputPath -Recurse -File | Where-Object { $_.Name -ne 'provenance.json' })
 $fileHashes = [ordered]@{}
 foreach ($file in $files | Sort-Object FullName) {
-  $relative = [IO.Path]::GetRelativePath($outputPath, $file.FullName).Replace([char]92, [char]47)
+  $relative = Get-RelativePath $outputPath $file.FullName
   $fileHashes[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $requestHash = (Get-FileHash -LiteralPath $requestPath -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -78,7 +83,7 @@ $provenance = [ordered]@{
   source_revision = $SourceRevision.ToLowerInvariant()
   source_revision_kind = 'git-oid'
   source_of_truth = 'Rust proto descriptors and Rust typed-request-manifest emitter'
-  request = [IO.Path]::GetRelativePath($root, $requestPath).Replace([char]92, [char]47)
+  request = Get-RelativePath $root $requestPath
   request_sha256 = $requestHash
   generator = [ordered]@{
     protoc_plugin = 'proto-lens-protoc 0.9.0.1'
