@@ -358,7 +358,6 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore,
     {
         self.require_write()?;
-        self.require_capability("project:merge")?;
         self.authorize_direct_child(parent, child, child_project)?;
         if child_project.provider() != &host.provider {
             return Err(Error::Unauthorized(
