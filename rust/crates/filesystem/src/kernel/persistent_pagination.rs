@@ -1,7 +1,7 @@
 //! Shared bounded cursor pagination for authenticated persistent B+trees.
 
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io::{self, OwnedPage};
 use super::search::counted_partition_point;
 use super::{CanonicalDecodeError, DecodeLimits};
@@ -380,8 +380,9 @@ impl<'a, F: Format> Machine<'a, F> {
         values: &[F::Value],
         pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_values::<F>(values, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(values, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
             bound_values::<F>(values, cursor, self.inclusive)
         });
@@ -414,8 +415,9 @@ impl<'a, F: Format> Machine<'a, F> {
         children: &[Child<F::Key>],
         pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_children::<F>(children, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(children, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self
             .after
             .map_or((0, 0), |cursor| upper_bound_children(children, cursor));
@@ -497,8 +499,9 @@ impl<'a, F: Format> Machine<'a, F> {
         decoded_bytes: u64,
         pending: &Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_values::<F>(&values, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(&values, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self.after.map_or((0, 0), |cursor| {
             bound_values::<F>(&values, cursor, self.inclusive)
         });
@@ -533,8 +536,9 @@ impl<'a, F: Format> Machine<'a, F> {
         decoded_bytes: u64,
         pending: &mut Pending<F::Key>,
     ) -> Result<(), Failure> {
-        validate_children::<F>(&children, pending.lower.as_ref(), pending.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(&children, pending.lower.as_ref(), pending.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let (start, comparisons) = self
             .after
             .map_or((0, 0), |cursor| upper_bound_children(&children, cursor));
@@ -683,38 +687,6 @@ impl<'a, F: Format> Machine<'a, F> {
             work: self.work,
         })
     }
-}
-
-fn validate_values<F: Format>(
-    values: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && values.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && values.last().is_some_and(|value| F::key(value) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children<F: Format>(
-    children: &[Child<F::Key>],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| child.first >= *upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

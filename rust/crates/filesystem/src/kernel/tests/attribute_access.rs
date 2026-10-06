@@ -531,14 +531,9 @@ fn batch_allocation_storage_and_routing_error_maps_are_total()
             digest: Digest::from_bytes([91; 32]),
         },
     };
-    assert!(matches!(
-        validate_children(std::slice::from_ref(&child), Some(&name(2)?), None),
-        Err(AttributeLookupError::ChildBoundsMismatch)
-    ));
-    assert!(validate_children(std::slice::from_ref(&child), None, Some(&name(4)?)).is_ok());
-    assert!(matches!(
-        validate_children(std::slice::from_ref(&child), None, Some(&name(2)?)),
-        Err(AttributeLookupError::ChildBoundsMismatch)
-    ));
+    let only = Some(&child.first_name);
+    assert!(!within_bounds(only, only, Some(&name(2)?), None));
+    assert!(within_bounds(only, only, None, Some(&name(4)?)));
+    assert!(!within_bounds(only, only, None, Some(&name(2)?)));
     Ok(())
 }

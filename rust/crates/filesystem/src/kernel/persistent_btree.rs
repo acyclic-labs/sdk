@@ -529,7 +529,9 @@ where
             .map_err(map_io)?;
         match page {
             Page::Leaf(entries) => {
-                validate_leaf::<F, M>(&entries, request.lower.as_ref(), request.upper.as_ref())?;
+                if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
+                    return Err(Error::ChildBoundsMismatch);
+                }
                 // `request.mutations` is a `Range<usize>` into this same
                 // `mutations` slice, threaded unchanged through the whole
                 // traversal (`rewrite` -> `enter_node`/`advance_frame`).
@@ -552,11 +554,9 @@ where
                 Ok(EnteredNode::Complete(result?))
             }
             Page::Internal(children) => {
-                validate_children::<F, M>(
-                    &children,
-                    request.lower.as_ref(),
-                    request.upper.as_ref(),
-                )?;
+                if !children_within(&children, request.lower.as_ref(), request.upper.as_ref()) {
+                    return Err(Error::ChildBoundsMismatch);
+                }
                 Ok(EnteredNode::Internal(InternalFrame {
                     original: request.page,
                     children,
@@ -1134,44 +1134,45 @@ fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
             .all(|(left, right)| left.first == right.first && left.page == right.page)
 }
 
-fn validate_leaf<F, M>(
-    entries: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error<M::Error>>
-where
-    F: Format,
-    M: Mutation<F>,
-{
-    if lower.is_some() && entries.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && entries.last().is_some_and(|entry| F::key(entry) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
+/// Whether a page whose first and last keys are `first` and `last` matches its
+/// parent's routing: it starts exactly at `lower` and stays below `upper`.
+pub(crate) fn within_bounds<K: Ord>(
+    first: Option<&K>,
+    last: Option<&K>,
+    lower: Option<&K>,
+    upper: Option<&K>,
+) -> bool {
+    (lower.is_none() || first == lower)
+        && !matches!((last, upper), (Some(last), Some(upper)) if last >= upper)
 }
 
-fn validate_children<F, M>(
-    children: &[Child<F::Key>],
+/// [`within_bounds`] for a leaf's values.
+pub(crate) fn leaf_within<F: Format>(
+    values: &[F::Value],
     lower: Option<&F::Key>,
     upper: Option<&F::Key>,
-) -> Result<(), Error<M::Error>>
-where
-    F: Format,
-    M: Mutation<F>,
-{
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| &child.first >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
+) -> bool {
+    within_bounds(
+        values.first().map(F::key),
+        values.last().map(F::key),
+        lower,
+        upper,
+    )
+}
+
+/// [`within_bounds`] for an internal page's routing keys.
+pub(crate) fn children_within<K: Ord>(
+    children: &[Child<K>],
+    lower: Option<&K>,
+    upper: Option<&K>,
+) -> bool {
+    let (first, last) = (children.first(), children.last());
+    within_bounds(
+        first.map(|child| &child.first),
+        last.map(|child| &child.first),
+        lower,
+        upper,
+    )
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use super::attribute::attribute_page_decode_shape;
 use super::attribute_mutation::AttributeFormat;
 use super::codec::DecodedPageKind;
 use super::persistent_batch;
+use super::persistent_btree::within_bounds;
 use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     AttributeChild, AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
@@ -214,8 +215,11 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
 
         match decoded.page {
             AttributePage::Leaf(mut entries) => {
-                validate_leaf(&entries, routing.lower.as_ref(), routing.upper.as_ref())
-                    .map_err(|error| failed(error, work))?;
+                let first = entries.first().map(|entry| &entry.name);
+                let last = entries.last().map(|entry| &entry.name);
+                if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
+                    return Err(failed(AttributeLookupError::ChildBoundsMismatch, work));
+                }
                 let (position, comparisons) = search_entries(&entries, name);
                 charge_items(&mut work, comparisons, budget)?;
                 let entry = position.ok().map(|index| entries.swap_remove(index));
@@ -268,8 +272,11 @@ fn advance_internal(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<ObjectId, AttributeLookupFailure> {
-    validate_children(&children, routing.lower.as_ref(), routing.upper.as_ref())
-        .map_err(|error| failed(error, *work))?;
+    let first = children.first().map(|child| &child.first_name);
+    let last = children.last().map(|child| &child.first_name);
+    if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
+        return Err(failed(AttributeLookupError::ChildBoundsMismatch, *work));
+    }
     let (partition, comparisons) = upper_bound_children(&children, name);
     charge_items(work, comparisons, budget)?;
     let selected = partition.saturating_sub(1);
@@ -411,40 +418,6 @@ fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<u
 
 fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (usize, u64) {
     counted_partition_point(children, |child| child.first_name <= *name)
-}
-
-fn validate_leaf(
-    entries: &[AttributeEntry],
-    lower: Option<&AttributeName>,
-    upper: Option<&AttributeName>,
-) -> Result<(), AttributeLookupError> {
-    if lower.is_some() && entries.first().map(|entry| &entry.name) != lower {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && entries.last().is_some_and(|entry| entry.name >= *upper)
-    {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children(
-    children: &[AttributeChild],
-    lower: Option<&AttributeName>,
-    upper: Option<&AttributeName>,
-) -> Result<(), AttributeLookupError> {
-    if lower.is_some() && children.first().map(|child| &child.first_name) != lower {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children
-            .last()
-            .is_some_and(|child| child.first_name >= *upper)
-    {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    Ok(())
 }
 
 fn charge_items(

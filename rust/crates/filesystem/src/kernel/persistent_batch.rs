@@ -1,7 +1,7 @@
 //! Shared-frontier batch lookup for authenticated persistent B+trees.
 
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
-use super::persistent_btree::{Child, Format, Page};
+use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
 use super::search::{counted_binary_search, counted_partition_point};
 use super::{CanonicalDecodeError, DecodeLimits};
@@ -365,8 +365,9 @@ impl<'a, F: Format> Machine<'a, F> {
         mut entries: Vec<F::Value>,
         decoded_bytes: u64,
     ) -> Result<(), Failure> {
-        validate_values::<F>(&entries, request.lower.as_ref(), request.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         self.matches.clear();
         let mut query = request.queries.start;
         while query < request.queries.end {
@@ -454,8 +455,9 @@ impl<'a, F: Format> Machine<'a, F> {
         children: &[Child<F::Key>],
         decoded_bytes: u64,
     ) -> Result<(), Failure> {
-        validate_children::<F>(children, request.lower.as_ref(), request.upper.as_ref())
-            .map_err(|error| failed(error, self.work))?;
+        if !children_within(children, request.lower.as_ref(), request.upper.as_ref()) {
+            return Err(failed(Error::ChildBoundsMismatch, self.work));
+        }
         let next_height = request
             .height
             .checked_add(1)
@@ -748,38 +750,6 @@ fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>
 fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
     let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
     (after.saturating_sub(1), comparisons)
-}
-
-fn validate_values<F: Format>(
-    values: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && values.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && values.last().is_some_and(|value| F::key(value) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children<F: Format>(
-    children: &[Child<F::Key>],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error> {
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| child.first >= *upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
 }
 
 fn map_allocation(error: AllocationError) -> Error {
