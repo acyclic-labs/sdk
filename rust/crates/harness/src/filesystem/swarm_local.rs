@@ -41,7 +41,7 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
+        SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
     },
     swarm_budget_journal::SwarmBudgetJournal,
@@ -109,7 +109,6 @@ const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 /// Host-owned bridge for effect measurements outside provider receipts.
 struct LocalHarnessEffectRecorder {
     journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
-    projection: Arc<StdMutex<SwarmBudget>>,
     operation: OperationId,
     owner: SwarmOwnerFence,
     root: bool,
@@ -131,44 +130,39 @@ impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
                     elapsed_ms,
                 )
                 .await;
-            if result.is_ok() {
-                let live = self.journal.lock().await.live_projection();
-                let mut projection = self
-                    .projection
-                    .lock()
-                    .map_err(|_| Error::Storage("budget projection lock poisoned".into()))?;
-                *projection = live;
-            }
             result
         })
     }
 
     fn remaining_execution_time_ms(&self) -> Option<u64> {
-        match self.projection.lock() {
-            Ok(projection) => {
-                let global = projection
-                    .root_resource_limits()
-                    .map(|limits| limits.execution_time_ms)
-                    .unwrap_or(0);
-                let own = projection
-                    .reservation(self.operation)
-                    .ok()
-                    .flatten()
-                    .map(|reservation| {
-                        reservation
-                            .resources
-                            .execution_time_ms
-                            .saturating_sub(reservation.usage.execution_time_ms)
-                    })
-                    .unwrap_or(0);
-                Some(if self.root {
-                    global
-                } else {
-                    global.saturating_add(own)
+        None
+    }
+
+    fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        Box::pin(async move {
+            let journal = self.journal.lock().await;
+            let projection = journal.live_projection();
+            let global = projection
+                .root_resource_limits()
+                .map(|limits| limits.execution_time_ms)
+                .unwrap_or(0);
+            let own = projection
+                .reservation(self.operation)
+                .ok()
+                .flatten()
+                .map(|reservation| {
+                    reservation
+                        .resources
+                        .execution_time_ms
+                        .saturating_sub(reservation.usage.execution_time_ms)
                 })
-            }
-            Err(_) => Some(0),
-        }
+                .unwrap_or(0);
+            Ok(Some(if self.root {
+                global
+            } else {
+                global.saturating_add(own)
+            }))
+        })
     }
 }
 
@@ -2403,7 +2397,6 @@ impl LocalModelForkPublisher {
             let mut boundary = SwarmProviderBoundary::new(context);
             boundary.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
                 journal: swarm.budget_journal.clone(),
-                projection: swarm.budget_projection.clone(),
                 operation: budget_token.operation_id(),
                 owner: budget_token.owner().clone(),
                 root: false,
@@ -3422,7 +3415,6 @@ pub struct PersistentLocalSwarm {
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
     budget_journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
-    budget_projection: Arc<StdMutex<SwarmBudget>>,
     /// Shared provider bindings used by the root and lazily reopened task
     /// harnesses. The resolver must observe the same host and stream domain.
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -3483,16 +3475,6 @@ impl PersistentLocalSwarm {
         if let Some(observer) = &self.bindings.observer {
             observer.observe(observation);
         }
-    }
-
-    async fn refresh_budget_projection(&self) -> Result<()> {
-        let projection = self.budget_journal.lock().await.live_projection();
-        let mut shared = self
-            .budget_projection
-            .lock()
-            .map_err(|_| Error::Storage("budget projection lock poisoned".into()))?;
-        *shared = projection;
-        Ok(())
     }
 
     async fn git_tool_for(
@@ -3952,7 +3934,6 @@ impl PersistentLocalSwarm {
             root_dispatch_id,
         )
         .await?;
-        let budget_projection = Arc::new(StdMutex::new(budget_journal.live_projection()));
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -3988,7 +3969,6 @@ impl PersistentLocalSwarm {
             model_fork_publisher,
             registry,
             budget_journal: Arc::new(Mutex::new(budget_journal)),
-            budget_projection,
             filesystem_host,
             git_store: None,
             conversation_stream,
@@ -4749,7 +4729,6 @@ impl PersistentLocalSwarm {
             )
             .await
         };
-        self.refresh_budget_projection().await?;
         result
     }
 
@@ -4773,7 +4752,6 @@ impl PersistentLocalSwarm {
                 publication,
             )
             .await;
-        self.refresh_budget_projection().await?;
         result
     }
 
@@ -4793,7 +4771,6 @@ impl PersistentLocalSwarm {
             .await
             .complete_from_source(token, source)
             .await;
-        self.refresh_budget_projection().await?;
         result
     }
 
@@ -4807,7 +4784,6 @@ impl PersistentLocalSwarm {
             .await
             .cancel(operation, &self.config.budget.owner)
             .await;
-        self.refresh_budget_projection().await?;
         result
     }
 
@@ -5854,7 +5830,6 @@ impl PersistentLocalSwarm {
         let mut provider_budget = SwarmRootProviderBoundary::new(context);
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
-            projection: self.budget_projection.clone(),
             operation,
             owner: self.config.budget.owner.clone(),
             root: true,
@@ -5897,7 +5872,6 @@ impl PersistentLocalSwarm {
             .await
             .report_root_usage_from_source(&self.config.budget.owner, source)
             .await;
-        self.refresh_budget_projection().await?;
         settlement?;
         let output = run_result?;
         // The per-task mutex only fences handles in this process.  A second
@@ -6774,7 +6748,6 @@ impl PersistentLocalSwarm {
         let mut provider_budget = SwarmProviderBoundary::new(context);
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
-            projection: self.budget_projection.clone(),
             operation: budget_token.operation_id(),
             owner: budget_token.owner().clone(),
             root: false,

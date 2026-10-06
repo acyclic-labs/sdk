@@ -1793,13 +1793,25 @@ impl SwarmBudget {
         }
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
+        let mut child_reservation = if operation_id == state.session_id {
+            None
+        } else {
+            Some(
+                state
+                    .reservations
+                    .get(&operation_id)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::NotFound(format!("swarm reservation {operation_id}"))
+                    })?,
+            )
+        };
         if operation_id == state.session_id {
             if state.root_dispatch_id.as_ref() != Some(dispatch_id) {
                 return Err(Error::Unauthorized("effect is not bound to the canonical root dispatch".into()));
             }
         } else {
-            let reservation = state.reservations.get(&operation_id)
-                .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+            let reservation = child_reservation.as_ref().expect("child reservation loaded");
             if reservation.owner != *owner
                 || reservation.dispatch_id.as_ref() != Some(dispatch_id)
                 || !matches!(reservation.state, SwarmReservationState::Reserved | SwarmReservationState::Active)
@@ -1817,7 +1829,26 @@ impl SwarmBudget {
         if next > state.limits.max_execution_time_ms {
             return Err(Error::Conflict("swarm execution time budget exceeded".into()));
         }
+        if let Some(reservation) = child_reservation.as_mut() {
+            reservation.usage.execution_time_ms = reservation
+                .usage
+                .execution_time_ms
+                .checked_add(elapsed_ms)
+                .ok_or_else(|| Error::Invalid("swarm child time usage exhausted".into()))?;
+            if reservation.usage.execution_time_ms > reservation.resources.execution_time_ms {
+                return Err(Error::Conflict("Harness effect exceeds child time reservation".into()));
+            }
+            state.usage.reserved.execution_time_ms = state
+                .usage
+                .reserved
+                .execution_time_ms
+                .checked_sub(elapsed_ms)
+                .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
+        }
         state.usage.consumed.execution_time_ms = next;
+        if let Some(reservation) = child_reservation {
+            state.reservations.insert(operation_id, reservation);
+        }
         state.harness_effects.insert(key, elapsed_ms);
         Ok(true)
     }
@@ -2128,6 +2159,58 @@ mod harness_effect_tests {
             budget.record_harness_effect(session, &owner, &dispatch, &effect, 4),
             Err(Error::Conflict(_))
         ));
+        assert_eq!(budget.usage()?.consumed.execution_time_ms, 3);
+        Ok(())
+    }
+
+    #[test]
+    fn harness_effect_measurement_consumes_child_reservation_once() -> Result<()> {
+        let session = OperationId::from_bytes([0x42; 16]);
+        let child = OperationId::from_bytes([0x43; 16]);
+        let owner = SwarmOwnerFence::new("test-owner", 0)?;
+        let dispatch = IdempotencyKey::new("child-dispatch")?;
+        let effect = IdempotencyKey::new("child-effect")?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            session,
+            owner.clone(),
+            SwarmBudgetLimits {
+                max_active_agents: 2,
+                max_total_agents: 2,
+                max_recursion_depth: 1,
+                max_model_steps: 10,
+                max_output_bytes: 100,
+                max_execution_time_ms: 20,
+            },
+            Some(IdempotencyKey::new("root-dispatch")?),
+        )?;
+        budget.reserve_child(SwarmForkRequest {
+            operation_id: child,
+            parent_operation_id: None,
+            depth: 1,
+            resources: SwarmResourceRequest {
+                model_steps: 2,
+                output_bytes: 20,
+                execution_time_ms: 8,
+            },
+            idempotency_key: IdempotencyKey::new("child-reservation")?,
+            admission_digest: None,
+        })?;
+        budget.activate_with_dispatch(
+            child,
+            owner.clone(),
+            ForkPublication {
+                operation_id: child,
+                parent_operation_id: None,
+                completed_boundary_digest: [0x51; 32],
+                workspace_generation_digest: [0x52; 32],
+            },
+            Some(dispatch.clone()),
+        )?;
+        assert!(budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
+        assert!(!budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
+        let stored = budget.reservation(child)?.expect("child reservation");
+        assert_eq!(stored.usage.execution_time_ms, 3);
+        assert_eq!(budget.usage()?.reserved.execution_time_ms, 5);
         assert_eq!(budget.usage()?.consumed.execution_time_ms, 3);
         Ok(())
     }

@@ -854,6 +854,8 @@ async fn persistent_provider_receives_exact_unicode_request_and_cold_restart_rep
                 result, projection, ..
             } => vec![result, projection],
             ExecutionEvent::Started { .. }
+            | ExecutionEvent::ToolReconcileAttemptStarted { .. }
+            | ExecutionEvent::BatchPublicationAttemptStarted { .. }
             | ExecutionEvent::BatchPublicationCompleted { .. }
             | ExecutionEvent::ModelStarted { .. }
             | ExecutionEvent::ToolFailed { .. } => Vec::new(),

@@ -131,6 +131,15 @@ pub enum ExecutionEvent {
         /// Complete immutable publication request.
         publication: FileRef,
     },
+    /// Durable identity for one physical retry publication attempt.
+    BatchPublicationAttemptStarted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Digest of the immutable publication admission.
+        publication_digest: [u8; 32],
+        /// Unique attempt identity persisted before publisher dispatch.
+        attempt_id: IdempotencyKey,
+    },
     /// Publication outcome persisted before a later parent model request.
     BatchPublicationCompleted {
         /// Zero-based executor step.
@@ -174,6 +183,16 @@ pub enum ExecutionEvent {
         call_id: String,
         /// Pinned, private JSON file containing the admitted invocation.
         invocation: FileRef,
+    },
+    /// Durable identity for one physical reconciliation attempt after a
+    /// previously admitted tool is recovered.
+    ToolReconcileAttemptStarted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Stable provider/model-owned call identity.
+        call_id: String,
+        /// Unique attempt identity persisted before reconciliation dispatch.
+        attempt_id: IdempotencyKey,
     },
     /// Tool execution and projection completed.
     ToolCompleted {
@@ -495,6 +514,10 @@ pub trait HarnessEffectRecorder: Send + Sync {
     fn record<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
         effect_id: &'a IdempotencyKey, elapsed_ms: u64) -> BoxFuture<'a, Result<()>>;
     fn remaining_execution_time_ms(&self) -> Option<u64> { None }
+    fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        let remaining = self.remaining_execution_time_ms();
+        Box::pin(async move { Ok(remaining) })
+    }
 }
 
 /// Erased provider-side budget guard used by the canonical stock loop.
@@ -519,6 +542,10 @@ pub trait SwarmProviderAdmission: Send {
     }
     fn supports_harness_effect_time(&self) -> bool { false }
     fn remaining_execution_time_ms(&self) -> Option<u64> { None }
+    fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        let remaining = self.remaining_execution_time_ms();
+        Box::pin(async move { Ok(remaining) })
+    }
 }
 
 /// Provider-side admission and measurement boundary for one child dispatch.
@@ -554,8 +581,31 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
 
     pub fn remaining_execution_time_ms(&self) -> Option<u64> {
         let local = self.context.remaining_execution_time_ms();
-        self.effect_recorder.as_ref().and_then(|r| r.remaining_execution_time_ms())
-            .map(|global| local.min(global)).or(Some(local))
+        let Some(recorder) = self.effect_recorder.as_ref() else {
+            return Some(local);
+        };
+        recorder
+            .remaining_execution_time_ms()
+            .map(|global| local.min(global))
+            // A recorder-backed boundary cannot safely fall back to the
+            // construction-time child ceiling when its durable projection is
+            // only available asynchronously. Fail closed for synchronous
+            // callers; the stock loop uses the async authority below.
+            .or(Some(0))
+    }
+
+    pub fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        let local = self.context.remaining_execution_time_ms();
+        let Some(recorder) = self.effect_recorder.clone() else {
+            return Box::pin(async move { Ok(Some(local)) });
+        };
+        Box::pin(async move {
+            Ok(recorder
+                .remaining_execution_time_ms_async()
+                .await?
+                .map(|global| local.min(global))
+                .or(Some(0)))
+        })
     }
 
     /// Admits one model step before invoking the provider.
@@ -639,6 +689,9 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
     }
     fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
     fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
+    fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        Self::remaining_execution_time_ms_async(self)
+    }
 }
 /// Provider-side admission and measurement boundary for the canonical root
 /// dispatch lease. Root work is accepted only when the journal has a real
@@ -671,7 +724,24 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
         let Some(recorder) = &self.effect_recorder else {
             return Some(self.context.remaining_execution_time_ms());
         };
-        recorder.remaining_execution_time_ms().map(|global| global.min(self.context.remaining_execution_time_ms()))
+        recorder
+            .remaining_execution_time_ms()
+            .map(|global| global.min(self.context.remaining_execution_time_ms()))
+            .or(Some(0))
+    }
+
+    pub fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        let local = self.context.remaining_execution_time_ms();
+        let Some(recorder) = self.effect_recorder.clone() else {
+            return Box::pin(async move { Ok(Some(local)) });
+        };
+        Box::pin(async move {
+            Ok(recorder
+                .remaining_execution_time_ms_async()
+                .await?
+                .map(|global| local.min(global))
+                .or(Some(0)))
+        })
     }
 
     /// Admits one root model step before invoking the provider.
@@ -741,6 +811,9 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
     }
     fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
     fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
+    fn remaining_execution_time_ms_async<'a>(&'a self) -> BoxFuture<'a, Result<Option<u64>>> {
+        Self::remaining_execution_time_ms_async(self)
+    }
 }
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
@@ -1020,6 +1093,15 @@ impl StockExecutor {
                     }
                     if !started_tools.insert((*step, call_id.clone())) {
                         return Err(Error::Storage("tool admission is duplicated".into()));
+                    }
+                }
+                ExecutionEvent::ToolReconcileAttemptStarted { step, call_id, .. } => {
+                    if !started_steps.contains(step)
+                        || !started_tools.contains(&(*step, call_id.clone()))
+                    {
+                        return Err(Error::Storage(
+                            "tool reconciliation is missing its admitted start".into(),
+                        ));
                     }
                 }
                 ExecutionEvent::ToolCompleted { step, call_id, .. }
@@ -1633,6 +1715,30 @@ impl StockExecutor {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
                 crate::stack_diagnostics::marker("fork-publication-enter-retry");
+                let retry_attempt = IdempotencyKey::new(format!(
+                    "publication-attempt:{}",
+                    OperationId::new()
+                ))?;
+                let retry_claim = format!(
+                    "model:{step}:publication-attempt:{}",
+                    OperationId::new()
+                );
+                let retry_records = journal.replay(operation).await?;
+                if !journal
+                    .append_if_tail(
+                        operation,
+                        retry_records.len() as u64,
+                        retry_claim,
+                        ExecutionEvent::BatchPublicationAttemptStarted {
+                            step,
+                            publication_digest: digest,
+                            attempt_id: retry_attempt.clone(),
+                        },
+                    )
+                    .await?
+                {
+                    return Err(Error::Indeterminate(publication.operation_id));
+                }
                 let publish = publisher.publish(publication.clone());
                 crate::stack_diagnostics::future_size("fork-publication-handle-retry", &publish);
                 crate::stack_diagnostics::future_size(
@@ -1643,7 +1749,7 @@ impl StockExecutor {
                     "publication-retry",
                     publication.operation_id,
                     step,
-                    &publication,
+                    &retry_attempt,
                 )?;
                 await_publication(
                     publish,
@@ -2100,15 +2206,17 @@ impl StockExecutor {
                     }
                 }
             }
-            let claim_id = durable_effect_id(
-                "tool-claim",
-                operation_id,
-                step,
-                &invocation,
-            )?;
-            let attempt_id = started
+            // Claim identities remain unique per owner. The execution
+            // journal persists this identity before dispatch; replays use
+            // its stored retry digest below rather than re-claiming it.
+            let claim_id = IdempotencyKey::new(format!(
+                "tool:{step}:{}:claim:{}",
+                invocation.call_id,
+                OperationId::new()
+            ))?;
+            let mut attempt_id = started
                 .clone()
-                .unwrap_or_else(|| claim_id.as_str().to_owned());
+                .unwrap_or_else(|| execution_retry_digest(operation_id, claim_id.as_str()));
             let claimed = if started.is_some() {
                 false
             } else {
@@ -2147,6 +2255,38 @@ impl StockExecutor {
                     Err(error) => return Err(error),
                 }
             };
+            if !claimed {
+                // Reconciliation is itself a physical provider boundary. Give
+                // every invocation a durable, unique attempt identity before
+                // dispatch so a retry cannot reuse the original ToolStarted
+                // effect key or silently overwrite its measured time.
+                let reconcile_attempt = IdempotencyKey::new(format!(
+                    "tool-reconcile-attempt:{}",
+                    OperationId::new()
+                ))?;
+                let reconcile_claim = format!(
+                    "tool:{step}:{}:reconcile:{}",
+                    invocation.call_id,
+                    OperationId::new()
+                );
+                let current = journal.replay(operation_id).await?;
+                if !journal
+                    .append_if_tail(
+                        operation_id,
+                        current.len() as u64,
+                        reconcile_claim,
+                        ExecutionEvent::ToolReconcileAttemptStarted {
+                            step,
+                            call_id: invocation.call_id.clone(),
+                            attempt_id: reconcile_attempt.clone(),
+                        },
+                    )
+                    .await?
+                {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                attempt_id = reconcile_attempt.as_str().to_owned();
+            }
             let tool_context = ModelToolContext {
                 parent_operation: operation_id,
                 step,
@@ -2676,11 +2816,13 @@ fn event_step(event: &ExecutionEvent) -> Option<u32> {
         ExecutionEvent::ModelInputPrepared { step, .. }
         | ExecutionEvent::ToolBatchCompleted { step, .. }
         | ExecutionEvent::BatchPublicationStarted { step, .. }
+        | ExecutionEvent::BatchPublicationAttemptStarted { step, .. }
         | ExecutionEvent::BatchPublicationCompleted { step, .. }
         | ExecutionEvent::ModelStarted { step, .. }
         | ExecutionEvent::Model { step, .. }
         | ExecutionEvent::ToolAdmissionRejected { step, .. }
         | ExecutionEvent::ToolStarted { step, .. }
+        | ExecutionEvent::ToolReconcileAttemptStarted { step, .. }
         | ExecutionEvent::ToolCompleted { step, .. }
         | ExecutionEvent::ToolFailed { step, .. } => Some(*step),
         ExecutionEvent::Started { .. } => None,
@@ -3502,6 +3644,13 @@ pub(crate) async fn classify_terminal_failure(
                 }
                 failed_tool = true;
             }
+            ExecutionEvent::ToolReconcileAttemptStarted { step, call_id, .. } => {
+                if !started_tools.contains(&(*step, call_id.clone())) {
+                    return Err(Error::Storage(
+                        "tool reconciliation is not bound to a started call while classifying terminal failure".into(),
+                    ));
+                }
+            }
             ExecutionEvent::ToolBatchCompleted { step, boundary } => {
                 if !completed_steps.contains(step)
                     || !declared_tools.keys().filter(|(declared_step, _)| declared_step == step)
@@ -3557,6 +3706,22 @@ pub(crate) async fn classify_terminal_failure(
                 if publications.insert(*step, (digest, false)).is_some() {
                     return Err(Error::Storage(
                         "batch publication started more than once while classifying terminal failure".into(),
+                    ));
+                }
+            }
+            ExecutionEvent::BatchPublicationAttemptStarted {
+                step,
+                publication_digest,
+                ..
+            } => {
+                let Some((expected, _)) = publications.get(step) else {
+                    return Err(Error::Storage(
+                        "batch publication attempt has no durable publication admission".into(),
+                    ));
+                };
+                if expected != publication_digest {
+                    return Err(Error::Conflict(
+                        "batch publication attempt is bound to another admission".into(),
                     ));
                 }
             }
@@ -3744,6 +3909,12 @@ fn durable_effect_id<T: Serialize>(
     IdempotencyKey::new(format!("{label}:{digest}"))
 }
 
+fn execution_retry_digest(operation: OperationId, claim_id: &str) -> String {
+    blake3::hash(format!("{operation}:{claim_id}").as_bytes())
+        .to_hex()
+        .to_string()
+}
+
 /// Bounds publication I/O by the same admission ceiling used for provider
 /// work. A timed-out publication remains indeterminate and therefore cannot
 /// be followed by another model request or child dispatch.
@@ -3771,7 +3942,7 @@ where
 {
     let started_at = clock.now_unix_millis();
     let outcome = if let Some(admission) = budget.as_deref_mut() {
-        if let Some(remaining) = admission.remaining_execution_time_ms() {
+        if let Some(remaining) = admission.remaining_execution_time_ms_async().await? {
             if remaining == 0 {
                 return Err(Error::Conflict("provider execution time ceiling exhausted".into()));
             }

@@ -584,6 +584,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ModelStarted { .. }
             | ExecutionEvent::ToolFailed { .. }
+            | ExecutionEvent::ToolReconcileAttemptStarted { .. }
+            | ExecutionEvent::BatchPublicationAttemptStarted { .. }
             | ExecutionEvent::BatchPublicationCompleted { .. } => Vec::new(),
         };
         for reference in refs {
@@ -866,7 +868,11 @@ where
                     if records.iter().any(|record| {
                         record.idempotency_key == retry_digest && record.event == event
                     }) {
-                        Ok(true)
+                        // A committed retry identity proves durable admission,
+                        // but not that this caller owns the physical attempt.
+                        // Returning true here would let two owners that raced
+                        // before the append both dispatch the admitted effect.
+                        Ok(false)
                     } else {
                         Err(Error::Indeterminate(operation_id))
                     }
