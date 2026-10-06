@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-qualification-lanes.json",
+  "type": "array",
+  "minItems": 1,
+  "items": {
+    "type": "object",
+    "required": ["lane", "runner", "workers", "artifact", "artifact_path", "inputs", "source_bound", "early_start"],
+    "properties": {
+      "lane": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+      "runner": { "type": "string", "minLength": 1 },
+      "workers": { "type": "integer", "minimum": 1 },
+      "artifact": { "type": "string", "pattern": "^([a-z0-9]+(-[a-z0-9]+)*)?$" },
+      "artifact_path": { "type": "string" },
+      "inputs": { "enum": ["rust", "product", "repository", "policy"] },
+      "source_bound": { "type": "boolean" },
+      "early_start": { "type": "boolean" }
+    },
+    "additionalProperties": false
+  }
+}

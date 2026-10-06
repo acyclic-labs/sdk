@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-release-cargo-equivalent-archives.json",
+  "type": "object",
+  "propertyNames": { "pattern": "^acyclic(-[a-z]+)*@[0-9]+[.][0-9]+[.][0-9]+$" },
+  "additionalProperties": {
+    "type": "object",
+    "required": ["checksum", "sourceSha"],
+    "properties": {
+      "checksum": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+      "sourceSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+    },
+    "additionalProperties": false
+  }
+}

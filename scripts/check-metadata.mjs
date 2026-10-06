@@ -54,6 +54,10 @@ const documents = [
   ["provenance/manifest.json", "compatibility/schemas/provenance.schema.json"],
   ["languages/package-names.json", "compatibility/schemas/package-names.schema.json"],
   ["compatibility/manifest.json", "compatibility/schemas/compatibility.schema.json"],
+  [".github/qualification-lanes.json", "compatibility/schemas/qualification-lanes.schema.json"],
+  ["release/cargo-crates.json", "compatibility/schemas/release-cargo-crates.schema.json"],
+  ["release/cargo-equivalent-archives.json", "compatibility/schemas/release-cargo-equivalent-archives.schema.json"],
+  ["release/npm-packages.json", "compatibility/schemas/release-npm-packages.schema.json"],
 ];
 for (const [documentPath, schemaPath] of documents) {
   const validate = ajv.compile(await load(schemaPath));
