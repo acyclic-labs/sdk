@@ -512,12 +512,17 @@ mod tests {
         )
         .await?;
         let approved = checkout.binding().await;
+        assert_eq!(approved.source_root, std::fs::canonicalize(root.path())?);
+        assert_eq!(approved.workspace_id, checkout.workspace().id());
         checkout
             .workspace()
             .write_text("/approved.txt", "agent")
             .await?;
         let generation = checkout.workspace().head().await?;
+        assert_eq!(generation.workspace_id(), approved.workspace_id);
         let key = IdempotencyKey::from_bytes([11; 16]);
+        let options = MaterializeOptions::native(root.path());
+        assert_eq!(options.destination, approved.source_root);
 
         checkout
             .restore_paths(
@@ -525,7 +530,7 @@ mod tests {
                 &approved,
                 &[PathBuf::from("approved.txt")],
                 HostPathReplacement::Atomic,
-                &MaterializeOptions::native(root.path()),
+                &options,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
