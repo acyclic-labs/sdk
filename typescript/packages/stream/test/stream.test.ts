@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
+import fc from "fast-check";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
-import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
+import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, compareStreamPaths, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
@@ -832,4 +833,20 @@ describe("website Stream contract", () => {
     expect(token.expiresAt.toISOString()).toBe("2030-01-02T03:04:05.000Z");
     expect(() => decodeHttpResponse("tokens/create", JSON.stringify({ token: "secret", expiresAt: "not-a-date" }))).toThrow();
   });
+});
+
+test("path ordering matches Unicode code point order, the order of UTF-8 bytes", () => {
+  const codePoints = (value: string) => Array.from(value, character => character.codePointAt(0) ?? 0);
+  const oracle = (left: number[], right: number[]): number => {
+    for (let index = 0; index < Math.min(left.length, right.length); index += 1) {
+      const difference = (left[index] ?? 0) - (right[index] ?? 0);
+      if (difference !== 0) return difference;
+    }
+    return left.length - right.length;
+  };
+  fc.assert(fc.property(fc.string({ unit: "binary" }), fc.string({ unit: "binary" }), (left, right) => {
+    const ordered = Math.sign(compareStreamPaths(left, right));
+    expect(ordered).toBe(Math.sign(oracle(codePoints(left), codePoints(right))));
+    expect(Math.sign(compareStreamPaths(right, left)) + ordered).toBe(0);
+  }), { numRuns: 100 });
 });
