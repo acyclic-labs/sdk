@@ -14,7 +14,7 @@ use super::{
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
-    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, InteractionId, OperationId, Outcome, Result, TaskGroup, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
@@ -2094,12 +2094,43 @@ impl LocalModelForkPlans {
                 Error::Unsupported("local model fork resolver is not bound".into())
             })?;
             crate::stack_diagnostics::marker("fork-resolve-before-physical-resolve");
-            let plan = resolver.resolve(intent, publication.clone()).await?;
+            let plan = Self::resolve_on_owned_task(resolver, intent, publication.clone())
+                .await?;
             crate::stack_diagnostics::marker("fork-resolve-after-physical-resolve");
             self.register(plan.clone()).await?;
             plans.push(plan);
         }
         Ok(plans)
+    }
+
+    /// Polls one physical resolver on its own owned task. This is a runtime
+    /// boundary, rather than a timeout or an extra model step: cancellation
+    /// drops the handle and aborts the resolver, while typed resolver errors
+    /// remain unchanged on the successful task path.
+    async fn resolve_on_owned_task(
+        resolver: Arc<dyn LocalModelForkResolver>,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+    ) -> Result<LocalModelForkPlan> {
+        // Keep the group local to this call. The handle below owns the task's
+        // cancellation, so dropping the caller's future aborts the resolver
+        // even though plans themselves are a durable registry shared by
+        // retries and reopened publishers.
+        let resolver_tasks = TaskGroup::new(1);
+        let uncertain_operation = publication.operation_id;
+        let handle = resolver_tasks
+            .spawn(async move { resolver.resolve(intent, publication).await })
+            .await;
+        match handle.result().await {
+            Outcome::Succeeded(result) => result,
+            // A resolver can have crossed an external read/rebind boundary
+            // before its task is cancelled or panics. Keep that publication
+            // uncertain so recovery reconciles it rather than retrying.
+            Outcome::Failed { .. } | Outcome::Cancelled => {
+                Err(Error::Indeterminate(uncertain_operation))
+            }
+            Outcome::Indeterminate { .. } => Err(Error::Indeterminate(uncertain_operation)),
+        }
     }
 
     /// Registers one exact prepared report before a model turn begins.
