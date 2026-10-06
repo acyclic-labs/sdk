@@ -654,7 +654,7 @@ fn decode_read<F: Format>(
 ) -> Result<OwnedPage<F>, Error> {
     let prepared = (|| -> Result<_, Error> {
         let shape = F::decode_shape(read, limits)?;
-        charge_items(work, u64::try_from(shape.items).unwrap_or(u64::MAX), budget)?;
+        work.charge_items(u64::try_from(shape.items).unwrap_or(u64::MAX), &budget)?;
         let logical_bytes = logical_page_bytes::<F>(shape).ok_or(Error::AllocationFailed)?;
         Ok((shape, logical_bytes))
     })();
@@ -778,10 +778,6 @@ fn charge_copy(
             Err(error.into())
         }
     }
-}
-
-fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), WorkError> {
-    work.charge_items(count, &budget)
 }
 
 #[cfg(all(test, feature = "memory"))]

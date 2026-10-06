@@ -283,6 +283,9 @@ fn item_charging_and_lower_layer_error_translation_are_total()
         rejected.error,
         Error::Work(WorkError::BudgetExceeded { .. })
     ));
+    // A rejected charge spends nothing, like every other item charge.
+    assert_eq!(*rejected.work, exact_budget);
+    assert_eq!(work, exact_budget);
 
     for allocation in [
         AllocationError::Overflow,

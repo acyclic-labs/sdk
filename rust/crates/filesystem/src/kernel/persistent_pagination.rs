@@ -735,13 +735,7 @@ fn upper_bound_children<K: Ord>(children: &[Child<K>], cursor: &K) -> (usize, u6
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), Failure> {
-    *work = work
-        .checked_add(WorkCounters {
-            items_examined: count,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| failed(error.into(), *work))?;
-    work.verify(budget)
+    work.charge_items(count, &budget)
         .map_err(|error| failed(error.into(), *work))
 }
 

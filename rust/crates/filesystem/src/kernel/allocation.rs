@@ -172,7 +172,7 @@ impl VisitedObjectSet {
             let mask = self.slots.len() - 1;
             let mut index = object_hash(object) & mask;
             loop {
-                Self::charge_items(work, budget, 1)?;
+                work.charge_items(1, budget)?;
                 probes = probes.checked_add(1).ok_or(AllocationError::Overflow)?;
                 match self.slots[index] {
                     Some(existing) if existing == object => {
@@ -233,9 +233,9 @@ impl VisitedObjectSet {
         for object in self.slots.iter().flatten().copied() {
             let mut index = object_hash(object) & mask;
             loop {
-                if let Err(error) = Self::charge_items(work, budget, 1) {
+                if let Err(error) = work.charge_items(1, budget) {
                     ledger.release(new_bytes)?;
-                    return Err(error);
+                    return Err(error.into());
                 }
                 let Some(next_probes) = probes.checked_add(1) else {
                     ledger.release(new_bytes)?;
@@ -269,15 +269,6 @@ impl VisitedObjectSet {
             .checked_mul(Self::LOAD_NUMERATOR)
             .and_then(usize::checked_next_power_of_two)
             .ok_or(AllocationError::Overflow)
-    }
-
-    #[inline]
-    fn charge_items(
-        work: &mut WorkCounters,
-        budget: &WorkBudget,
-        count: u64,
-    ) -> Result<(), AllocationError> {
-        Ok(work.charge_items(count, budget)?)
     }
 
     fn charge_copied(work: &mut WorkCounters, budget: &WorkBudget) -> Result<(), AllocationError> {
