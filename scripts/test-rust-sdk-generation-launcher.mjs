@@ -40,9 +40,20 @@ test("explicit caller paths and pinned runtime/cache are preserved", () => {
   assert.equal(plan.program, "pinned-cargo");
   assert.equal(value(plan, "--source-root"), resolve(options.callerDirectory, "snapshot"));
   assert.equal(value(plan, "--output"), resolve(options.callerDirectory, "packages"));
-  assert.equal(plan.options.env.CARGO_TARGET_DIR, "owned-cache");
+  assert.equal(plan.options.env.CARGO_TARGET_DIR, resolve(options.callerDirectory, "owned-cache"));
   assert.equal(plan.options.env.KEEP, "value");
   assert.equal(environment.CARGO_TARGET_DIR, "owned-cache");
+});
+
+test("explicit Cargo target directories cannot write inside the frozen source", () => {
+  assert.throws(
+    () => generationInvocation(
+      "generate",
+      ["--source-root", "/frozen/sdk"],
+      { ...options, environment: { CARGO_TARGET_DIR: "/frozen/sdk/target" } },
+    ),
+    /Cargo target directory must be outside the Rust source root/,
+  );
 });
 
 test("missing path values fail before a compiler or generator starts", () => {
