@@ -1585,7 +1585,43 @@ async fn default_local_composition_runs_recursive_models_and_reopens_without_dis
     ).await?;
     provider.bind_swarm(&swarm);
     let operation = id(0xF0);
-    let output = swarm.run_root(operation, "run default recursive composition").await?;
+    let output = match swarm
+        .run_root(operation, "run default recursive composition")
+        .await
+    {
+        Ok(output) => output,
+        Err(error) => {
+            #[cfg(feature = "test-support")]
+            {
+                let mut task_operations = Vec::with_capacity(4);
+                if let Ok(root_task) = swarm.root_task().await {
+                    task_operations.push((root_task, operation));
+                }
+                for operation_id in [id(0xF1), id(0xF2), id(0xF3)] {
+                    task_operations.push((
+                        acyclic_harness::TaskId::from_bytes(operation_id.into_bytes()),
+                        operation_id,
+                    ));
+                }
+                return Err(
+                    swarm_provider_support::preserve_failure_evidence(
+                        directory,
+                        &swarm,
+                        operation,
+                        task_operations,
+                        swarm_provider_support::FixtureFailureSummary {
+                            dispatches: provider.dispatches.load(Ordering::SeqCst),
+                            serialized_request_count: provider.serialized_requests().len(),
+                        },
+                        error,
+                    )
+                    .await,
+                );
+            }
+            #[cfg(not(feature = "test-support"))]
+            return Err(error);
+        }
+    };
     assert_eq!(output.text, "ordinary completion");
     assert_eq!(swarm.sessions().await?.len(), 4);
     assert!(provider.child_read_verified.load(Ordering::SeqCst));
