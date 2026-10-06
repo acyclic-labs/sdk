@@ -45,7 +45,11 @@ mod wasm {
         harness::v2 as harness,
         protocol::v1 as harness_protocol,
     };
-    use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
+    use acyclic_sdk_contract_wire::{
+        BEARER_NO_CRLF,
+        bindings::BindingFamily,
+        credential,
+    };
     use blake3::hash;
     use js_sys::{Array, Object, Reflect, Uint8Array};
     use prost::Message;
@@ -55,8 +59,7 @@ mod wasm {
     use wasm_bindgen::prelude::*;
 
     const FILESYSTEM_PROTOCOL_VERSION: &str = "1";
-    const FILE_DESCRIPTOR_SET: &[u8] =
-        include_bytes!("../../filesystem/src/generated/acyclic-filesystem-v2.bin");
+    const FILE_DESCRIPTOR_SET: &[u8] = BindingFamily::Filesystem.archived_runtime_descriptor();
     const MINIMUM_HANDSHAKE_RESPONSE_BYTES: u64 = 512;
 
     type Transport = tonic_web_wasm_client::Client;
@@ -520,8 +523,7 @@ mod wasm {
         ("observe", "1"),
         ("cancel", "1"),
     ];
-    const HARNESS_DESCRIPTOR_SET: &[u8] =
-        include_bytes!("../../harness/src/generated/harness-archived-v2.bin");
+    const HARNESS_DESCRIPTOR_SET: &[u8] = BindingFamily::Harness.archived_runtime_descriptor();
     /// Rust-owned default request bound for browser Harness calls.
     pub const DEFAULT_HARNESS_MAXIMUM_REQUEST_BYTES: u64 = 16 * 1024 * 1024;
     /// Rust-owned default response bound for browser Harness calls.

@@ -29,8 +29,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_transport(false)
         .build_server(false)
         .compile_fds_with_config(descriptors, tonic_prost_build::Config::new())?;
-    println!("cargo:rerun-if-changed=../filesystem/src/generated/rust-model-filesystem-v2.bin");
-    println!("cargo:rerun-if-changed=../harness/src/generated/rust-model-harness-v2.bin");
-    println!("cargo:rerun-if-changed=../sdk-contract-wire/src");
+    // The descriptor inputs come from the Rust-owned wire dependency. Keep
+    // rerun paths package-local so an extracted crate never reaches into
+    // sibling workspace directories.
+    println!("cargo:rerun-if-changed=build.rs");
     Ok(())
 }

@@ -11,7 +11,7 @@ description = "Rust-owned browser admission and response-boundary helpers for ge
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 blake3 = "1.8.2"
 bytes = "1.10.1"
 prost = "0.14.4"
@@ -26,7 +26,7 @@ wasm-bindgen = "=0.2.117"
 wasm-bindgen-futures = "0.4.67"
 
 [build-dependencies]
-acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 prost = "0.14.4"
 prost-types = "0.14.4"
 tonic-prost-build = "0.14.6"

@@ -55,6 +55,11 @@ for (let i = 2; i < process.argv.length; i += 1) {
 const output = resolve(args.get("--output") ?? join(repo, "work", "guide-projection-qualification"));
 const snippets = join(output, "snippets");
 mkdirSync(snippets, { recursive: true });
+// Keep consumer compilation artifacts outside each receipt directory so a
+// stable output path can reuse them. An explicit target may point at a shared
+// cache; the default remains owned by this checkout.
+const cargoTargetDir = resolve(repo, process.env.CARGO_TARGET_DIR ?? process.env.SDK_CARGO_TARGET_DIR ?? join(repo, "target", "sdk-guide-qualification"));
+const fixtureBinary = resolve(repo, process.env.SDK_FIXTURE_SERVER_BIN ?? join(repo, "target", "debug", process.platform === "win32" ? "fixture-server.exe" : "fixture-server"));
 const expectedProjectionCount = args.has("--expected-count")
   ? Number(args.get("--expected-count"))
   : 54;
@@ -83,8 +88,13 @@ function command(name, commandArgs, cwd = repo, extraEnv = {}) {
 }
 
 async function startFixture() {
-  const binary = join(repo, "rust", "crates", "sdk-examples", "target", "debug", process.platform === "win32" ? "fixture-server.exe" : "fixture-server");
-  if (!existsSync(binary)) return null;
+  let binary;
+  try {
+    binary = statSync(fixtureBinary).isFile() ? fixtureBinary : null;
+  } catch {
+    binary = null;
+  }
+  if (!binary) return null;
   const child = spawn(binary, ["--port", "0", "--grpc-port", "0", "--max-requests", "512"], {
     cwd: repo,
     stdio: ["ignore", "pipe", "pipe"],
@@ -329,7 +339,7 @@ function prepare(language, packageArtifact, directory, projection) {
     }
     const installedRoot = rustPackagePath(packageInstall, packageName);
     writeFileSync(join(directory, "Cargo.toml"), `[package]\nname = "guide_snippet"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\n${packageName} = { package = "${packageName}", path = "${installedRoot.replaceAll("\\", "/")}" }\nbytes = "1.10.1"\nprost = "0.14.4"\nsha2 = "0.10.9"\ntokio = { version = "1.48.0", features = ["macros", "rt", "rt-multi-thread", "time", "sync"] }\n`);
-    const environment = { CARGO_TARGET_DIR: join(output, "cargo-target") };
+    const environment = { CARGO_TARGET_DIR: cargoTargetDir };
     const metadata = command(cargo, ["metadata", "--offline", "--manifest-path", join(directory, "Cargo.toml"), "--format-version", "1"], directory, environment);
     if (metadata.exitCode !== 0) {
       return { status: "install-failed", install: metadata, environment, packageSha256: extracted.archiveSha256, packageTreeSha256: extracted.treeSha256, archiveFormat: "gzip+ustar", resolvedPackageRoot: relative(repo, installedRoot).replaceAll("\\", "/") };

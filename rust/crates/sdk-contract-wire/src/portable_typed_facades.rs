@@ -565,7 +565,7 @@ fn php_default(field: &ResolvedRequestField) -> String {
         return " = null".to_owned();
     }
     if php_uint64(field) {
-        return format!(" = {}::fromString('0')", php_uint64_type());
+        return format!(" = new {}('0')", php_uint64_type());
     }
     if let Some(class) = enum_field(field) {
         return format!(" = new {class}(0)");
@@ -1077,7 +1077,7 @@ fn php_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) 
         let payload = oneof_php_payload(member);
         out.push_str(&format!("final readonly class {variant} extends {base}\n{{\n    public readonly {payload} $value;\n    /** @param {payload} $value */\n    public function __construct({} $value) {{\n        if (!({})) {{ throw new \\InvalidArgumentException('invalid Rust-typed oneof payload for {variant}'); }}\n        $this->value = $value;\n        parent::__construct({:?});\n    }}\n}}\n", php_constructor_type_for_type(&payload), php_runtime_predicate_for_type(&payload, "$value"), member.field.field));
     }
-    out.push_str(&format!("final readonly class {base}Unknown extends {base}\n{{\n    public readonly int $unknownTag;\n    public readonly string $payload;\n    /** @param int $unknownTag @param string $payload */\n    public function __construct(mixed $unknownTag, mixed $payload) {{\n        if (!is_int($unknownTag) || !is_string($payload)) {{ throw new \\InvalidArgumentException('invalid Rust-typed unknown oneof payload'); }}\n        $this->unknownTag = $unknownTag;\n        $this->payload = $payload;\n        parent::__construct('unknown:' . (string) $unknownTag);\n    }}\n}}\n"));
+    out.push_str(&format!("final readonly class {base}Unknown extends {base}\n{{\n    public readonly int $unknownTag;\n    public readonly string $payload;\n    /** @param int $unknownTag @param string $payload */\n    public function __construct(int $unknownTag, string $payload) {{\n        if (!is_int($unknownTag) || !is_string($payload)) {{ throw new \\InvalidArgumentException('invalid Rust-typed unknown oneof payload'); }}\n        $this->unknownTag = $unknownTag;\n        $this->payload = $payload;\n        parent::__construct('unknown:' . (string) $unknownTag);\n    }}\n}}\n"));
     out
 }
 
@@ -1139,12 +1139,7 @@ fn php_constructor_type(field: &ResolvedRequestField) -> String {
 }
 
 fn php_constructor_type_for_type(type_name: &str) -> String {
-    let scalar = type_name.strip_prefix('?').unwrap_or(type_name);
-    if matches!(scalar, "bool" | "float" | "int" | "string") {
-        "mixed".to_owned()
-    } else {
-        type_name.to_owned()
-    }
+    type_name.to_owned()
 }
 
 fn php_runtime_error(field: &ResolvedRequestField) -> String {
@@ -1164,7 +1159,7 @@ fn php_runtime_predicate_for_type(type_name: &str, value: &str) -> String {
 
 fn php_nominal_wrapper(name: &str, scalar: &str) -> String {
     format!(
-        "final readonly class {name} {{\n    public readonly {scalar} $value;\n    /** @param {scalar} $value */\n    public function __construct(mixed $value) {{\n        if (!({})) {{ throw new \\InvalidArgumentException('invalid Rust-typed value for {}'); }}\n        $this->value = $value;\n    }}\n    public function toWire(): {scalar} {{ return $this->value; }}\n}}\n",
+        "final readonly class {name} {{\n    public readonly {scalar} $value;\n    /** @param {scalar} $value */\n    public function __construct({scalar} $value) {{\n        if (!({})) {{ throw new \\InvalidArgumentException('invalid Rust-typed value for {}'); }}\n        $this->value = $value;\n    }}\n    public function toWire(): {scalar} {{ return $this->value; }}\n}}\n",
         php_runtime_predicate_for_type(scalar, "$value"),
         name
     )
@@ -1173,7 +1168,7 @@ fn php_nominal_wrapper(name: &str, scalar: &str) -> String {
 fn php_enum(entry: &ResolvedEnumField) -> String {
     let name = enum_class(&entry.enum_type);
     let mut out = format!(
-        "final readonly class {name} {{\n    public readonly int $value;\n    /** @param int $value */\n    public function __construct(mixed $value) {{\n        if (!is_int($value)) {{ throw new \\InvalidArgumentException('invalid Rust-typed value for {name}'); }}\n        $this->value = $value;\n    }}\n    public static function unknown(int $value): self {{ return new self($value); }}\n    public static function fromWire(int $value): self {{ return new self($value); }}\n    public function toWire(): int {{ return $this->value; }}\n"
+        "final readonly class {name} {{\n    public readonly int $value;\n    /** @param int $value */\n    public function __construct(int $value) {{\n        if (!is_int($value)) {{ throw new \\InvalidArgumentException('invalid Rust-typed value for {name}'); }}\n        $this->value = $value;\n    }}\n    public static function unknown(int $value): self {{ return new self($value); }}\n    public static function fromWire(int $value): self {{ return new self($value); }}\n    public function toWire(): int {{ return $this->value; }}\n"
     );
     for value in &entry.values {
         out.push_str(&format!(
@@ -1380,8 +1375,12 @@ mod tests {
         let (_, requests, responses) = models();
         let fields = requests.into_iter().chain(responses);
         let mut count = 0;
+        let mut first_uint64 = None;
         for field in fields.filter(php_uint64) {
             count += 1;
+            if first_uint64.is_none() {
+                first_uint64 = Some(field.clone());
+            }
             assert!(
                 output.source.contains(&format!(
                     "public readonly {} ${};",
@@ -1410,9 +1409,21 @@ mod tests {
         }
         assert!(count > 0, "Rust descriptor model has no unsigned 64-bit fields");
         assert!(output.source.contains("::fromWireScalar("));
-        assert!(output.source.contains("array_reduce("));
         assert!(output
             .source
             .contains("function __construct(\\Acyclic\\Runtime\\UInt64 $"));
+        assert!(output
+            .source
+            .contains("= new \\Acyclic\\Runtime\\UInt64('0')"));
+        assert!(!output.source.contains("::fromString('0')"));
+        assert!(output.source.contains("public function __construct(string $value)"));
+        assert!(output.source.contains("public function __construct(int $value)"));
+        assert!(!output.source.contains("public function __construct(mixed $value)"));
+        let mut repeated = first_uint64.expect("unsigned 64-bit field");
+        repeated.label = Some(3);
+        assert!(
+            php_runtime_predicate_for_field(&repeated, "$value").contains("array_reduce("),
+            "repeated UInt64 fields must validate every element"
+        );
     }
 }

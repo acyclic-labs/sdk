@@ -2315,6 +2315,14 @@ fn native_companion_dependencies(
                     manifest_path.display()
                 ))
             })?;
+        let target = entry.file_name().to_string_lossy().into_owned();
+        let expected_name = format!("@acyclic-labs/{family}-{target}");
+        if name != expected_name {
+            return Err(Error::Missing(format!(
+                "native companion package name must match its Rust-owned target directory: {} ({name} != {expected_name})",
+                manifest_path.display()
+            )));
+        }
         let version = object
             .get("version")
             .and_then(serde_json::Value::as_str)
@@ -3016,6 +3024,59 @@ mod tests {
         assert!(!package_native_module_available(
             &repository.join("typescript/packages/actors/package.json")
         ));
+    }
+
+    #[test]
+    fn package_optional_companions_are_read_from_rust_owned_manifests() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let stream = native_companion_dependencies(&repository, "stream")
+            .expect("Stream native package metadata");
+        let machines = native_companion_dependencies(&repository, "machines")
+            .expect("Machines native package metadata");
+
+        assert_eq!(stream.len(), 8);
+        assert_eq!(machines.len(), 6);
+        assert!(stream.contains_key("@acyclic-labs/stream-linux-x64-musl"));
+        assert!(stream.contains_key("@acyclic-labs/stream-darwin-arm64"));
+        assert!(machines.contains_key("@acyclic-labs/machines-linux-x64-gnu"));
+        assert!(machines.contains_key("@acyclic-labs/machines-win32-arm64"));
+        assert!(stream
+            .values()
+            .all(|version| version.as_str() == Some("0.2.0")));
+        assert!(machines
+            .values()
+            .all(|version| version.as_str() == Some("0.2.0")));
+
+        for (family, expected) in [("stream", 8usize), ("machines", 6usize)] {
+            let service = model()
+                .expect("Rust model")
+                .services
+                .into_iter()
+                .find(|service| service.family == family)
+                .expect("native family metadata");
+            let source_manifest = repository
+                .join("typescript/packages")
+                .join(family)
+                .join("package.json");
+            let generated = generated_package_manifest(
+                &source_manifest,
+                &repository,
+                &service,
+                "working-tree",
+                None,
+            )
+            .expect("Rust-generated package manifest");
+            let manifest: serde_json::Value =
+                serde_json::from_str(&generated).expect("generated package JSON");
+            assert_eq!(
+                manifest
+                    .get("optionalDependencies")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|value| value.len()),
+                Some(expected),
+                "{family} optional dependencies must be Rust-owned companion packages",
+            );
+        }
     }
 
     #[test]

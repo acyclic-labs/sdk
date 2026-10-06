@@ -35,7 +35,10 @@ pub mod grpc;
 /// HTTP Workers transport shared by native and browser consumers.
 pub mod http;
 
-pub use client::{Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect};
+pub use client::{
+    Client, ConnectError, Error, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect,
+    connect_with_ca_certificate,
+};
 
 /// Generated Workers v1 wire types. The documented schema is `proto/workers/v1/workers.proto`.
 pub mod wire {

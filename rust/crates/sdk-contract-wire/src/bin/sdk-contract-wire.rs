@@ -25,9 +25,10 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     transport_control::{control_descriptor, control_proto},
     type_policy::{
-        FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PublicFieldDirection, SEMANTIC_TYPES,
-        SemanticRule, TYPE_PROJECTION_PROFILES, TypePolicyLanguage, WIRE_UNION_VARIANTS,
-        WireValueKind,
+        resolved_operation_rules, FIELD_SEMANTIC_TYPES, JVM_WIRE_UNION_VARIANTS,
+        PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, OperationEnforcement, OperationRule,
+        PublicFieldDirection, PublicNestedFieldKind, SEMANTIC_TYPES, SemanticRule,
+        TYPE_PROJECTION_PROFILES, TypePolicyLanguage, WIRE_UNION_VARIANTS, WireValueKind,
     },
     workers::{workers_descriptor, workers_proto},
 };
@@ -108,6 +109,56 @@ fn public_field_direction_name(direction: PublicFieldDirection) -> &'static str 
         PublicFieldDirection::Response => "response",
         PublicFieldDirection::NestedMessage => "nested_message",
         PublicFieldDirection::EmbeddedOnly => "embedded_only",
+    }
+}
+
+fn operation_enforcement_name(enforcement: OperationEnforcement) -> &'static str {
+    match enforcement {
+        OperationEnforcement::ClientLocal => "client_local",
+        OperationEnforcement::ProviderState => "provider_state",
+        OperationEnforcement::ResponseInvariant => "response_invariant",
+        OperationEnforcement::Unsupported => "unsupported",
+    }
+}
+
+fn operation_rule_json(rule: OperationRule) -> Value {
+    match rule {
+        OperationRule::Capability(capability) => {
+            serde_json::json!({ "kind": "capability", "capability": capability })
+        }
+        OperationRule::BucketMustBeEmpty => serde_json::json!({ "kind": "bucket_must_be_empty" }),
+        OperationRule::OrderedParts {
+            max_items,
+            max_part_number,
+        } => serde_json::json!({
+            "kind": "ordered_parts",
+            "max_items": max_items,
+            "max_part_number": max_part_number,
+        }),
+        OperationRule::AtomicPrecondition => serde_json::json!({ "kind": "atomic_precondition" }),
+        OperationRule::MaxRecordBytes(max_bytes) => {
+            serde_json::json!({ "kind": "max_record_bytes", "max_bytes": max_bytes })
+        }
+        OperationRule::MaxCommandBytes(max_bytes) => {
+            serde_json::json!({ "kind": "max_command_bytes", "max_bytes": max_bytes })
+        }
+        OperationRule::Policy(validation) => {
+            serde_json::json!({ "kind": "policy", "validation": validation })
+        }
+    }
+}
+
+fn public_nested_field_json(field: &str, kind: PublicNestedFieldKind) -> Value {
+    match kind {
+        PublicNestedFieldKind::Text => serde_json::json!({
+            "field": field,
+            "kind": "text",
+        }),
+        PublicNestedFieldKind::Message(message) => serde_json::json!({
+            "field": field,
+            "kind": "message",
+            "message_type": message,
+        }),
     }
 }
 
@@ -235,6 +286,28 @@ fn type_policy_json() -> Vec<u8> {
             })
         })
         .collect::<Vec<_>>();
+    let jvm_union_variants = JVM_WIRE_UNION_VARIANTS
+        .iter()
+        .map(|variant| {
+            let payload_wire_kind = match variant.payload_wire_kind {
+                WireValueKind::String => "string",
+                WireValueKind::Bytes => "bytes",
+                WireValueKind::SignedInteger => "signed_integer",
+                WireValueKind::UnsignedInteger => "unsigned_integer",
+                WireValueKind::Boolean => "boolean",
+                WireValueKind::Timestamp => "timestamp",
+                WireValueKind::Enum => "enum",
+                WireValueKind::Message => "message",
+                WireValueKind::Oneof => "oneof",
+            };
+            serde_json::json!({
+                "union": variant.union,
+                "variant": variant.variant,
+                "tag": variant.tag,
+                "payload_wire_kind": payload_wire_kind,
+            })
+        })
+        .collect::<Vec<_>>();
     let public_field_bindings = PUBLIC_FIELD_BINDINGS
         .iter()
         .map(|binding| {
@@ -293,6 +366,43 @@ fn type_policy_json() -> Vec<u8> {
                 acyclic_sdk_contract_wire::ResolvedPresenceKind::ExplicitOptional => "explicit_optional",
             },
         })).collect::<Vec<_>>();
+    let operation_rules = resolved_operation_rules()
+        .into_iter()
+        .map(|rule| {
+            serde_json::json!({
+                "family": rule.family,
+                "rpc": rule.rpc,
+                "validation": rule.validation,
+                "rule": operation_rule_json(rule.rule),
+                "target": {
+                    "path": rule.target.path,
+                    "enforcement": operation_enforcement_name(rule.target.enforcement),
+                },
+            })
+        })
+        .collect::<Vec<_>>();
+    let public_nested_routes = PUBLIC_NESTED_ROUTES
+        .iter()
+        .map(|route| {
+            serde_json::json!({
+                "family": route.family,
+                "operation": route.operation,
+                "module": route.module,
+                "request_message": route.request_message,
+                "nested_message": route.nested_message,
+                "nested_field": route.nested_field,
+                "semantic_field": route.semantic_field,
+                "client_attribute": route.client_attribute,
+                "rpc": route.rpc,
+                "response": route.response,
+                "fields": route
+                    .fields
+                    .iter()
+                    .map(|(field, kind)| public_nested_field_json(field, *kind))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "schema": "acyclic.sdk.type-policy.v1",
         "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
@@ -301,10 +411,13 @@ fn type_policy_json() -> Vec<u8> {
         "field_mappings": field_mappings,
         "public_field_bindings": public_field_bindings,
         "union_variants": union_variants,
+        "jvm_union_variants": jvm_union_variants,
         "rpc_methods": rpc_methods,
         "enum_fields": enum_fields,
         "oneof_members": oneof_members,
         "presence_fields": presence_fields,
+        "operation_rules": operation_rules,
+        "public_nested_routes": public_nested_routes,
     });
     serde_json::to_vec_pretty(&document).expect("type policy JSON is serializable")
 }
@@ -1755,6 +1868,52 @@ mod tests {
             .expect("presence inventory");
         for kind in ["message", "oneof", "explicit_optional"] {
             assert!(presence.iter().any(|item| item["kind"] == kind));
+        }
+    }
+
+    #[test]
+    fn exported_policy_retains_operation_rules_and_nested_public_routes() {
+        let document: Value = serde_json::from_slice(&type_policy_json()).expect("policy JSON");
+        let operation_rules = document["operation_rules"]
+            .as_array()
+            .expect("operation rule inventory");
+        let expected_rules = resolved_operation_rules();
+        assert_eq!(operation_rules.len(), expected_rules.len());
+        for (expected, exported) in expected_rules.iter().zip(operation_rules) {
+            assert_eq!(exported["family"], expected.family);
+            assert_eq!(exported["rpc"], expected.rpc);
+            assert_eq!(exported["validation"], expected.validation);
+            assert_eq!(exported["rule"], operation_rule_json(expected.rule));
+            assert_eq!(
+                exported["target"]["path"],
+                expected.target.path
+            );
+            assert_eq!(
+                exported["target"]["enforcement"],
+                operation_enforcement_name(expected.target.enforcement)
+            );
+        }
+
+        let nested_routes = document["public_nested_routes"]
+            .as_array()
+            .expect("public nested route inventory");
+        assert_eq!(nested_routes.len(), PUBLIC_NESTED_ROUTES.len());
+        for (expected, exported) in PUBLIC_NESTED_ROUTES.iter().zip(nested_routes) {
+            assert_eq!(exported["family"], expected.family);
+            assert_eq!(exported["operation"], expected.operation);
+            assert_eq!(exported["module"], expected.module);
+            assert_eq!(exported["request_message"], expected.request_message);
+            assert_eq!(exported["nested_message"], expected.nested_message);
+            assert_eq!(exported["nested_field"], expected.nested_field);
+            assert_eq!(exported["semantic_field"], expected.semantic_field);
+            assert_eq!(exported["client_attribute"], expected.client_attribute);
+            assert_eq!(exported["rpc"], expected.rpc);
+            assert_eq!(exported["response"], expected.response);
+            let fields = exported["fields"].as_array().expect("nested route fields");
+            assert_eq!(fields.len(), expected.fields.len());
+            for ((field, kind), exported_field) in expected.fields.iter().zip(fields) {
+                assert_eq!(exported_field, &public_nested_field_json(field, *kind));
+            }
         }
     }
 

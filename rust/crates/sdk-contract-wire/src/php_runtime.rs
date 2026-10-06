@@ -36,12 +36,16 @@ use Stringable;
 final class UInt64 implements JsonSerializable, Stringable
 {
     private const MAX = '18446744073709551615';
+    private readonly string $decimal;
 
-    private function __construct(private readonly string $decimal)
+    /** Construct the exact decimal representation used by generated defaults. */
+    public function __construct(string $decimal)
     {
+        self::validateDecimal($decimal);
+        $this->decimal = $decimal;
     }
 
-    public static function fromString(string $value): self
+    private static function validateDecimal(string $value): void
     {
         if (!preg_match('/^(?:0|[1-9][0-9]*)$/', $value)) {
             throw new InvalidArgumentException('uint64 must be a non-negative decimal string');
@@ -49,6 +53,11 @@ final class UInt64 implements JsonSerializable, Stringable
         if (self::compare($value, self::MAX) > 0) {
             throw new InvalidArgumentException('uint64 is greater than 18446744073709551615');
         }
+    }
+
+    public static function fromString(string $value): self
+    {
+        self::validateDecimal($value);
         return new self($value);
     }
 
@@ -218,5 +227,6 @@ mod tests {
         assert!(bundle[0].1.contains("fromWireVarint"));
         assert!(bundle[0].1.contains("function toWire(): string"));
         assert!(bundle[0].1.contains("validateGeneratedScalar"));
+        assert!(bundle[0].1.contains("public function __construct(string $decimal)"));
     }
 }

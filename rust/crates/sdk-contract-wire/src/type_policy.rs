@@ -14,9 +14,10 @@
 //! * the idiomatic target-language representation used to expose those
 //!   constraints to a compiler or static checker.
 //!
-//! Unknown enum numbers and unknown oneof arms are always preserved.  A
-//! target may expose a closed, exhaustive convenience view only in addition
-//! to the open wire representation; it must never discard an unknown value.
+//! Unknown enum numbers and unknown oneof data are always preserved.  A target
+//! may expose a closed, exhaustive convenience view only in addition to the
+//! open wire representation; unknown oneof data is carried as canonical
+//! protobuf `UnknownFieldSet` semantic bytes and is never assigned to an arm.
 
 use std::{
     fs,
@@ -27,6 +28,7 @@ use std::{
 use prost::Message;
 pub use prost_types::field_descriptor_proto::Type as FieldType;
 use prost_types::{DescriptorProto, FileDescriptorSet};
+use sha2::{Digest, Sha256};
 
 use crate::family_registry::{FAMILY_VIEWS, FamilyModel};
 
@@ -53,8 +55,9 @@ pub struct ResolvedRequestField {
     pub wire_type: Option<i32>,
     pub label: Option<i32>,
     pub oneof_index: Option<i32>,
-    /// Rust descriptor oneof identity used to generate a nominal target union
-    /// while retaining the original wire bytes for unknown arms.
+    /// Rust descriptor oneof identity used to generate a nominal target union.
+    /// Unknown data is represented separately as canonical protobuf
+    /// `UnknownFieldSet` bytes; it is never assigned to a oneof arm.
     pub oneof_name: Option<String>,
     pub proto3_optional: bool,
     pub semantic_type: Option<String>,
@@ -86,8 +89,9 @@ pub struct ResolvedEnumField {
 
 /// A reachable oneof member with its descriptor payload identity.  Message
 /// members carry their fully qualified Rust descriptor type; scalar and enum
-/// members retain the protobuf wire kind.  Unknown tags remain preserved at
-/// the wire boundary for every member.
+/// members retain the protobuf wire kind. Unknown data remains available as a
+/// canonical protobuf `UnknownFieldSet` payload at the boundary; it is never
+/// asserted to belong to one member merely because its tag is not recognized.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedOneofMember {
     pub field: ResolvedRequestField,
@@ -1581,11 +1585,10 @@ impl PublicFieldBinding {
     }
 }
 
-/// A Rust-owned discriminated union projection.  The open `unknown` arm is
-/// part of the wire contract, while the `known` arm gives every target a
-/// statically visible payload-bearing variant for values understood by the
-/// current SDK revision.  Targets may add family-specific known arms later,
-/// but they must preserve this open pair when decoding newer senders.
+/// A Rust-owned discriminated union projection.  The opaque unknown payload is
+/// a canonical protobuf `UnknownFieldSet` encoding, not a claim about one
+/// field or the original serialization bytes.  An empty unknown set is an
+/// explicit absent state in JVM projections.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WireUnionVariant {
     pub union: &'static str,
@@ -1752,6 +1755,12 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         rust_name: "Revision",
         wire_kind: WireValueKind::UnsignedInteger,
         rules: NON_NEGATIVE,
+    },
+    SemanticType {
+        id: "uint64",
+        rust_name: "UInt64",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: &[],
     },
     SemanticType {
         id: "run_id",
@@ -2860,6 +2869,49 @@ pub const WIRE_UNION_VARIANTS: &[WireUnionVariant] = &[
     },
 ];
 
+/// JVM-specific projection metadata for the shared open union.  These names
+/// are generated class identities rather than protobuf field tags: unknown
+/// data is represented by the complete canonical `UnknownFieldSet` payload,
+/// and `Absent` is emitted only when that set is empty.
+pub const JVM_WIRE_UNION_VARIANTS: &[WireUnionVariant] = &[
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "KnownHeader",
+        tag: "header",
+        payload_wire_kind: WireValueKind::Message,
+    },
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "KnownBody",
+        tag: "body",
+        payload_wire_kind: WireValueKind::Bytes,
+    },
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "KnownError",
+        tag: "error",
+        payload_wire_kind: WireValueKind::Message,
+    },
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "KnownRaw",
+        tag: "known_raw",
+        payload_wire_kind: WireValueKind::Bytes,
+    },
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "Absent",
+        tag: "absent",
+        payload_wire_kind: WireValueKind::Oneof,
+    },
+    WireUnionVariant {
+        union: "jvm_wire_choice",
+        variant: "OpaqueUnknownFields",
+        tag: "opaque_unknown_fields",
+        payload_wire_kind: WireValueKind::Bytes,
+    },
+];
+
 /// How a target should expose optional fields, unions and open enums.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TypeProjectionProfile {
@@ -2932,7 +2984,7 @@ pub const TYPE_PROJECTION_PROFILES: &[TypeProjectionProfile] = &[
         unions: "sealed interfaces plus records",
         refinements: "factory methods returning typed validation errors",
         presence: "optional wrappers only where presence is explicit",
-        unknown_values: "UNRECOGNIZED plus raw number and UnknownOneof",
+        unknown_values: "UNRECOGNIZED plus canonical OpaqueUnknownFields and explicit Absent",
         integers: "long with unsigned helper/value wrapper",
         checker: "javac -Xlint + Error Prone",
     },
@@ -3002,7 +3054,7 @@ pub const TYPE_PROJECTION_PROFILES: &[TypeProjectionProfile] = &[
         unions: "sealed interfaces/data classes",
         refinements: "require/factory returning typed failures",
         presence: "nullable only for explicit presence",
-        unknown_values: "UNRECOGNIZED(raw) and UnknownOneof",
+        unknown_values: "UNRECOGNIZED(raw) plus canonical OpaqueUnknownFields and explicit Absent",
         integers: "ULong/Long with protobuf adapters",
         checker: "kotlinc + detekt",
     },
@@ -3012,7 +3064,7 @@ pub const TYPE_PROJECTION_PROFILES: &[TypeProjectionProfile] = &[
         unions: "sealed traits with case classes",
         refinements: "refined constructors and Either",
         presence: "Option only for explicit presence",
-        unknown_values: "open enum Unknown case carrying raw integer",
+        unknown_values: "open enum Unknown case carrying raw integer; OpaqueUnknownFields and Absent for oneofs",
         integers: "Long with UInt64 value class",
         checker: "scalac -Xfatal-warnings + munit",
     },
@@ -3245,6 +3297,47 @@ pub struct GeneratedSurfaceViolation {
 /// required list when it invokes the same audit.
 pub const REQUIRED_PRODUCT_SURFACES: &[&str] = &["python", "go", "jvm", "csharp", "swift", "cpp"];
 
+/// The first-class source-of-truth audit used by the Rust/TypeScript docs
+/// stage.  Rust generated wire sources and the Rust-owned TypeScript
+/// projections are independently useful evidence; downstream language
+/// producers remain part of the full release audit.
+pub const PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES: &[&str] = &["rust", "typescript"];
+
+/// A generated-type audit scope is selected by the Rust verifier rather than
+/// by a language-specific script.  The full scope preserves the existing
+/// downstream gate; the primary scope is intentionally narrow so a Rust and
+/// TypeScript docs PR is not blocked by a later release-only producer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GeneratedTypeAuditScope {
+    RustTypescript,
+    Full,
+}
+
+impl GeneratedTypeAuditScope {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::RustTypescript => "rust-typescript",
+            Self::Full => "full",
+        }
+    }
+
+    pub const fn default_required_languages(self) -> &'static [&'static str] {
+        match self {
+            Self::RustTypescript => PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES,
+            // Keep the historical release gate as the full-scope default;
+            // every discovered secondary surface is still audited below.
+            Self::Full => REQUIRED_PRODUCT_SURFACES,
+        }
+    }
+
+    pub fn allows(self, language: &str) -> bool {
+        match self {
+            Self::RustTypescript => PRIMARY_GENERATED_TYPE_AUDIT_LANGUAGES.contains(&language),
+            Self::Full => true,
+        }
+    }
+}
+
 /// A source-binding defect found in a language-producer output tree.
 ///
 /// Producer output lives below `language-producers/<target>/` and is allowed
@@ -3303,11 +3396,146 @@ fn producer_authority_metadata_files(root: &Path) -> Vec<PathBuf> {
         "rust-authority.json",
         "toolchain-receipt.json",
         "source-authority.json",
+        "producer-manifest.json",
     ]
     .into_iter()
     .map(|name| root.join(name))
     .filter(|path| path.is_file())
     .collect()
+}
+
+fn validate_producer_manifest(
+    document: &serde_json::Value,
+    target_root: &Path,
+    expected_git_revision: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    if document.get("schema").and_then(serde_json::Value::as_str)
+        != Some("acyclic.sdk.language-producer-manifest.v1")
+    {
+        errors.push("producer manifest schema is unsupported".to_owned());
+    }
+    let target = target_root.file_name().and_then(|name| name.to_str());
+    if document.get("target").and_then(serde_json::Value::as_str) != target {
+        errors.push(format!(
+            "producer manifest target differs: expected {}, got {}",
+            target.unwrap_or("<missing>"),
+            document
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing>")
+        ));
+    }
+    if let Some(expected) = expected_git_revision {
+        let actual = document
+            .get("source_revision")
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected) {
+            errors.push(format!(
+                "producer manifest source revision differs: expected {expected}, got {}",
+                actual.unwrap_or("<missing>")
+            ));
+        }
+    }
+
+    let Some(files) = document.get("files").and_then(serde_json::Value::as_array) else {
+        errors.push("producer manifest has no files array".to_owned());
+        return errors;
+    };
+    let mut listed = std::collections::BTreeSet::new();
+    let mut canonical = String::new();
+    for file in files {
+        let Some(path) = file.get("path").and_then(serde_json::Value::as_str) else {
+            errors.push("producer manifest file entry has no path".to_owned());
+            continue;
+        };
+        let relative = Path::new(path);
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+        {
+            errors.push(format!("producer manifest file path is not relative: {path}"));
+            continue;
+        }
+        if !listed.insert(path.to_owned()) {
+            errors.push(format!("producer manifest lists file more than once: {path}"));
+            continue;
+        }
+        let Some(expected_hash) = file.get("sha256").and_then(serde_json::Value::as_str) else {
+            errors.push(format!("producer manifest file has no hash: {path}"));
+            continue;
+        };
+        let Some(expected_bytes) = file.get("bytes").and_then(serde_json::Value::as_u64) else {
+            errors.push(format!("producer manifest file has no byte count: {path}"));
+            continue;
+        };
+        canonical.push_str(path);
+        canonical.push('\0');
+        canonical.push_str(expected_hash);
+        canonical.push('\0');
+        canonical.push_str(&expected_bytes.to_string());
+        canonical.push('\0');
+        let file_path = target_root.join(relative);
+        let Ok(metadata) = fs::symlink_metadata(&file_path) else {
+            errors.push(format!("producer manifest file is missing: {path}"));
+            continue;
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            errors.push(format!("producer manifest file is not a regular file: {path}"));
+            continue;
+        }
+        let Ok(bytes) = fs::read(&file_path) else {
+            errors.push(format!("producer manifest file is unreadable: {path}"));
+            continue;
+        };
+        let actual_hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        if actual_hash != expected_hash || bytes.len() as u64 != expected_bytes {
+            errors.push(format!("producer manifest file hash differs: {path}"));
+        }
+    }
+    let mut actual = Vec::new();
+    collect_all_producer_files(target_root, target_root, &mut actual);
+    actual.sort();
+    if actual
+        .iter()
+        .map(|path| path.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        != listed
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+    {
+        errors.push("producer manifest file set differs from output directory".to_owned());
+    }
+    let actual_artifact_digest = format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()));
+    if document
+        .get("artifact_digest")
+        .and_then(serde_json::Value::as_str)
+        != Some(actual_artifact_digest.as_str())
+    {
+        errors.push("producer manifest artifact digest differs".to_owned());
+    }
+    errors
+}
+
+fn collect_all_producer_files(root: &Path, directory: &Path, files: &mut Vec<String>) {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == root.join("producer-manifest.json") {
+            continue;
+        }
+        if path.is_dir() {
+            collect_all_producer_files(root, &path, files);
+        } else if path.is_file()
+            && let Ok(relative) = path.strip_prefix(root)
+        {
+            files.push(relative.to_string_lossy().replace('\\', "/"));
+        }
+    }
 }
 
 fn source_binding_value<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -3326,19 +3554,36 @@ fn model_digest_matches(actual: Option<&str>, expected: &str) -> bool {
 /// language toolchain receipt uses it for the Rust contract model.  Treating
 /// every `source_digest` as a model digest would let a producer from a
 /// different contract pass whenever it was built from the same checkout.
-fn producer_model_digest<'a>(document: &'a serde_json::Value) -> Option<&'a str> {
+fn producer_model_digest(document: &serde_json::Value) -> Option<&str> {
     let schema = source_binding_value(document, "schema");
     let authority = document.get("authority");
+    let is_rust_authority = schema == Some("acyclic.sdk.rust-authority.v1")
+        || schema.is_some_and(|value| value.ends_with(".rust-authority.v1"));
+    let is_toolchain_receipt =
+        schema == Some("acyclic.sdk.language-toolchain-receipt.v1");
 
-    source_binding_value(document, "rust_model_digest")
-        .or_else(|| source_binding_value(document, "model_digest"))
-        .or_else(|| authority.and_then(|value| source_binding_value(value, "rust_model_digest")))
-        .or_else(|| authority.and_then(|value| source_binding_value(value, "model_digest")))
+    is_toolchain_receipt
+        .then(|| source_binding_value(document, "rust_model_digest"))
+        .flatten()
+        .or_else(|| {
+            is_toolchain_receipt
+                .then(|| source_binding_value(document, "model_digest"))
+                .flatten()
+        })
+        .or_else(|| {
+            is_toolchain_receipt
+                .then(|| authority.and_then(|value| source_binding_value(value, "rust_model_digest")))
+                .flatten()
+        })
+        .or_else(|| {
+            is_toolchain_receipt
+                .then(|| authority.and_then(|value| source_binding_value(value, "model_digest")))
+                .flatten()
+        })
         .or_else(|| {
             // The canonical Rust wire authority intentionally places the
             // model digest in source_revision, alongside source_git_sha.
-            (schema == Some("acyclic.sdk.rust-authority.v1")
-                || schema.is_some_and(|value| value.ends_with(".rust-authority.v1")))
+            is_rust_authority
                 .then(|| source_binding_value(document, "source_revision"))
                 .flatten()
         })
@@ -3406,6 +3651,23 @@ pub fn audit_language_producer_source_bindings(
     expected_git_revision: Option<&str>,
     expected_model_digest: Option<&str>,
 ) -> Result<Vec<LanguageProducerBindingViolation>, String> {
+    audit_language_producer_source_bindings_for_languages(
+        artifact_root,
+        expected_git_revision,
+        expected_model_digest,
+        None,
+    )
+}
+
+/// Scope the producer provenance audit to the Rust-owned primary surfaces.
+/// Full release audits call [`audit_language_producer_source_bindings`] and
+/// therefore continue to inspect every producer directory.
+pub fn audit_language_producer_source_bindings_for_languages(
+    artifact_root: &Path,
+    expected_git_revision: Option<&str>,
+    expected_model_digest: Option<&str>,
+    required_languages: Option<&[&str]>,
+) -> Result<Vec<LanguageProducerBindingViolation>, String> {
     let producer_root = artifact_root.join("language-producers");
     if !producer_root.is_dir() {
         return Err(format!(
@@ -3427,6 +3689,9 @@ pub fn audit_language_producer_source_bindings(
             continue;
         };
         if !target_root.is_dir() || matches!(producer.as_str(), "requests" | "logs") {
+            continue;
+        }
+        if required_languages.is_some_and(|languages| !languages.contains(&producer.as_str())) {
             continue;
         }
         let mut surfaces = Vec::new();
@@ -3467,6 +3732,19 @@ pub fn audit_language_producer_source_bindings(
                     continue;
                 }
             };
+            if authority_path.file_name().and_then(|name| name.to_str())
+                == Some("producer-manifest.json")
+            {
+                for reason in validate_producer_manifest(&document, &target_root, expected_git_revision)
+                {
+                    violations.push(LanguageProducerBindingViolation {
+                        producer: producer.clone(),
+                        path: relative.clone(),
+                        reason,
+                    });
+                }
+                continue;
+            }
             for reason in validate_producer_authority_document(
                 &document,
                 expected_git_revision,
@@ -3500,6 +3778,15 @@ pub fn audit_language_producer_source_bindings(
 pub fn audit_generated_public_surfaces(
     artifact_root: &Path,
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    audit_generated_public_surfaces_for_languages(artifact_root, None)
+}
+
+/// Audit only the Rust-owned language set requested by the caller.  `None`
+/// preserves the full audit over every discovered generated facade.
+pub fn audit_generated_public_surfaces_for_languages(
+    artifact_root: &Path,
+    required_languages: Option<&[&str]>,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
         return Err(format!(
             "generated artifact root does not exist: {}",
@@ -3515,6 +3802,9 @@ pub fn audit_generated_public_surfaces(
         let Some(language) = surface_language(&path) else {
             continue;
         };
+        if required_languages.is_some_and(|languages| !languages.contains(&language)) {
+            continue;
+        }
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
         let relative = path
@@ -3644,6 +3934,16 @@ pub fn audit_generated_public_surfaces(
 pub fn audit_generated_descriptor_shape_coverage(
     artifact_root: &Path,
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    audit_generated_descriptor_shape_coverage_for_languages(artifact_root, None)
+}
+
+/// Audit descriptor-derived shape coverage for only the selected language
+/// surfaces.  The Rust descriptor inventory itself is never reduced; only
+/// the generated projections participating in this invocation are filtered.
+pub fn audit_generated_descriptor_shape_coverage_for_languages(
+    artifact_root: &Path,
+    required_languages: Option<&[&str]>,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
         return Err(format!(
             "generated artifact root does not exist: {}",
@@ -3662,6 +3962,9 @@ pub fn audit_generated_descriptor_shape_coverage(
         let Some(language) = surface_language(&path) else {
             continue;
         };
+        if required_languages.is_some_and(|languages| !languages.contains(&language)) {
+            continue;
+        }
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
         let entry = surfaces
@@ -3714,12 +4017,11 @@ pub fn audit_generated_descriptor_shape_coverage(
             }
         }
         for payload_type in message_oneof_types {
-            let matching_members = oneofs.iter().filter(|entry| {
+            let mut matching_members = oneofs.iter().filter(|entry| {
                 entry.payload_type.as_deref() == Some(payload_type.as_str())
                     && matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
             });
             let covered = matching_members
-                .clone()
                 .any(|entry| source_contains_descriptor_oneof_arm(language, &source, entry));
             if !covered {
                 violations.push(GeneratedSurfaceViolation {
@@ -3759,6 +4061,20 @@ pub fn audit_required_generated_descriptor_shape_coverage(
     artifact_root: &Path,
     required_languages: &[&str],
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    audit_required_generated_descriptor_shape_coverage_for_languages(
+        artifact_root,
+        required_languages,
+        None,
+    )
+}
+
+/// Fail closed for the requested language set, while keeping descriptor
+/// inventory resolution Rust-owned and complete.
+pub fn audit_required_generated_descriptor_shape_coverage_for_languages(
+    artifact_root: &Path,
+    required_languages: &[&str],
+    audit_languages: Option<&[&str]>,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
         return Err(format!(
             "generated artifact root does not exist: {}",
@@ -3783,7 +4099,7 @@ pub fn audit_required_generated_descriptor_shape_coverage(
             missing.join(", ")
         ));
     }
-    audit_generated_descriptor_shape_coverage(artifact_root)
+    audit_generated_descriptor_shape_coverage_for_languages(artifact_root, audit_languages)
 }
 
 fn descriptor_simple_name(name: &str) -> String {
@@ -3800,7 +4116,10 @@ fn descriptor_projection_prefix(name: &str) -> String {
         .filter(|part| !part.is_empty() && *part != "acyclic")
         .filter(|part| {
             let bytes = part.as_bytes();
-            !(bytes.len() >= 2 && bytes[0] == b'v' && bytes[1..].iter().all(u8::is_ascii_digit))
+            !(bytes.first() == Some(&b'v')
+                && bytes
+                    .get(1..)
+                    .is_some_and(|digits| !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)))
         })
         .map(pascal_identifier)
         .collect()
@@ -3840,6 +4159,22 @@ fn pascal_identifier(name: &str) -> String {
 fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
     let prefix = descriptor_projection_prefix(name);
     let simple = descriptor_simple_name(name);
+    if language == "rust" {
+        // The Rust prost projection retains the descriptor's simple nominal
+        // type identity.  Rust is the source projection, so no target alias
+        // table is needed here.
+        return vec![simple];
+    }
+    if language == "typescript" {
+        // Buf's TypeScript projection keeps the descriptor's simple nominal
+        // name.  Retain the package-derived prefix as a collision-safe
+        // fallback for emitters that qualify colliding declarations.
+        let mut aliases = vec![simple, prefix];
+        aliases.retain(|candidate| !candidate.is_empty());
+        aliases.sort();
+        aliases.dedup();
+        return aliases;
+    }
     match language {
         // Python and Go facades expose the collision-safe Rust descriptor
         // prefix directly (for example `ActorsActorState` and
@@ -3942,7 +4277,16 @@ fn source_contains_descriptor_enum_projection(language: &str, source: &str, alia
                     && line.trim_start().starts_with(&declaration)
                     && source.contains("static")
                     && source.contains("unknown(int value)")
-                    && source.contains("toWire()")
+                && source.contains("toWire()")
+            })
+        }
+        "typescript" => {
+            let declaration = format!("export enum {alias}");
+            let schema = format!("export declare const {alias}Schema: GenEnum<{alias}>");
+            source.lines().any(|line| {
+                !is_source_comment(line) && line.trim_start().starts_with(&declaration)
+            }) && source.lines().any(|line| {
+                !is_source_comment(line) && line.trim_start().starts_with(&schema)
             })
         }
         _ => source_contains_identifier(source, alias),
@@ -3994,12 +4338,14 @@ fn descriptor_oneof_scalar_aliases(
             "ruby" => "bool",
             "php" => "bool",
             "dart" => "bool",
+            "typescript" => "boolean",
             _ => return Vec::new(),
         },
         FieldType::Double | FieldType::Float => match language {
             "ruby" => "Float",
             "php" => "float",
             "dart" => "double",
+            "typescript" => "number",
             _ => return Vec::new(),
         },
         FieldType::Int32
@@ -4012,7 +4358,14 @@ fn descriptor_oneof_scalar_aliases(
         | FieldType::Fixed32
         | FieldType::Uint64
         | FieldType::Fixed64
-        | FieldType::Enum => match language {
+        => match language {
+            "ruby" => "Integer",
+            "php" => "int",
+            "dart" => "int",
+            "typescript" => "number",
+            _ => return Vec::new(),
+        },
+        FieldType::Enum => match language {
             "ruby" => "Integer",
             "php" => "int",
             "dart" => "int",
@@ -4022,12 +4375,14 @@ fn descriptor_oneof_scalar_aliases(
             "ruby" => "String",
             "php" => "string",
             "dart" => "String",
+            "typescript" => "string",
             _ => return Vec::new(),
         },
         FieldType::Bytes => match language {
             "ruby" => "String",
             "php" => "string",
             "dart" => "List<int>",
+            "typescript" => "Uint8Array",
             _ => return Vec::new(),
         },
         FieldType::Message | FieldType::Group => return Vec::new(),
@@ -4047,13 +4402,15 @@ fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
     let package = package
         .iter()
         .copied()
-        .filter(|part| *part != "acyclic" && !part.starts_with('v'))
-        .next()
+        .find(|part| *part != "acyclic" && !part.starts_with('v'))
         .unwrap_or("Acyclic");
     let version = parts
         .iter()
         .rev()
-        .find(|part| part.starts_with('v') && part[1..].chars().all(|ch| ch.is_ascii_digit()))
+        .find(|part| {
+            part.strip_prefix('v')
+                .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|ch| ch.is_ascii_digit()))
+        })
         .copied()
         .unwrap_or("v1");
     vec![
@@ -4092,6 +4449,14 @@ fn source_contains_descriptor_oneof_arm(
         .map(|name| descriptor_payload_aliases(language, name))
         .unwrap_or_default();
     match language {
+        "rust" => source.lines().any(|line| {
+            !is_source_comment(line)
+                && source_contains_identifier_in_line(line, &arm)
+                && (source_contains_identifier_in_line(line, &payload)
+                    || payload_aliases
+                        .iter()
+                        .any(|alias| source_contains_identifier_in_line(line, alias)))
+        }),
         "cpp" => source.lines().any(|line| {
             !is_source_comment(line)
                 && line.contains(&format!("{choice}{arm}"))
@@ -4178,6 +4543,43 @@ fn source_contains_descriptor_oneof_arm(
                     && payload_aliases
                         .iter()
                         .any(|alias| source_contains_qualified_identifier_in_line(line, alias))
+            })
+        }
+        "typescript" => {
+            // The generated Buf declaration carries the oneof identity in a
+            // rustdoc-derived marker and represents each concrete arm as a
+            // `{ value, case }` union member.  Require both pieces so a
+            // detached payload DTO cannot satisfy descriptor coverage.
+            let oneof = entry.field.oneof_name.as_deref().unwrap_or_default();
+            let marker = format!(
+                "@generated from oneof {}.{oneof}",
+                entry.field.message_path
+            );
+            if oneof.is_empty() || !source.contains(&marker) {
+                return false;
+            }
+            let case = entry.field.json_name.as_str();
+            let scalar_aliases = descriptor_oneof_scalar_aliases(language, entry);
+            let lines = source.lines().collect::<Vec<_>>();
+            lines.iter().enumerate().any(|(index, line)| {
+                if is_source_comment(line)
+                    || !line.contains(&format!("case: \"{case}\";"))
+                {
+                    return false;
+                }
+                lines[index.saturating_sub(8)..index]
+                    .iter()
+                    .any(|candidate| {
+                        let candidate = candidate.trim_start();
+                        candidate.starts_with("value:")
+                            && (source_contains_identifier_in_line(candidate, &payload)
+                                || payload_aliases.iter().any(|alias| {
+                                    source_contains_identifier_in_line(candidate, alias)
+                                })
+                                || scalar_aliases.iter().any(|alias| {
+                                    source_contains_identifier_in_line(candidate, alias)
+                                }))
+                    })
             })
         }
         "ruby" | "php" | "dart" => {
@@ -4321,18 +4723,22 @@ fn typescript_raw_signature(
         return false;
     }
     let end = (start + 6).min(lines.len());
-    let normalized = lines[start..end].join(" ");
+    let normalized = lines.get(start..end).unwrap_or_default().join(" ");
     let Some(request_start) = normalized.find("request:") else {
         return false;
     };
-    let request = normalized[request_start + "request:".len()..]
+    let request = normalized
+        .get(request_start + "request:".len()..)
+        .unwrap_or_default()
         .split(|character: char| character == ')' || character == ',' || character.is_whitespace())
         .find(|token| !token.is_empty())
         .unwrap_or_default();
     let Some(response_start) = normalized.find("Promise<") else {
         return false;
     };
-    let response = normalized[response_start + "Promise<".len()..]
+    let response = normalized
+        .get(response_start + "Promise<".len()..)
+        .unwrap_or_default()
         .split(|character: char| character == '>' || character == ',' || character.is_whitespace())
         .find(|token| !token.is_empty())
         .unwrap_or_default();
@@ -4348,7 +4754,12 @@ fn python_raw_public_return(source: &str, line_number: usize, line: &str) -> boo
     }
     let lines = source.lines().collect::<Vec<_>>();
     let mut method = None;
-    for candidate in lines[..line_number.saturating_sub(1)].iter().rev() {
+    for candidate in lines
+        .get(..line_number.saturating_sub(1))
+        .unwrap_or_default()
+        .iter()
+        .rev()
+    {
         let trimmed = candidate.trim_start();
         if trimmed.starts_with("async def ") || trimmed.starts_with("def ") {
             method = trimmed
@@ -4493,7 +4904,7 @@ fn jvm_raw_public_accessor(line: &str) -> bool {
         let Some(public_start) = declaration.find("public ") else {
             continue;
         };
-        let public = &declaration[public_start..];
+        let public = declaration.get(public_start..).unwrap_or_default();
         let Some(open) = public.find('(') else {
             continue;
         };
@@ -4511,24 +4922,24 @@ fn jvm_raw_public_accessor(line: &str) -> bool {
     }
     for declaration in line.split(['}', ';']) {
         if let Some(kotlin_start) = declaration.find("fun ") {
-            let kotlin = &declaration[kotlin_start..];
+            let kotlin = declaration.get(kotlin_start..).unwrap_or_default();
             if !kotlin.contains("toWire")
                 && !kotlin.contains("fromWire")
                 && let Some(colon) = kotlin.find(':')
             {
-                let result = &kotlin[colon + 1..];
+                let result = kotlin.get(colon + 1..).unwrap_or_default();
                 if result.contains("acyclic.") || result.contains("inference.") {
                     return true;
                 }
             }
         }
         if let Some(scala_start) = declaration.find("def ") {
-            let scala = &declaration[scala_start..];
+            let scala = declaration.get(scala_start..).unwrap_or_default();
             if !scala.contains("toWire")
                 && !scala.contains("fromWire")
                 && let Some(colon) = scala.find(':')
             {
-                let result = &scala[colon + 1..];
+                let result = scala.get(colon + 1..).unwrap_or_default();
                 if result.contains("acyclic.") || result.contains("inference.") {
                     return true;
                 }
@@ -4573,6 +4984,14 @@ fn jvm_raw_open_enum(line: &str) -> bool {
 pub fn audit_generated_type_features(
     artifact_root: &Path,
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    audit_generated_type_features_for_languages(artifact_root, None)
+}
+
+/// Run feature-marker checks over only the selected generated languages.
+pub fn audit_generated_type_features_for_languages(
+    artifact_root: &Path,
+    required_languages: Option<&[&str]>,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
         return Err(format!(
             "generated artifact root does not exist: {}",
@@ -4586,6 +5005,9 @@ pub fn audit_generated_type_features(
         let Some(language) = surface_language(&path) else {
             continue;
         };
+        if required_languages.is_some_and(|languages| !languages.contains(&language)) {
+            continue;
+        }
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("read generated facade {}: {error}", path.display()))?;
         let relative = path
@@ -4776,6 +5198,17 @@ pub fn audit_required_generated_public_surfaces(
     artifact_root: &Path,
     required_languages: &[&str],
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
+    audit_required_generated_public_surfaces_for_languages(artifact_root, required_languages, None)
+}
+
+/// Fail closed for the requested language set and audit only that same set.
+/// This is used by the primary Rust/TypeScript docs gate; the full wrapper
+/// above continues to audit every discovered secondary surface.
+pub fn audit_required_generated_public_surfaces_for_languages(
+    artifact_root: &Path,
+    required_languages: &[&str],
+    audit_languages: Option<&[&str]>,
+) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     let mut files = Vec::new();
     if !artifact_root.is_dir() {
         return Err(format!(
@@ -4802,7 +5235,7 @@ pub fn audit_required_generated_public_surfaces(
             missing.join(", ")
         ));
     }
-    audit_generated_public_surfaces(artifact_root)
+    audit_generated_public_surfaces_for_languages(artifact_root, audit_languages)
 }
 
 fn collect_surface_files(root: &Path, files: &mut Vec<PathBuf>) {
@@ -4821,7 +5254,17 @@ fn collect_surface_files(root: &Path, files: &mut Vec<PathBuf>) {
 
 fn surface_language(path: &Path) -> Option<&'static str> {
     let name = path.file_name()?.to_str()?;
-    if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" {
+    let path_components = path
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    if path.extension().and_then(|extension| extension.to_str()) == Some("rs")
+        && path_components
+            .windows(2)
+            .any(|parts| parts == ["generated", "rust"])
+    {
+        Some("rust")
+    } else if name.ends_with("-metadata.ts") || name == "RustTypedClients.ts" {
         Some("typescript")
     } else if name == "remote.py" {
         Some("python")
@@ -4976,6 +5419,23 @@ mod tests {
                 && finding.path.ends_with("source-authority.json")
         }));
 
+        // A generic model_digest on the checkout-authority schema is not a
+        // contract identity.  It must not bypass the schema-scoped producer
+        // binding check, even when its value happens to match the model.
+        fs::write(
+            root.join("language-producers/python/source-authority.json"),
+            format!(
+                r#"{{"schema":"acyclic.sdk.generation.source-authority.v1","source_revision":"{git}","source_digest":"{checkout_digest}","model_digest":"{model}"}}"#
+            ),
+        )
+        .expect("unscoped model digest fixture");
+        let findings = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("unscoped model digest audit");
+        assert!(findings.iter().any(|finding| {
+            finding.reason.contains("Rust model digest differs")
+                && finding.path.ends_with("source-authority.json")
+        }));
+
         fs::remove_file(root.join("language-producers/python/source-authority.json"))
             .expect("remove checkout authority fixture");
         fs::write(
@@ -5001,6 +5461,47 @@ mod tests {
         assert!(stale.iter().any(|finding| {
             finding.reason.contains("Rust model digest differs")
                 && finding.path.ends_with("toolchain-receipt.json")
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn producer_manifest_binds_revision_and_every_output_file() {
+        let root = producer_audit_fixture_root("manifest");
+        let git = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let model = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let relative = "generated/remote.py";
+        let bytes = fs::read(root.join("language-producers/python").join(relative))
+            .expect("producer facade bytes");
+        let hash = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let canonical = format!("{relative}\0{hash}\0{}\0", bytes.len());
+        let artifact_digest = format!("sha256:{:x}", Sha256::digest(canonical.as_bytes()));
+        fs::write(
+            root.join("language-producers/python/producer-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema": "acyclic.sdk.language-producer-manifest.v1",
+                "target": "python",
+                "source_revision": git,
+                "source_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "files": [{"path": relative, "sha256": hash, "bytes": bytes.len()}],
+                "artifact_digest": artifact_digest,
+            }))
+            .expect("producer manifest JSON"),
+        )
+        .expect("producer manifest fixture");
+        let passed = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("producer manifest audit");
+        assert!(passed.is_empty(), "unexpected manifest findings: {passed:?}");
+
+        fs::write(
+            root.join("language-producers/python/generated/remote.py"),
+            "class ChangedClient:\n    pass\n",
+        )
+        .expect("mutate producer facade");
+        let stale = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("stale producer manifest audit");
+        assert!(stale.iter().any(|finding| {
+            finding.reason.contains("producer manifest file hash differs")
         }));
         let _ = fs::remove_dir_all(root);
     }
@@ -5053,7 +5554,7 @@ mod tests {
         };
         let ruby_choice = "RustAcyclicObjectsV2GetObjectResponseFrameChoice";
         let ruby_source = format!(
-            "class {ruby_choice}Header < {ruby_choice}\n  def initialize(value) = super(tag: \"header\", value: value)\nend\nclass RustAcyclicObjectsV2GetObjectHeader\nend\n"
+            "class {ruby_choice}Header < {ruby_choice}\n  attr_reader value: RustAcyclicObjectsV2GetObjectHeader\n  def initialize(value) = super(tag: \"header\", value: value)\nend\nclass RustAcyclicObjectsV2GetObjectHeader\nend\n"
         );
         assert!(source_contains_descriptor_oneof_arm(
             "ruby",
@@ -5063,6 +5564,35 @@ mod tests {
         assert!(!source_contains_descriptor_oneof_arm(
             "ruby",
             &ruby_source.replace("RustAcyclicObjectsV2GetObjectHeader", "OpenEnumValue"),
+            &member,
+        ));
+
+        let typescript_aliases = descriptor_projection_aliases("typescript", enum_name);
+        assert!(typescript_aliases.iter().any(|alias| alias == "ObjectState"));
+        let typescript_enum = "export enum ObjectState {\n  UNKNOWN = 0,\n}\nexport declare const ObjectStateSchema: GenEnum<ObjectState>;\n";
+        assert!(source_contains_descriptor_enum_projection(
+            "typescript",
+            typescript_enum,
+            "ObjectState",
+        ));
+        assert!(!source_contains_descriptor_enum_projection(
+            "typescript",
+            "// export enum ObjectState {}\n",
+            "ObjectState",
+        ));
+
+        let typescript_source = format!(
+            "export declare type GetObjectResponse = Message<\"acyclic.objects.v2.GetObjectResponse\"> & {{\n  /** @generated from oneof {}.frame */\n  frame: {{\n    value: GetObjectHeader;\n    case: \"header\";\n  }} | {{ case: undefined; value?: undefined; }};\n}};\n",
+            member.field.message_path,
+        );
+        assert!(source_contains_descriptor_oneof_arm(
+            "typescript",
+            &typescript_source,
+            &member,
+        ));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "typescript",
+            &typescript_source.replace("GetObjectHeader", "OpenEnumValue"),
             &member,
         ));
     }
@@ -5550,8 +6080,14 @@ mod tests {
     #[test]
     fn every_projection_preserves_unknown_wire_values() {
         for profile in TYPE_PROJECTION_PROFILES {
+            let preserves_unknown_payload = match profile.language {
+                TypePolicyLanguage::Java
+                | TypePolicyLanguage::Kotlin
+                | TypePolicyLanguage::Scala => profile.unknown_values.contains("OpaqueUnknownFields"),
+                _ => profile.unknown_values.contains("raw") || profile.unknown_values.contains("Raw"),
+            };
             assert!(
-                profile.unknown_values.contains("raw") || profile.unknown_values.contains("Raw"),
+                preserves_unknown_payload,
                 "{}: {}",
                 profile.language.id(),
                 profile.unknown_values
@@ -5739,6 +6275,25 @@ mod tests {
         assert_eq!(variants[0].tag, "known");
         assert_eq!(variants[1].tag, "unknown");
         assert_eq!(variants[1].payload_wire_kind, WireValueKind::Bytes);
+    }
+
+    #[test]
+    fn jvm_union_projection_has_explicit_absent_and_opaque_variants() {
+        let variants = JVM_WIRE_UNION_VARIANTS
+            .iter()
+            .filter(|variant| variant.union == "jvm_wire_choice")
+            .collect::<Vec<_>>();
+        assert_eq!(variants.len(), 6);
+        assert!(variants.iter().any(|variant| {
+            variant.variant == "Absent"
+                && variant.tag == "absent"
+                && variant.payload_wire_kind == WireValueKind::Oneof
+        }));
+        assert!(variants.iter().any(|variant| {
+            variant.variant == "OpaqueUnknownFields"
+                && variant.tag == "opaque_unknown_fields"
+                && variant.payload_wire_kind == WireValueKind::Bytes
+        }));
     }
 
     #[test]

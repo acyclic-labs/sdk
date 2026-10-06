@@ -2,7 +2,7 @@
 name = "acyclic-machines"
 version = "0.2.0"
 edition.workspace = true
-rust-version = "1.92"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
