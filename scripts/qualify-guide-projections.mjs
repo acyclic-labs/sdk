@@ -10,6 +10,9 @@ import { verifyQualificationSummary } from "./verify-guide-projection-receipts.m
 // Resolve from the script directory so this remains correct when invoked from a docs checkout, a release archive, or a clean worktree.
 const repo = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const cargo = process.env.CARGO_BIN ?? (process.platform === "win32" ? join(process.env.USERPROFILE ?? "C:\\Users\\varun", ".cargo", "bin", "cargo.exe") : "cargo");
+const defaultTsc = process.platform === "win32" && existsSync(join(repo, "node_modules", ".bin", "tsc.exe"))
+  ? join(repo, "node_modules", ".bin", "tsc.exe")
+  : "tsc";
 // Release qualification supplies pinned toolchain paths. Keep every local
 // fallback overridable so a clean checkout can use the same resolver without
 // depending on a machine's PATH layout.
@@ -18,7 +21,7 @@ const binaries = {
   python: process.env.SDK_PYTHON_BIN ?? process.env.PYTHON_BIN ?? "python",
   bun: process.env.SDK_BUN_BIN ?? process.env.BUN_BIN ?? "bun",
   node: process.env.SDK_NODE_BIN ?? process.env.NODE_BIN ?? "node",
-  tsc: process.env.SDK_TSC_BIN ?? process.env.TSC_BIN ?? "tsc",
+  tsc: process.env.SDK_TSC_BIN ?? process.env.TSC_BIN ?? defaultTsc,
   go: process.env.SDK_GO_BIN ?? process.env.GO_BIN ?? "go",
   maven: process.env.SDK_MAVEN_BIN ?? process.env.MAVEN_BIN ?? "mvn",
   dotnet: process.env.SDK_DOTNET_BIN ?? process.env.DOTNET_BIN ?? "dotnet",
@@ -180,7 +183,7 @@ function compile(language, file, cwd, packageArtifact, environment = {}) {
       return command(cargo, ["check", "--offline", "--manifest-path", join(cwd, "Cargo.toml")], cwd, environment);
     }
     case "python": return command(environment.PYTHON_BIN ?? binaries.python, ["-m", "py_compile", file], cwd, environment);
-    case "typescript": return command(binaries.tsc, ["--noEmit", "--strict", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", file], cwd, environment);
+    case "typescript": return command(binaries.tsc, ["--ignoreConfig", "--types", "node", "--noEmit", "--strict", "--module", "NodeNext", "--moduleResolution", "NodeNext", "--target", "ES2022", file], cwd, environment);
     case "go": return command(binaries.go, ["test", "."], cwd, environment);
     case "java": {
       const args = ["--offline", "--batch-mode", "-q"];
@@ -332,6 +335,9 @@ function prepare(language, packageArtifact, directory) {
         [packageJson.name]: `file:${packageRoot.replaceAll("\\", "/")}`,
         "@connectrpc/connect": packageJson.dependencies?.["@connectrpc/connect"] ?? "2.1.1",
         "@connectrpc/connect-node": "2.1.1",
+      },
+      devDependencies: {
+        "@types/node": "26.4.1",
       },
     }, null, 2));
     const install = command(binaries.bun, ["install", "--offline", "--no-progress"], directory);
