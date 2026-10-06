@@ -163,6 +163,42 @@ struct EditExecutor {
     maximum_bytes: u64,
 }
 
+impl EditExecutor {
+    async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        let input: EditInput = parse(&invocation)?;
+        validate_path(&input.path, false)?;
+        let bytes = input.content.into_bytes();
+        if bytes.len() as u64 > self.maximum_bytes {
+            return Err(Error::Invalid(
+                "workspace edit exceeds the file byte limit".into(),
+            ));
+        }
+        let workspace = project_workspace(&self.project)?;
+        let expected = input.expected_generation.ok_or_else(|| {
+            Error::Invalid("workspace edit requires an expected generation".into())
+        })?;
+        let generation = self
+            .host
+            .apply(
+                &workspace,
+                Some(&expected),
+                &[WorkspaceMutation::PutFile {
+                    path: input.path.clone(),
+                    bytes,
+                }],
+                &operation_key(&invocation)?,
+            )
+            .await?;
+        Ok(ToolResult {
+            value: json!({
+                "path": input.path,
+                "generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?,
+                "operation_id": invocation.operation_id.to_string(),
+            }),
+        })
+    }
+}
+
 impl ToolExecutor for EditExecutor {
     fn authorize(&self, scope: Option<&RuntimeScope>, _invocation: &ToolInvocation) -> Result<()> {
         if let Some(scope) = scope {
@@ -189,37 +225,21 @@ impl ToolExecutor for EditExecutor {
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             require_project(context.scope(), &self.project, VolumeOperation::Write)?;
-            let input: EditInput = parse(&invocation)?;
-            validate_path(&input.path, false)?;
-            let bytes = input.content.into_bytes();
-            if bytes.len() as u64 > self.maximum_bytes {
-                return Err(Error::Invalid(
-                    "workspace edit exceeds the file byte limit".into(),
-                ));
-            }
-            let workspace = project_workspace(&self.project)?;
-            let expected = input.expected_generation.ok_or_else(|| {
-                Error::Invalid("workspace edit requires an expected generation".into())
+            self.execute_workspace(invocation).await
+        })
+    }
+
+    fn execute_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            context.task_id.ok_or_else(|| {
+                Error::Unauthorized("project edit requires authenticated task context".into())
             })?;
-            let generation = self
-                .host
-                .apply(
-                    &workspace,
-                    Some(&expected),
-                    &[WorkspaceMutation::PutFile {
-                        path: input.path.clone(),
-                        bytes,
-                    }],
-                    &operation_key(&invocation)?,
-                )
-                .await?;
-            Ok(ToolResult {
-                value: json!({
-                    "path": input.path,
-                    "generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?,
-                    "operation_id": invocation.operation_id.to_string(),
-                }),
-            })
+            self.execute_workspace(invocation).await
         })
     }
 
@@ -285,6 +305,37 @@ struct ReadExecutor {
     maximum_bytes: u64,
 }
 
+impl ReadExecutor {
+    async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        let input: ReadInput = parse(&invocation)?;
+        validate_path(&input.path, false)?;
+        let workspace = project_workspace(&self.project)?;
+        let generation = match input.expected_generation {
+            Some(generation) => generation,
+            None => self.host.resolve(&workspace).await?.generation,
+        };
+        let bytes = self
+            .host
+            .read(
+                &workspace,
+                Some(&generation),
+                &input.path,
+                self.maximum_bytes,
+            )
+            .await?;
+        let text = String::from_utf8(bytes.to_vec())
+            .map_err(|_| Error::Invalid("workspace read is not UTF-8".into()))?;
+        Ok(ToolResult {
+            value: json!({
+                "path": input.path,
+                "content": text,
+                "generation": serde_json::to_value(generation)
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+            }),
+        })
+    }
+}
+
 impl ToolExecutor for ReadExecutor {
     fn authorize(&self, scope: Option<&RuntimeScope>, _invocation: &ToolInvocation) -> Result<()> {
         if let Some(scope) = scope {
@@ -311,32 +362,21 @@ impl ToolExecutor for ReadExecutor {
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             require_project(context.scope(), &self.project, VolumeOperation::Read)?;
-            let input: ReadInput = parse(&invocation)?;
-            validate_path(&input.path, false)?;
-            let workspace = project_workspace(&self.project)?;
-            let generation = match input.expected_generation {
-                Some(generation) => generation,
-                None => self.host.resolve(&workspace).await?.generation,
-            };
-            let bytes = self
-                .host
-                .read(
-                    &workspace,
-                    Some(&generation),
-                    &input.path,
-                    self.maximum_bytes,
-                )
-                .await?;
-            let text = String::from_utf8(bytes.to_vec())
-                .map_err(|_| Error::Invalid("workspace read is not UTF-8".into()))?;
-            Ok(ToolResult {
-                value: json!({
-                    "path": input.path,
-                    "content": text,
-                    "generation": serde_json::to_value(generation)
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                }),
-            })
+            self.execute_workspace(invocation).await
+        })
+    }
+
+    fn execute_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            context.task_id.ok_or_else(|| {
+                Error::Unauthorized("project read requires authenticated task context".into())
+            })?;
+            self.execute_workspace(invocation).await
         })
     }
 
@@ -354,6 +394,90 @@ struct SearchExecutor {
     maximum_bytes: u64,
     maximum_files: usize,
     maximum_search_bytes: u64,
+}
+
+impl SearchExecutor {
+    async fn execute_workspace(&self, invocation: ToolInvocation) -> Result<ToolResult> {
+        let input: SearchInput = parse(&invocation)?;
+        validate_path(&input.path, true)?;
+        if input.query.is_empty() || input.max_matches == 0 || input.max_matches > 256 {
+            return Err(Error::Invalid(
+                "search query and match bound are invalid".into(),
+            ));
+        }
+        let workspace = project_workspace(&self.project)?;
+        let generation = self.host.resolve(&workspace).await?.generation;
+        let mut directories = vec![input.path.clone()];
+        let mut matches = Vec::new();
+        let mut files_seen = 0usize;
+        let mut bytes_seen = 0u64;
+        let needle = if input.case_sensitive {
+            input.query.clone()
+        } else {
+            input.query.to_lowercase()
+        };
+        while let Some(directory) = directories.pop() {
+            let page = self
+                .host
+                .list(&workspace, Some(&generation), &directory, 64)
+                .await?;
+            for entry in page.entries {
+                let name = String::from_utf8(entry.name.as_bytes().to_vec())
+                    .map_err(|_| Error::Invalid("workspace entry is not UTF-8".into()))?;
+                let child = if directory == "/" {
+                    format!("/{name}")
+                } else {
+                    format!("{directory}/{name}")
+                };
+                match entry.kind {
+                    FileKind::Directory => directories.push(child),
+                    FileKind::Regular => {
+                        files_seen = files_seen.saturating_add(1);
+                        if files_seen > self.maximum_files {
+                            return Err(Error::Invalid(
+                                "workspace search file budget exceeded".into(),
+                            ));
+                        }
+                        let bytes = self
+                            .host
+                            .read(&workspace, Some(&generation), &child, self.maximum_bytes)
+                            .await?;
+                        bytes_seen = bytes_seen.saturating_add(bytes.len() as u64);
+                        if bytes_seen > self.maximum_search_bytes {
+                            return Err(Error::Invalid(
+                                "workspace search byte budget exceeded".into(),
+                            ));
+                        }
+                        let Ok(text) = String::from_utf8(bytes.to_vec()) else {
+                            continue;
+                        };
+                        let haystack = if input.case_sensitive {
+                            text.clone()
+                        } else {
+                            text.to_lowercase()
+                        };
+                        if haystack.contains(&needle) {
+                            matches.push(json!({"path": child}));
+                            if matches.len() >= input.max_matches as usize {
+                                return Ok(ToolResult {
+                                    value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": true}),
+                                });
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if page.has_more {
+                return Err(Error::Invalid(
+                    "search directory exceeds one bounded page".into(),
+                ));
+            }
+        }
+        Ok(ToolResult {
+            value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": false}),
+        })
+    }
 }
 
 impl ToolExecutor for SearchExecutor {
@@ -382,85 +506,21 @@ impl ToolExecutor for SearchExecutor {
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             require_project(context.scope(), &self.project, VolumeOperation::Read)?;
-            let input: SearchInput = parse(&invocation)?;
-            validate_path(&input.path, true)?;
-            if input.query.is_empty() || input.max_matches == 0 || input.max_matches > 256 {
-                return Err(Error::Invalid(
-                    "search query and match bound are invalid".into(),
-                ));
-            }
-            let workspace = project_workspace(&self.project)?;
-            let generation = self.host.resolve(&workspace).await?.generation;
-            let mut directories = vec![input.path.clone()];
-            let mut matches = Vec::new();
-            let mut files_seen = 0usize;
-            let mut bytes_seen = 0u64;
-            let needle = if input.case_sensitive {
-                input.query.clone()
-            } else {
-                input.query.to_lowercase()
-            };
-            while let Some(directory) = directories.pop() {
-                let page = self
-                    .host
-                    .list(&workspace, Some(&generation), &directory, 64)
-                    .await?;
-                for entry in page.entries {
-                    let name = String::from_utf8(entry.name.as_bytes().to_vec())
-                        .map_err(|_| Error::Invalid("workspace entry is not UTF-8".into()))?;
-                    let child = if directory == "/" {
-                        format!("/{name}")
-                    } else {
-                        format!("{directory}/{name}")
-                    };
-                    match entry.kind {
-                        FileKind::Directory => directories.push(child),
-                        FileKind::Regular => {
-                            files_seen = files_seen.saturating_add(1);
-                            if files_seen > self.maximum_files {
-                                return Err(Error::Invalid(
-                                    "workspace search file budget exceeded".into(),
-                                ));
-                            }
-                            let bytes = self
-                                .host
-                                .read(&workspace, Some(&generation), &child, self.maximum_bytes)
-                                .await?;
-                            bytes_seen = bytes_seen.saturating_add(bytes.len() as u64);
-                            if bytes_seen > self.maximum_search_bytes {
-                                return Err(Error::Invalid(
-                                    "workspace search byte budget exceeded".into(),
-                                ));
-                            }
-                            let Ok(text) = String::from_utf8(bytes.to_vec()) else {
-                                continue;
-                            };
-                            let haystack = if input.case_sensitive {
-                                text.clone()
-                            } else {
-                                text.to_lowercase()
-                            };
-                            if haystack.contains(&needle) {
-                                matches.push(json!({"path": child}));
-                                if matches.len() >= input.max_matches as usize {
-                                    return Ok(ToolResult {
-                                        value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": true}),
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if page.has_more {
-                    return Err(Error::Invalid(
-                        "search directory exceeds one bounded page".into(),
-                    ));
-                }
-            }
-            Ok(ToolResult {
-                value: json!({"generation": serde_json::to_value(generation).map_err(|error| Error::Storage(error.to_string()))?, "matches": matches, "bounded": false}),
-            })
+            self.execute_workspace(invocation).await
+        })
+    }
+
+    fn execute_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            context.task_id.ok_or_else(|| {
+                Error::Unauthorized("project search requires authenticated task context".into())
+            })?;
+            self.execute_workspace(invocation).await
         })
     }
 
