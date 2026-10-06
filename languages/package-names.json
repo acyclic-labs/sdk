@@ -157,7 +157,7 @@
       "umbrella": "family crates (no umbrella)"
     },
     "scala": {
-      "implemented": false,
+      "implemented": true,
       "registry": "Maven Central/SBT",
       "umbrella": "dev.acyclic:acyclic-sdk-jvm-transport"
     },

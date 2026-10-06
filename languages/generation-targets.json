@@ -829,11 +829,11 @@
         }
       ],
       "generator": {
-        "license": "BSD-3-Clause",
-        "name": "ScalaPB + scalapb-grpc",
-        "pin": "Stable 0.11.17; do not use ScalaPB 1.0 alpha for release qualification.",
-        "source": "https://github.com/scalapb/ScalaPB",
-        "version": "0.11.17"
+        "license": "Apache-2.0",
+        "name": "Rust JVM facades + protoc + grpc-java",
+        "pin": "Pinned unified jvm/pom.xml transport dependencies and source-bound jvm/producer-adapter.ps1; ScalaPB 0.11.17 remains a separate research prototype.",
+        "source": "https://grpc.io/docs/languages/java/",
+        "version": "protobuf 4.31.1; grpc-java 1.75.0; protobuf-maven-plugin 0.6.1"
       },
       "id": "scala",
       "kind": "language",
@@ -849,9 +849,29 @@
         "installable": true,
         "notes": "Unified JVM transport artifact with generated Scala sources; the separately pinned ScalaPB prototype is retained as research evidence."
       },
+      "producer": {
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "{source_root}/jvm/producer-adapter.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-Authority",
+          "{wire_root}",
+          "-Request",
+          "{request}",
+          "-Output",
+          "{target_output}"
+        ],
+        "output": "package",
+        "program": "powershell.exe"
+      },
       "remote": {
         "level": "full-grpc",
-        "notes": "ScalaPB 0.11.17 native protobuf/gRPC generation compiles 70 Rust Actors and Stream sources; the published artifact is consumed from an isolated Ivy resolver against the Rust fixture with auth, bytes, uint64 and Stream append/read checks. Full target qualification and cancellation recovery remain pending.",
+        "notes": "The unified JVM producer compiles Rust-generated Scala facades over the generated Java gRPC transport. The separately pinned ScalaPB prototype provides native Scala protobuf/gRPC research evidence. Installed full-RPC cancellation and recovery qualification remains pending.",
         "qualification": "prototype",
         "streaming": [
           "unary",
