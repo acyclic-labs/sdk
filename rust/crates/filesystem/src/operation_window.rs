@@ -6,6 +6,7 @@
 //! the last lease closes. Durable stores make crash recovery and writer fencing
 //! independent of the process that opened the window.
 
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationId, IdempotencyKey, OperationId, Workspace,
     WorkspaceError, WorkspaceId, WorkspaceRebase,
@@ -13,14 +14,13 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[cfg(feature = "distributed")]
 use futures::StreamExt as _;
 
 const STATE_VERSION: u32 = 1;
-const MAXIMUM_CAS_ATTEMPTS: u8 = 32;
 
 /// Stable identity of one tool lease.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -542,8 +542,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             )
             .is_some()
             {
-                let expected = current.revision;
-                current.revision = expected.saturating_add(1);
+                let expected = next_revision(&mut current.revision);
                 if self.cas(workspace_id, expected, current).await? {
                     return Err(OperationWindowError::Reconciling);
                 }
@@ -599,8 +598,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     return Err(OperationWindowError::Reconciling);
                 }
             };
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(OperationWindowLease {
                     workspace_id,
@@ -630,8 +628,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     subsequent_parent, ..
                 } => *subsequent_parent = Some(parent),
             }
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(true);
             }
@@ -680,8 +677,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     None
                 }
             };
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
                 return match reconcile {
                     Some(reconcile) => self
@@ -733,8 +729,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 .get_mut(&lease.lease_id)
                 .ok_or(OperationWindowError::StaleLease)?
                 .expires_at_millis = expires_at_millis;
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(lease.workspace_id, expected, current).await? {
                 return Ok(OperationWindowLease {
                     workspace_id: lease.workspace_id,
@@ -812,8 +807,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                     }
                 }
             }
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(lease.workspace_id, expected, current).await? {
                 return Ok((
                     result.unwrap_or(OperationWindowFinish::AlreadyClosed),
@@ -985,8 +979,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
             else {
                 return Ok(None);
             };
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(Some(reconcile));
             }
@@ -1033,8 +1026,7 @@ impl<S: OperationWindowStore> OperationWindowCoordinator<S> {
                 }
                 _ => return Err(OperationWindowError::StaleTicket),
             }
-            let expected = current.revision;
-            current.revision = expected.saturating_add(1);
+            let expected = next_revision(&mut current.revision);
             if self.cas(workspace_id, expected, current).await? {
                 return Ok(());
             }
@@ -1175,7 +1167,7 @@ fn close_lease(
 /// Process-local adapter used by tests and embedded single-process callers.
 #[derive(Clone, Default)]
 pub struct MemoryOperationWindowStore {
-    states: Arc<Mutex<BTreeMap<WorkspaceId, OperationWindowSnapshot>>>,
+    states: Arc<MemoryRecords<WorkspaceId, OperationWindowSnapshot>>,
 }
 
 impl MemoryOperationWindowStore {
@@ -1199,9 +1191,8 @@ impl OperationWindowStore for MemoryOperationWindowStore {
         workspace_id: WorkspaceId,
     ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
         self.states
-            .lock()
+            .load(&workspace_id)
             .map_err(|_| MemoryOperationWindowStoreError)
-            .map(|states| states.get(&workspace_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -1210,16 +1201,9 @@ impl OperationWindowStore for MemoryOperationWindowStore {
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> Result<bool, Self::Error> {
-        let mut states = self
-            .states
-            .lock()
-            .map_err(|_| MemoryOperationWindowStoreError)?;
-        let revision = states.get(&workspace_id).map_or(0, |state| state.revision);
-        if revision != expected_revision {
-            return Ok(false);
-        }
-        states.insert(workspace_id, replacement);
-        Ok(true)
+        self.states
+            .compare_and_swap(workspace_id, expected_revision, replacement)
+            .map_err(|_| MemoryOperationWindowStoreError)
     }
 }
 
@@ -1251,7 +1235,7 @@ mod tests {
     async fn persisted_active_windows_require_a_nonempty_identity_keyed_lease_set() {
         let workspace = WorkspaceId::from_bytes([6; 16]);
         let store = MemoryOperationWindowStore::new();
-        store.states.lock().expect("state lock").insert(
+        store.states.0.lock().expect("state lock").insert(
             workspace,
             OperationWindowSnapshot {
                 version: STATE_VERSION,
