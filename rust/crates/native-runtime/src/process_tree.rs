@@ -26,18 +26,29 @@ impl ProcessTree {
 
     /// Polls the direct child without releasing ownership of its descendants.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child
+        let child = self
+            .child
             .as_mut()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?
-            .try_wait()
+            .ok_or_else(|| io::Error::other("process output was already collected"))?;
+        #[cfg(unix)]
+        return platform::observe_exit(child, false);
+        #[cfg(windows)]
+        child.try_wait()
     }
 
     /// Waits for the direct child while retaining ownership of its descendants.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.child
+        let child = self
+            .child
             .as_mut()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?
-            .wait()
+            .ok_or_else(|| io::Error::other("process output was already collected"))?;
+        // Match Child::wait: an owned piped stdin must not prevent exit.
+        drop(child.stdin.take());
+        #[cfg(unix)]
+        return platform::observe_exit(child, true)?
+            .ok_or_else(|| io::Error::other("blocking child observation returned no exit"));
+        #[cfg(windows)]
+        child.wait()
     }
 
     /// Collects at most `max_bytes` across both pipes, with a deadline measured
@@ -171,7 +182,37 @@ mod platform {
     use std::io::Read;
     pub(super) use std::os::fd::AsRawFd as Pipe;
     use std::os::unix::process::CommandExt as _;
-    use std::process::{Child, Command};
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::process::{Child, Command, ExitStatus};
+
+    pub(super) fn observe_exit(child: &Child, blocking: bool) -> io::Result<Option<ExitStatus>> {
+        let flags = libc::WEXITED | libc::WNOWAIT | if blocking { 0 } else { libc::WNOHANG };
+        loop {
+            // SAFETY: initialized OS output storage and the exclusively owned
+            // child's ID. WNOWAIT retains the leader until group termination,
+            // preventing its PID/PGID from being reused for an unrelated group.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            if unsafe { libc::waitid(libc::P_PID, child.id(), &raw mut info, flags) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            // SAFETY: WEXITED waitid initialized the child-status union.
+            if unsafe { info.si_pid() } == 0 {
+                return Ok(None);
+            }
+            let status = unsafe { info.si_status() };
+            let raw = match info.si_code {
+                libc::CLD_EXITED => status << 8,
+                libc::CLD_KILLED => status,
+                libc::CLD_DUMPED => status | 0x80,
+                _ => return Err(io::Error::other("unexpected child exit observation")),
+            };
+            return Ok(Some(ExitStatus::from_raw(raw)));
+        }
+    }
 
     pub(super) fn read_pipe(
         pipe: &mut (impl Read + Pipe),
@@ -333,6 +374,7 @@ mod tests {
                 // Avoid test-harness stdout in the exact shared-budget fixture.
                 std::process::exit(0);
             }
+            "exit-code" => std::process::exit(7),
             _ => assert_eq!(mode, "known helper mode"),
         }
     }
@@ -443,6 +485,45 @@ mod tests {
         ready(temporary.path(), "tree-ready");
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_observation_retains_group_leader_until_cleanup() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("output", temporary.path());
+        command.env("EXPLICIT_PROCESS_INPUT", "allowed");
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while tree.try_wait().expect("poll exit").is_none() {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert!(tree.wait().expect("wait exit").success());
+        // A second real waitid observation fails with ECHILD if try_wait or
+        // wait reaped the leader, releasing its PID for reuse before cleanup.
+        assert!(
+            super::platform::observe_exit(tree.child.as_ref().expect("retained child"), false)
+                .expect("leader remains waitable")
+                .expect("exited leader")
+                .success()
+        );
+        tree.terminate().expect("terminate and reap");
+        assert!(tree.child.is_none());
+        let mut tree = ProcessTree::spawn(&mut self::command("exit-code", temporary.path()))
+            .expect("spawn nonzero exit");
+        assert_eq!(tree.wait().expect("nonzero exit").code(), Some(7));
+        tree.terminate().expect("reap nonzero exit");
+
+        let mut tree = ProcessTree::spawn(&mut self::command("child", temporary.path()))
+            .expect("spawn signalled child");
+        tree.terminate_descendants().expect("signal tree");
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(
+            tree.wait().expect("signal exit").signal(),
+            Some(libc::SIGKILL)
+        );
+        tree.terminate().expect("reap signal exit");
     }
 }
 
