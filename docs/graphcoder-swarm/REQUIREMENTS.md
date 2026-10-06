@@ -70,9 +70,9 @@ until concrete recursive fork activation and fault scenarios pass.
 
 | ID | Contract | Verification | Evidence/status |
 |---|---|---|---|
-| EFFECT-01-A | Persist completed-batch publication admission before dispatch and result before next request | completed_batch_publication_blocks_next_request_until_reconciled | checkpoint-publication.json; TESTED stock executor |
-| EFFECT-02-A | Reconcile original admission; repeat dispatch only for idempotent guarantee | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED three guarantees |
-| EFFECT-02-B | Reject altered completed boundary on replay without dispatch | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED |
+| EFFECT-01-A | Persist completed-batch publication admission before dispatch and result before next request | completed_batch_publication_blocks_next_request_until_reconciled | Historical scoped test; rerun against the final source |
+| EFFECT-02-A | Reconcile original admission; repeat dispatch only for idempotent guarantee | batch_publication_recovery_preserves_admission_and_retry_guarantee | Historical scoped test; rerun against the final source |
+| EFFECT-02-B | Reject altered completed boundary on replay without dispatch | batch_publication_recovery_preserves_admission_and_retry_guarantee | Historical scoped test; rerun against the final source |
 | FORK-04-A | Typed fork adapter activates children only after the shared completed boundary | concrete swarm fault E2E | PENDING |
 
 ## Authoritative exchange subcontracts
@@ -81,11 +81,11 @@ These supplement the original required rows; they do not qualify the full swarm.
 
 | ID | Contract | Verification | Evidence/status |
 |---|---|---|---|
-| HISTORY-01 | Store completed text, calls, successful results and rejection feedback in exact order | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED native durable storage |
-| HISTORY-02 | Restore canonical text bytes and original text message representation | pinned_model_text_preserves_bytes_and_rejects_overflow_corruption_and_reinterpretation | checkpoint-history.json; TESTED |
-| HISTORY-03 | Retain intermediate assistant text once across follow-up turns | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED |
-| FORK-01-A | Two actual sibling workspace forks receive the same completed model prefix bytes | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED fixture through production executor and SDK fork providers |
-| EFFECT-05-A | Refuse stale completed conversation before writing publication artifacts | stale_completed_boundary_is_refused_before_publication_files_are_written | checkpoint-history.json; TESTED native generation unchanged |
+| HISTORY-01 | Store completed text, calls, successful results and rejection feedback in exact order | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | Historical scoped test; rerun against the final source |
+| HISTORY-02 | Restore canonical text bytes and original text message representation | pinned_model_text_preserves_bytes_and_rejects_overflow_corruption_and_reinterpretation | Historical scoped test; rerun against the final source |
+| HISTORY-03 | Retain intermediate assistant text once across follow-up turns | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | Historical scoped test; rerun against the final source |
+| FORK-01-A | Two actual sibling workspace forks receive the same completed model prefix bytes | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | Historical scoped test; rerun against the final source |
+| EFFECT-05-A | Refuse stale completed conversation before writing publication artifacts | stale_completed_boundary_is_refused_before_publication_files_are_written | Historical scoped test; rerun against the final source |
 
 ## Model tool provenance subcontracts
 
@@ -94,7 +94,7 @@ activation and do not qualify those parent requirements.
 
 | ID | Contract | Verification | Evidence/status |
 |---|---|---|---|
-| FORK-04-B | Runtime turn/step provenance survives tool recovery without entering model-visible content | model_tool_provenance_survives_recovery_without_entering_model_input | checkpoint-provenance.json; TESTED stock dispatch/reconciliation |
-| EFFECT-02-C | Cross-turn, cross-step and cross-call routing is refused | model_batch_context_refuses_cross_turn_step_and_call_routing | checkpoint-provenance.json; TESTED |
-| EFFECT-02-D | Batch-publication effect IDs cannot collide with model-owned call IDs | model_batch_context_refuses_cross_turn_step_and_call_routing | checkpoint-provenance.json; TESTED separate identity domain |
-| EFFECT-02-E | Recovery refuses earlier executor semantics before model/effect dispatch | old_publication_identity_semantics_are_fenced_before_dispatch | checkpoint-provenance.json; TESTED v2/v3 fence |
+| FORK-04-B | Runtime turn/step provenance survives tool recovery without entering model-visible content | model_tool_provenance_survives_recovery_without_entering_model_input | Historical scoped test; rerun against the final source |
+| EFFECT-02-C | Cross-turn, cross-step and cross-call routing is refused | model_batch_context_refuses_cross_turn_step_and_call_routing | Historical scoped test; rerun against the final source |
+| EFFECT-02-D | Batch-publication effect IDs cannot collide with model-owned call IDs | model_batch_context_refuses_cross_turn_step_and_call_routing | Historical scoped test; rerun against the final source |
+| EFFECT-02-E | Recovery refuses earlier executor semantics before model/effect dispatch | old_publication_identity_semantics_are_fenced_before_dispatch | Historical scoped test; rerun against the final source |
