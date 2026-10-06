@@ -174,8 +174,6 @@ fn source_revision_from_metadata(value: &Value) -> Option<String> {
 
     let schema = value.get("schema").and_then(Value::as_str).unwrap_or("");
     let authority = value.get("authority");
-    let source = value.get("source");
-    let source_identity = value.get("source_identity");
 
     // A Rust authority has two different identities: source_git_sha is the
     // checkout revision, while source_revision is the contract-model digest.
@@ -226,9 +224,7 @@ fn source_revision_from_metadata(value: &Value) -> Option<String> {
     ) {
         return git_revision(value.get("source_revision"));
     }
-    git_revision(source.and_then(|item| item.get("git_sha")))
-        .or_else(|| git_revision(source.and_then(|item| item.get("revision"))))
-        .or_else(|| git_revision(source_identity.and_then(|item| item.get("revision"))))
+    None
 }
 
 fn metadata_source_revisions(
@@ -778,13 +774,14 @@ mod tests {
         .unwrap();
         fs::write(
             root.join("nested/cache/random.json"),
-            format!(r#"{{"source_revision":"{digest}"}}"#),
+            format!(r#"{{"source_revision":"{digest}","source":{{"revision":"{git}"}}}}"#),
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
         let (report, error) = source_binding_report(&root, &hashes, Some(git));
         assert_eq!(report["status"], "passed");
         assert!(error.is_none());
+        assert_eq!(report["observations"].as_array().unwrap().len(), 1);
         assert_eq!(report["observations"][0]["source_revision"], git);
         fs::remove_dir_all(root).unwrap();
     }
