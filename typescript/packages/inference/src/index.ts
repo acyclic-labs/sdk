@@ -431,7 +431,7 @@ export class HttpInferenceTransport implements InferenceTransport {
       redirect: "error",
       headers,
       body,
-      signal,
+      ...(signal === undefined ? {} : { signal }),
     });
     if (!response.ok) {
       throw new InferenceTransportError(
