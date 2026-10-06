@@ -3084,33 +3084,34 @@ fn scan_crate(
     let registry_verified = registry
         .as_ref()
         .is_some_and(|entry| entry.status == "published");
-    let package_instructions = if publish {
-        vec![PackageInstruction {
-            ecosystem: "cargo".to_owned(),
-            package: package_name.clone(),
-            command: if registry_verified {
-                format!(
-                    "cargo add {package_name}@={}",
-                    registry
-                        .as_ref()
-                        .map(|entry| entry.version.as_str())
-                        .unwrap_or_default()
-                )
-            } else if dirty_worktree
-                || source_state == "working-tree"
-                || source_revision == "unknown"
-            {
-                format!("cargo add {package_name} --path {crate_relative_path}")
-            } else {
-                format!(
-                    "cargo add {package_name} --git https://github.com/acyclic-labs/sdk --rev {source_revision}"
-                )
-            },
-            registry,
-        }]
-    } else {
-        Vec::new()
-    };
+    // Every navigable family gets a source instruction, including
+    // `publish = false` crates. Those crates are valid workspace targets for
+    // branch previews and generated embedded bindings, even though Cargo must
+    // not be told to resolve them from a registry. Registry commands remain
+    // restricted to packages that are both publishable and registry-verified.
+    let package_instructions = vec![PackageInstruction {
+        ecosystem: "cargo".to_owned(),
+        package: package_name.clone(),
+        command: if publish && registry_verified {
+            format!(
+                "cargo add {package_name}@={}",
+                registry
+                    .as_ref()
+                    .map(|entry| entry.version.as_str())
+                    .unwrap_or_default()
+            )
+        } else if dirty_worktree
+            || source_state == "working-tree"
+            || source_revision == "unknown"
+        {
+            format!("cargo add {package_name} --path {crate_relative_path}")
+        } else {
+            format!(
+                "cargo add {package_name} --git https://github.com/acyclic-labs/sdk --rev {source_revision}"
+            )
+        },
+        registry,
+    }];
     let navigation = format!("crates/{package_name}");
     let coverage = DocCoverage {
         guides: guides.len(),
@@ -5486,6 +5487,61 @@ mod tests {
                 .map(|entry| entry.status.as_str()),
             Some("unavailable")
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_crate_emits_source_install_for_unpublished_workspace_package() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-source-only-{}",
+            std::process::id()
+        ));
+        let crate_dir = root.join("rust/crates/demo-source-only");
+        fs::create_dir_all(crate_dir.join("src")).expect("create source-only fixture");
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"demo-source-only\"\nversion = \"0.1.0\"\npublish = false\n",
+        )
+        .expect("write source-only manifest");
+        fs::write(crate_dir.join("src/lib.rs"), "//! Source-only fixture.\npub struct Item;\n")
+            .expect("write source-only source");
+
+        let bundle = scan_crate(
+            &root,
+            &crate_dir,
+            None,
+            false,
+            "source-revision",
+            None,
+            "working-tree",
+            true,
+            None,
+        )
+        .expect("scan source-only fixture");
+        assert_eq!(bundle.availability, "source-only");
+        assert_eq!(
+            bundle.package_instructions[0].command,
+            "cargo add demo-source-only --path rust/crates/demo-source-only"
+        );
+        assert_eq!(bundle.package_instructions[0].registry, None);
+
+        let release_bundle = scan_crate(
+            &root,
+            &crate_dir,
+            None,
+            false,
+            &"a".repeat(40),
+            None,
+            "release",
+            false,
+            None,
+        )
+        .expect("scan source-only release fixture");
+        assert_eq!(
+            release_bundle.package_instructions[0].command,
+            "cargo add demo-source-only --git https://github.com/acyclic-labs/sdk --rev aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+
         let _ = fs::remove_dir_all(root);
     }
 
