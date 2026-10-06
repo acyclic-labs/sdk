@@ -1855,8 +1855,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_stream_mailbox_preserves_order_replay_and_target_scope() -> Result<()> {
-        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+    async fn local_stream_mailbox_persists_order_replay_and_target_scope_after_reopen() -> Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        let provider = acyclic_stream::LocalStream::open(
+            root.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
         let mailbox = MailboxStore::new(
             acyclic_stream::StreamClient::new(provider),
             Arc::new(AllowContent),
@@ -1899,10 +1906,42 @@ mod tests {
             Some(file.clone())
         );
 
+        // Reopen the journal through the public LocalStream provider. The
+        // endpoint identity and committed order must survive process teardown.
+        drop(mailbox);
+        let reopened_provider = acyclic_stream::LocalStream::open(
+            root.path(),
+            acyclic_stream::LocalStreamLimits::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        let reopened = MailboxStore::new(
+            acyclic_stream::StreamClient::new(reopened_provider),
+            Arc::new(AllowContent),
+        );
+        let reopened_page = reopened.inbox(host.as_ref(), recipient, 0, 2).await?;
+        let reopened_ids: Vec<_> = reopened_page
+            .iter()
+            .map(|item| item.message_id.clone())
+            .collect();
+        assert_eq!(
+            reopened_ids,
+            vec![first_id.to_string(), second_id.to_string()]
+        );
+        reopened
+            .send(host.as_ref(), sender, recipient, first_id, file.clone())
+            .await?;
+        assert!(
+            reopened
+                .inbox(host.as_ref(), recipient, 2, 2)
+                .await?
+                .is_empty()
+        );
+
         // task(2) and task(3) are siblings in the host fixture, so this
         // endpoint is outside the sender's direct parent/child scope.
         assert!(matches!(
-            mailbox
+            reopened
                 .send(host.as_ref(), task(2), task(3), operation(0x33), file,)
                 .await,
             Err(Error::Unauthorized(_))
