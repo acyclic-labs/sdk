@@ -14,7 +14,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
 const WIRE_VERSION: u16 = 1;
-const PUBLICATION_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -419,36 +418,12 @@ fn valid_multi_root_plan(value: &MultiRootMergePlan) -> bool {
 }
 
 fn valid_multi_root_candidate(value: &MultiRootMergeCandidate) -> bool {
-    valid_multi_root_plan(&value.plan) && value.plan.roots.keys().eq(value.resolutions.keys())
+    crate::multi_root::validate_candidate(value).is_ok()
 }
 
+/// A decoded publication must be one the coordinator itself could recover.
 fn valid_publication(value: &MultiRootPublication) -> bool {
-    value.version == PUBLICATION_VERSION
-        && value.revision > 0
-        && valid_multi_root_candidate(&value.candidate)
-        && value
-            .published_roots
-            .is_subset(&value.candidate.plan.roots.keys().copied().collect())
-        && value
-            .published_generations
-            .keys()
-            .all(|root| value.published_roots.contains(root))
-        && value
-            .fences
-            .keys()
-            .all(|root| value.candidate.plan.roots.contains_key(root))
-        && value
-            .conflicts
-            .keys()
-            .all(|root| value.candidate.plan.roots.contains_key(root))
-        && value
-            .projected_roots
-            .keys()
-            .all(|root| value.candidate.plan.roots.contains_key(root))
-        && value
-            .declared_conflicts
-            .keys()
-            .all(|root| value.candidate.plan.roots.contains_key(root))
+    crate::multi_root::validate_journal(value).is_ok()
 }
 
 /// Encodes one immutable merge plan.
@@ -702,7 +677,7 @@ mod tests {
         let root_id = *plan.roots.keys().next().expect("root");
         let generation = generation(42);
         let publication = Publication::Applied(MultiRootPublication {
-            version: PUBLICATION_VERSION,
+            version: crate::multi_root::MULTI_ROOT_VERSION,
             revision: 2,
             candidate: MultiRootMergeCandidate {
                 resolutions: plan
@@ -715,7 +690,7 @@ mod tests {
             phase: MultiRootPublicationPhase::Applied,
             published_roots: BTreeSet::from([root_id]),
             published_generations: BTreeMap::from([(root_id, generation)]),
-            fences: BTreeMap::new(),
+            fences: BTreeMap::from([(root_id, MultiRootFence { token: vec![7] })]),
             conflicts: BTreeMap::new(),
             projected_roots: BTreeMap::new(),
             declared_conflicts: BTreeMap::new(),
@@ -724,6 +699,18 @@ mod tests {
         let encoded = encode_publication(&publication).expect("encode");
         assert!(encoded.contains("publishedGenerations"));
         assert_eq!(decode_publication(&encoded).expect("decode"), publication);
+
+        // An Applied record without the fences of its roots cannot come from
+        // the coordinator, whose recovery rejects it; neither may the decoder.
+        let Publication::Applied(mut unfenced) = publication else {
+            unreachable!("fixture is applied");
+        };
+        unfenced.fences.clear();
+        let encoded = encode_publication(&Publication::Applied(unfenced)).expect("encode");
+        assert!(matches!(
+            decode_publication(&encoded),
+            Err(CompatibilityWireError::InvalidValue)
+        ));
     }
 
     #[test]

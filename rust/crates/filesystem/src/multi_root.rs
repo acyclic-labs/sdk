@@ -23,7 +23,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
 
-const MULTI_ROOT_VERSION: u32 = 2;
+pub(crate) const MULTI_ROOT_VERSION: u32 = 2;
 
 /// One root pinned by an immutable cross-root merge plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2449,7 +2449,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
     }
 }
 
-fn validate_candidate(candidate: &MultiRootMergeCandidate) -> Result<(), ()> {
+pub(crate) fn validate_candidate(candidate: &MultiRootMergeCandidate) -> Result<(), ()> {
     if candidate.plan.roots.is_empty()
         || candidate.plan.parent_context_id == candidate.plan.child_context_id
         || candidate.plan.roots.keys().ne(candidate.resolutions.keys())
@@ -2475,7 +2475,7 @@ fn is_pristine_unclaimed(journal: &MultiRootPublication) -> bool {
         && journal.paused_root.is_none()
 }
 
-fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()> {
+pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()> {
     let roots: BTreeSet<_> = journal.candidate.plan.roots.keys().copied().collect();
     let fence_roots: BTreeSet<_> = journal.fences.keys().copied().collect();
     let generation_roots: BTreeSet<_> = journal.published_generations.keys().copied().collect();
