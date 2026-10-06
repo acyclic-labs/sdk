@@ -2435,6 +2435,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let branch = branch.into();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
+            let before = state.clone();
             let output = register_branch_workspace_state(
                 &mut state,
                 branch.clone(),
@@ -2442,6 +2443,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 head,
                 switch,
             )?;
+            if state == before {
+                return Ok(output);
+            }
             let expected = state.revision;
             state.revision = expected.saturating_add(1);
             if self.compare_and_swap_state(expected, state).await? {
@@ -8919,6 +8923,58 @@ mod tests {
                 .expect("exact retry"),
             GitCommandOutput::NoOp
         );
+    }
+
+    #[tokio::test]
+    async fn branch_registration_is_idempotent_and_rejects_replacement() {
+        let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
+        let source = WorkspaceId::derive(
+            [0x52; 16],
+            &WorkspaceName::new("branch-source").expect("valid source workspace"),
+        );
+        repository
+            .register_branch_workspace("agents/child", source, None, false)
+            .await
+            .expect("initial branch registration");
+        let first = repository
+            .store()
+            .load(workspace())
+            .await
+            .expect("load initial state")
+            .expect("initial state");
+
+        assert_eq!(
+            repository
+                .register_branch_workspace("agents/child", source, None, false)
+                .await
+                .expect("identical branch replay"),
+            GitCommandOutput::NoOp
+        );
+        let replay = repository
+            .store()
+            .load(workspace())
+            .await
+            .expect("load replay state")
+            .expect("replay state");
+        assert_eq!(replay, first);
+
+        let replacement = WorkspaceId::derive(
+            [0x53; 16],
+            &WorkspaceName::new("replacement-source").expect("valid replacement workspace"),
+        );
+        assert!(matches!(
+            repository
+                .register_branch_workspace("agents/child", replacement, None, false)
+                .await,
+            Err(GitCompatError::BranchExists(name)) if name == "agents/child"
+        ));
+        let after_rejection = repository
+            .store()
+            .load(workspace())
+            .await
+            .expect("load rejected state")
+            .expect("rejected state");
+        assert_eq!(after_rejection, first);
     }
 
     #[tokio::test]
