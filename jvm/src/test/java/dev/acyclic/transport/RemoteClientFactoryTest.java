@@ -46,7 +46,7 @@ class RemoteClientFactoryTest {
       try {
         assertEquals(GeneratedRemotePolicy.Transport.GRPC, client.transport(), family);
         if (family.equals("machines")) {
-          assertEquals(0, client.headers().keys().size(), "Machines uses native mTLS metadata");
+          assertEquals("Bearer test-token", client.headers().get(io.grpc.Metadata.Key.of("authorization", io.grpc.Metadata.ASCII_STRING_MARSHALLER)));
         }
       } finally {
         client.close();
@@ -67,6 +67,6 @@ class RemoteClientFactoryTest {
         .get("acyclic.machines.v1.MachinesService/WatchOperation");
     assertEquals(true, watch.serverStreaming());
     assertEquals("call", watch.cancellation());
-    assertEquals(false, watch.bearerAuth());
+    assertEquals(true, watch.bearerAuth());
   }
 }
