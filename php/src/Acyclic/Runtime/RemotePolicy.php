@@ -41,4 +41,9 @@ final class RemotePolicy
     {
         return GeneratedRemotePolicy::validateBearer($token);
     }
+
+    public static function resolveRuntime(string $runtime = 'auto'): string
+    {
+        return GeneratedRemotePolicy::resolveRuntime($runtime);
+    }
 }
