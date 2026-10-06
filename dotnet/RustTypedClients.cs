@@ -526,6 +526,21 @@ public readonly record struct UnixTimestampMillis
     }
 }
 
+public readonly record struct UnixTimestampSeconds
+{
+    public UnixTimestampSeconds(ulong value)
+    {
+        if (value == 0) throw new ArgumentOutOfRangeException(nameof(value));
+        Value = value;
+    }
+    public ulong Value { get; }
+    internal ulong ToWire()
+    {
+        if (Value == 0) throw new ArgumentOutOfRangeException(nameof(Value));
+        return Value;
+    }
+}
+
 public abstract record ImmutableImage
 {
     public sealed record Managed(Sha256Digest Digest) : ImmutableImage;
@@ -5567,7 +5582,7 @@ public sealed record RustFilesystemCredentialResponseResponse
     private Acyclic.Filesystem.V2.CredentialResponse Wire { get; }
     private RustFilesystemCredentialResponseResponse(Acyclic.Filesystem.V2.CredentialResponse wire) => Wire = wire;
     public OpaqueText Endpoint => new OpaqueText(Wire.Endpoint);
-    public UnixTimestampMillis ExpiresAtUnixSeconds => new UnixTimestampMillis(checked((ulong)Wire.ExpiresAtUnixSeconds));
+    public UnixTimestampSeconds ExpiresAtUnixSeconds => new UnixTimestampSeconds(checked((ulong)Wire.ExpiresAtUnixSeconds));
     public OpaqueText BearerToken => new OpaqueText(Wire.BearerToken);
     public int BearerTokenOneofIndex => 0;
     public RustFilesystemS3CredentialValue? S3 => Wire.S3 is null ? null : RustFilesystemS3CredentialValue.FromWire(Wire.S3);

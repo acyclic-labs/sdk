@@ -158,6 +158,11 @@ module Acyclic
       sig { returns(Integer) }
       def to_wire; end
     end
+    class RustUnixTimestampSeconds < T::Struct
+      const :value, Integer
+      sig { returns(Integer) }
+      def to_wire; end
+    end
     class RustUploadId < T::Struct
       const :value, String
       sig { returns(String) }
@@ -1473,7 +1478,7 @@ module Acyclic
     class RustAcyclicFilesystemV2CredentialResponse < T::Struct
       const :unknown, T::Hash[Symbol, T.untyped], default: {}
       const :endpoint, Acyclic::GeneratedTyped::RustOpaqueText, default: nil
-      const :expires_at_unix_seconds, Acyclic::GeneratedTyped::RustUnixTimestampMillis, default: nil
+      const :expires_at_unix_seconds, Acyclic::GeneratedTyped::RustUnixTimestampSeconds, default: nil
       const :bearer_token, T.nilable(Acyclic::GeneratedTyped::RustOpaqueText), default: nil
       const :s3, T.nilable(Acyclic::GeneratedTyped::RustAcyclicFilesystemV2S3Credential), default: nil
       sig { returns(T::Hash[Symbol, T.untyped]) }

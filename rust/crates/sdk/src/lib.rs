@@ -32,14 +32,14 @@ mod tests {
 
     #[test]
     fn exposes_every_public_family() {
-        let _ = actors::connect;
+        let _actors_connection = actors::connect("http://127.0.0.1:8080", "fixture");
         let _ = filesystem::FILE_DESCRIPTOR_SET;
         let _ = harness::FILE_DESCRIPTOR_SET;
         let _ = inference::MAXIMUM_MESSAGE_BYTES;
         let _ = machines::FILE_DESCRIPTOR_SET;
-        let _ = objects::connect;
-        let _ = stream::connect;
-        let _ = workers::connect;
+        let _objects_connection = objects::connect("http://127.0.0.1:8080", "fixture");
+        let _stream_connection = stream::connect("http://127.0.0.1:8080", "fixture");
+        let _workers_connection = workers::connect("http://127.0.0.1:8080", "fixture");
         assert_eq!(SDK_VERSION, "0.2.0");
     }
 }

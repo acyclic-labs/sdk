@@ -384,24 +384,28 @@ mod validation_tests {
     use prost_reflect::{DescriptorPool, DynamicMessage};
     use sha2::{Digest, Sha256};
 
-    fn response(
-        family: crate::BindingFamily,
-        version: &str,
-        supported: serde_json::Value,
-    ) -> Vec<u8> {
-        let json = serde_json::json!({
-            "protocol": { "version": version, "descriptorDigest": format!("{:x}", Sha256::digest(family.archived_runtime_descriptor())) },
-            "supported": { "capabilities": supported }
-        }).to_string();
+    fn encode_response(value: serde_json::Value) -> Vec<u8> {
         let pool =
             DescriptorPool::decode(crate::protocol::protocol_descriptor().as_slice()).unwrap();
         let descriptor = pool
             .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
             .unwrap();
+        let json = value.to_string();
         let mut deserializer = serde_json::Deserializer::from_str(&json);
         DynamicMessage::deserialize(descriptor, &mut deserializer)
             .unwrap()
             .encode_to_vec()
+    }
+
+    fn response(
+        family: crate::BindingFamily,
+        version: &str,
+        supported: serde_json::Value,
+    ) -> Vec<u8> {
+        encode_response(serde_json::json!({
+            "protocol": { "version": version, "descriptorDigest": format!("{:x}", Sha256::digest(family.archived_runtime_descriptor())) },
+            "supported": { "capabilities": supported }
+        }))
     }
 
     #[test]
@@ -472,6 +476,99 @@ mod validation_tests {
         assert_eq!(
             validate_handshake_response(family, "v1", &required, &bytes, 4096),
             Err(E::InvalidCapability)
+        );
+    }
+
+    #[test]
+    fn rejects_missing_supported_and_empty_identity_fields() {
+        use HandshakeValidationError as E;
+        let family = crate::BindingFamily::Actors;
+        let required = [RequiredCapability {
+            name: "read",
+            version: "1",
+        }];
+        let digest = format!("{:x}", Sha256::digest(family.archived_runtime_descriptor()));
+
+        let missing_supported = encode_response(serde_json::json!({
+            "protocol": { "version": "v1", "descriptorDigest": digest }
+        }));
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &missing_supported, 4096),
+            Err(E::MissingCapabilities)
+        );
+
+        let empty_version = response(
+            family,
+            "",
+            serde_json::json!([{ "name": "read", "version": "1" }]),
+        );
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &empty_version, 4096),
+            Err(E::VersionMismatch)
+        );
+
+        let empty_digest = encode_response(serde_json::json!({
+            "protocol": { "version": "v1", "descriptorDigest": "" },
+            "supported": { "capabilities": [{ "name": "read", "version": "1" }] }
+        }));
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &empty_digest, 4096),
+            Err(E::DescriptorMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_capabilities_and_invalid_expectations() {
+        use HandshakeValidationError as E;
+        let family = crate::BindingFamily::Actors;
+        let required = [RequiredCapability {
+            name: "read",
+            version: "1",
+        }];
+        let empty_capabilities = response(family, "v1", serde_json::json!([]));
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &empty_capabilities, 4096),
+            Err(E::MissingRequiredCapability)
+        );
+
+        let valid = response(
+            family,
+            "v1",
+            serde_json::json!([{ "name": "read", "version": "1" }]),
+        );
+        assert_eq!(
+            validate_handshake_response(family, "", &required, &valid, 4096),
+            Err(E::InvalidExpectation)
+        );
+        assert_eq!(
+            validate_handshake_response(family, "v1", &required, &valid, 0),
+            Err(E::InvalidExpectation)
+        );
+        assert_eq!(
+            validate_handshake_response(
+                family,
+                "v1",
+                &[RequiredCapability {
+                    name: "",
+                    version: "1",
+                }],
+                &valid,
+                4096,
+            ),
+            Err(E::InvalidExpectation)
+        );
+        assert_eq!(
+            validate_handshake_response(
+                family,
+                "v1",
+                &[RequiredCapability {
+                    name: "read",
+                    version: "",
+                }],
+                &valid,
+                4096,
+            ),
+            Err(E::InvalidExpectation)
         );
     }
 }

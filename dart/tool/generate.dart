@@ -125,6 +125,19 @@ List<String> protocIncludeRoots(List<String> schemaRoots) {
 }
 
 Future<void> main(List<String> arguments) async {
+  final sdkMatch = RegExp(r'^(\d+)\.(\d+)\.(\d+)').firstMatch(Platform.version);
+  final sdkVersion = sdkMatch == null
+      ? null
+      : List<int>.generate(3, (index) => int.parse(sdkMatch.group(index + 1)!));
+  if (sdkVersion == null ||
+      sdkVersion[0] < 3 ||
+      (sdkVersion[0] == 3 && sdkVersion[1] < 8)) {
+    stderr.writeln(
+      'Dart SDK >=3.8.0 is required by pubspec.yaml; found ${Platform.version}',
+    );
+    exitCode = 2;
+    return;
+  }
   final explicitIndex = arguments.indexOf('--schema-root');
   final explicitRaw = explicitIndex >= 0 && explicitIndex + 1 < arguments.length
       ? arguments[explicitIndex + 1]

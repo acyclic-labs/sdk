@@ -70,7 +70,7 @@ impl MachinesNativeClient {
         Ok(Self::from_machines(client))
     }
 
-    /// Connects using the canonical ACYCLIC_MACHINES_* environment configuration.
+    /// Connects using the canonical `ACYCLIC_MACHINES_*` environment configuration.
     #[napi(factory, js_name = "connectFromEnv")]
     pub async fn connect_from_env() -> Result<Self> {
         Ok(Self::from_machines(
@@ -171,15 +171,15 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn bridge_uses_shared_public_boundary_for_qualification() {
+    async fn bridge_uses_shared_public_boundary_for_qualification() -> Result<()> {
         let client = MachinesNativeClient::from_machines(Machines::new(Arc::new(
             SimulatedMachines::default(),
         )));
         let json = client
             .qualify_image(r#"{"kind":"custom","digestHex":"0101010101010101010101010101010101010101010101010101010101010101"}"#.into())
-            .await
-            .expect("qualification");
+            .await?;
         assert!(json.contains("custom"));
+        Ok(())
     }
 
     #[tokio::test]

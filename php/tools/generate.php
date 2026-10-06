@@ -28,7 +28,40 @@ function sha256File(string $path): string
     return $digest;
 }
 
-if (($lock['generator_version'] ?? null) !== '1.82.0') {
+function exactVersionPin(mixed $value, string $name): string
+{
+    if (!is_string($value) || !preg_match('/\A\d+\.\d+\.\d+\z/', $value)) {
+        throw new RuntimeException($name . ' must be configured as an exact semantic version');
+    }
+    return $value;
+}
+
+function exactSha256Pin(mixed $value, string $name): string
+{
+    if (!is_string($value) || !preg_match('/\A[0-9a-f]{64}\z/i', $value)) {
+        throw new RuntimeException($name . ' must be configured as a 64-character SHA-256 pin');
+    }
+    return strtolower($value);
+}
+
+function probeVersion(string $executable, array $arguments): string
+{
+    $command = implode(' ', array_map('escapeshellarg', [$executable, ...$arguments])) . ' 2>&1';
+    $lines = [];
+    $status = 0;
+    exec($command, $lines, $status);
+    $output = trim(implode(PHP_EOL, $lines));
+    if ($status !== 0 || $output === '') {
+        throw new RuntimeException('unable to read the pinned tool version from ' . $executable);
+    }
+    return $output;
+}
+
+$expectedPluginVersion = exactVersionPin($lock['generator_version'] ?? null, 'generator_version');
+$expectedProtocVersion = exactVersionPin($lock['protobuf_compiler'] ?? null, 'protobuf_compiler');
+$expectedPluginSha256 = exactSha256Pin($lock['generator_sha256'] ?? null, 'generator_sha256');
+$expectedProtocSha256 = exactSha256Pin($lock['protobuf_compiler_sha256'] ?? null, 'protobuf_compiler_sha256');
+if ($expectedPluginVersion !== '1.82.0') {
     throw new RuntimeException('generator.lock.json has an unexpected grpc_php_plugin version');
 }
 
@@ -161,6 +194,27 @@ function runCommand(array $arguments): void
 
 $protoc = executable('protoc');
 $plugin = executable('grpc_php_plugin');
+$protocVersionOutput = probeVersion($protoc, ['--version']);
+if (!preg_match('/\Alibprotoc\s+(\d+\.\d+\.\d+)\z/', $protocVersionOutput, $protocMatch)
+    || $protocMatch[1] !== $expectedProtocVersion) {
+    throw new RuntimeException(
+        'expected libprotoc ' . $expectedProtocVersion . '; found ' . var_export($protocVersionOutput, true)
+    );
+}
+$pluginVersionOutput = probeVersion($plugin, ['--version']);
+if (!preg_match('/(?:^|\D)v?' . preg_quote($expectedPluginVersion, '/') . '(?:\D|$)/', $pluginVersionOutput)) {
+    throw new RuntimeException(
+        'expected grpc_php_plugin ' . $expectedPluginVersion . '; found ' . var_export($pluginVersionOutput, true)
+    );
+}
+$protocSha256 = sha256File($protoc);
+$pluginSha256 = sha256File($plugin);
+if ($protocSha256 !== $expectedProtocSha256) {
+    throw new RuntimeException('protobuf compiler SHA-256 does not match generator.lock.json');
+}
+if ($pluginSha256 !== $expectedPluginSha256) {
+    throw new RuntimeException('grpc_php_plugin SHA-256 does not match generator.lock.json');
+}
 $preserved = [
     // Rust-owned runtime and transport policy facades. Protobuf generation
     // may replace message/service files, but it must not erase the facade
@@ -226,6 +280,12 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
+    'toolchain' => [
+        'protoc_version' => $protocMatch[1],
+        'protoc_sha256' => $protocSha256,
+        'grpc_php_plugin_version' => $expectedPluginVersion,
+        'grpc_php_plugin_sha256' => $pluginSha256,
+    ],
     'platform' => [
         'execution_scope' => 'portable',
         'target_triple' => 'portable',

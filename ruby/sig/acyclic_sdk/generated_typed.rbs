@@ -157,6 +157,11 @@ module Acyclic
       def initialize: (Integer) -> void
       def to_wire: () -> Integer
     end
+    class RustUnixTimestampSeconds < Object
+      attr_reader value: Integer
+      def initialize: (Integer) -> void
+      def to_wire: () -> Integer
+    end
     class RustUploadId < Object
       attr_reader value: String
       def initialize: (String) -> void
@@ -1455,7 +1460,7 @@ module Acyclic
     end
     class RustAcyclicFilesystemV2CredentialResponse < Object
       attr_reader endpoint: Acyclic::GeneratedTyped::RustOpaqueText
-      attr_reader expires_at_unix_seconds: Acyclic::GeneratedTyped::RustUnixTimestampMillis
+      attr_reader expires_at_unix_seconds: Acyclic::GeneratedTyped::RustUnixTimestampSeconds
       attr_reader bearer_token: Acyclic::GeneratedTyped::RustOpaqueText?
       attr_reader s3: Acyclic::GeneratedTyped::RustAcyclicFilesystemV2S3Credential?
       def initialize: (**untyped) -> void

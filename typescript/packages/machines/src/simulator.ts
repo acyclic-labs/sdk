@@ -5,6 +5,7 @@ import type {
   QualificationOut, UsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { ensureMachinesWasm } from "./wasm-runtime.js";
+import { invokeWithAbort } from "./generated-client.js";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineId, MachineObservation, MachinesProvider,
@@ -43,30 +44,30 @@ export class SimulatedMachines implements MachinesProvider {
     this.#inner = ensureMachinesWasm().then(() => new WasmSimulatedMachines());
   }
 
-  async #run<Input, Output>(payload: Input, invoke: (inner: WasmSimulatedMachines, payload: Input) => Promise<Output>): Promise<Output> {
+  async #run<Input, Output>(payload: Input, invoke: (inner: WasmSimulatedMachines, payload: Input) => Promise<Output>, signal?: AbortSignal): Promise<Output> {
     // Take the caller's snapshot before asynchronous WASM initialization.
     const authored = structuredClone(payload);
-    return invoke(await this.#inner, authored);
+    return invokeWithAbort(async () => invoke(await this.#inner, authored), signal);
   }
 
-  qualifyImage(image: Image): Promise<ImageQualification> { return this.#run(image, (inner, authored) => inner.qualifyImage(authored)).then(asPublic<QualificationOut, ImageQualification>); }
-  create(request: CreateMachine): Promise<MutationOutcome> { return this.#run(request, (inner, authored) => inner.create(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#run(machineId, (inner, authored) => inner.inspectMachine(authored)).then(asPublic<ObservationOut, MachineObservation>); }
-  listMachines(after: MachineId | null, limit: number): Promise<MachinePage> { return this.#run({ after, limit }, (inner, authored) => inner.listMachines(authored)).then(asPublic<PageOut, MachinePage>); }
-  checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.checkpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation> { return this.#run(checkpointId, (inner, authored) => inner.inspectCheckpoint(authored)).then(asPublic<CheckpointOut, CheckpointObservation>); }
-  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, count, idempotencyKey }, (inner, authored) => inner.fork(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, count, idempotencyKey }, (inner, authored) => inner.forkMachine(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  suspend(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.suspend(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  wake(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.wake(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, policy, idempotencyKey }, (inner, authored) => inner.setSuspensionPolicy(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.destroyMachine(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, idempotencyKey }, (inner, authored) => inner.destroyCheckpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence, limit }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs, endUnixMs }, (inner, authored) => inner.usage(authored)).then(usageOut); }
-  recover(key: IdempotencyKey): Promise<MutationOutcome> { return this.#run(key, (inner, authored) => inner.recover(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored)).then(operationId); }
-  inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored)).then(asPublic<OperationOut, OperationObservation>); }
-  cancel(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.cancel(authored)).then(asPublic<OperationOut, OperationObservation>); }
-  async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> { for (const value of await this.#run(operationId, (inner, authored) => inner.watchOperation(authored))) yield asPublic<OperationOut, OperationObservation>(value); }
+  qualifyImage(image: Image, signal?: AbortSignal): Promise<ImageQualification> { return this.#run(image, (inner, authored) => inner.qualifyImage(authored), signal).then(asPublic<QualificationOut, ImageQualification>); }
+  create(request: CreateMachine, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run(request, (inner, authored) => inner.create(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  inspectMachine(machineId: MachineId, signal?: AbortSignal): Promise<MachineObservation> { return this.#run(machineId, (inner, authored) => inner.inspectMachine(authored), signal).then(asPublic<ObservationOut, MachineObservation>); }
+  listMachines(after: MachineId | null, limit: number, signal?: AbortSignal): Promise<MachinePage> { return this.#run({ after, limit }, (inner, authored) => inner.listMachines(authored), signal).then(asPublic<PageOut, MachinePage>); }
+  checkpoint(machineId: MachineId, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.checkpoint(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  inspectCheckpoint(checkpointId: CheckpointId, signal?: AbortSignal): Promise<CheckpointObservation> { return this.#run(checkpointId, (inner, authored) => inner.inspectCheckpoint(authored), signal).then(asPublic<CheckpointOut, CheckpointObservation>); }
+  fork(checkpointId: CheckpointId, count: number, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ checkpointId, count, idempotencyKey }, (inner, authored) => inner.fork(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  forkMachine(machineId: MachineId, count: number, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, count, idempotencyKey }, (inner, authored) => inner.forkMachine(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  suspend(machineId: MachineId, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.suspend(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  wake(machineId: MachineId, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.wake(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, policy, idempotencyKey }, (inner, authored) => inner.setSuspensionPolicy(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.destroyMachine(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run({ checkpointId, idempotencyKey }, (inner, authored) => inner.destroyCheckpoint(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  events(machineId: MachineId, afterSequence: number | null, limit: number, signal?: AbortSignal): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence, limit }, (inner, authored) => inner.events(authored), signal).then(asPublic<EventsOut, MachineEventPage>); }
+  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number, signal?: AbortSignal): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs, endUnixMs }, (inner, authored) => inner.usage(authored), signal).then(usageOut); }
+  recover(key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.#run(key, (inner, authored) => inner.recover(authored), signal).then(asPublic<MutationOut, MutationOutcome>); }
+  recoverOperation(key: IdempotencyKey, signal?: AbortSignal): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored), signal).then(operationId); }
+  inspectOperation(operationId: OperationId, signal?: AbortSignal): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored), signal).then(asPublic<OperationOut, OperationObservation>); }
+  cancel(operationId: OperationId, signal?: AbortSignal): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.cancel(authored), signal).then(asPublic<OperationOut, OperationObservation>); }
+  async *watchOperation(operationId: OperationId, signal?: AbortSignal): AsyncIterable<OperationObservation> { for (const value of await this.#run(operationId, (inner, authored) => inner.watchOperation(authored), signal)) yield asPublic<OperationOut, OperationObservation>(value); }
 }

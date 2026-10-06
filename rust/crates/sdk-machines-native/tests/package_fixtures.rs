@@ -15,28 +15,17 @@ const TARGETS: &[&str] = &[
 ];
 
 #[test]
-fn every_platform_fixture_uses_the_machines_native_binary_name() {
+fn every_platform_fixture_uses_the_machines_native_binary_name() -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm");
     for target in TARGETS {
-        let package = match fs::read_to_string(root.join(target).join("package.json")) {
-            Ok(value) => value,
-            Err(_) => {
-                assert!(false, "missing {target} package fixture");
-                continue;
-            }
-        };
+        let package = fs::read_to_string(root.join(target).join("package.json"))?;
         assert!(package.contains("\"main\":\"index.js\""));
         assert!(package.contains("\"sdk_machines_native.node\""));
-        let loader = match fs::read_to_string(root.join(target).join("index.js")) {
-            Ok(value) => value,
-            Err(_) => {
-                assert!(false, "missing {target} loader fixture");
-                continue;
-            }
-        };
+        let loader = fs::read_to_string(root.join(target).join("index.js"))?;
         assert_eq!(
             loader.trim(),
             "module.exports = require(\"./sdk_machines_native.node\");"
         );
     }
+    Ok(())
 }

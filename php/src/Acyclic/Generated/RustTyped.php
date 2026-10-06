@@ -285,6 +285,15 @@ final readonly class RustUnixTimestampMillis {
     }
     public function toWire(): int { return $this->value; }
 }
+final readonly class RustUnixTimestampSeconds {
+    public readonly int $value;
+    /** @param int $value */
+    public function __construct(int $value) {
+        if (!(is_int($value))) { throw new \InvalidArgumentException('invalid Rust-typed value for RustUnixTimestampSeconds'); }
+        $this->value = $value;
+    }
+    public function toWire(): int { return $this->value; }
+}
 final readonly class RustUploadId {
     public readonly string $value;
     /** @param string $value */
@@ -4749,24 +4758,24 @@ final readonly class RustAcyclicFilesystemV2CredentialRequest
 final readonly class RustAcyclicFilesystemV2CredentialResponse
 {
     public readonly RustOpaqueText $endpoint;
-    public readonly RustUnixTimestampMillis $expires_at_unix_seconds;
+    public readonly RustUnixTimestampSeconds $expires_at_unix_seconds;
     public readonly ?RustOpaqueText $bearer_token;
     public readonly ?RustAcyclicFilesystemV2S3Credential $s3;
     /**
      * @param RustOpaqueText $endpoint
-     * @param RustUnixTimestampMillis $expires_at_unix_seconds
+     * @param RustUnixTimestampSeconds $expires_at_unix_seconds
      * @param ?RustOpaqueText $bearer_token
      * @param ?RustAcyclicFilesystemV2S3Credential $s3
      */
     public function __construct(
         RustOpaqueText $endpoint,
-        RustUnixTimestampMillis $expires_at_unix_seconds,
+        RustUnixTimestampSeconds $expires_at_unix_seconds,
         ?RustOpaqueText $bearer_token = null,
         ?RustAcyclicFilesystemV2S3Credential $s3 = null,
     ) {
         if (!($endpoint instanceof RustOpaqueText)) { throw new \InvalidArgumentException("invalid Rust-typed value for endpoint"); }
         $this->endpoint = $endpoint;
-        if (!($expires_at_unix_seconds instanceof RustUnixTimestampMillis)) { throw new \InvalidArgumentException("invalid Rust-typed value for expires_at_unix_seconds"); }
+        if (!($expires_at_unix_seconds instanceof RustUnixTimestampSeconds)) { throw new \InvalidArgumentException("invalid Rust-typed value for expires_at_unix_seconds"); }
         $this->expires_at_unix_seconds = $expires_at_unix_seconds;
         if (!($bearer_token === null || ($bearer_token instanceof RustOpaqueText))) { throw new \InvalidArgumentException("invalid Rust-typed value for bearer_token"); }
         $this->bearer_token = $bearer_token;
@@ -4806,7 +4815,7 @@ final readonly class RustAcyclicFilesystemV2CredentialResponse
     {
         return new self(
             endpoint: new RustOpaqueText((string)(($value['endpoint'] ?? null))),
-            expires_at_unix_seconds: new RustUnixTimestampMillis((int)(($value['expiresAtUnixSeconds'] ?? null))),
+            expires_at_unix_seconds: new RustUnixTimestampSeconds((int)(($value['expiresAtUnixSeconds'] ?? null))),
             bearer_token: (($value['bearerToken'] ?? null) === null ? null : (new RustOpaqueText((string)(($value['bearerToken'] ?? null))))),
             s3: (($value['s3'] ?? null) === null ? null : (RustAcyclicFilesystemV2S3Credential::fromWire(self::wireMap(($value['s3'] ?? null))))),
         );

@@ -33,6 +33,7 @@ final class RustSequenceNumber { final int value; const RustSequenceNumber(this.
 final class RustSourceName { final String value; const RustSourceName(this.value); }
 final class RustStreamPageLimit { final int value; const RustStreamPageLimit(this.value); }
 final class RustUnixTimestampMillis { final int value; const RustUnixTimestampMillis(this.value); }
+final class RustUnixTimestampSeconds { final int value; const RustUnixTimestampSeconds(this.value); }
 final class RustUploadId { final String value; const RustUploadId(this.value); }
 final class RustSha256Digest { final String value; const RustSha256Digest(this.value); }
 final class RustAcyclicActorsV1ActorState {
@@ -1234,7 +1235,7 @@ final class RustAcyclicFilesystemV2CredentialRequest {
 }
 final class RustAcyclicFilesystemV2CredentialResponse {
   final RustOpaqueText endpoint;
-  final RustUnixTimestampMillis expires_at_unix_seconds;
+  final RustUnixTimestampSeconds expires_at_unix_seconds;
   final RustOpaqueText? bearer_token;
   final RustAcyclicFilesystemV2S3Credential? s3;
   const RustAcyclicFilesystemV2CredentialResponse({

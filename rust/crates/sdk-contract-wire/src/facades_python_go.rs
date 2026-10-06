@@ -36,7 +36,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Annotated, AsyncIterator, Literal, NewType, Protocol, TypeAlias
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import grpc
 from google.protobuf import json_format
@@ -73,11 +73,23 @@ def _message_unknown_wire_bytes(message: object) -> bytes | None:
     particular union.
     """
     try:
+        raw = bytes(message.SerializeToString())
         unknown = message.UnknownFields()
         if len(unknown) > 0:
-            return bytes(message.SerializeToString())
+            return raw
     except Exception:
-        pass
+        # The upb-backed Python runtime exposes UnknownFields as a deliberate
+        # NotImplementedError.  Its supported inspection path is to copy the
+        # message, discard unknown fields, and compare the wire bytes.
+        try:
+            raw = bytes(message.SerializeToString())
+            known = type(message)()
+            known.CopyFrom(message)
+            known.DiscardUnknownFields()
+            if bytes(known.SerializeToString()) != raw:
+                return raw
+        except Exception:
+            pass
     raw_unknown = getattr(message, "_unknown_fields", None)
     if raw_unknown:
         return bytes(message.SerializeToString())
@@ -218,17 +230,28 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 class _HttpJsonStream:
     """Cancellable Rust-owned HTTP JSON-lines response stream."""
 
-    def __init__(self, response: object, response_type: type[object]):
+    def __init__(self, response: object, response_type: type[object], on_close=None):
         self._response = response
         self._response_type = response_type
+        self._on_close = on_close
         self._cancelled = False
         self._done = False
 
+    def _release(self) -> None:
+        callback = self._on_close
+        self._on_close = None
+        if callable(callback):
+            callback(self)
+
     def cancel(self) -> bool:
-        if self._done:
+        if self._done or self._cancelled:
             return False
         self._cancelled = True
-        self._response.close()
+        try:
+            self._response.close()
+        finally:
+            self._done = True
+            self._release()
         return True
 
     def cancelled(self) -> bool:
@@ -263,8 +286,11 @@ class _HttpJsonStream:
                     json_format.Parse(line.decode("utf-8"), value)
                     yield value
         finally:
-            self._response.close()
-            self._done = True
+            try:
+                self._response.close()
+            finally:
+                self._done = True
+                self._release()
 
 
 async def _wire_request_iterator(request: AsyncIterator[object]):
@@ -287,6 +313,7 @@ class Client:
         self._http_base = ("https://" if secure else "http://") + target
         _validate(self.credentials, secure)
         self._transports: dict[str, str] = {}
+        self._http_streams: set[_HttpJsonStream] = set()
         call_credentials = None
         if self.credentials.bearer_token:
             call_credentials = grpc.access_token_call_credentials(self.credentials.bearer_token)
@@ -378,6 +405,22 @@ class Client:
             raise RuntimeError("Rust-owned HTTP response exceeds the generated bound")
         return body
 
+    @staticmethod
+    def _route_path(route: dict[str, object], request: object) -> str:
+        path = str(route["path"])
+        for placeholder, field in route.get("path_fields", {}).items():
+            value = getattr(request, str(field), None)
+            if isinstance(value, (bytes, bytearray, memoryview)):
+                value = bytes(value).hex()
+            elif value is None:
+                raise ValueError(f"Rust-owned route field {field} is required")
+            else:
+                value = str(value)
+            path = path.replace("{" + str(placeholder) + "}", quote(value, safe=""))
+        if "{" in path or "}" in path:
+            raise RuntimeError(f"Rust-owned route template was not fully resolved: {path}")
+        return path
+
     def _http_handshake(self, family: str, timeout: float | None = None) -> None:
         url = self._http_base + "/v1/sdk/" + family + "/handshake"
         headers = {"accept": "application/json"}
@@ -457,11 +500,12 @@ class Client:
             with self._open_http(http_request, timeout=5.0 if timeout is None else timeout) as response:
                 body = self._read_bounded(response)
         except urllib.error.HTTPError as error:
-            detail = b""
             try:
                 detail = error.read(64 * 1024 + 1)
             except OSError:
-                pass
+                detail = b""
+            finally:
+                error.close()
             raise RustHttpError(error.code, detail[: 64 * 1024]) from error
         except RustHttpError:
             raise
@@ -488,8 +532,10 @@ class Client:
             with self._open_http(http_request, timeout=5.0 if timeout is None else timeout) as response:
                 body = self._read_bounded(response)
         except urllib.error.HTTPError as error:
-            detail = error.read(64 * 1024 + 1)[: 64 * 1024]
-            error.close()
+            try:
+                detail = error.read(64 * 1024 + 1)[: 64 * 1024]
+            finally:
+                error.close()
             raise RustHttpError(error.code, detail) from error
         except urllib.error.URLError as error:
             raise RuntimeError(f"Rust-owned HTTP transport failed: {error}") from error
@@ -506,11 +552,12 @@ class Client:
         route = HTTP_ROUTES.get(family, {}).get(rpc)
         if route is None:
             raise RuntimeError(f"Rust-owned HTTP projection is unavailable for {rpc}")
+        path = self._route_path(route, request)
         body = await asyncio.to_thread(
             self._http_request,
             family,
             route["method"],
-            route["path"],
+            path,
             request,
             timeout,
         )
@@ -561,6 +608,7 @@ class Client:
         route = HTTP_ROUTES.get(family, {}).get(rpc)
         if route is None or not route.get("streaming"):
             raise RuntimeError(f"Rust-owned HTTP streaming projection is unavailable for {rpc}")
+        path = self._route_path(route, request)
         def open_stream() -> object:
             payload = json_format.MessageToJson(request).encode("utf-8")
             headers = {"content-type": "application/json", "accept": "application/x-ndjson, application/json", "acyclic-family": family}
@@ -568,16 +616,19 @@ class Client:
                 headers["authorization"] = "Bearer " + self.credentials.bearer_token
             return self._open_http(
                 urllib.request.Request(
-                    self._http_base + route["path"], data=payload, headers=headers, method=route["method"]
+                    self._http_base + path, data=payload, headers=headers, method=route["method"]
                 ),
                 timeout=5.0 if timeout is None else timeout,
             )
         try:
             response = await asyncio.to_thread(open_stream)
         except urllib.error.HTTPError as error:
-            detail = error.read(64 * 1024 + 1)[: 64 * 1024]
+            try:
+                detail = error.read(64 * 1024 + 1)[: 64 * 1024]
+            finally:
+                error.close()
             raise RustHttpError(error.code, detail) from error
-        if response.geturl() != self._http_base + route["path"]:
+        if response.geturl() != self._http_base + path:
             response.close()
             raise RuntimeError("Rust-owned HTTP stream redirected")
         status = response.getcode()
@@ -585,9 +636,18 @@ class Client:
             detail = self._read_bounded(response)
             response.close()
             raise RustHttpError(status, detail)
-        return _HttpJsonStream(response, response_type)
+        streams = getattr(self, "_http_streams", None)
+        if streams is None:
+            streams = set()
+            self._http_streams = streams
+        stream = _HttpJsonStream(response, response_type, streams.discard)
+        streams.add(stream)
+        return stream
 
     async def close(self) -> None:
+        for stream in tuple(getattr(self, "_http_streams", ())):
+            stream.cancel()
+        getattr(self, "_http_streams", set()).clear()
         self._transports.clear()
         await self._channel.close()
 
@@ -883,7 +943,7 @@ fn python_rpc_oneof_definitions(
                 tag = field.json_name,
             ));
         }
-        let mut variants = members
+        let variants = members
             .iter()
             .map(|field| python_rpc_oneof_arm_name(response_name, oneof, &field.json_name))
             .collect::<Vec<_>>();
@@ -997,7 +1057,9 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
 }
 
 fn python_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
-    let wire = python_proto_field_expression(receiver, &field.json_name);
+    // Python protobuf accessors and presence checks use the descriptor field
+    // name (snake_case), while JSON names may be lowerCamelCase.
+    let wire = python_proto_field_expression(receiver, &field.field);
     if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
         if matches!(item.wire_kind, WireValueKind::Message) {
             if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
@@ -1042,7 +1104,10 @@ fn python_response_field_property(field: &ResolvedRequestField) -> String {
     let annotation = python_response_field_type(field);
     let expression = python_response_field_expression(field, "self._wire");
     let presence = if descriptor_has_presence(field) {
-        format!("        if not self._wire.HasField({name:?}):\n            return None\n")
+        format!(
+            "        if not self._wire.HasField({:?}):\n            return None\n",
+            field.field
+        )
     } else {
         String::new()
     };
@@ -1341,6 +1406,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1468,6 +1534,7 @@ type httpStreamHandle interface { cancel() }
 type httpJSONStream struct {
     response *http.Response
     scanner *bufio.Scanner
+    cancelContext context.CancelFunc
     stateMu sync.Mutex
     recvMu sync.Mutex
     cancelled bool
@@ -1480,8 +1547,10 @@ func (stream *httpJSONStream) cancel() {
     if stream.cancelled { stream.stateMu.Unlock(); return }
     stream.cancelled = true
     response := stream.response
+    cancelContext := stream.cancelContext
     onClose := stream.onClose
     stream.stateMu.Unlock()
+    if cancelContext != nil { cancelContext() }
     if response != nil { _ = response.Body.Close() }
     if onClose != nil { onClose() }
 }
@@ -1506,7 +1575,11 @@ func (stream *httpJSONStream) recv(message proto.Message) error {
         stream.bytes += len(line)
         if stream.bytes > 64*1024 { stream.cancel(); return fmt.Errorf("Rust-owned HTTP response exceeds the generated bound") }
         if len(bytes.TrimSpace(line)) == 0 { continue }
-        return protojson.Unmarshal(bytes.TrimSpace(line), message)
+        if err := protojson.Unmarshal(bytes.TrimSpace(line), message); err != nil {
+            stream.cancel()
+            return err
+        }
+        return nil
     }
     if err := stream.scanner.Err(); err != nil { stream.cancel(); return err }
     stream.cancel()
@@ -1516,8 +1589,9 @@ func (stream *httpJSONStream) recv(message proto.Message) error {
 type httpJSONClientResult struct { response *http.Response; err error }
 type httpJSONClientStream struct {
     writer *io.PipeWriter
-    results <-chan httpJSONClientResult
+    results chan httpJSONClientResult
     cancelContext context.CancelFunc
+    response *http.Response
     stateMu sync.Mutex
     sendMu sync.Mutex
     recvMu sync.Mutex
@@ -1532,11 +1606,29 @@ func (stream *httpJSONClientStream) cancel() {
     stream.cancelled = true
     cancelContext := stream.cancelContext
     writer := stream.writer
+    response := stream.response
+    stream.response = nil
     onClose := stream.onClose
     stream.stateMu.Unlock()
     if cancelContext != nil { cancelContext() }
     if writer != nil { _ = writer.CloseWithError(context.Canceled) }
+    if response != nil { _ = response.Body.Close() }
     if onClose != nil { onClose() }
+}
+
+func (stream *httpJSONClientStream) publish(result httpJSONClientResult) {
+    if result.response != nil {
+        stream.stateMu.Lock()
+        if stream.cancelled {
+            stream.stateMu.Unlock()
+            _ = result.response.Body.Close()
+            result.response = nil
+        } else {
+            stream.response = result.response
+            stream.stateMu.Unlock()
+        }
+    }
+    stream.results <- result
 }
 
 func (stream *httpJSONClientStream) send(message proto.Message) error {
@@ -1565,6 +1657,9 @@ func (stream *httpJSONClientStream) closeAndRecv(message proto.Message) error {
     result := <-stream.results
     if result.err != nil { stream.cancel(); return result.err }
     if result.response == nil { stream.cancel(); return fmt.Errorf("Rust-owned HTTP stream returned no response") }
+    stream.stateMu.Lock()
+    stream.response = nil
+    stream.stateMu.Unlock()
     body, err := io.ReadAll(io.LimitReader(result.response.Body, 64*1024+1))
     _ = result.response.Body.Close()
     if err != nil { stream.cancel(); return err }
@@ -1666,7 +1761,10 @@ func (client *Client) ensureTransport(ctx context.Context, family string, stream
 }
 
 func (client *Client) invokeHTTP(ctx context.Context, family, method, path string, request, response proto.Message) error {
-	payload, err := protojson.Marshal(request)
+    renderedPath, err := renderHTTPPath(path, request)
+    if err != nil { return err }
+    path = renderedPath
+    payload, err := protojson.Marshal(request)
 	if err != nil { return err }
 	httpRequest, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(client.endpoint, "/")+path, bytes.NewReader(payload))
     if err != nil { return err }
@@ -1684,24 +1782,56 @@ func (client *Client) invokeHTTP(ctx context.Context, family, method, path strin
 	return protojson.Unmarshal(body, response)
 }
 
+func renderHTTPPath(path string, request proto.Message) (string, error) {
+    switch {
+    case strings.Contains(path, "{sha256hex}"):
+        typed, ok := request.(*workersv1.InvokeVersionRequest)
+        if !ok { return "", fmt.Errorf("Rust-owned HTTP route requires an InvokeVersionRequest") }
+        digest := typed.GetVersionSha256()
+        if len(digest) != 32 { return "", fmt.Errorf("version_sha256 must contain exactly 32 bytes") }
+        return strings.Replace(path, "{sha256hex}", hex.EncodeToString(digest), 1), nil
+    case strings.Contains(path, "{alias}"):
+        typed, ok := request.(*workersv1.InvokeDeploymentRequest)
+        if !ok { return "", fmt.Errorf("Rust-owned HTTP route requires an InvokeDeploymentRequest") }
+        if err := requireGoText(typed.GetAlias(), "alias"); err != nil { return "", err }
+        return strings.Replace(path, "{alias}", url.PathEscape(typed.GetAlias()), 1), nil
+    default:
+        return path, nil
+    }
+}
+
 func (client *Client) httpStream(ctx context.Context, family, method, path string, request proto.Message) (*httpJSONStream, error) {
 	payload, err := protojson.Marshal(request)
 	if err != nil { return nil, err }
-	httpRequest, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(client.endpoint, "/")+path, bytes.NewReader(payload))
-    if err != nil { return nil, err }
+    streamContext, cancelContext := context.WithCancel(ctx)
+    httpRequest, err := http.NewRequestWithContext(streamContext, method, strings.TrimRight(client.endpoint, "/")+path, bytes.NewReader(payload))
+    if err != nil { cancelContext(); return nil, err }
     httpRequest.Header.Set("content-type", "application/json")
     httpRequest.Header.Set("accept", "application/x-ndjson, application/json")
     httpRequest.Header.Set("acyclic-family", family)
     if client.credentialsToken() != "" { httpRequest.Header.Set("authorization", "Bearer "+client.credentialsToken()) }
+    stream := &httpJSONStream{cancelContext: cancelContext}
+    stream.onClose = func() { client.unregisterHTTPStream(stream) }
+    if !client.registerHTTPStream(stream) { return nil, context.Canceled }
     result, err := client.httpClient.Do(httpRequest)
-    if err != nil { return nil, err }
-	if result.StatusCode < 200 || result.StatusCode >= 300 { body, _ := io.ReadAll(io.LimitReader(result.Body, 64*1024+1)); _ = result.Body.Close(); return nil, &RustHTTPError{StatusCode: result.StatusCode, Detail: body} }
+    if err != nil { stream.cancel(); return nil, err }
+    stream.stateMu.Lock()
+    if stream.cancelled {
+        stream.stateMu.Unlock()
+        _ = result.Body.Close()
+        return nil, context.Canceled
+    }
+    stream.response = result
+    stream.stateMu.Unlock()
+	if result.StatusCode < 200 || result.StatusCode >= 300 { body, _ := io.ReadAll(io.LimitReader(result.Body, 64*1024+1)); stream.cancel(); return nil, &RustHTTPError{StatusCode: result.StatusCode, Detail: body} }
     scanner := bufio.NewScanner(result.Body)
     scanner.Buffer(make([]byte, 4096), 64*1024)
     scanner.Split(scanNDJSONRecord)
-    stream := &httpJSONStream{response: result, scanner: scanner}
-    stream.onClose = func() { client.unregisterHTTPStream(stream) }
-    if !client.registerHTTPStream(stream) { return nil, context.Canceled }
+    stream.stateMu.Lock()
+    stream.scanner = scanner
+    cancelled := stream.cancelled
+    stream.stateMu.Unlock()
+    if cancelled { stream.cancel(); return nil, context.Canceled }
     return stream, nil
 }
 
@@ -1715,13 +1845,13 @@ func (client *Client) httpClientStream(ctx context.Context, family, method, path
     httpRequest.Header.Set("acyclic-family", family)
     if client.credentialsToken() != "" { httpRequest.Header.Set("authorization", "Bearer "+client.credentialsToken()) }
     results := make(chan httpJSONClientResult, 1)
-    go func() {
-        response, requestErr := client.httpClient.Do(httpRequest)
-        results <- httpJSONClientResult{response: response, err: requestErr}
-    }()
     stream := &httpJSONClientStream{writer: requestWriter, results: results, cancelContext: cancelContext}
     stream.onClose = func() { client.unregisterHTTPStream(stream) }
     if !client.registerHTTPStream(stream) { return nil, context.Canceled }
+    go func() {
+        response, requestErr := client.httpClient.Do(httpRequest)
+        stream.publish(httpJSONClientResult{response: response, err: requestErr})
+    }()
     return stream, nil
 }
 
@@ -1927,19 +2057,63 @@ fn python_http_routes() -> String {
         }
         output.push_str(&format!("    {:?}: {{\n", family.name));
         for route in routes {
-            let streaming = methods
+            let method = methods
                 .iter()
-                .find(|method| method.family == family.name && method.rpc == route.rpc)
+                .find(|method| method.family == family.name && method.rpc == route.rpc);
+            let streaming = method
                 .is_some_and(|method| method.client_streaming || method.server_streaming);
+            let path_fields = method
+                .map(|method| python_route_path_fields(route.path, method))
+                .unwrap_or_else(|| "{}".to_owned());
             output.push_str(&format!(
-                "        {:?}: {{\"method\": {:?}, \"path\": {:?}, \"streaming\": {}}},\n",
+                "        {:?}: {{\"method\": {:?}, \"path\": {:?}, \"path_fields\": {}, \"streaming\": {}}},\n",
                 route.rpc,
                 route.method,
                 route.path,
+                path_fields,
                 py_bool(streaming),
             ));
         }
         output.push_str("    },\n");
+    }
+    output.push('}');
+    output
+}
+
+fn python_route_path_fields(path: &str, method: &ResolvedRpcMethod) -> String {
+    let fields = resolved_request_fields().expect("Rust request descriptors must resolve");
+    let mut output = String::from("{");
+    let mut remainder = path;
+    let mut first = true;
+    while let Some(start) = remainder.find('{') {
+        let after_start = &remainder[start + 1..];
+        let Some(end) = after_start.find('}') else {
+            panic!("Rust route template has an unterminated placeholder: {path}");
+        };
+        let placeholder = &after_start[..end];
+        let field = fields
+            .iter()
+            .find(|field| {
+                field.family == method.family
+                    && field.root_message == method.input_message
+                    && field.message_path == method.input_message
+                    && (field.field == placeholder
+                        || field.json_name == placeholder
+                        || (placeholder == "sha256hex"
+                            && field.semantic_type.as_deref() == Some("version_sha256")))
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "Rust route placeholder {placeholder:?} has no request field for {}",
+                    method.rpc
+                )
+            });
+        if !first {
+            output.push_str(", ");
+        }
+        first = false;
+        output.push_str(&format!("{placeholder:?}: {:?}", field.field));
+        remainder = &after_start[end + 1..];
     }
     output.push('}');
     output
@@ -2496,7 +2670,7 @@ fn python_all_rpc_models() -> String {
                 output.push_str(&format!(
                     "            if selected_{tag} == {field:?}:\n                {tag} = {arm}(value={expression})\n",
                     tag = tag,
-                    field = field.json_name,
+                    field = field.field,
                     arm = arm,
                     expression = expression,
                 ));
@@ -2517,13 +2691,13 @@ fn python_all_rpc_models() -> String {
                     "{expression} if message.WhichOneof({oneof:?}) == {field:?} else None",
                     expression = expression,
                     oneof = oneof,
-                    field = field.json_name,
+                    field = field.field,
                 )
             } else if descriptor_has_presence(field) {
                 format!(
                     "{expression} if message.HasField({field:?}) else None",
                     expression = expression,
-                    field = field.json_name,
+                    field = field.field,
                 )
             } else {
                 expression
@@ -3452,7 +3626,11 @@ fn go_type_projection() -> String {
         ));
     }
     output.push_str("type RustEnum interface { IsKnown() bool; IsUnknown() bool; Name() string }\n\nvar EnumTypeConstructors = map[string]func(int32) RustEnum{\n");
+    let mut emitted_enum_types = std::collections::BTreeSet::new();
     for field in enum_fields {
+        if !emitted_enum_types.insert(field.enum_type.clone()) {
+            continue;
+        }
         let name = descriptor_enum_projection_name(&field.enum_type);
         output.push_str(&format!(
             "\t{enum_type:?}: func(value int32) RustEnum {{ return New{name}(value) }},\n",
@@ -4108,6 +4286,8 @@ fn go_all_rpc_models() -> String {
         let request_name = go_rpc_request_name(method);
         let response_name = go_rpc_response_name(method);
         let client = go_rpc_client_expression_for_method(method);
+        let input_wire = go_message_wire_type(&method.family, &method.input_message);
+        let output_wire = go_message_wire_type(&method.family, &method.output_message);
         let method_name = format!(
             "{}{}{}",
             pascal_case(&method.family),
@@ -4116,7 +4296,7 @@ fn go_all_rpc_models() -> String {
         );
         if method.client_streaming {
             let stream_name = format!("{response_name}ClientStream");
-            let input_wire = input.trim_start_matches('*');
+            let input_wire = input_wire.trim_start_matches('*');
             let output_wire = output_wire.trim_start_matches('*');
             output.push_str(&format!("type {stream_name} struct {{ inner grpc.ClientStreamingClient[{input_wire}, {output_wire}]; http *httpJSONClientStream; cancel context.CancelFunc }}\n\nfunc (stream *{stream_name}) Send(request {request_name}) error {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return err }}\n\tif stream.http != nil {{ return stream.http.send(wireRequest) }}\n\treturn stream.inner.Send(wireRequest)\n}}\n\nfunc (stream *{stream_name}) CloseAndRecv() (*{response_name}, error) {{\n\tif stream.http != nil {{ message := new({output_wire}); if err := stream.http.closeAndRecv(message); err != nil {{ return nil, err }}; return {response_name}FromWire(message) }}\n\tmessage, err := stream.inner.CloseAndRecv()\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(message)\n}}\n\nfunc (stream *{stream_name}) Close() error {{ if stream.cancel != nil {{ stream.cancel() }}; if stream.http != nil {{ stream.http.cancel() }}; return nil }}\n\n", stream_name = stream_name, input_wire = input_wire, output_wire = output_wire, request_name = request_name, response_name = response_name));
             output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, opts ...grpc.CallOption) (*{stream_name}, error) {{\n\ttransport, err := client.ensureTransport(ctx, {family:?}, true)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok || !route.Streaming {{ return nil, fmt.Errorf(\"Rust-owned HTTP streaming projection is unavailable for {route_rpc}\") }}; httpResponse, err := client.httpClientStream(ctx, {family:?}, route.Method, route.Path); if err != nil {{ return nil, err }}; return &{stream_name}{{http: httpResponse}}, nil }}\n\tstreamContext, cancel := context.WithCancel(ctx)\n\tstream, err := {client}.{grpc_method}(streamContext, opts...)\n\tif err != nil {{ cancel(); return nil, err }}\n\treturn &{stream_name}{{inner: stream, cancel: cancel}}, nil\n}}\n\n", method_name = method_name, stream_name = stream_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family));
@@ -4125,7 +4305,9 @@ fn go_all_rpc_models() -> String {
             output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}Stream, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\ttransport, err := client.ensureTransport(ctx, {family:?}, true)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok || !route.Streaming {{ return nil, fmt.Errorf(\"Rust-owned HTTP streaming projection is unavailable for {route_rpc}\") }}; httpResponse, err := client.httpStream(ctx, {family:?}, route.Method, route.Path, wireRequest); if err != nil {{ return nil, err }}; return &{response_name}Stream{{http: httpResponse}}, nil }}\n\tstreamContext, cancel := context.WithCancel(ctx)\n\tstream, err := {client}.{grpc_method}(streamContext, wireRequest, opts...)\n\tif err != nil {{ cancel(); return nil, err }}\n\treturn &{response_name}Stream{{inner: stream, cancel: cancel}}, nil\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family));
         } else {
 
-            let wire_response = go_message_wire_type(&method.family, &method.output_message);
+            let wire_response = go_message_wire_type(&method.family, &method.output_message)
+                .trim_start_matches('*')
+                .to_owned();
             output.push_str(&format!("func (client *Client) {method_name}(ctx context.Context, request {request_name}, opts ...grpc.CallOption) (*{response_name}, error) {{\n\twireRequest, err := request.ToWire()\n\tif err != nil {{ return nil, err }}\n\ttransport, err := client.ensureTransport(ctx, {family:?}, false)\n\tif err != nil {{ return nil, err }}\n\tif transport == \"http_json\" {{ route, ok := HTTPRoutes[{family:?}][{route_rpc:?}]; if !ok {{ return nil, fmt.Errorf(\"Rust-owned HTTP projection is unavailable for {route_rpc}\") }}; wireResponse := new({wire_response}); if err := client.invokeHTTP(ctx, {family:?}, route.Method, route.Path, wireRequest, wireResponse); err != nil {{ return nil, err }}; return {response_name}FromWire(wireResponse) }}\n\twireResponse, err := {client}.{grpc_method}(ctx, wireRequest, opts...)\n\tif err != nil {{ return nil, err }}\n\treturn {response_name}FromWire(wireResponse)\n}}\n\n", method_name = method_name, request_name = request_name, response_name = response_name, client = client, grpc_method = method.method, route_rpc = method.rpc, family = method.family, wire_response = wire_response));
         }
     }
@@ -4317,10 +4499,11 @@ fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
             _ => source.clone(),
         }
     } else if matches!(kind, FieldType::Enum) {
+        let wire_enum = go_proto_enum_type(field);
         if descriptor_has_presence(field) {
-            format!("(*{source}).Value")
+            format!("{wire_enum}((*{source}).Value)")
         } else {
-            format!("{source}.Value")
+            format!("{wire_enum}({source}.Value)")
         }
     } else {
         go_deref_if_pointer(field, &source)

@@ -283,6 +283,15 @@ module Acyclic
           end
           def to_wire = @value
         end
+        class RustUnixTimestampSeconds
+          attr_reader :value
+          def initialize(value)
+            raise ArgumentError, "invalid UnixTimestampSeconds" if value.nil?
+            @value = value
+            freeze
+          end
+          def to_wire = @value
+        end
         class RustUploadId
           attr_reader :value
           def initialize(value)

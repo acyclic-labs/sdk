@@ -15,6 +15,13 @@ php tools/generate.php --schema-root ..\\.tmp-rust-authority --manifest ..\\.tmp
 composer test
 ```
 
+`tools/generate.php` fails closed unless `generator.lock.json` contains exact
+protobuf/compiler versions and SHA-256 pins, and both executables report the
+configured versions. It records the selected executable SHA-256 values in
+provenance; an unreported plugin version is not treated as a match.
+The current lock intentionally has no accepted compiler executable pin, so
+generation remains unavailable until those official release values are added.
+
 The package uses the official `grpc/grpc` runtime and `google/protobuf` runtime.
 The generator writes SHA-256 hashes for both schema inputs and the optional Rust
 authority manifest to `src/provenance.json`, so CI can reject stale or
@@ -58,4 +65,3 @@ Native qualification receipt
 With the pinned PECL `protobuf` 5.36.2 extension loaded, `tests/uint64_rust_golden.php` runs the clean installed consumer against `tests/fixtures/rust-family-goldens.json`. It covers all nine Rust authority families with exact wire and JSON round trips: eight family messages carry `u64::MAX`, while Protocol v1 has no uint64 field and checks its real `ProtocolIdentity.version` scalar. The fixture set is bound to the authority manifest hash in `src/provenance.json`.
 
 The pinned official PECL `grpc` 1.82.0 and `protobuf` 5.36.2 Windows extensions are loaded together for the native consumer. `tests/native_transport_fixture.php` exercises a generated Actors unary call, Stream append, and server-stream cancellation against the Rust fixture; it passed with exit code 0. The exact runtime, package, fixture, output, and source-authority hashes are recorded in `tests/fixtures/native-qualification.receipt.json`. Pure PHP remains limited to the no-clamp uint64 policy described above; this native lane qualifies PHP transport and generated-message semantics for the pinned Windows target.
-

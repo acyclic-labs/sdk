@@ -15,9 +15,9 @@ The remote consumer carries a Rust-owned request manifest for `StreamService/App
 
 Pinned OSS sources:
 
-- @@BT@@grapesy@@BT@@ 1.2.1 (BSD-3-Clause), gRPC client/server and TLS/reconnection/cancellation primitives.
-- @@BT@@proto-lens@@BT@@ 0.7.1.7 plus @@BT@@proto-lens-protobuf-types@@BT@@ 0.7.2.3 and @@BT@@proto-lens-runtime@@BT@@ 0.7.0.8.
-- @@BT@@proto-lens-protoc@@BT@@ 0.9.0.1.
-- @@BT@@http2-grpc-proto-lens@@BT@@ 0.1.1.0 remains the alternative encoder stack for the older http2-grpc-native implementation; it is not mixed into this grapesy prototype.
+- [grapesy](https://hackage.haskell.org/package/grapesy-1.2.1) 1.2.1 (BSD-3-Clause), gRPC client/server and TLS/reconnection/cancellation primitives.
+- [proto-lens](https://hackage.haskell.org/package/proto-lens-0.7.1.7) 0.7.1.7 plus [proto-lens-protobuf-types](https://hackage.haskell.org/package/proto-lens-protobuf-types-0.7.2.3) 0.7.2.3 and [proto-lens-runtime](https://hackage.haskell.org/package/proto-lens-runtime-0.7.0.8) 0.7.0.8.
+- [proto-lens-protoc](https://hackage.haskell.org/package/proto-lens-protoc-0.9.0.1) 0.9.0.1.
+- [http2-grpc-proto-lens](https://hackage.haskell.org/package/http2-grpc-proto-lens-0.1.1.0) 0.1.1.0 remains the alternative encoder stack for the older http2-grpc-native implementation; it is not mixed into this grapesy prototype.
 
-@@BT@@cabal.project.freeze@@BT@@ records the resolved package graph from the clean GHC 9.2.8 build. @@BT@@hackage-root.json@@BT@@ records the signed Hackage root keys and threshold, while @@BT@@provenance.json@@BT@@ records the Rust proto hash and archive hashes. The runners copy the project to a writable Linux task cache before regeneration and compilation, avoiding mounted filesystem extraction faults. Secure Hackage metadata remains enabled; signature verification is never disabled.
+[`cabal.project.freeze`](./cabal.project.freeze) records the resolved package graph from the clean GHC 9.2.8 build. [`hackage-root.json`](./hackage-root.json) records the signed Hackage root keys and threshold, while [`provenance.json`](./provenance.json) records the Rust proto hash and archive hashes. The runners copy the project to a writable Linux task cache before regeneration and compilation, avoiding mounted filesystem extraction faults. Secure Hackage metadata remains enabled; signature verification is never disabled.

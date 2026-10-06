@@ -12,12 +12,14 @@ from acyclic_sdk.generated.actors.v1 import actors_pb2, actors_pb2_grpc
 from acyclic_sdk.generated.objects.v2 import objects_pb2
 from acyclic_sdk.generated.protocol.v1 import protocol_pb2
 from acyclic_sdk.generated.stream.v2 import stream_pb2, stream_pb2_grpc
+from acyclic_sdk.generated.workers.v1 import workers_pb2
 from acyclic_sdk.remote import (
     Client,
     HANDSHAKE,
     HTTP_ROUTES,
     MessageUnknown,
     RustHttpError,
+    RustObjectsObjectsPutObjectRequest,
     RustObjectsObjectsGetObjectResponse,
 )
 
@@ -60,6 +62,34 @@ def test_unknown_wire_fields_remain_message_level_opaque_data() -> None:
     assert decoded.frame is None
     assert isinstance(decoded.unknown, MessageUnknown)
     assert decoded.unknown.raw == message.SerializeToString()
+
+
+def test_client_streaming_facade_accepts_async_request_iterators() -> None:
+    async def run() -> None:
+        client = object.__new__(Client)
+
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "grpc"
+
+        class ObjectsStub:
+            async def PutObject(self, request_iterator, timeout=None):  # noqa: N802
+                values = [item async for item in request_iterator]
+                assert len(values) == 2
+                assert timeout == 1.25
+                return objects_pb2.ObjectInfo(etag="streamed")
+
+        client._ensure_transport = ensure_transport
+        client._objects = ObjectsStub()
+        request = RustObjectsObjectsPutObjectRequest.from_wire(objects_pb2.PutObjectRequest())
+
+        async def requests():
+            yield request
+            yield request
+
+        result = await client.objects_Objects_PutObject(requests(), timeout=1.25)
+        assert result.etag == "streamed"
+
+    asyncio.run(run())
 
 
 class _Actors(actors_pb2_grpc.ActorsServiceServicer):
@@ -274,13 +304,35 @@ def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> N
     assert raised.value.detail == error_body
 
 
+def test_worker_http_route_templates_encode_binary_and_alias_segments() -> None:
+    version_route = HTTP_ROUTES["workers"][
+        "acyclic.workers.v1.WorkersService/InvokeVersion"
+    ]
+    version_request = workers_pb2.InvokeVersionRequest(version_sha256=b"\xab" * 32)
+    assert version_route["path_fields"] == {"sha256hex": "version_sha256"}
+    assert Client._route_path(version_route, version_request) == (
+        "/v1/workers/versions/" + ("ab" * 32) + "/invoke"
+    )
+
+    alias_route = HTTP_ROUTES["workers"][
+        "acyclic.workers.v1.WorkersService/InvokeDeployment"
+    ]
+    alias_request = workers_pb2.InvokeDeploymentRequest(alias="canary/blue ?")
+    assert alias_route["path_fields"] == {"alias": "alias"}
+    assert Client._route_path(alias_route, alias_request).endswith(
+        "/deployments/canary%2Fblue%20%3F/invoke"
+    )
+
+
 def test_http_handshake_fixture_rejects_redirect_and_wrong_content_type() -> None:
     client = _fixture_client()
-    client._open_http = lambda _request, **_kwargs: _HttpFixtureResponse(
+    redirect_response = _HttpFixtureResponse(
         _handshake_json("actors"), url="http://other.test/v1/sdk/actors/handshake"
     )
+    client._open_http = lambda _request, **_kwargs: redirect_response
     with pytest.raises(RuntimeError, match="redirected"):
         client._http_handshake("actors")
+    assert redirect_response.closed
 
     invalid_content_response = _HttpFixtureResponse(
         _handshake_json("actors"),
@@ -317,7 +369,13 @@ def test_http_stream_fixture_closes_response_when_cancelled() -> None:
     )
     family = next(family for family, routes in HTTP_ROUTES.items() if route_name in routes)
     response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
-    client._open_http = lambda _request, **_kwargs: response
+    timeouts: list[object] = []
+
+    def open_http(_request: object, *_args: object, **kwargs: object) -> _HttpFixtureResponse:
+        timeouts.append(kwargs.get("timeout"))
+        return response
+
+    client._open_http = open_http
 
     async def run() -> None:
         stream = await client._http_stream(
@@ -325,9 +383,125 @@ def test_http_stream_fixture_closes_response_when_cancelled() -> None:
             route_name,
             stream_pb2.FollowRequest(path="fixture"),
             stream_pb2.ReadResponse,
+            timeout=1.25,
         )
         assert stream.cancel()
         assert stream.cancelled()
         assert response.closed
+        assert timeouts == [1.25]
 
     asyncio.run(run())
+
+
+def test_http_stream_fixture_closes_once_and_client_close_cancels_active_stream() -> None:
+    client = _fixture_client()
+    route_name, route = next(
+        (rpc, item)
+        for family_routes in HTTP_ROUTES.values()
+        for rpc, item in family_routes.items()
+        if item["streaming"]
+    )
+    response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
+    client._open_http = lambda _request, **_kwargs: response
+
+    class Channel:
+        async def close(self) -> None:
+            return None
+
+    client._channel = Channel()
+
+    async def run() -> None:
+        stream = await client._http_stream(
+            next(family for family, routes in HTTP_ROUTES.items() if route_name in routes),
+            route_name,
+            stream_pb2.FollowRequest(path="fixture"),
+            stream_pb2.ReadResponse,
+        )
+        assert stream.cancel()
+        assert not stream.cancel()
+        assert stream.done()
+        await client.close()
+        assert response.closed
+
+    asyncio.run(run())
+
+
+def test_http_body_read_failure_closes_response_and_http_error_body() -> None:
+    client = _fixture_client()
+    route = next(iter(HTTP_ROUTES["actors"].values()))
+
+    class ReadFailureResponse(_HttpFixtureResponse):
+        def read(self, _limit: int = -1) -> bytes:
+            raise OSError("fixture read failure")
+
+    response = ReadFailureResponse()
+    client._open_http = lambda _request, **_kwargs: response
+    with pytest.raises(OSError, match="fixture read failure"):
+        client._http_request(
+            "actors", route["method"], route["path"], actors_pb2.CreateActorRequest()
+        )
+    assert response.closed
+
+    class ReadFailureFile(io.BytesIO):
+        def read(self, _size: int = -1) -> bytes:
+            raise OSError("fixture error-body failure")
+
+    error_file = ReadFailureFile()
+    error = urllib.error.HTTPError(
+        client._http_base + route["path"],
+        503,
+        "unavailable",
+        {"content-type": "application/json"},
+        error_file,
+    )
+    client._open_http = lambda _request, **_kwargs: (_ for _ in ()).throw(error)
+    with pytest.raises(RustHttpError) as raised:
+        client._http_request(
+            "actors", route["method"], route["path"], actors_pb2.CreateActorRequest()
+        )
+    assert raised.value.status == 503
+    assert error_file.closed
+
+
+def test_http_client_stream_fixture_sends_bounded_ndjson_and_typed_response() -> None:
+    client = _fixture_client()
+    rpc, route = next(
+        (rpc, item)
+        for routes in HTTP_ROUTES.values()
+        for rpc, item in routes.items()
+        if rpc.endswith("/PutObject")
+    )
+    response = _HttpFixtureResponse(
+        json_format.MessageToJson(objects_pb2.ObjectInfo(etag="streamed")).encode("utf-8")
+    )
+    calls: list[object] = []
+    timeouts: list[object] = []
+
+    def open_http(request: object, *_args: object, **kwargs: object) -> _HttpFixtureResponse:
+        calls.append(request)
+        timeouts.append(kwargs.get("timeout"))
+        return response
+
+    client._open_http = open_http
+
+    async def run() -> None:
+        request = RustObjectsObjectsPutObjectRequest.from_wire(objects_pb2.PutObjectRequest())
+
+        async def requests():
+            yield request
+            yield request
+
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        result = await client.objects_Objects_PutObject(requests(), timeout=1.25)
+        assert result.etag == "streamed"
+
+    asyncio.run(run())
+    request = calls[0]
+    assert request.get_method() == route["method"]
+    assert request.get_header("Content-type") == "application/x-ndjson"
+    assert request.data.count(b"\n") == 2
+    assert timeouts == [1.25]
+    assert response.closed

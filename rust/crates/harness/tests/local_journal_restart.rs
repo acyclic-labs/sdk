@@ -57,16 +57,29 @@ async fn local_harness_journal_survives_process_restart()
             "read" => {
                 let records = storage.replay(OPERATION).await?;
                 assert_eq!(records.len(), 2);
-                assert_eq!(records[0].sequence, 1);
-                assert_eq!(records[1].sequence, 2);
-                assert_eq!(records[0].idempotency_key, retry_digest("operation-start"));
-                assert_eq!(records[1].idempotency_key, retry_digest("operation-cancelled"));
+                let [started, cancelled] = records.as_slice() else {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "journal replay did not contain exactly two records",
+                    )
+                    .into());
+                };
+                assert_eq!(started.sequence, 1);
+                assert_eq!(cancelled.sequence, 2);
+                assert_eq!(started.idempotency_key, retry_digest("operation-start"));
+                assert_eq!(cancelled.idempotency_key, retry_digest("operation-cancelled"));
                 assert!(matches!(
-                    records[1].event,
+                    &cancelled.event,
                     ExecutionEvent::ToolFailed { .. }
                 ));
             }
-            other => panic!("unknown child mode {other}"),
+            other => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("unknown child mode {other}"),
+                )
+                .into());
+            }
         }
         return Ok(());
     }

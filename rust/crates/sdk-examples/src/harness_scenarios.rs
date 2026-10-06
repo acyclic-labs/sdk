@@ -377,13 +377,12 @@ mod tests {
     #[test]
     fn source_and_snippet_are_stable() {
         assert!(SOURCE.ends_with("harness_scenarios.rs"));
-        assert!(QUICKSTART_SNIPPET.contains("HarnessBuilder::new"));
         assert!(QUICKSTART_SNIPPET.contains("TaskGroup::new"));
         assert!(QUICKSTART_SNIPPET.contains("group.cancel()"));
-        assert!(QUICKSTART_SNIPPET.contains("PersistentHarnessStorage"));
-        assert!(QUICKSTART_SNIPPET.contains("child process"));
-        assert!(QUICKSTART_SNIPPET.contains("durable recovery"));
-        assert!(QUICKSTART_SNIPPET.contains("metadata[\"replayed\"]"));
-        assert!(QUICKSTART_SNIPPET.contains("result.is_err()"));
+        assert!(QUICKSTART_SNIPPET.contains("fresh_group_after_cancellation"));
+        assert!(QUICKSTART_SNIPPET.contains("LocalHarnessStorage::open"));
+        assert!(QUICKSTART_SNIPPET.contains("ExecutionEvent::Started"));
+        assert!(QUICKSTART_SNIPPET.contains("storage.replay(operation_id)"));
+        assert!(QUICKSTART_SNIPPET.contains("std::fs::remove_dir_all(root)"));
     }
 }

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createMachinesGrpcClient, MACHINES_GRPC_METHODS, type RustOwnedGrpcInvoker } from "../src/generated-client.ts";
+import { createMachinesGrpcClient, invokeWithAbort, MACHINES_GRPC_METHODS, type RustOwnedGrpcInvoker } from "../src/generated-client.ts";
 
 test("Rust-generated Machines gRPC factory exposes every native RPC", async () => {
   const calls: string[] = [];
@@ -22,9 +22,11 @@ test("Rust-generated Machines gRPC factory exposes every native RPC", async () =
 
 test("Rust-generated Machines gRPC factory forwards AbortSignal to the invoker", async () => {
   let observed: AbortSignal | undefined;
+  const reason = new Error("caller aborted");
   const invoker: RustOwnedGrpcInvoker = {
     async invokeGrpc(_method, _request, signal) {
       observed = signal;
+      if (signal?.aborted) throw signal.reason;
       return {};
     },
     invokeGrpcStream() {
@@ -33,6 +35,15 @@ test("Rust-generated Machines gRPC factory forwards AbortSignal to the invoker",
   };
   const client = createMachinesGrpcClient(invoker);
   const controller = new AbortController();
-  await client.inspectMachine({} as never, controller.signal);
+  controller.abort(reason);
+  await expect(client.inspectMachine({} as never, controller.signal)).rejects.toBe(reason);
   expect(observed).toBe(controller.signal);
+});
+
+test("Rust-generated await helper rejects with the caller abort reason", async () => {
+  const reason = new Error("caller aborted");
+  const controller = new AbortController();
+  const pending = invokeWithAbort(() => new Promise<void>(() => undefined), controller.signal);
+  controller.abort(reason);
+  await expect(pending).rejects.toBe(reason);
 });

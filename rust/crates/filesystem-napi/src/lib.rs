@@ -141,14 +141,23 @@ pub fn decode_publication_json(value_json: String) -> Result<String> {
 /// range is the admissible maximum at this boundary.
 #[napi]
 pub fn validate_hosted_page_bound(value: f64) -> Result<()> {
-    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&value) {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&value) {
         return Err(napi_wire_error(
             "value must be a finite integer in the u32 range",
         ));
     }
-    let value = value as u32;
+    let value = bounded_f64_to_u32(value);
     acyclic_fs::hosted_contract::validate_page_bound(value, u32::MAX)
         .map_err(napi_wire_error)
+}
+
+fn bounded_f64_to_u32(value: f64) -> u32 {
+    // The caller has already checked finiteness, integrality, and the complete
+    // non-negative u32 range, so this conversion cannot truncate or lose sign.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u32
+    }
 }
 
 /// Exact native companion capabilities returned before any filesystem work.
@@ -2017,7 +2026,7 @@ impl NativeWorkspace {
     #[napi(js_name = readRange)]
     /// Reads an exact bounded byte range from a regular file.
     ///
-    /// `offset` and `length` are unsigned BigInts so large files retain their
+    /// `offset` and `length` are unsigned `BigInt`s so large files retain their
     /// full Rust range without JavaScript number conversion.
     pub async fn read_range(&self, path: String, offset: BigInt, length: BigInt) -> Result<Buffer> {
         Box::pin(

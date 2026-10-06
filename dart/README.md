@@ -14,6 +14,9 @@ dart run tool/generate.dart
 dart test
 ```
 
+The producer checks this minimum SDK before touching generated output. A Dart
+SDK below 3.8.0 is rejected even when the package cache is otherwise complete.
+
 The qualification run also works with an unpacked SDK. Set `PUB_CACHE` to a
 package-local cache and point `PROTOC`/`PROTOC_GEN_DART` at the pinned compiler
 and plugin; the generator records the source revision in

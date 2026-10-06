@@ -1000,13 +1000,23 @@ fn model_oneof_groups(
         PublicFieldDirection::Response => {
             resolved_response_fields().expect("Rust response descriptors must resolve")
         }
-        PublicFieldDirection::NestedMessage => Vec::new(),
+        PublicFieldDirection::NestedMessage => resolved_request_fields()
+            .expect("Rust nested descriptors must resolve")
+            .into_iter()
+            .chain(
+                resolved_response_fields()
+                    .expect("Rust nested response descriptors must resolve")
+                    .into_iter(),
+            )
+            .collect(),
+        PublicFieldDirection::EmbeddedOnly => Vec::new(),
     };
+    let nested_message = direction == PublicFieldDirection::NestedMessage;
     let mut groups = BTreeMap::<String, Vec<ResolvedRequestField>>::new();
     for field in fields.into_iter().filter(|field| {
         field.oneof_name.is_some()
             && message_leaf(&field.message_path) == message
-            && message_leaf(&field.root_message) == message
+            && (message_leaf(&field.root_message) == message || nested_message)
     }) {
         groups
             .entry(field.oneof_name.clone().expect("oneof name"))
@@ -1049,6 +1059,24 @@ fn cpp_oneof_arm_type(field: &ResolvedRequestField) -> String {
         .and_then(|value| value.strip_suffix('>'))
         .unwrap_or(&ty)
         .to_owned()
+}
+
+fn cpp_oneof_choice_value_type(oneof: &str, members: &[ResolvedRequestField]) -> String {
+    format!(
+        "{}Value",
+        response_oneof_name(members.first().expect("oneof must contain an arm"), oneof)
+    )
+}
+
+fn cpp_oneof_choice_field_name(oneof: &str) -> String {
+    cpp_field_name(&format!("{}Choice", camel(oneof)))
+}
+
+fn cpp_oneof_none_type(oneof: &str, members: &[ResolvedRequestField]) -> String {
+    format!(
+        "{}None",
+        response_oneof_name(members.first().expect("oneof must contain an arm"), oneof)
+    )
 }
 
 fn render_swift_oneof_models(out: &mut String) {
@@ -1109,6 +1137,85 @@ fn swift_field_cast(field: &crate::type_policy::ResolvedRequestField) -> String 
     }
 }
 
+fn swift_oneof_choice_wire_switch(
+    property: &str,
+    members: &[ResolvedRequestField],
+    oneof: &str,
+) -> String {
+    let mut out = format!(" switch {property} {{");
+    for field in members {
+        out.push_str(&format!(
+            " case .{}(let value): wire[\"{}\"] = value",
+            camel(&field.field),
+            field.json_name
+        ));
+    }
+    out.push_str(" case .none: break");
+    out.push_str(&format!(
+        " case .unknown(let rawTag, let payload): wire[\"__unknown_{oneof}\"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload) }}"
+    ));
+    out
+}
+
+fn swift_oneof_decode_value(
+    field: &ResolvedRequestField,
+    direction: PublicFieldDirection,
+    raw: &str,
+    local: &str,
+) -> String {
+    let target = swift_field_type(field, direction)
+        .trim_end_matches('?')
+        .to_owned();
+    let cast = swift_field_cast(field);
+    let key = &field.json_name;
+    let value = format!("value_{local}");
+    let constructor = semantic_field(field, direction).is_some()
+        || descriptor_type_name(field).is_some();
+    let converted = if constructor {
+        format!(
+            "guard let {value} = {target}({raw}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};",
+            target = target
+        )
+    } else {
+        format!("let {value}: {target} = {raw};", target = target)
+    };
+    format!(
+        "if let {raw_name} = wire[\"{key}\"] as? {cast} {{ {converted} guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof arm {key} conflicts\") }}; selected_{local} = .{case_name}({value}) }}",
+        raw_name = raw,
+        case_name = camel(&field.field),
+    )
+}
+
+fn swift_oneof_decode_block(
+    property: &str,
+    choice_type: &str,
+    oneof: &str,
+    members: &[ResolvedRequestField],
+    direction: PublicFieldDirection,
+) -> String {
+    let local = swift_local_name(oneof);
+    let mut out = format!(
+        "var selected_{local}: {choice_type}? = nil;",
+        local = local,
+        choice_type = choice_type
+    );
+    for field in members {
+        out.push_str(&swift_oneof_decode_value(
+            field,
+            direction,
+            &format!("raw_{}", swift_local_name(&field.field)),
+            &local,
+        ));
+    }
+    out.push_str(&format!(
+        "if let unknown_{local} = wire[\"__unknown_{oneof}\"] as? RustWireUnknownOneof {{ guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof {oneof} contains known and unknown arms\") }}; selected_{local} = .unknown(rawTag: unknown_{local}.rawTag, payload: unknown_{local}.payload) }} let {property}: {choice_type} = selected_{local} ?? .none;",
+        local = local,
+        property = property,
+        choice_type = choice_type,
+    ));
+    out
+}
+
 fn swift_wire_cast(kind: WireValueKind) -> &'static str {
     match kind {
         WireValueKind::String => "String",
@@ -1124,9 +1231,134 @@ fn swift_wire_cast(kind: WireValueKind) -> &'static str {
 
 fn render_swift() -> String {
     let mut out = String::from(
-        "// Generated by acyclic-sdk-contract-wire; do not edit.\nimport Foundation\n\npublic enum RustWireDecodeError: Error {\n case missingField(String)\n case invalidField(String)\n}\npublic struct RustWireMessage: Sendable { public let wire: Data; public init(wire: Data) { self.wire = wire } }\npublic struct RustWireEnum: Sendable { public let raw: Int32; public init(raw: Int32) { self.raw = raw } }\n/// A transport may place this value under `__unknown_<oneof>` when a oneof\n/// arm is newer than this generated facade.\npublic struct RustWireUnknownOneof: Sendable {\n public let rawTag: Int32\n public let payload: Data\n public init(rawTag: Int32, payload: Data) { self.rawTag = rawTag; self.payload = payload }\n}\npublic protocol RustWireRequest { associatedtype Wire; func toWire() -> Wire }\npublic protocol RustWireResponse { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }\npublic final class RustTypedStream<Element: RustWireResponse>: @unchecked Sendable {\n private let nextOperation: @Sendable () async throws -> Element?\n private let cancelOperation: @Sendable () -> Void\n public init(next: @escaping @Sendable () async throws -> Element?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancelOperation = cancel }\n public func next() async throws -> Element? { try await nextOperation() }\n public func cancel() { cancelOperation() }\n}\n\n",
-    );
-    let mut seen = BTreeSet::new();
+        r#"// Generated by acyclic-sdk-contract-wire; do not edit.
+import Foundation
+
+public enum RustWireDecodeError: Error {
+ case missingField(String)
+ case invalidField(String)
+}
+public struct RustWireMessage: Sendable { public let wire: Data; public init(wire: Data) { self.wire = wire } }
+public struct RustWireEnum: Sendable { public let raw: Int32; public init(raw: Int32) { self.raw = raw } }
+/// A transport may place this value under `__unknown_<oneof>` when a oneof
+/// arm is newer than this generated facade.
+public struct RustWireUnknownOneof: Sendable {
+ public let rawTag: Int32
+ public let payload: Data
+ public init(rawTag: Int32, payload: Data) { self.rawTag = rawTag; self.payload = payload }
+}
+public protocol RustWireRequest: Sendable { associatedtype Wire; func toWire() -> Wire }
+public protocol RustWireResponse: Sendable { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }
+
+private final class RustTypedSerialExecutor: @unchecked Sendable {
+ private let lock = NSLock()
+ private var tail: Task<Void, Never>?
+ func submit<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) -> Task<T, Error> {
+  lock.lock()
+  defer { lock.unlock() }
+  let previous = tail
+  let task = Task<T, Error> {
+   if let previous { await previous.value }
+   return try await operation()
+  }
+  tail = Task { _ = await task.result }
+  return task
+ }
+}
+
+private final class RustTypedCancellationState: @unchecked Sendable {
+ private let lock = NSLock()
+ private var cancelled = false
+ private let operation: @Sendable () -> Void
+ init(_ operation: @escaping @Sendable () -> Void) { self.operation = operation }
+ func cancelIfNeeded() {
+  lock.lock()
+  guard !cancelled else { lock.unlock(); return }
+  cancelled = true
+  lock.unlock()
+  operation()
+ }
+ func completeWithoutCancel() {
+  lock.lock()
+  cancelled = true
+  lock.unlock()
+ }
+}
+
+public enum RustTypedStreamState: Sendable, Equatable { case open; case finished; case cancelled }
+public final class RustTypedStream<Element: RustWireResponse>: @unchecked Sendable {
+ private let nextOperation: @Sendable () async throws -> Element?
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
+ private let lock = NSLock()
+ private var lifecycle: RustTypedStreamState = .open
+ public init(next: @escaping @Sendable () async throws -> Element?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
+ public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
+ public func next() async throws -> Element? {
+  lock.lock()
+  guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("stream is not open") }
+  let task = executor.submit { try await self.nextOperation() }
+  lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
+}
+public final class RustTypedRequestSequence<Request: RustWireRequest>: @unchecked Sendable {
+ private let nextOperation: @Sendable () async throws -> Request?
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
+ private let lock = NSLock()
+ private var lifecycle: RustTypedStreamState = .open
+ public init(next: @escaping @Sendable () async throws -> Request?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
+ public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
+ public func next() async throws -> Request? {
+  lock.lock()
+  guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("request sequence is not open") }
+  let task = executor.submit { try await self.nextOperation() }
+  lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
+}
+public final class RustTypedClientStream<Request: RustWireRequest, Response: RustWireResponse>: @unchecked Sendable {
+ private let sendOperation: @Sendable (Request) async throws -> Void
+ private let finishOperation: @Sendable () async throws -> Response
+ private let nextOperation: (@Sendable () async throws -> Response?)?
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
+ private let lock = NSLock()
+ private var lifecycle: RustTypedStreamState = .open
+ public init(send: @escaping @Sendable (Request) async throws -> Void, finish: @escaping @Sendable () async throws -> Response, next: (@Sendable () async throws -> Response?)? = nil, cancel: @escaping @Sendable () -> Void) { self.sendOperation = send; self.finishOperation = finish; self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
+ public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
+ public func send(_ request: Request) async throws {
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; let task = executor.submit { try await self.sendOperation(request) }; lock.unlock()
+  try await task.value
+ }
+ public func next() async throws -> Response? {
+  guard let nextOperation else { throw RustWireDecodeError.invalidField("client stream has no response sequence") }
+  lock.lock(); guard lifecycle == .open || lifecycle == .finished else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is cancelled") }; let task = executor.submit { try await nextOperation() }; lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func finish() async throws -> Response {
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lifecycle = .finished; let task = executor.submit { try await self.finishOperation() }; lock.unlock()
+  let result = try await task.value
+  cancellation.completeWithoutCancel()
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
+}
+
+"#,
+    );    let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
         if !seen.insert(item.rust_name) {
             continue;
@@ -1138,26 +1370,64 @@ fn render_swift() -> String {
             WireValueKind::SignedInteger => out.push_str(&format!("public struct {}: Sendable {{ public let value: Int64; public init?(_ value: Int64) {{{} self.value = value }} }}\n", item.rust_name, swift_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
                 let nested = semantic_nested_fields(item.rust_name);
+                let oneofs = model_oneof_groups(item.rust_name, PublicFieldDirection::NestedMessage);
                 let nested_type = |field: &crate::type_policy::ResolvedRequestField| {
                     let ty = swift_field_type(field, PublicFieldDirection::NestedMessage);
                     if ty.ends_with('?') { ty } else { format!("{ty}?") }
                 };
-                let declarations = nested.iter().map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), nested_type(field))).collect::<String>();
-                let params = nested.iter().map(|field| format!("{}: {} = nil", swift_field_name(&field.field), nested_type(field))).collect::<Vec<_>>().join(", ");
-                let assignments = nested.iter().map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field))).collect::<String>();
-                let raw_assignments = nested.iter().map(|field| format!("self.{} = nil\n", swift_field_name(&field.field))).collect::<String>();
-                let typed_checks = nested.iter().map(|field| swift_nested_value_checks(field, item.rules)).collect::<String>();
+                let declarations = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| format!("public let {}: {};\n", swift_field_name(&field.field), nested_type(field)))
+                    .chain(oneofs.iter().map(|(oneof, members)| format!(
+                        "public let {}: {};\n",
+                        swift_oneof_choice_property(oneof),
+                        swift_oneof_choice_type(members)
+                    )))
+                    .collect::<String>();
+                let params = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| format!("{}: {} = nil", swift_field_name(&field.field), nested_type(field)))
+                    .chain(oneofs.iter().map(|(oneof, members)| format!(
+                        "{}: {}? = nil",
+                        swift_oneof_choice_property(oneof),
+                        swift_oneof_choice_type(members)
+                    )))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let assignments = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field)))
+                    .chain(oneofs.iter().map(|(oneof, _)| {
+                        let property = swift_oneof_choice_property(oneof);
+                        format!("self.{property} = {property} ?? .none\n")
+                    }))
+                    .collect::<String>();
+                let raw_assignments = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| format!("self.{} = nil\n", swift_field_name(&field.field)))
+                    .chain(oneofs.iter().map(|(oneof, _)| {
+                        format!("self.{} = .none\n", swift_oneof_choice_property(oneof))
+                    }))
+                    .collect::<String>();
+                let typed_checks = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| swift_nested_value_checks(field, item.rules))
+                    .collect::<String>();
                 let image_oneof = if item.rust_name == "Image" {
-                    let arms = nested
-                        .iter()
-                        .filter(|field| field.oneof_index.is_some())
-                        .map(|field| format!("{} != nil", swift_field_name(&field.field)))
-                        .collect::<Vec<_>>();
-                    if arms.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" guard [{}].filter {{ $0 }}.count == 1 else {{ return nil }};", arms.join(", "))
-                    }
+                    oneofs
+                        .keys()
+                        .map(|oneof| {
+                            let property = swift_oneof_choice_property(oneof);
+                            format!(
+                                " guard let choice = {property} else {{ return nil }}; if case .none = choice {{ return nil }};"
+                            )
+                        })
+                        .collect::<String>()
                 } else {
                     String::new()
                 };
@@ -1223,8 +1493,10 @@ fn render_swift() -> String {
             camel(&module),
             camel(message.trim_end_matches("Request"))
         );
+        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Request);
         let field_declarations = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "public let {}: {};\n",
@@ -1233,7 +1505,6 @@ fn render_swift() -> String {
                 )
             })
             .collect::<String>();
-        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Request);
         let choice_declarations = oneofs
             .iter()
             .map(|(oneof, members)| {
@@ -1246,6 +1517,7 @@ fn render_swift() -> String {
             .collect::<String>();
         let params = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "{}: {}",
@@ -1268,47 +1540,16 @@ fn render_swift() -> String {
             .join(", ");
         let assignments = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field)))
-            .collect::<String>();
-        let oneof_checks = model_oneof_groups(&message, PublicFieldDirection::Request)
-            .values()
-            .map(|members| {
-                let active = members
-                    .iter()
-                    .map(|field| format!("{} != nil", swift_field_name(&field.field)))
-                    .collect::<Vec<_>>();
-                format!(
-                    " precondition([{}].filter {{ $0 }}.count <= 1, \"oneof arms are mutually exclusive\")\n",
-                    active.join(", ")
-                )
-            })
-            .collect::<String>();
-        let choice_assignments = oneofs
-            .iter()
-            .map(|(oneof, members)| {
+            .chain(oneofs.iter().map(|(oneof, _)| {
                 let property = swift_oneof_choice_property(oneof);
-                let active = members
-                    .iter()
-                    .map(|field| format!("{} != nil", swift_field_name(&field.field)))
-                    .collect::<Vec<_>>();
-                let inferred = members
-                    .iter()
-                    .map(|field| {
-                        let field_name = swift_field_name(&field.field);
-                        format!(
-                            " else if let value = {field_name} {{ self.{property} = .{}(value) }}",
-                            camel(&field.field)
-                        )
-                    })
-                    .collect::<String>();
-                format!(
-                    " let active_{property} = [{}].filter {{ $0 }}.count\n precondition(active_{property} <= 1, \"oneof {oneof} contains multiple arms\")\n if let choice = {property} {{ if case .unknown = choice {{ precondition(active_{property} == 0, \"oneof {oneof} contains an unknown and known arm\") }}; self.{property} = choice }} else if active_{property} == 0 {{ self.{property} = .none }}{inferred} else {{ self.{property} = .none }}\n",
-                    active.join(", ")
-                )
-            })
+                format!("self.{property} = {property} ?? .none\n")
+            }))
             .collect::<String>();
         let wire_fields = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "\"{}\": {}",
@@ -1319,10 +1560,20 @@ fn render_swift() -> String {
             .collect::<Vec<_>>()
             .join(", ");
         let wire_literal = if wire_fields.is_empty() {
-            "[:]".to_owned()
+            "var wire: [String: Any] = [:]".to_owned()
         } else {
-            format!("[{wire_fields}]")
+            format!("var wire: [String: Any] = [{wire_fields}]")
         };
+        let choice_wire = oneofs
+            .iter()
+            .map(|(oneof, _)| {
+                swift_oneof_choice_wire_switch(
+                    &swift_oneof_choice_property(oneof),
+                    oneofs.get(oneof).expect("oneof members"),
+                    oneof,
+                )
+            })
+            .collect::<String>();
         let all_params = if params.is_empty() {
             choice_params.clone()
         } else if choice_params.is_empty() {
@@ -1330,12 +1581,14 @@ fn render_swift() -> String {
         } else {
             format!("{params}, {choice_params}")
         };
-        out.push_str(&format!("public struct {name}: RustWireRequest, Sendable {{\n{field_declarations}{choice_declarations} public init({all_params}) {{\n{oneof_checks}{assignments}{choice_assignments} }}\n public typealias Wire = [String: Any]\n public func toWire() -> [String: Any] {{ {wire_literal} }}\n}}\n"));
+        out.push_str(&format!("public struct {name}: RustWireRequest, Sendable {{\n{field_declarations}{choice_declarations} public init({all_params}) {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public func toWire() -> [String: Any] {{ {wire_literal};{choice_wire} return wire }}\n}}\n"));
     }
     for ((module, message), fields) in response_groups() {
         let name = format!("{}{}Response", camel(&module), camel(&message));
+        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Response);
         let field_declarations = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "public let {}: {};\n",
@@ -1346,6 +1599,7 @@ fn render_swift() -> String {
             .collect::<String>();
         let params = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "{}: {}",
@@ -1357,9 +1611,13 @@ fn render_swift() -> String {
             .join(", ");
         let assignments = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| format!("self.{0} = {0}\n", swift_field_name(&field.field)))
+            .chain(oneofs.iter().map(|(oneof, _)| {
+                let property = swift_oneof_choice_property(oneof);
+                format!("self.{property} = {property} ?? .none\n")
+            }))
             .collect::<String>();
-        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Response);
         let choice_declarations = oneofs
             .iter()
             .map(|(oneof, members)| {
@@ -1381,31 +1639,10 @@ fn render_swift() -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let choice_assignments = oneofs
-            .iter()
-            .map(|(oneof, members)| {
-                let property = swift_oneof_choice_property(oneof);
-                let active = members
-                    .iter()
-                    .map(|field| format!("{} != nil", swift_field_name(&field.field)))
-                    .collect::<Vec<_>>();
-                let inferred = members
-                    .iter()
-                    .map(|field| {
-                        let field_name = swift_field_name(&field.field);
-                        format!(
-                            " else if let value = {field_name} {{ self.{property} = .{}(value) }}",
-                            camel(&field.field)
-                        )
-                    })
-                    .collect::<String>();
-                format!(
-                    " let active_{property} = [{}].filter {{ $0 }}.count\n guard active_{property} <= 1 else {{ throw RustWireDecodeError.invalidField(\"oneof {oneof} contains multiple arms\") }}\n if let choice = {property} {{ if case .unknown = choice {{ guard active_{property} == 0 else {{ throw RustWireDecodeError.invalidField(\"oneof {oneof} contains an unknown and known arm\") }} }}; self.{property} = choice }} else if active_{property} == 0 {{ self.{property} = .none }}{inferred} else {{ self.{property} = .none }}\n",
-                    active.join(", ")
-                )
-            })
-            .collect::<String>();
         let decodes = fields.iter().map(|field| {
+            if field.oneof_index.is_some() {
+                return String::new();
+            }
             let cast = swift_field_cast(field);
             let key = &field.json_name;
             let local = swift_local_name(&field.field);
@@ -1445,9 +1682,12 @@ fn render_swift() -> String {
             .map(|(oneof, members)| {
                 let property = swift_oneof_choice_property(oneof);
                 let choice_type = swift_oneof_choice_type(members);
-                let key = format!("__unknown_{}", oneof);
-                format!(
-                    "let {property}: {choice_type}? = (wire[\"{key}\"] as? RustWireUnknownOneof).map {{ .unknown(rawTag: $0.rawTag, payload: $0.payload) }};"
+                swift_oneof_decode_block(
+                    &property,
+                    &choice_type,
+                    oneof,
+                    members,
+                    PublicFieldDirection::Response,
                 )
             })
             .collect::<String>();
@@ -1461,6 +1701,7 @@ fn render_swift() -> String {
             .join(", ");
         let args = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 let name = swift_field_name(&field.field);
                 format!("{name}: {name}")
@@ -1481,7 +1722,7 @@ fn render_swift() -> String {
         } else {
             format!("{args}, {choice_args}")
         };
-        out.push_str(&format!("public struct {name}: RustWireResponse, Sendable {{\n{field_declarations}{choice_declarations} public init({all_params}) throws {{\n{assignments}{choice_assignments} }}\n public typealias Wire = [String: Any]\n public static func fromWire(_ wire: [String: Any]) throws -> Self {{ {decodes}{choice_decodes} return try Self({all_args}) }}\n}}\n"));
+        out.push_str(&format!("public struct {name}: RustWireResponse, Sendable {{\n{field_declarations}{choice_declarations} public init({all_params}) throws {{\n{assignments} }}\n public typealias Wire = [String: Any]\n public static func fromWire(_ wire: [String: Any]) throws -> Self {{ {decodes}{choice_decodes} return try Self({all_args}) }}\n}}\n"));
     }
     for (message, bindings) in nested_message_groups() {
         let fields = bindings
@@ -1576,7 +1817,7 @@ fn render_swift() -> String {
             assignments
         ));
     }
-    out.push_str("\npublic protocol RustTypedRemoteTransport { func call<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ request: Request) async throws -> Response; func stream<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ request: Request) async throws -> RustTypedStream<Response> }\npublic struct RustTypedClient<Transport: RustTypedRemoteTransport> { public let transport: Transport; public init(transport: Transport) { self.transport = transport }\n");
+    out.push_str("\npublic protocol RustTypedRemoteTransport { func call<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ request: Request) async throws -> Response; func stream<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ request: Request) async throws -> RustTypedStream<Response>; func openClientStream<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String) async throws -> RustTypedClientStream<Request, Response>; func sendClientStream<Request: RustWireRequest, Response: RustWireResponse>(_ rpc: String, _ requests: RustTypedRequestSequence<Request>) async throws -> Response }\npublic struct RustTypedClient<Transport: RustTypedRemoteTransport> { public let transport: Transport; public init(transport: Transport) { self.transport = transport }\n");
     let mut methods = BTreeSet::new();
     for method in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
         let message = message_leaf(&method.input_message);
@@ -1613,7 +1854,7 @@ fn render_swift() -> String {
             );
             let method_name = swift_method_name(&method_name);
             if method.client_streaming {
-                out.push_str(&format!(" @available(*, unavailable, message: \"client-streaming RPC {rpc} is not implemented by this typed facade\") public func {method_name}(_ request: {request}) async throws -> {response} {{ fatalError() }}\n", rpc = method.rpc));
+                out.push_str(&format!(" public func {method_name}() async throws -> RustTypedClientStream<{request}, {response}> {{ try await transport.openClientStream(\"{rpc}\") }} public func {method_name}(_ requests: RustTypedRequestSequence<{request}>) async throws -> {response} {{ try await transport.sendClientStream(\"{rpc}\", requests) }}\n", rpc = method.rpc));
             } else if method.server_streaming {
                 out.push_str(&format!(" public func {method_name}(_ request: {request}) async throws -> RustTypedStream<{response}> {{ try await transport.stream(\"{rpc}\", request) }}\n", rpc = method.rpc));
             } else {
@@ -1627,7 +1868,7 @@ fn render_swift() -> String {
 
 fn render_cpp() -> String {
     let mut out = String::from(
-        "// Generated by acyclic-sdk-contract-wire; do not edit.\n#pragma once\n#include <atomic>\n#include <chrono>\n#include <cstdint>\n#include <memory>\n#include <optional>\n#include <stdexcept>\n#include <string>\n#include <system_error>\n#include <utility>\n#include <variant>\n#include <vector>\nnamespace acyclic::rust_typed {\n\nstruct RustWireMessage { std::vector<std::uint8_t> wire; };\nstruct RustWireEnum { std::int32_t raw; };\n\nclass RustCancellationToken {\n  std::shared_ptr<const std::atomic_bool> flag_;\n  explicit RustCancellationToken(std::shared_ptr<const std::atomic_bool> flag) : flag_(std::move(flag)) {}\n  friend class RustCancellationSource;\npublic:\n  RustCancellationToken() : flag_(std::make_shared<const std::atomic_bool>(false)) {}\n  bool stop_requested() const noexcept { return flag_->load(std::memory_order_acquire); }\n};\n\nclass RustCancellationSource {\n  std::shared_ptr<std::atomic_bool> flag_ = std::make_shared<std::atomic_bool>(false);\npublic:\n  RustCancellationToken get_token() const noexcept { return RustCancellationToken(flag_); }\n  bool request_stop() noexcept {\n    bool expected = false;\n    return flag_->compare_exchange_strong(expected, true, std::memory_order_acq_rel);\n  }\n};\n\ntemplate<class Element>\nclass RustTypedStream {\npublic:\n  virtual ~RustTypedStream() = default;\n  virtual std::optional<Element> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\n",
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n#pragma once\n#include <atomic>\n#include <chrono>\n#include <cstdint>\n#include <memory>\n#include <optional>\n#include <stdexcept>\n#include <string>\n#include <system_error>\n#include <utility>\n#include <variant>\n#include <vector>\nnamespace acyclic::rust_typed {\n\nstruct RustWireMessage { std::vector<std::uint8_t> wire; };\nstruct RustWireEnum { std::int32_t raw; };\n\nclass RustCancellationToken {\n  std::shared_ptr<const std::atomic_bool> flag_;\n  explicit RustCancellationToken(std::shared_ptr<const std::atomic_bool> flag) : flag_(std::move(flag)) {}\n  friend class RustCancellationSource;\npublic:\n  RustCancellationToken() : flag_(std::make_shared<const std::atomic_bool>(false)) {}\n  bool stop_requested() const noexcept { return flag_->load(std::memory_order_acquire); }\n};\n\nclass RustCancellationSource {\n  std::shared_ptr<std::atomic_bool> flag_ = std::make_shared<std::atomic_bool>(false);\npublic:\n  RustCancellationToken get_token() const noexcept { return RustCancellationToken(flag_); }\n  bool request_stop() noexcept {\n    bool expected = false;\n    return flag_->compare_exchange_strong(expected, true, std::memory_order_acq_rel);\n  }\n};\n\ntemplate<class Element>\nclass RustTypedStream {\npublic:\n  virtual ~RustTypedStream() = default;\n  virtual std::optional<Element> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\ntemplate<class Request>\nclass RustTypedRequestSequence {\npublic:\n  virtual ~RustTypedRequestSequence() = default;\n  virtual std::optional<Request> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\ntemplate<class Request, class Response>\nclass RustTypedClientStream {\npublic:\n  virtual ~RustTypedClientStream() = default;\n  virtual void send(const Request& request) = 0;\n  virtual Response finish() = 0;\n  virtual std::optional<Response> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\n",
     );
     // C++ requires nominal field types to be declared before any semantic
     // message that embeds them.  Emit descriptor-derived ordinary messages
@@ -1697,7 +1938,11 @@ fn render_cpp() -> String {
             WireValueKind::SignedInteger => out.push_str(&format!("struct {} {{ std::int64_t value; explicit {}(std::int64_t value) : value(value) {{{}}} }};\n", item.rust_name, item.rust_name, cpp_checks(item.wire_kind, item.rules))),
             WireValueKind::Message => {
                 let nested = semantic_nested_fields(item.rust_name);
-                let declarations = nested.iter().map(|field| {
+                let oneofs = model_oneof_groups(item.rust_name, PublicFieldDirection::NestedMessage);
+                let declarations = nested
+                    .iter()
+                    .filter(|field| field.oneof_index.is_none())
+                    .map(|field| {
                     let ty = cpp_field_type(field, PublicFieldDirection::NestedMessage);
                     let ty = if ty.starts_with("std::optional<") { ty } else { format!("std::optional<{ty}>") };
                     format!(
@@ -1705,9 +1950,19 @@ fn render_cpp() -> String {
                         cpp_field_name(&field.field),
                         cpp_field_annotation(&field.field)
                     )
-                }).collect::<String>();
+                })
+                    .chain(oneofs.iter().map(|(oneof, members)| {
+                        format!(
+                            "{} {}_choice = {}{{}};\n",
+                            cpp_oneof_choice_value_type(oneof, members),
+                            cpp_oneof_choice_field_name(oneof),
+                            cpp_oneof_none_type(oneof, members)
+                        )
+                    }))
+                    .collect::<String>();
                 let typed_params = nested
                     .iter()
+                    .filter(|field| field.oneof_index.is_none())
                     .map(|field| {
                         let ty = cpp_field_type(field, PublicFieldDirection::NestedMessage);
                         let ty = if ty.starts_with("std::optional<") {
@@ -1717,30 +1972,56 @@ fn render_cpp() -> String {
                         };
                         format!("{ty} {} = std::nullopt", cpp_field_name(&field.field))
                     })
+                    .chain(oneofs.iter().map(|(oneof, members)| {
+                        format!(
+                            "{} {}_choice = {}{{}}",
+                            cpp_oneof_choice_value_type(oneof, members),
+                            cpp_oneof_choice_field_name(oneof),
+                            cpp_oneof_none_type(oneof, members)
+                        )
+                    }))
                     .collect::<Vec<_>>()
                     .join(", ");
                 let typed_assignments = nested
                     .iter()
+                    .filter(|field| field.oneof_index.is_none())
                     .map(|field| {
                         let name = cpp_field_name(&field.field);
-                        format!(" {name} = std::move({name});")
+                        format!(" this->{name} = std::move({name});")
                     })
+                    .chain(oneofs.iter().map(|(oneof, _)| {
+                        let name = cpp_oneof_choice_field_name(oneof);
+                        format!(" this->{name}_choice = std::move({name}_choice);")
+                    }))
                     .collect::<String>();
                 let image_check = if item.rust_name == "Image" {
-                    let arms = nested
+                    let checks = oneofs
                         .iter()
-                        .filter(|field| field.oneof_index.is_some())
-                        .map(|field| format!("{}.has_value()", cpp_field_name(&field.field)))
+                        .map(|(oneof, members)| {
+                            let name = cpp_oneof_choice_field_name(oneof);
+                            let none = cpp_oneof_none_type(oneof, members);
+                            format!("std::holds_alternative<{none}>({name}_choice)")
+                        })
                         .collect::<Vec<_>>();
-                    if arms.is_empty() {
+                    if checks.is_empty() {
                         String::new()
                     } else {
-                        format!(" if (std::size_t{{{}}} != 1) throw std::invalid_argument(\"Image requires exactly one immutable reference\");", arms.join(" + "))
+                        format!(" if ({}) throw std::invalid_argument(\"Image requires exactly one immutable reference\");", checks.join(" || "))
                     }
                 } else {
                     String::new()
                 };
-                out.push_str(&format!("struct {} {{ private: RustWireMessage wire; explicit {}(RustWireMessage value) {{{} wire = std::move(value); }} public: {} {}({}) : {} {{{}}} }};\n", item.rust_name, item.rust_name, cpp_message_checks(item.rules), declarations, item.rust_name, typed_params, typed_assignments, image_check));
+                let raw_choice_assignments = oneofs
+                    .iter()
+                    .map(|(oneof, members)| {
+                        format!(
+                            ", {}_choice({}{{}})",
+                            cpp_oneof_choice_field_name(oneof),
+                            cpp_oneof_none_type(oneof, members)
+                        )
+                    })
+                    .collect::<String>();
+                out.push_str(&format!("struct {} {{ private: RustWireMessage wire; explicit {}(RustWireMessage value) : wire(std::move(value)){} {{{} }} public: {} {}({}) : {} {{{}}} }};\n", item.rust_name, item.rust_name, raw_choice_assignments, cpp_message_checks(item.rules), declarations, item.rust_name, typed_params, typed_assignments, image_check));
             }
             _ => {}
         }
@@ -1755,8 +2036,10 @@ fn render_cpp() -> String {
             camel(&module),
             camel(message.trim_end_matches("Request"))
         );
+        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Request);
         let fields = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "{} {};{}",
@@ -1766,12 +2049,25 @@ fn render_cpp() -> String {
                 )
             })
             .collect::<String>();
-        out.push_str(&format!("struct {name} {{ {fields} }};\n"));
+        let choices = oneofs
+            .iter()
+            .map(|(oneof, members)| {
+                format!(
+                    " {} {}_choice = {}{{}};",
+                    cpp_oneof_choice_value_type(oneof, members),
+                    cpp_oneof_choice_field_name(oneof),
+                    cpp_oneof_none_type(oneof, members)
+                )
+            })
+            .collect::<String>();
+        out.push_str(&format!("struct {name} {{ {fields}{choices} }};\n"));
     }
     for ((module, message), fields) in response_groups() {
         let name = format!("{}{}Response", camel(&module), camel(&message));
+        let oneofs = model_oneof_groups(&message, PublicFieldDirection::Response);
         let fields = fields
             .iter()
+            .filter(|field| field.oneof_index.is_none())
             .map(|field| {
                 format!(
                     "{} {};{}",
@@ -1781,13 +2077,14 @@ fn render_cpp() -> String {
                 )
             })
             .collect::<String>();
-        let choices = model_oneof_groups(&message, PublicFieldDirection::Response)
+        let choices = oneofs
             .iter()
             .map(|(oneof, members)| {
                 format!(
-                    "{}Value {}_choice;",
-                    response_oneof_name(members.first().expect("oneof arm"), oneof),
-                    cpp_field_name(&format!("{}Choice", oneof))
+                    "{} {}_choice = {}{{}};",
+                    cpp_oneof_choice_value_type(oneof, members),
+                    cpp_oneof_choice_field_name(oneof),
+                    cpp_oneof_none_type(oneof, members)
                 )
             })
             .collect::<String>();
@@ -1855,7 +2152,7 @@ fn render_cpp() -> String {
             fields
         ));
     }
-    out.push_str("\ntemplate<class Transport> class RustTypedClient { Transport& transport_; public: explicit RustTypedClient(Transport& transport) : transport_(transport) {} template<class Request, class Response> Response call(const char* rpc, const Request& request) { return transport_.template call<Request, Response>(rpc, request); } template<class Request, class Response> Response call_cancellable(const char* rpc, const Request& request, RustCancellationToken cancellation_token) { if (cancellation_token.stop_requested()) throw std::system_error(std::make_error_code(std::errc::operation_canceled)); return transport_.template call<Request, Response>(rpc, request, cancellation_token); } template<class Request, class Response> std::unique_ptr<RustTypedStream<Response>> stream(const char* rpc, const Request& request) { return transport_.template stream<Request, Response>(rpc, request); } template<class Request, class Response> std::unique_ptr<RustTypedStream<Response>> stream_cancellable(const char* rpc, const Request& request, RustCancellationToken cancellation_token) { if (cancellation_token.stop_requested()) throw std::system_error(std::make_error_code(std::errc::operation_canceled)); return transport_.template stream<Request, Response>(rpc, request, cancellation_token); }\n");
+    out.push_str("\ntemplate<class Transport> class RustTypedClient { Transport& transport_; public: explicit RustTypedClient(Transport& transport) : transport_(transport) {} template<class Request, class Response> Response call(const char* rpc, const Request& request) { return transport_.template call<Request, Response>(rpc, request); } template<class Request, class Response> Response call_cancellable(const char* rpc, const Request& request, RustCancellationToken cancellation_token) { if (cancellation_token.stop_requested()) throw std::system_error(std::make_error_code(std::errc::operation_canceled)); return transport_.template call<Request, Response>(rpc, request, cancellation_token); } template<class Request, class Response> std::unique_ptr<RustTypedStream<Response>> stream(const char* rpc, const Request& request) { return transport_.template stream<Request, Response>(rpc, request); } template<class Request, class Response> std::unique_ptr<RustTypedStream<Response>> stream_cancellable(const char* rpc, const Request& request, RustCancellationToken cancellation_token) { if (cancellation_token.stop_requested()) throw std::system_error(std::make_error_code(std::errc::operation_canceled)); return transport_.template stream<Request, Response>(rpc, request, cancellation_token); } template<class Request, class Response> std::unique_ptr<RustTypedClientStream<Request, Response>> open_client_stream(const char* rpc) { return transport_.template open_client_stream<Request, Response>(rpc); } template<class Request, class Response> Response send_client_stream(const char* rpc, RustTypedRequestSequence<Request>& requests) { return transport_.template send_client_stream<Request, Response>(rpc, requests); }\n");
     let mut methods = BTreeSet::new();
     for method_info in resolved_rpc_methods().expect("Rust RPC identities must resolve") {
         let message = message_leaf(&method_info.input_message);
@@ -1887,7 +2184,7 @@ fn render_cpp() -> String {
                 camel(message_leaf(&method_info.output_message))
             );
             if method_info.client_streaming {
-                out.push_str(&format!(" [[deprecated(\"client-streaming RPC {rpc} is not implemented by this typed facade\")]] {response} {method_name}(const {request}&) = delete;\n", rpc = method_info.rpc));
+                out.push_str(&format!(" std::unique_ptr<RustTypedClientStream<{request}, {response}>> {method_name}() {{ return open_client_stream<{request}, {response}>(\"{rpc}\"); }} {response} {method_name}(RustTypedRequestSequence<{request}>& requests) {{ return send_client_stream<{request}, {response}>(\"{rpc}\", requests); }}\n", rpc = method_info.rpc));
             } else if method_info.server_streaming {
                 out.push_str(&format!(" std::unique_ptr<RustTypedStream<{response}>> {method_name}(const {request}& request) {{ return stream<{request}, {response}>(\"{rpc}\", request); }} std::unique_ptr<RustTypedStream<{response}>> {method_name}(const {request}& request, RustCancellationToken cancellation_token) {{ return stream_cancellable<{request}, {response}>(\"{rpc}\", request, cancellation_token); }}\n", rpc = method_info.rpc));
             } else {
@@ -1930,6 +2227,10 @@ mod tests {
         assert!(swift.contains("case unknown(rawTag: Int32, payload: Data)"));
         assert!(swift.contains("public struct RustWireUnknownOneof"));
         assert!(swift.contains("public final class RustTypedStream"));
+        assert!(swift.contains("public final class RustTypedRequestSequence"));
+        assert!(swift.contains("public final class RustTypedClientStream"));
+        assert!(swift.contains("func openClientStream<Request: RustWireRequest, Response: RustWireResponse>"));
+        assert!(swift.contains("func sendClientStream<Request: RustWireRequest, Response: RustWireResponse>"));
         assert!(swift.contains("func stream<Request: RustWireRequest, Response: RustWireResponse>"));
         assert!(!swift.contains("func run<Response: RustWireResponse>"));
         assert!(swift.contains("Choice: "));
@@ -1948,6 +2249,10 @@ mod tests {
         assert!(cpp.contains("class RustCancellationToken"));
         assert!(cpp.contains("class RustCancellationSource"));
         assert!(cpp.contains("class RustTypedStream"));
+        assert!(cpp.contains("class RustTypedRequestSequence"));
+        assert!(cpp.contains("class RustTypedClientStream"));
+        assert!(cpp.contains("open_client_stream"));
+        assert!(cpp.contains("send_client_stream"));
         assert!(cpp.contains("stream_cancellable"));
         assert!(cpp.contains("RustCancellationToken cancellation_token"));
         assert!(cpp.contains("call_cancellable"));

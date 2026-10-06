@@ -1607,6 +1607,7 @@ const OPAQUE_BYTES: &[SemanticRule] = &[];
 const NON_NEGATIVE_COUNT: &[SemanticRule] = &[SemanticRule::NonNegative];
 const POSITIVE_COUNT: &[SemanticRule] = &[SemanticRule::StrictlyPositive];
 const TIMESTAMP_MILLIS: &[SemanticRule] = &[SemanticRule::NonNegative];
+const TIMESTAMP_SECONDS: &[SemanticRule] = &[SemanticRule::NonNegative];
 const PRESENT_ONEOF: &[SemanticRule] =
     &[SemanticRule::ExactOneof, SemanticRule::PreserveUnknownOneof];
 const IMMUTABLE_MESSAGE: &[SemanticRule] = &[SemanticRule::Immutable];
@@ -1855,6 +1856,12 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         rust_name: "UnixTimestampMillis",
         wire_kind: WireValueKind::UnsignedInteger,
         rules: TIMESTAMP_MILLIS,
+    },
+    SemanticType {
+        id: "timestamp_seconds",
+        rust_name: "UnixTimestampSeconds",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: TIMESTAMP_SECONDS,
     },
 ];
 
@@ -2399,7 +2406,7 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     PublicFieldBinding {
         family: "filesystem",
         field: "expires_at_unix_seconds",
-        semantic_type: "timestamp_millis",
+        semantic_type: "timestamp_seconds",
         module: "filesystem",
         message: "CredentialResponse",
         wire_field: "expires_at_unix_seconds",
@@ -7365,6 +7372,11 @@ mod tests {
         assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
             binding.direction == PublicFieldDirection::Response
                 && binding.semantic_type == "timestamp_millis"
+        }));
+        assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && binding.semantic_type == "timestamp_seconds"
+                && binding.wire_field == "expires_at_unix_seconds"
         }));
         assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
             binding.direction == PublicFieldDirection::Response

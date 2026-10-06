@@ -25,6 +25,7 @@ tokio.workspace = true
 napi-build = "2.3.1"
 
 [dev-dependencies]
+base64.workspace = true
 rcgen = "0.14.10"
 tokio-stream.workspace = true
 tokio.workspace = true

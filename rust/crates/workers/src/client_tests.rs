@@ -2,9 +2,13 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    error::Error,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{
@@ -12,31 +16,49 @@ use tonic::{
     transport::{Identity, Server, ServerTlsConfig},
 };
 
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
 async fn endpoint(
     family: BindingFamily,
     digest: String,
     requests: usize,
-) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+) -> TestResult<(String, tokio::task::JoinHandle<TestResult<Vec<String>>>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
         let mut observed = Vec::new();
         for index in 0..requests {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await?;
             let mut bytes = Vec::new();
             while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
                 let mut chunk = [0; 1024];
-                let count = stream.read(&mut chunk).await.unwrap();
-                assert!(count > 0 && bytes.len() + count <= 64 * 1024);
-                bytes.extend_from_slice(&chunk[..count]);
+                let count = stream.read(&mut chunk).await?;
+                if count == 0 {
+                    return Err(io::Error::other("fixture closed before the HTTP headers").into());
+                }
+                let new_len = bytes
+                    .len()
+                    .checked_add(count)
+                    .filter(|length| *length <= 64 * 1024)
+                    .ok_or_else(|| io::Error::other("fixture request exceeded 64 KiB"))?;
+                let received = chunk
+                    .get(..count)
+                    .ok_or_else(|| io::Error::other("fixture returned an invalid read length"))?;
+                bytes.extend_from_slice(received);
+                debug_assert_eq!(bytes.len(), new_len);
             }
-            let request = String::from_utf8(bytes).unwrap();
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer fixture-token\r\n")
-            );
-            observed.push(request.lines().next().unwrap().to_owned());
+            let request = String::from_utf8(bytes)?;
+            if !request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-token\r\n")
+            {
+                return Err(io::Error::other("fixture request omitted bearer authentication").into());
+            }
+            let request_line = request
+                .lines()
+                .next()
+                .ok_or_else(|| io::Error::other("fixture request omitted its request line"))?;
+            observed.push(request_line.to_owned());
             let body = if index == 0 {
                 serde_json::json!({
                     "protocol": { "version": control::control_protocol_version(family), "descriptorDigest": digest },
@@ -51,36 +73,38 @@ async fn endpoint(
                 body.len(),
                 body
             );
-            stream.write_all(response.as_bytes()).await.unwrap();
-            stream.shutdown().await.unwrap();
+            stream.write_all(response.as_bytes()).await?;
+            stream.shutdown().await?;
         }
-        observed
+        Ok::<Vec<String>, Box<dyn Error + Send + Sync>>(observed)
     });
-    (format!("http://{address}"), task)
+    Ok((format!("http://{address}"), task))
 }
 
 #[tokio::test]
-async fn workers_choose_verified_http_without_consumer_feature_flags() {
+async fn workers_choose_verified_http_without_consumer_feature_flags() -> TestResult<()> {
     let family = BindingFamily::Workers;
-    let (endpoint, server) = endpoint(family, control::archived_descriptor_digest(family), 1).await;
-    let client = crate::connect(&endpoint, "fixture-token").await.unwrap();
+    let (endpoint, server) =
+        endpoint(family, control::archived_descriptor_digest(family), 1).await?;
+    let client = crate::connect(&endpoint, "fixture-token").await?;
     assert_eq!(client.transport(), "http");
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
-        .unwrap()
-        .unwrap();
+        .map_err(|error| io::Error::other(format!("fixture timed out: {error}")))??;
     assert_eq!(observed, ["GET /v1/sdk/workers/handshake HTTP/1.1"]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn incompatible_identity_is_terminal_before_any_application_request() {
-    let (endpoint, server) = endpoint(BindingFamily::Workers, "substituted-descriptor".into(), 1).await;
+async fn incompatible_identity_is_terminal_before_any_application_request() -> TestResult<()> {
+    let (endpoint, server) =
+        endpoint(BindingFamily::Workers, "substituted-descriptor".into(), 1).await?;
     assert!(crate::connect(&endpoint, "fixture-token").await.is_err());
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
-        .unwrap()
-        .unwrap();
+        .map_err(|error| io::Error::other(format!("fixture timed out: {error}")))??;
     assert_eq!(observed, ["GET /v1/sdk/workers/handshake HTTP/1.1"]);
+    Ok(())
 }
 
 #[derive(Clone, Copy)]

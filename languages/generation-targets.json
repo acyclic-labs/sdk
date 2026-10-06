@@ -968,9 +968,9 @@
       "generator": {
         "license": "Apache-2.0",
         "name": "grpc_php_plugin + protobuf PHP",
-        "pin": "Pin PECL gRPC and Composer protobuf packages.",
-        "source": "https://grpc.io/docs/languages/php/",
-        "version": "pending qualification"
+        "pin": "grpc_php_plugin 1.82.0; Composer grpc/grpc 1.82.0; google/protobuf 5.36.2; exact protoc version and SHA-256 required before generation.",
+        "source": "https://github.com/grpc/grpc",
+        "version": "grpc_php_plugin 1.82.0; grpc/grpc 1.82.0; google/protobuf 5.36.2"
       },
       "id": "php",
       "kind": "language",
@@ -1037,9 +1037,9 @@
       "generator": {
         "license": "BSD-3-Clause/Apache-2.0",
         "name": "protoc_plugin + grpc Dart",
-        "pin": "Pin Dart protobuf and grpc package versions.",
-        "source": "https://grpc.io/docs/languages/dart/",
-        "version": "pending qualification"
+        "pin": "protoc_plugin 25.1.0; grpc 5.1.0; protobuf 6.1.0; fixnum 1.1.1; Dart SDK >=3.8.0.",
+        "source": "https://github.com/google/protobuf.dart/tree/master/protoc_plugin",
+        "version": "protoc_plugin 25.1.0; grpc 5.1.0; protobuf 6.1.0; fixnum 1.1.1"
       },
       "id": "dart",
       "kind": "language",

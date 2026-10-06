@@ -1,3 +1,5 @@
+//! Verify the platform package fixture shape for the native stream addon.
+
 use std::fs;
 use std::path::Path;
 
@@ -41,16 +43,10 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
 ];
 
 #[test]
-fn every_platform_fixture_is_loadable_shape_with_matching_binary_name() {
+fn every_platform_fixture_is_loadable_shape_with_matching_binary_name() -> std::io::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm");
     for (target, os, cpu, package_name) in TARGETS {
-        let package = match fs::read_to_string(root.join(target).join("package.json")) {
-            Ok(value) => value,
-            Err(_) => {
-                assert!(false, "platform package fixture must be readable");
-                continue;
-            }
-        };
+        let package = fs::read_to_string(root.join(target).join("package.json"))?;
         assert!(package.contains(&format!("\"name\":\"{package_name}\"")));
         assert!(package.contains("\"version\":\"0.2.0\""));
         assert!(package.contains("\"license\":\"Apache-2.0\""));
@@ -58,16 +54,11 @@ fn every_platform_fixture_is_loadable_shape_with_matching_binary_name() {
         assert!(package.contains(&format!("\"cpu\":[\"{cpu}\"]")));
         assert!(package.contains("\"main\":\"index.js\""));
         assert!(package.contains("\"acyclic_stream_native.node\""));
-        let loader = match fs::read_to_string(root.join(target).join("index.js")) {
-            Ok(value) => value,
-            Err(_) => {
-                assert!(false, "platform loader fixture must be readable");
-                continue;
-            }
-        };
+        let loader = fs::read_to_string(root.join(target).join("index.js"))?;
         assert_eq!(
             loader.trim(),
             "module.exports = require(\"./acyclic_stream_native.node\");"
         );
     }
+    Ok(())
 }

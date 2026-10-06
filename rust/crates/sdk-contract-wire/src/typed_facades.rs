@@ -1312,6 +1312,14 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
     }
     let semantic = descriptor_semantic_type(field);
     let repeated = field.label == Some(FieldLabel::Repeated as i32);
+    if descriptor_optional_bearer_token(field) {
+        return match language {
+            "java" => "java.util.Optional<RustSemanticTypes.OpaqueText>".to_owned(),
+            "kotlin" => "RustSemanticTypesKotlin.OpaqueText?".to_owned(),
+            "scala" => "Option[RustSemanticTypesScala.OpaqueText]".to_owned(),
+            _ => unreachable!(),
+        };
+    }
     let base = if let Some(semantic) = semantic {
         match language {
             "java" => format!("RustSemanticTypes.{}", semantic.rust_name),
@@ -1433,6 +1441,13 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
     }
 }
 
+fn descriptor_optional_bearer_token(field: &ResolvedRequestField) -> bool {
+    field.family == "filesystem"
+        && field.field == "bearer_token"
+        && field.message_path.ends_with(".CredentialResponse")
+        && field.oneof_index.is_some()
+}
+
 fn descriptor_field_expression(
     field: &ResolvedRequestField,
     chain: &[ResolvedRequestField],
@@ -1502,6 +1517,9 @@ fn descriptor_field_has_expression_at(
 }
 
 fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    if descriptor_optional_bearer_token(field) && chain.is_empty() {
+        return "value.getCredentialCase() == acyclic.filesystem.v2.Filesystem.CredentialResponse.CredentialCase.BEARER_TOKEN ? java.util.Optional.of(RustSemanticTypes.OpaqueText.of(value.getBearerToken())) : java.util.Optional.empty()".to_owned();
+    }
     let expression = descriptor_field_expression(field, chain, "value");
     if field.map_entry {
         match descriptor_map_entry_field(field, "value")
@@ -1588,6 +1606,9 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
 }
 
 fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    if descriptor_optional_bearer_token(field) && chain.is_empty() {
+        return "if (value.credentialCase == acyclic.filesystem.v2.Filesystem.CredentialResponse.CredentialCase.BEARER_TOKEN) RustSemanticTypesKotlin.OpaqueText.of(value.getBearerToken()) else null".to_owned();
+    }
     let mut expression = descriptor_field_expression(field, chain, "value");
     if descriptor_semantic_type(field).is_some()
         && matches!(
@@ -1701,6 +1722,9 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
 }
 
 fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequestField]) -> String {
+    if descriptor_optional_bearer_token(field) && chain.is_empty() {
+        return "if (value.getCredentialCase == acyclic.filesystem.v2.Filesystem.CredentialResponse.CredentialCase.BEARER_TOKEN) RustSemanticTypesScala.OpaqueText.from(value.getBearerToken()).toOption else None".to_owned();
+    }
     let expression = descriptor_field_expression(field, chain, "value");
     if field.map_entry {
         match descriptor_map_entry_field(field, "value")
@@ -3684,6 +3708,36 @@ mod tests {
         }
         assert!(java.contains("signum() < 0"));
         assert!(scala.contains("scala.math.BigInt(0)"));
+    }
+
+    #[test]
+    fn credential_bearer_oneof_is_nullable_and_keeps_the_concrete_choice_factory() {
+        let outputs = generate_jvm_typed_responses();
+        let java = outputs
+            .iter()
+            .find(|(path, _)| path.ends_with("RustTypedResponses.java"))
+            .map(|(_, source)| source)
+            .expect("Java typed responses must be generated");
+        let kotlin = outputs
+            .iter()
+            .find(|(path, _)| path.ends_with("RustTypedResponses.kt"))
+            .map(|(_, source)| source)
+            .expect("Kotlin typed responses must be generated");
+        let scala = outputs
+            .iter()
+            .find(|(path, _)| path.ends_with("RustTypedResponses.scala"))
+            .map(|(_, source)| source)
+            .expect("Scala typed responses must be generated");
+
+        assert!(java.contains("Optional<RustSemanticTypes.OpaqueText> bearerToken()"));
+        assert!(java.contains("CredentialCase.BEARER_TOKEN"));
+        assert!(kotlin.contains("fun bearerToken(): RustSemanticTypesKotlin.OpaqueText?"));
+        assert!(kotlin.contains("else null"));
+        assert!(scala.contains("def bearerToken: Option[RustSemanticTypesScala.OpaqueText]"));
+        assert!(scala.contains("else None"));
+        assert!(java.contains("credentialChoice()"));
+        assert!(kotlin.contains("credentialChoice(): RustSemanticTypesKotlin.FilesystemCredentialResponseCredentialChoice"));
+        assert!(scala.contains("def credentialChoice: RustSemanticTypesScala.FilesystemCredentialResponseCredentialChoice"));
     }
 
     #[test]

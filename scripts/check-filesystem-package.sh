@@ -5,10 +5,28 @@ set -euo pipefail
 output="$1"
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
-[[ -f "$inference_evidence" ]] || { echo 'filesystem qualification requires the preceding inference package artifact' >&2; exit 2; }
+expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
+source_sha="$(git -C "$root" rev-parse --verify HEAD)"
+if [[ -n "$expected_source" && "$source_sha" != "$expected_source" ]]; then
+  echo "package checkout differs from the selected source commit" >&2
+  exit 1
+fi
 work="$(mktemp -d -t sdk-fs-package.XXXXXXXX)"
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
+git_status="$work/git-status"
+git -C "$root" status --porcelain=v1 --untracked-files=all >"$git_status"
+if [[ -s "$git_status" ]]; then
+  echo "package checkout is not clean" >&2
+  exit 1
+fi
+git_index="$work/git-index"
+git -C "$root" ls-files -v >"$git_index"
+if grep -Eq '^[a-zS] ' "$git_index"; then
+  echo "package checkout contains concealed index changes" >&2
+  exit 1
+fi
+inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
+[[ -f "$inference_evidence" ]] || { echo 'filesystem qualification requires the preceding inference package artifact' >&2; exit 2; }
 
 npm_stage="$work/npm-package"
 bash "$root/scripts/stage-npm-package.sh" "$root/typescript/packages/filesystem" "$npm_stage"
@@ -80,7 +98,7 @@ while IFS= read -r archive; do
 done <<< "$archives"
 cd "$output"
 sha256sum acyclic-fs.tgz acyclic-*.crate > SHA256SUMS
-git -C "$root" rev-parse --verify HEAD > SOURCE_COMMIT
+printf '%s\n' "$source_sha" > SOURCE_COMMIT
 
 package_root="$(dirname "$output")"
 bash "$root/scripts/check-typescript-packages.sh" \

@@ -12,6 +12,7 @@ function successfulCommand(value) {
 const identity = value => JSON.stringify([value?.scenario_id, value?.language]);
 const hash = value => createHash("sha256").update(value).digest("hex");
 const archivePattern = /\.(?:tgz|tar\.gz|crate)$/i;
+const embeddedHarnessOperation = "acyclic_sdk_examples::harness_scenarios::execute_harness_scenario";
 
 function sourceCheckoutPath(path) {
   const normalized = path.replaceAll("\\", "/").toLowerCase();
@@ -93,6 +94,13 @@ export function verifyQualificationSummary(summary, {
     else {
       for (const field of ["family", "operation", "mode", "source", "package_manager", "package_name", "artifact_path"]) {
         if (typeof projection[field] !== "string" || receipt[field] !== projection[field]) errors.push(`${prefix}.${field}`);
+      }
+      if (projection.family === "harness" && ["rust", "typescript"].includes(projection.language)) {
+        if (projection.mode !== "embedded" || projection.operation !== embeddedHarnessOperation) errors.push(`${prefix}.embedded_harness_identity`);
+        if (projection.language === "typescript") {
+          if (!projection.code.includes("Harness.create") || !projection.code.includes("issueScope")) errors.push(`${prefix}.embedded_harness_facade`);
+          if (projection.code.includes("CommandEnvelope")) errors.push(`${prefix}.embedded_harness_remote_marker`);
+        }
       }
       for (const phase of ["install", "compile", "execute"]) {
         if (!projection.qualification?.[phase] || receipt.qualification?.[phase] !== projection.qualification[phase]) errors.push(`${prefix}.recipe.${phase}`);
