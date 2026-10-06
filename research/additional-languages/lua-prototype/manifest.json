@@ -1,0 +1,47 @@
+{
+  "schema": "acyclic.sdk.lua.prototype.v1",
+  "target": "lua",
+  "scope": "remote-http-json-subset",
+  "qualification": "excluded-full-sdk",
+  "generator": {
+    "name": "OpenAPI Generator",
+    "version": "7.25.0",
+    "generator_name": "lua",
+    "stability": "beta",
+    "license": "Apache-2.0",
+    "jar_sha256": "41ce4f6b07f196676439d710759fa1ced7a08066d06ff1bf314681470289efae",
+    "source": "https://github.com/OpenAPITools/openapi-generator/tree/v7.25.0/modules/openapi-generator/src/main/resources/lua",
+    "license_source": "https://github.com/OpenAPITools/openapi-generator/blob/v7.25.0/LICENSE"
+  },
+  "rust_source": {
+    "projection": "rust/crates/sdk-openapi-prototype/src/lib.rs",
+    "entrypoint": "rust/crates/sdk-openapi-prototype/src/main.rs",
+    "input_family": "workers",
+    "contract_extensions": [
+      "x-protobuf-json",
+      "x-protobuf-range",
+      "x-protobuf-oneof",
+      "x-protobuf-presence"
+    ],
+    "uint64_json_encoding": "decimal-string"
+  },
+  "generated_runtime": {
+    "transport": "lua-http",
+    "serialization": "dkjson",
+    "encoding": "basexx",
+    "package_format": "LuaRocks rockspec",
+    "runtime_requirement": "Lua >= 5.2",
+    "runtime_qualification": "not-run-lua-and-luarocks-unavailable"
+  },
+  "evidence": {
+    "generation": "passed",
+    "generated_package": "passed",
+    "uint64_annotation_consumption": "failed",
+    "rust_owned_validation": "failed",
+    "package_license_metadata": "failed-upstream-template-unlicense",
+    "grpc": "excluded-no-maintained-generated-runtime",
+    "streaming": "excluded-openapi-http-projection-only",
+    "embedded": "excluded"
+  },
+  "decision": "exclude-from-full-targets; retain-as-bounded-http-json-research"
+}
