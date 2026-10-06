@@ -6,16 +6,20 @@
 //! TypeScript declaration from the same Rust definitions. Transport behavior
 //! remains in [`crate::grpc`] and [`crate::http`].
 
+use std::path::Path;
+
 use crate::wire;
-use ts_rs::TS;
+use ts_rs::{Config, ExportError, TS};
 
 /// A non-empty Actor identity.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
+#[ts(export_to = "actors/ActorId.ts")]
 #[ts(type = "string & { readonly __brand: unique symbol }")]
 pub struct ActorId(String);
 
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
+#[ts(export_to = "actors/CodeSha256.ts")]
 #[ts(type = "Uint8Array & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
 
@@ -133,6 +137,7 @@ pub type Header = wire::Header;
 
 /// Resource binding admitted by the canonical create/update validators.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/Binding.ts")]
 pub struct Binding {
     name: String,
     capability: String,
@@ -172,6 +177,7 @@ impl From<Binding> for wire::Binding {
 
 /// Positive limits admitted by the canonical create/update validators.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ActorLimits.ts")]
 pub struct ActorLimits {
     #[ts(type = "bigint")]
     handler_timeout_millis: u64,
@@ -218,6 +224,7 @@ impl From<ActorLimits> for wire::ActorLimits {
 /// The published oneof is retained exactly, including cursor zero and the
 /// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/SubscriptionStart.ts")]
 pub enum SubscriptionStart {
     /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
@@ -259,6 +266,7 @@ impl From<SubscriptionStart> for wire::SubscriptionStart {
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/SubscriptionSpec.ts")]
 pub struct SubscriptionSpec {
     subscription_id: String,
     stream_path: String,
@@ -329,6 +337,7 @@ impl From<SubscriptionSpec> for wire::SubscriptionSpec {
 /// Known subscription states. Unknown protobuf integers are rejected rather
 /// than normalized to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/SubscriptionState.ts")]
 pub enum SubscriptionState {
     /// No subscription state was specified by the service.
     Unspecified,
@@ -351,8 +360,19 @@ impl TryFrom<i32> for SubscriptionState {
     }
 }
 
+impl From<SubscriptionState> for i32 {
+    fn from(value: SubscriptionState) -> Self {
+        match value {
+            SubscriptionState::Unspecified => 0,
+            SubscriptionState::Active => 1,
+            SubscriptionState::Paused => 2,
+        }
+    }
+}
+
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ActorState.ts")]
 pub enum ActorState {
     /// No Actor state was specified by the service.
     Unspecified,
@@ -367,6 +387,7 @@ pub enum ActorState {
 /// Published service error codes. Unknown numeric values stay visible through
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ErrorCode.ts")]
 pub enum ErrorCode {
     /// No service error code was specified.
     Unspecified,
@@ -415,6 +436,7 @@ impl TryFrom<i32> for ErrorCode {
 
 /// A service error with a typed known code and lossless message.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ServiceError.ts")]
 pub struct ServiceError {
     code: ErrorCode,
     message: String,
@@ -428,6 +450,15 @@ impl TryFrom<wire::Error> for ServiceError {
             code: value.code.try_into()?,
             message: value.message,
         })
+    }
+}
+
+impl From<ServiceError> for wire::Error {
+    fn from(value: ServiceError) -> Self {
+        Self {
+            code: value.code.into(),
+            message: value.message,
+        }
     }
 }
 
@@ -445,8 +476,38 @@ impl TryFrom<i32> for ActorState {
     }
 }
 
+impl From<ActorState> for i32 {
+    fn from(value: ActorState) -> Self {
+        match value {
+            ActorState::Unspecified => 0,
+            ActorState::Active => 1,
+            ActorState::Hibernated => 2,
+            ActorState::Paused => 3,
+        }
+    }
+}
+
+impl From<ErrorCode> for i32 {
+    fn from(value: ErrorCode) -> Self {
+        match value {
+            ErrorCode::Unspecified => 0,
+            ErrorCode::InvalidArgument => 1,
+            ErrorCode::CapabilityDenied => 2,
+            ErrorCode::CapabilityExpired => 3,
+            ErrorCode::ActorNotFound => 4,
+            ErrorCode::SubscriptionNotFound => 5,
+            ErrorCode::IdempotencyMismatch => 6,
+            ErrorCode::Conflict => 7,
+            ErrorCode::AdmissionDenied => 8,
+            ErrorCode::CheckpointFailed => 9,
+            ErrorCode::DependencyUnavailable => 10,
+        }
+    }
+}
+
 /// Lossless semantic view of a subscription observation.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/SubscriptionObservation.ts")]
 pub struct SubscriptionObservation {
     subscription_id: String,
     stream_path: String,
@@ -483,8 +544,26 @@ impl TryFrom<wire::SubscriptionObservation> for SubscriptionObservation {
     }
 }
 
+impl From<SubscriptionObservation> for wire::SubscriptionObservation {
+    fn from(value: SubscriptionObservation) -> Self {
+        Self {
+            subscription_id: value.subscription_id,
+            stream_path: value.stream_path,
+            state: value.state.into(),
+            delivered_cursor: value.delivered_cursor,
+            completed_cursor: value.completed_cursor,
+            recoverable_cursor: value.recoverable_cursor,
+            placement_anchor: value.placement_anchor,
+            retry_count: value.retry_count,
+            failure_code: value.failure_code,
+            failed_cursor: value.failed_cursor,
+        }
+    }
+}
+
 /// Lossless semantic view of a server Actor observation.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ActorObservation.ts")]
 pub struct ActorObservation {
     actor_id: ActorId,
     code_sha256: CodeSha256,
@@ -520,6 +599,21 @@ impl TryFrom<wire::ActorObservation> for ActorObservation {
     }
 }
 
+impl From<ActorObservation> for wire::ActorObservation {
+    fn from(value: ActorObservation) -> Self {
+        Self {
+            actor_id: value.actor_id.0,
+            code_sha256: value.code_sha256.as_bytes().to_vec(),
+            home_region: value.home_region,
+            state: value.state.into(),
+            subscriptions: value.subscriptions.into_iter().map(Into::into).collect(),
+            checkpoint_unix_millis: value.checkpoint_unix_millis,
+            checkpoint_epoch: value.checkpoint_epoch,
+            configuration_revision: value.configuration_revision,
+        }
+    }
+}
+
 fn actor_response(
     value: Option<wire::ActorObservation>,
 ) -> Result<Option<ActorObservation>, DomainError> {
@@ -529,6 +623,7 @@ fn actor_response(
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+        #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
         #[doc = "Typed response preserving the optional server Actor observation."]
         pub struct $name {
             actor: Option<ActorObservation>,
@@ -541,6 +636,14 @@ macro_rules! actor_response_type {
                 Ok(Self {
                     actor: actor_response(value.actor)?,
                 })
+            }
+        }
+
+        impl From<$name> for wire::$wire {
+            fn from(value: $name) -> Self {
+                Self {
+                    actor: value.actor.map(Into::into),
+                }
             }
         }
     };
@@ -556,6 +659,7 @@ actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/CreateActorRequest.ts")]
 pub struct CreateActorRequest {
     code_sha256: CodeSha256,
     home_region: String,
@@ -604,6 +708,7 @@ impl From<CreateActorRequest> for wire::CreateActorRequest {
 
 /// Update request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/UpdateActorRequest.ts")]
 pub struct UpdateActorRequest {
     actor_id: ActorId,
     code_sha256: CodeSha256,
@@ -650,6 +755,7 @@ impl From<UpdateActorRequest> for wire::UpdateActorRequest {
 /// Inspect currently has no additional wire validator; only the semantic
 /// Actor identity rule is applied by this conversion.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/InspectActorRequest.ts")]
 pub struct InspectActorRequest {
     actor_id: ActorId,
 }
@@ -674,6 +780,7 @@ impl From<InspectActorRequest> for wire::InspectActorRequest {
 
 /// Add subscription request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/AddSubscriptionRequest.ts")]
 pub struct AddSubscriptionRequest {
     actor_id: ActorId,
     subscription: SubscriptionSpec,
@@ -708,6 +815,7 @@ impl From<AddSubscriptionRequest> for wire::AddSubscriptionRequest {
 /// Removal has no canonical validator yet, so subscription and idempotency
 /// strings remain unbranded and are carried exactly as received.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
 pub struct RemoveSubscriptionRequest {
     actor_id: ActorId,
     subscription_id: String,
@@ -738,6 +846,7 @@ impl From<RemoveSubscriptionRequest> for wire::RemoveSubscriptionRequest {
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
 pub struct ResumeSubscriptionRequest {
     actor_id: ActorId,
     subscription_id: String,
@@ -769,6 +878,7 @@ impl From<ResumeSubscriptionRequest> for wire::ResumeSubscriptionRequest {
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 /// applied and the idempotency key remains an ordinary string.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[ts(export_to = "actors/CheckpointActorRequest.ts")]
 pub struct CheckpointActorRequest {
     actor_id: ActorId,
     idempotency_key: String,
@@ -797,6 +907,7 @@ impl From<CheckpointActorRequest> for wire::CheckpointActorRequest {
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
 #[derive(Clone, Debug, PartialEq, TS)]
+#[ts(export_to = "actors/InvokeActorRequest.ts")]
 pub struct InvokeActorRequest {
     actor_id: ActorId,
     method: String,
@@ -835,6 +946,7 @@ impl From<InvokeActorRequest> for wire::InvokeActorRequest {
 
 /// Typed invocation response with byte-preserving body and headers.
 #[derive(Clone, Debug, PartialEq, TS)]
+#[ts(export_to = "actors/InvokeActorResponse.ts")]
 pub struct InvokeActorResponse {
     status: u32,
     #[ts(type = "Uint8Array")]
@@ -861,6 +973,42 @@ impl From<InvokeActorResponse> for wire::InvokeActorResponse {
             headers: value.headers,
         }
     }
+}
+
+/// Export all public Actors request and response declarations and their
+/// recursively discovered semantic dependencies.
+///
+/// The output directory is supplied by the SDK generator so generation never
+/// writes into the Rust source tree. `ts-rs` keeps dependency traversal and
+/// import paths derived from these Rust types.
+pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
+    let config = Config::from_env().with_out_dir(path.as_ref());
+
+    macro_rules! export_roots {
+        ($($root:ty),+ $(,)?) => {
+            $(<$root as TS>::export_all(&config)?;)+
+        };
+    }
+
+    export_roots!(
+        CreateActorRequest,
+        UpdateActorRequest,
+        InspectActorRequest,
+        AddSubscriptionRequest,
+        RemoveSubscriptionRequest,
+        ResumeSubscriptionRequest,
+        CheckpointActorRequest,
+        InvokeActorRequest,
+        CreateActorResponse,
+        UpdateActorResponse,
+        InspectActorResponse,
+        AddSubscriptionResponse,
+        RemoveSubscriptionResponse,
+        ResumeSubscriptionResponse,
+        CheckpointActorResponse,
+        InvokeActorResponse,
+    );
+    Ok(())
 }
 
 #[cfg(test)]

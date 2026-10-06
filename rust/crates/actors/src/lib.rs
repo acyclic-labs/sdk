@@ -5,6 +5,12 @@ use std::collections::HashSet;
 /// Rust-owned semantic projections for generated SDK metadata.
 pub mod domain;
 
+/// Authenticated operations over the platform's Rust-owned transport.
+pub mod client;
+
+/// Rust-owned Actors contract declarations and schema renderer.
+pub mod contract;
+
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
@@ -14,7 +20,8 @@ pub mod http;
 pub mod wire;
 
 /// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-actors-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 /// Maximum subscriptions on one Actor contract.
 pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.

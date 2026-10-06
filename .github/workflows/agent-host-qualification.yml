@@ -1,21 +1,10 @@
 name: Agent Host Qualification
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  pull_request:
-    paths:
-      - ".github/workflows/agent-host-qualification.yml"
-      - ".github/actions/rust-build-cache/action.yml"
-      - "Cargo.lock"
-      - "Cargo.toml"
-      - "plugin/**"
-      - "!plugin/**/README.md"
-      - "!plugin/**/CHANGELOG.md"
-      - "!plugin/scripts/validate-package.mjs"
-      - "rust/crates/filesystem/**"
-      - "rust/crates/harness/**"
-      - "rust/crates/harness-codex/**"
-      - "rust/crates/native-runtime/**"
+  workflow_call:
 
 permissions:
   contents: read

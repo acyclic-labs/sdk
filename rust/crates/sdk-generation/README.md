@@ -6,15 +6,17 @@ Release generation invokes the pinned Rustdoc stage for the Actors package;
 preview generation accepts an explicitly supplied external JSON input.
 
 The source closure is declared in `src/main.rs` and covers the workspace
-manifest, guide files, Actors, sdk-docs, this launcher, all lockfiles, and the
-pinned toolchain. The accepted rustdoc input is exactly one typed
+manifest, active Cargo configuration, tracked Markdown, Actors, sdk-docs, this
+launcher, all lockfiles, and the pinned toolchain. Release Rustdoc dep-info
+adds its compiler-consumed Markdown files to that closure. The accepted rustdoc input is exactly one typed
 `acyclic_actors` family from the checked-in Actors crate. The public executable
 Rust declarations, including `actors/src/wire.rs`, are the source authority;
-current generated transport and descriptor files under `actors/src` remain
-hashed migration inputs and are not independent authority. Proto files are not
-accepted as a substitute source input. The launcher resolves the Git revision
-itself, hashes that source closure and the external rustdoc JSON, calls the
-existing `sdk-docs` library, and writes a versioned manifest. Release
+the Actors build script runs the shared contract code generator into `OUT_DIR`
+before Rustdoc, so checked-in transport and descriptor files are not consumed
+as authority. Proto files are not accepted as a substitute source input. The
+launcher resolves the Git revision itself, hashes that source closure and the
+external rustdoc JSON, calls the existing `sdk-docs` library, and writes a
+versioned manifest. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
 the supplied JSON input. Release Rustdoc also emits its exact dep-info file;

@@ -28,10 +28,28 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tonic-web-wasm-client",
  "ts-rs",
+ "url",
+]
+
+[[package]]
+name = "acyclic-actors-napi"
+version = "0.2.0"
+dependencies = [
+ "acyclic-actors",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -4817,6 +4835,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "libc",
  "pin-project-lite",
  "tokio",

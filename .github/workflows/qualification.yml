@@ -47,7 +47,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -163,7 +163,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
@@ -223,7 +223,7 @@ jobs:
         if: steps.plan.outputs.run == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false

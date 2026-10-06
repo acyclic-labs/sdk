@@ -53,6 +53,7 @@ fn command(
     if let Some(rustdoc) = rustdoc {
         command.args(["--rustdoc-json", rustdoc.to_str().unwrap()]);
     }
+    command.current_dir(root.parent().unwrap());
     command
 }
 
@@ -88,6 +89,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     }
     for path in [
         "rust/crates/actors/src/lib.rs",
+        "rust/crates/actors/build.rs",
         "rust/crates/actors/examples/example.rs",
         "rust/crates/sdk-docs/src/lib.rs",
         "rust/crates/sdk-generation/src/main.rs",
@@ -373,6 +375,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     )
     .unwrap();
     for (path, contents) in [
+        ("rust/crates/actors/build.rs", "fn main() {}\n"),
         ("rust/crates/actors/README.md", "Actors\n"),
         (
             "rust/crates/sdk-docs/Cargo.toml",

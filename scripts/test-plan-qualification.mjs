@@ -148,6 +148,7 @@ test("the workflow keeps full qualification off routine pull requests", () => {
   assert.match(workflow, /^  release:/m);
   assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(workflow, /default: false/);
+  assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
   assert.match(workflow, /needs: plan/);
   assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
 });

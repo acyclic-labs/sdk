@@ -561,12 +561,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         });
     }
     items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
-    let guides = guides_from_rustdoc(
-        krate,
-        &crate_name,
-        &public_items,
-        &public_occurrence_paths,
-    )?;
+    let guides = guides_from_rustdoc(krate, &crate_name, &public_items, &public_occurrence_paths)?;
     Ok(Family {
         slug,
         title,
@@ -580,8 +575,10 @@ fn public_occurrence_paths(
     public_items: &[public_api::PublicItemSignature],
     crate_name: &str,
 ) -> HashMap<Id, Vec<String>> {
-    // Rustdoc IDs are scoped to this blob; only local public-api occurrences
-    // are safe to expose as stable path targets.
+    // Rustdoc IDs identify definitions within this blob. A public `use` alias
+    // or glob contributes an occurrence path for that definition, so retain
+    // those paths while keeping the link target anchored to the definition ID.
+    // Only local public-api occurrences are safe to expose as stable targets.
     let mut paths = HashMap::<Id, Vec<String>>::new();
     for public_item in public_items {
         if public_item.path.first().map(String::as_str) != Some(crate_name) {
@@ -1173,12 +1170,13 @@ mod tests {
             "crate_version": null,
             "includes_private": false,
             "index": {
-                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1, 2, 4, 5], "is_stripped": false}}},
-                "1": {"id": 1, "crate_id": 0, "name": "hidden", "span": null, "visibility": "default", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [3], "is_stripped": true}}},
+                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
                 "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": "alias", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
                 "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
-                "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 2, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
-                "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}}
+                "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "6": {"id": 6, "crate_id": 0, "name": "nested", "span": null, "visibility": "public", "docs": "Nested guide", "links": {"associated target": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [7], "is_stripped": false}}},
+                "7": {"id": 7, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "crate", "name": "crate", "id": 0, "is_glob": true}}}
             },
             "paths": {"3": {"crate_id": 0, "path": ["demo", "hidden", "private_function"], "kind": "function"}, "4": {"crate_id": 0, "path": ["demo", "linked"], "kind": "function"}, "5": {"crate_id": 0, "path": ["demo", "associated_target"], "kind": "function"}},
             "external_crates": {},
@@ -1214,7 +1212,7 @@ mod tests {
             .find(|item| {
                 item.reexport.as_deref() == Some("hidden::Visible")
                     && item.reexport_target.as_deref() == Some("demo::hidden::private_function")
-        })
+            })
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         let linked = family
@@ -1222,24 +1220,52 @@ mod tests {
             .iter()
             .find(|item| item.name == "linked")
             .expect("the link source should be projected");
+        // Rustdoc resolves the alias reference to definition id 3; the
+        // public occurrence map still exposes the reachable `demo::Visible`
+        // use path rather than confusing the use item id with the definition.
+        assert!(linked
+            .links
+            .get("alias target")
+            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
+        let associated_paths = linked
+            .links
+            .get("associated target")
+            .expect("the associated public target should be projected");
+        assert!(associated_paths.contains(&"demo::associated_target".to_owned()));
+        assert!(associated_paths.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(
-            linked.links.get("alias target"),
-            Some(&vec!["demo::Visible".to_owned()])
+            associated_paths,
+            &associated_paths
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
         );
-        assert_eq!(
-            linked.links.get("associated target"),
-            Some(&vec!["demo::associated_target".to_owned()])
+        assert!(
+            !linked.links.contains_key("private target"),
+            "private link unexpectedly projected: links={:?}; items={:?}",
+            linked.links,
+            family
+                .items
+                .iter()
+                .map(|item| (&item.id, &item.path, &item.name))
+                .collect::<Vec<_>>()
         );
-        assert!(!linked.links.contains_key("private target"));
         assert!(!linked.links.contains_key("external target"));
         assert_eq!(
-            linked
-                .links
-                .keys()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
+            linked.links.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["alias target", "associated target"]
         );
+        let guide = family
+            .guides
+            .iter()
+            .find(|guide| guide.path == "demo::nested")
+            .expect("the public module guide should be projected");
+        assert!(guide
+            .links
+            .get("associated target")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )
