@@ -90,7 +90,9 @@ ownership boundary; no command-execution binding or new crate is introduced.
 On Darwin, group signalling returns EPERM for a zombie-only group. Cleanup
 accepts that case only when a kernel membership snapshot is empty or contains
 exactly the owned, independently observed exited leader. Additional members or
-denied snapshot authority retain the error. Windows admission failures attempt
+denied snapshot authority retain the error. Additional members get a separate
+five-second window for OS reaping, with the same membership proof checked again;
+EPERM itself never proves exit. Windows admission failures attempt
 both Job and direct-child cleanup with bounded observation, and report
 unresolved cleanup explicitly; failed admission is not a rollback guarantee.
 Drop is best-effort and cannot report cleanup failure. Successful explicit

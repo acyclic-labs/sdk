@@ -377,6 +377,25 @@ mod platform {
 
     #[cfg(target_vendor = "apple")]
     fn group_has_no_live_members(group: libc::pid_t) -> io::Result<bool> {
+        // Terminated descendants can remain visible until the OS reaps them.
+        // Wait only for the same conservative membership proof; EPERM itself
+        // never establishes that any member has exited. Denial stays an error
+        // if this bounded observation does not establish an empty group or
+        // exactly the independently observed exited owned leader.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if group_snapshot_has_no_live_members(group)? {
+                return Ok(true);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn group_snapshot_has_no_live_members(group: libc::pid_t) -> io::Result<bool> {
         // XNU skips zombies in killpg1 and reports EPERM when none are signalled.
         // Accept only an empty group or a snapshot containing exactly the owned,
         // independently observed exited leader. Other members (even zombies)
