@@ -12,7 +12,14 @@ import { fileURLToPath } from "node:url";
 import { assertCanonicalParents, ensureOwnedDirectory, isWithin } from "./graphcoder-path-ownership.mjs";
 import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 import { describeArtifact } from "./graphcoder-artifact.mjs";
-import { inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
+import {
+  GRAPH_CODER_EXPORT_COUNT,
+  GRAPH_CODER_EXPORTS,
+  LAZY_LISTING_COUNTERS,
+  NATIVE_PROCESS_OWNER_CAPABILITY,
+  NATIVE_PROCESS_OWNER_VERSION,
+  inspectInstalledPackage,
+} from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 const ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const PACKAGE_ROOT = join(ROOT, "typescript", "packages", "graphcoder");
@@ -186,11 +193,16 @@ function nativeCompanionPackage(output, npmEnvironment, attemptNonce, builtAt) {
 function verifyConsumer(consumerRoot, verificationPath, archivePath) {
   const packageRoot = join(consumerRoot, "node_modules", "@acyclic-labs", "graphcoder");
   const installedIdentity = inspectInstalledPackage(packageRoot, { artifactPath: archivePath });
+  const graphCoderNames = GRAPH_CODER_EXPORTS
+    .map(specifier => specifier === "@acyclic-labs/graphcoder" ? "." : `.${specifier.slice("@acyclic-labs/graphcoder".length)}`)
+    .filter(name => name !== "./native-cli");
+  const graphCoderExportNames = [...graphCoderNames, "./native-cli"];
+  const filesystemNames = ["@acyclic-labs/fs", "@acyclic-labs/fs/native", "@acyclic-labs/fs/native-process"];
   const script = [
     "import fs from 'node:fs';",
     "import path from 'node:path';",
     "import { createRequire } from 'node:module';",
-    "const names = ['.', './terminal', './mock', './bridge', './node', './node-dispatcher'];",
+    `const names = ${JSON.stringify(graphCoderNames)};`,
     "const loaded = [];",
     "for (const name of names) await import('@acyclic-labs/graphcoder' + (name === '.' ? '' : name.slice(1))).then(() => loaded.push(name));",
     "const require = createRequire(import.meta.url); require.resolve('@acyclic-labs/graphcoder/native-cli'); loaded.push('./native-cli');",
@@ -200,15 +212,20 @@ function verifyConsumer(consumerRoot, verificationPath, archivePath) {
     "if (packageJson.name !== '@acyclic-labs/graphcoder') throw new Error('installed package name mismatch');",
     "const fsPackageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'node_modules', '@acyclic-labs', 'fs', 'package.json')));",
     "if (fsPackageJson.name !== '@acyclic-labs/fs') throw new Error('installed filesystem companion name mismatch');",
-    "for (const name of ['@acyclic-labs/fs', '@acyclic-labs/fs/native', '@acyclic-labs/fs/native-process']) await import(name).then(() => loaded.push(name));",
+    "await import('@acyclic-labs/fs');",
+    `const fsNativeProcess = await import('@acyclic-labs/fs/native-process'); if (fsNativeProcess.NATIVE_PROCESS_OWNER_CAPABILITY !== ${JSON.stringify(NATIVE_PROCESS_OWNER_CAPABILITY)} || fsNativeProcess.NATIVE_PROCESS_OWNER_VERSION !== ${JSON.stringify(NATIVE_PROCESS_OWNER_VERSION)} || typeof fsNativeProcess.createNativeProcessOwner !== 'function') throw new Error('installed filesystem native-process owner contract is incomplete'); loaded.push(...${JSON.stringify(filesystemNames)});`,
+    "const fsNative = await import('@acyclic-labs/fs/native');",
+    ...(process.platform === "win32" ? ["const nativeProcessOwner = await fsNative.openNativeProcessOwner(); if (typeof nativeProcessOwner?.spawn !== 'function' || typeof nativeProcessOwner?.terminate !== 'function') throw new Error('native companion did not provide the process owner capability');"] : []),
     ...(process.platform === "win32" ? ["await import('@acyclic-labs/fs-win32-x64').then(() => loaded.push('@acyclic-labs/fs-win32-x64')); "] : []),
-    "fs.writeFileSync(process.argv.at(-1), JSON.stringify({ package: packageJson.name, version: packageJson.version, loaded, native_connection: process.platform === 'win32', companion: { package: fsPackageJson.name, version: fsPackageJson.version } }, null, 2) + '\\n');",
+    `fs.writeFileSync(process.argv.at(-1), JSON.stringify({ package: packageJson.name, version: packageJson.version, loaded, expected_graphcoder_export_count: ${GRAPH_CODER_EXPORT_COUNT}, native_connection: process.platform === 'win32', native_process_owner: process.platform === 'win32' ? { capability: fsNativeProcess.NATIVE_PROCESS_OWNER_CAPABILITY, version: fsNativeProcess.NATIVE_PROCESS_OWNER_VERSION } : null, lazy_listing_counters: ${JSON.stringify(LAZY_LISTING_COUNTERS)}, companion: { package: fsPackageJson.name, version: fsPackageJson.version } }, null, 2) + '\\n');`,
   ].join(" ");
   run(process.execPath, ["--input-type=module", "-e", script, "--", "qualification-consumer", verificationPath], consumerRoot, filteredEnvironment(process.env, "runtime"));
   if (!existsSync(verificationPath)) fail("consumer verification output was not created");
   const result = JSON.parse(readFileSync(verificationPath, "utf8"));
-  const expectedLoaded = process.platform === "win32" ? 11 : 10;
-  if (result.loaded?.length !== expectedLoaded) fail("consumer did not load all GraphCoder and filesystem exports");
+  const expectedLoadedNames = [...graphCoderExportNames, ...filesystemNames, ...(process.platform === "win32" ? ["@acyclic-labs/fs-win32-x64"] : [])];
+  if (result.expected_graphcoder_export_count !== GRAPH_CODER_EXPORT_COUNT) fail("consumer recorded the wrong GraphCoder export count");
+  if (JSON.stringify(result.loaded) !== JSON.stringify(expectedLoadedNames)) fail("consumer did not load the exact GraphCoder and filesystem export set");
+  if (process.platform === "win32" && result.native_process_owner?.capability !== NATIVE_PROCESS_OWNER_CAPABILITY) fail("consumer did not validate the native companion process owner capability");
   const verification = { ...result, installed_identity: installedIdentity };
   writeFileSync(verificationPath, `${JSON.stringify(verification, null, 2)}\n`);
   return verification;

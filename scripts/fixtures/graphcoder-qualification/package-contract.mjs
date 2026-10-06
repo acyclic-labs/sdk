@@ -16,6 +16,19 @@ export const GRAPH_CODER_EXPORTS = [
   `${GRAPH_CODER_PACKAGE}/node-dispatcher`,
   `${GRAPH_CODER_PACKAGE}/native-cli`,
 ];
+export const GRAPH_CODER_EXPORT_COUNT = GRAPH_CODER_EXPORTS.length;
+export const NATIVE_PROCESS_OWNER_CAPABILITY = "acyclic.native-process-owner.v1";
+export const NATIVE_PROCESS_OWNER_VERSION = "0.2.0";
+// These counters are emitted by a real host around one list_sessions request.
+// Keep body and diff hydration explicit: a broad workspace counter alone can
+// hide an eager read of a file body or generation diff.
+export const LAZY_LISTING_COUNTERS = [
+  "worker_starts",
+  "workspace_reads",
+  "workspace_body_reads",
+  "diff_reads",
+  "model_dispatches",
+];
 
 function fail(message) {
   throw new Error(`graphcoder-package-contract: ${message}`);
@@ -97,6 +110,13 @@ export function inspectInstalledPackage(packageRoot, { artifactPath } = {}) {
   catch (error) { fail(`package.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`); }
   if (packageJson.name !== GRAPH_CODER_PACKAGE) fail(`unexpected installed package name: ${String(packageJson.name)}`);
   if (packageJson.version !== GRAPH_CODER_VERSION) fail(`unexpected installed package version: ${String(packageJson.version)}`);
+  const actualExportKeys = packageJson.exports === null || typeof packageJson.exports !== "object" || Array.isArray(packageJson.exports)
+    ? []
+    : Object.keys(packageJson.exports);
+  const expectedExportKeys = GRAPH_CODER_EXPORTS.map(specifier => specifier === GRAPH_CODER_PACKAGE ? "." : `.${specifier.slice(GRAPH_CODER_PACKAGE.length)}`);
+  if (actualExportKeys.length !== GRAPH_CODER_EXPORT_COUNT || actualExportKeys.some(key => !expectedExportKeys.includes(key))) {
+    fail(`installed package export count/map does not match the pinned contract (expected ${GRAPH_CODER_EXPORT_COUNT}, got ${actualExportKeys.length})`);
+  }
   const require = createRequire(resolve(root, "package.json"));
   const exports = {};
   for (const specifier of GRAPH_CODER_EXPORTS) {
@@ -186,7 +206,7 @@ export function assertLazyCounters(observationPath, {
   const after = listing.counters_after;
   if (before === null || typeof before !== "object" || Array.isArray(before)) fail("lazy observation must contain counters_before");
   if (after === null || typeof after !== "object" || Array.isArray(after)) fail("lazy observation must contain counters_after");
-  for (const field of ["worker_starts", "workspace_reads", "model_dispatches"]) {
+  for (const field of LAZY_LISTING_COUNTERS) {
     if (!Number.isSafeInteger(before[field]) || before[field] < 0) fail(`lazy observation counters_before.${field} must be a nonnegative integer`);
     if (!Number.isSafeInteger(after[field]) || after[field] < 0) fail(`lazy observation counters_after.${field} must be a nonnegative integer`);
     if (after[field] < before[field]) fail(`lazy observation counters_after.${field} precedes counters_before`);
@@ -197,6 +217,6 @@ export function assertLazyCounters(observationPath, {
   }
   return {
     path,
-    during_list_sessions: Object.fromEntries(["worker_starts", "workspace_reads", "model_dispatches"].map(field => [field, listing[field]])),
+    during_list_sessions: Object.fromEntries(LAZY_LISTING_COUNTERS.map(field => [field, listing[field]])),
   };
 }

@@ -5,12 +5,17 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 import { fileURLToPath } from "node:url";
-import { assertLazyCounters, inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
+import {
+  assertLazyCounters,
+  GRAPH_CODER_EXPORT_COUNT,
+  inspectInstalledPackage,
+  LAZY_LISTING_COUNTERS,
+} from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 const sdkRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const graphCoderPackageRoot = join(sdkRoot, "typescript", "packages", "graphcoder");
 
-function fixturePackage() {
+function fixturePackage(exportsOverride) {
   const root = mkdtempSync(join(tmpdir(), "graphcoder-package-contract-"));
   mkdirSync(join(root, "dist"));
   const exports = {
@@ -22,12 +27,13 @@ function fixturePackage() {
     "./node-dispatcher": "./dist/node-dispatcher.js",
     "./native-cli": "./dist/native-cli.js",
   };
-  for (const target of Object.values(exports)) writeFileSync(join(root, target), "export {};\n");
+  const packageExports = exportsOverride ?? exports;
+  for (const target of Object.values(packageExports)) writeFileSync(join(root, target), "export {};\n");
   writeFileSync(join(root, "package.json"), `${JSON.stringify({
     name: "@acyclic-labs/graphcoder",
     version: "0.2.0",
     type: "module",
-    exports,
+    exports: packageExports,
     bin: { graphcoder: "./dist/cli.js", "graphcoder-native": "./dist/native-cli.js" },
   })}\n`);
   writeFileSync(join(root, "dist/cli.js"), "#!/usr/bin/env node\n");
@@ -63,11 +69,11 @@ test("installed package contract records export and bin identities", () => {
   try {
     const identity = inspectInstalledPackage(root, { artifactPath: fixtureArchive(root) });
     assert.equal(identity.package, "@acyclic-labs/graphcoder");
-    assert.equal(Object.keys(identity.exports).length, 7);
+    assert.equal(Object.keys(identity.exports).length, GRAPH_CODER_EXPORT_COUNT);
     assert.match(identity.package_json_sha256, /^[0-9a-f]{64}$/u);
     assert.ok(identity.bins.graphcoder.endsWith("dist\\cli.js"));
     assert.match(identity.artifact.manifest_sha256, /^[0-9a-f]{64}$/u);
-    assert.equal(identity.artifact.exports.length, 7);
+    assert.equal(identity.artifact.exports.length, GRAPH_CODER_EXPORT_COUNT);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -83,6 +89,24 @@ test("installed package contract rejects manifest bytes that differ from the arc
       () => inspectInstalledPackage(root, { artifactPath: archive }),
       /manifest bytes differ from package artifact/u,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("installed package contract rejects an unpinned public export", () => {
+  const root = fixturePackage({
+    ".": "./dist/index.js",
+    "./mock": "./dist/mock.js",
+    "./bridge": "./dist/bridge.js",
+    "./node": "./dist/node.js",
+    "./terminal": "./dist/terminal.js",
+    "./node-dispatcher": "./dist/node-dispatcher.js",
+    "./native-cli": "./dist/native-cli.js",
+    "./private": "./dist/private.js",
+  });
+  try {
+    assert.throws(() => inspectInstalledPackage(root), /export count\/map does not match/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -126,9 +150,9 @@ test("real-host lazy observations require zero listing side effects", () => {
       runtime: { pid: 42, executable: process.execPath },
       request: { request_id: "list-1", method: "list_sessions" },
       during_list_sessions: {
-        counters_before: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
-        counters_after: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
-        worker_starts: 0, workspace_reads: 0, model_dispatches: 0,
+        counters_before: Object.fromEntries(LAZY_LISTING_COUNTERS.map((field, index) => [field, index + 2])),
+        counters_after: Object.fromEntries(LAZY_LISTING_COUNTERS.map((field, index) => [field, index + 2])),
+        ...Object.fromEntries(LAZY_LISTING_COUNTERS.map(field => [field, 0])),
       },
     })}\n`);
     assert.deepEqual(assertLazyCounters(observation, {
@@ -137,21 +161,19 @@ test("real-host lazy observations require zero listing side effects", () => {
       expectedMethod: "list_sessions",
       expectedExecutable: process.execPath,
     }).during_list_sessions, {
-      worker_starts: 0,
-      workspace_reads: 0,
-      model_dispatches: 0,
+      ...Object.fromEntries(LAZY_LISTING_COUNTERS.map(field => [field, 0])),
     });
     writeFileSync(observation, `${JSON.stringify({
       schema: "graphcoder.lazy-observation.v1",
       runtime: { pid: 42, executable: process.execPath },
       request: { request_id: "list-1", method: "list_sessions" },
       during_list_sessions: {
-        counters_before: { worker_starts: 4, workspace_reads: 7, model_dispatches: 2 },
-        counters_after: { worker_starts: 5, workspace_reads: 7, model_dispatches: 2 },
-        worker_starts: 1, workspace_reads: 0, model_dispatches: 0,
+        counters_before: Object.fromEntries(LAZY_LISTING_COUNTERS.map((field, index) => [field, index + 2])),
+        counters_after: Object.fromEntries(LAZY_LISTING_COUNTERS.map((field, index) => [field, field === "workspace_body_reads" ? index + 3 : index + 2])),
+        ...Object.fromEntries(LAZY_LISTING_COUNTERS.map(field => [field, field === "workspace_body_reads" ? 1 : 0])),
       },
     })}\n`);
-    assert.throws(() => assertLazyCounters(observation, { require: true }), /worker starts/u);
+    assert.throws(() => assertLazyCounters(observation, { require: true }), /workspace body reads/u);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
