@@ -4,7 +4,7 @@ import type {
   CheckpointOut, EventsOut, MutationOut, ObservationOut, OperationOut, PageOut,
   QualificationOut, UsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
-import { ensureMachinesWasm } from "./wasm-runtime.js";
+import "./wasm-runtime.js";
 import type {
   CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image,
   ImageQualification, MachineId, MachineObservation, MachinesProvider,
@@ -37,16 +37,11 @@ export function usageOut(value: UsageOut): UsageReceipt {
 
 export class SimulatedMachines implements MachinesProvider {
   readonly assurance = "process-local-simulation" as const;
-  readonly #inner: Promise<WasmSimulatedMachines>;
-
-  constructor() {
-    this.#inner = ensureMachinesWasm().then(() => new WasmSimulatedMachines());
-  }
+  readonly #inner = new WasmSimulatedMachines();
 
   async #run<Input, Output>(payload: Input, invoke: (inner: WasmSimulatedMachines, payload: Input) => Promise<Output>): Promise<Output> {
-    // Take the caller's snapshot before asynchronous WASM initialization.
-    const authored = structuredClone(payload);
-    return invoke(await this.#inner, authored);
+    // Snapshot the caller's input before the asynchronous provider call.
+    return invoke(this.#inner, structuredClone(payload));
   }
 
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#run(image, (inner, authored) => inner.qualifyImage(authored)).then(asPublic<QualificationOut, ImageQualification>); }

@@ -4,7 +4,6 @@ import type {
   CheckpointOut, EventsOut, MachinesHttpRequest, MachinesHttpResponse, MachinesHttpRoute,
   MachinesHttpRoutes, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
-import { ensureMachinesWasm } from "./wasm-runtime.js";
 import { operationId } from "./index.js";
 import { asPublic, usageOut } from "./simulator.js";
 
@@ -36,7 +35,6 @@ export class HttpMachinesProvider implements MachinesProvider {
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_CANCEL", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
   async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> { for (const observation of await this.#call("OPERATIONS_WATCH", { operationId })) yield asPublic<OperationOut, OperationObservation>(observation); }
   async #call<Key extends keyof MachinesHttpRoutes>(key: Key, request: MachinesHttpRequest<MachinesHttpRoutes[Key]>): Promise<MachinesHttpResponse<MachinesHttpRoutes[Key]>> {
-    await ensureMachinesWasm();
     const route = httpRoutes()[key];
     const payload = WasmSimulatedMachines.encodeHttpRequest(request);
     const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload });

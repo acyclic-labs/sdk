@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 import { normalize_identity as rustNormalizeIdentity, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
-import { ensureMachinesWasm } from "../src/wasm-runtime.ts";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -15,7 +14,6 @@ const request = (idempotencyKey: string): CreateMachine => ({
 
 describe("Machines simulation", () => {
   test("uses the Rust OCI constructor and preserves its public image shape", async () => {
-    await ensureMachinesWasm();
     expect(managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`)).toEqual({ kind: "managed-oci", digestHex: "a".repeat(64) });
     expect(managedOci(`registry.example/app@sha256:${"AB".repeat(32)}`)).toEqual({ kind: "managed-oci", digestHex: "ab".repeat(32) });
     expect(managedOci(`registry.example/one@sha256:${"0".repeat(63)}1`)).toEqual({ kind: "managed-oci", digestHex: `${"0".repeat(63)}1` });
@@ -26,7 +24,6 @@ describe("Machines simulation", () => {
   });
 
   test("normalizes public identities through the Rust contract", async () => {
-    await ensureMachinesWasm();
     expect(idempotencyKey("caller-key")).toBe(rustNormalizeIdentity("idempotency", "caller-key"));
     expect(machineId("machine-label")).toBe(rustNormalizeIdentity("machine", "machine-label"));
     expect(checkpointId("checkpoint-label")).toBe(rustNormalizeIdentity("checkpoint", "checkpoint-label"));
@@ -37,7 +34,6 @@ describe("Machines simulation", () => {
   });
 
   test("rejects malformed WASM inputs through the async boundary", async () => {
-    await ensureMachinesWasm();
     const wasm = new WasmSimulatedMachines();
     expect(JSON.parse(WasmSimulatedMachines.encodeHttpRequest({ count: 7n, bytes: Uint8Array.of(0, 255, 128) }))).toEqual({ count: { $bigint: "7" }, bytes: { $bytes: "AP+A" } });
     const cyclic: Record<string, unknown> = {};
