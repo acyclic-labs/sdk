@@ -7,9 +7,7 @@
 //! requests, tool-result pairing, durable communication, and real per-child
 //! project volumes after the recursive run.
 
-use acyclic_fs::{
-    Fs, GitBranch, GitCompatState, GitCompatStore, LocalCoreStateStore, LocalOptions, WorkspaceId,
-};
+use acyclic_fs::{Fs, GitCompatStore, LocalCoreStateStore, LocalOptions, WorkspaceId};
 use acyclic_harness::conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef};
 use acyclic_harness::filesystem::PersistentLocalSwarm;
 use acyclic_harness::fork::ResourceRevision;
@@ -33,6 +31,10 @@ use swarm_provider_support::FixtureUsage;
 
 fn id(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
+}
+
+fn child_branch(operation: OperationId) -> String {
+    format!("child-local-project-{operation}")
 }
 
 fn task_name(request: &ModelRequest) -> Option<String> {
@@ -235,7 +237,9 @@ impl ModelProvider for UnifiedProvider {
                 Ok(ModelEvent::ToolCall {
                     call_id: "child-a-merge-grandchild".into(),
                     name: "acyclic.git".into(),
-                    arguments: json!({"argv": ["merge", "grandchild"]}),
+                    arguments: json!({
+                        "argv": ["merge", child_branch(self.grandchild)]
+                    }),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: Value::Null,
@@ -434,12 +438,16 @@ impl ModelProvider for UnifiedProvider {
                 Ok(ModelEvent::ToolCall {
                     call_id: "root-merge-child-a".into(),
                     name: "acyclic.git".into(),
-                    arguments: json!({"argv": ["merge", "child-a"]}),
+                    arguments: json!({
+                        "argv": ["merge", child_branch(self.child_a)]
+                    }),
                 }),
                 Ok(ModelEvent::ToolCall {
                     call_id: "root-merge-child-b".into(),
                     name: "acyclic.git".into(),
-                    arguments: json!({"argv": ["merge", "child-b"]}),
+                    arguments: json!({
+                        "argv": ["merge", child_branch(self.child_b)]
+                    }),
                 }),
                 Ok(ModelEvent::Completed {
                     metadata: Value::Null,
@@ -474,42 +482,6 @@ fn project_from_seed(seed: &acyclic_harness::fork::ForkSeed) -> Result<VolumeRef
             _ => None,
         })
         .ok_or_else(|| Error::Invalid("recursive model fork has no project volume".into()))
-}
-
-async fn install_git_branch(
-    root: &std::path::Path,
-    parent: WorkspaceId,
-    name: &str,
-    source: WorkspaceId,
-) -> Result<()> {
-    let store = LocalCoreStateStore::new(root.join("git"));
-    let current = store
-        .load(parent)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    let (expected, mut state) = current
-        .map(|state| (state.revision, state))
-        .unwrap_or_else(|| (0, GitCompatState::new("main", parent)));
-    state.branches.insert(
-        name.to_owned(),
-        GitBranch {
-            name: name.to_owned(),
-            workspace_id: source,
-            head: None,
-            tracked_paths: Default::default(),
-        },
-    );
-    if expected != 0 {
-        state.revision = expected + 1;
-    }
-    let replaced = store
-        .compare_and_swap(parent, expected, state)
-        .await
-        .map_err(|error| Error::Storage(error.to_string()))?;
-    if !replaced {
-        return Err(Error::Conflict("unified Git branch state raced".into()));
-    }
-    Ok(())
 }
 
 async fn assert_git_branch_target(
@@ -676,10 +648,9 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
             .await?,
     )?;
 
-    // The branch records are test fixture metadata only: content and all
-    // commits below are produced by model-facing Git calls.  The subsequent
-    // merge calls are issued by the child and root model turns, so the typed
-    // facade remains the sole publication path.
+    // Child branch aliases are published by the production recursive child
+    // lifecycle. This test only reads the durable records to prove that the
+    // model-facing merge calls resolve the exact published workspaces.
     let child_a_workspace_id = filesystem
         .workspace_id(child_a_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -692,45 +663,24 @@ async fn default_local_runtime_executes_two_children_grandchild_and_communicatio
     let root_workspace_id = filesystem
         .workspace_id(root_project.storage_name()?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    install_git_branch(
-        directory.path(),
-        child_a_workspace_id,
-        "grandchild",
-        grandchild_workspace_id,
-    )
-    .await?;
-    install_git_branch(
-        directory.path(),
-        root_workspace_id,
-        "child-a",
-        child_a_workspace_id,
-    )
-    .await?;
-    install_git_branch(
-        directory.path(),
-        root_workspace_id,
-        "child-b",
-        child_b_workspace_id,
-    )
-    .await?;
     assert_git_branch_target(
         directory.path(),
         child_a_workspace_id,
-        "grandchild",
+        &child_branch(grandchild),
         grandchild_workspace_id,
     )
     .await?;
     assert_git_branch_target(
         directory.path(),
         root_workspace_id,
-        "child-a",
+        &child_branch(child_a),
         child_a_workspace_id,
     )
     .await?;
     assert_git_branch_target(
         directory.path(),
         root_workspace_id,
-        "child-b",
+        &child_branch(child_b),
         child_b_workspace_id,
     )
     .await?;

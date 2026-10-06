@@ -340,6 +340,42 @@ impl<S> FilesystemGitFacade<S> {
             .await
     }
 
+    /// Registers the exact workspace of one already-published direct child as
+    /// a compatibility branch in this parent's Git state. The branch is only
+    /// metadata: all later merge effects still pass through the authenticated
+    /// project merge path and the Filesystem provider.
+    pub(crate) async fn register_direct_child_branch<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        branch: impl Into<String>,
+    ) -> Result<()>
+    where
+        S: GitCompatStore,
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.require_write()?;
+        self.require_capability("project:merge")?;
+        self.authorize_direct_child(parent, child, child_project)?;
+        if child_project.provider() != &host.provider {
+            return Err(Error::Unauthorized(
+                "published child project belongs to another Filesystem provider".into(),
+            ));
+        }
+        let workspace_id = host
+            .filesystem
+            .workspace_id(child_project.storage_name()?)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        self.repository
+            .register_branch_workspace(branch, workspace_id, None, false)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
     /// Publishes a previously inspected project join under parent authority.
     pub(crate) async fn apply_project_merge<A, O>(
         &self,

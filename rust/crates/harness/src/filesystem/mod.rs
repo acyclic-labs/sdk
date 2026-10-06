@@ -62,8 +62,8 @@ pub use git_facade::{
 };
 mod swarm_git;
 pub use swarm_git::{
-    FilesystemGitTool, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    ProjectWorkspaceTree,
+    direct_child_branch_name, FilesystemGitTool, LocalProjectChildBinding, LocalProjectChildren,
+    LocalProjectWorkspaceTree, ProjectWorkspaceTree,
 };
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;

@@ -7,10 +7,11 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemGitFacade, FilesystemGitTool,
-    FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
-    LocalHarnessTools, LocalProjectChildBinding, LocalProjectChildren, LocalProjectWorkspaceTree,
-    ProjectWorkspaceTree, VerifiedModelForkBoundary,
+    direct_child_branch_name, FilesystemContentVerifier, FilesystemForkPreparer,
+    FilesystemGitFacade, FilesystemGitTool, FilesystemHost, InteractionApprovalAuthorization,
+    InteractionOperatorAuthorizer, LocalHarnessTools, LocalProjectChildBinding,
+    LocalProjectChildren, LocalProjectWorkspaceTree, ProjectWorkspaceTree,
+    VerifiedModelForkBoundary,
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
@@ -3228,16 +3229,21 @@ impl PersistentLocalSwarm {
     async fn register_project_child(
         &self,
         seed: &ForkSeed,
+        parent_task: TaskId,
         parent: &crate::core::Reducer,
     ) -> Result<()> {
-        let Some(project) = seed
-            .resources
-            .iter()
-            .find_map(|resource| match &resource.revision {
-                ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+        let Some((parent_project, project)) = seed.resources.iter().find_map(|resource| {
+            match (&resource.source, &resource.revision) {
+                (
+                    ResourceRevision::Project {
+                        volume: parent_project,
+                        ..
+                    },
+                    ResourceRevision::Project { volume: project, .. },
+                ) => Some((parent_project.clone(), project.clone())),
                 _ => None,
-            })
-        else {
+            }
+        }) else {
             return Ok(());
         };
         let workspace_id = self
@@ -3253,9 +3259,38 @@ impl PersistentLocalSwarm {
                 LocalProjectChildBinding {
                     parent: parent.clone(),
                     child: seed.child.clone(),
-                    project,
+                    project: project.clone(),
                 },
             );
+
+        // Publish the child workspace identity into the parent's typed Git
+        // compatibility state as part of the same durable seed lifecycle.
+        // The alias is deterministic and parent-authorized; it is not a
+        // model-controlled workspace path or a test-side state mutation.
+        if let Some(store) = &self.git_store {
+            let parent_harness = self.open_session(parent_task).await?;
+            let parent_workspace_id = self
+                .filesystem_host
+                .filesystem
+                .workspace_id(parent_project.storage_name()?)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let facade = FilesystemGitFacade::new(
+                parent_workspace_id,
+                (**store).clone(),
+                parent_project,
+                parent_harness.storage().verifier(),
+                parent_harness.storage().owner_scope().clone(),
+            )?;
+            facade
+                .register_direct_child_branch(
+                    self.filesystem_host.as_ref(),
+                    parent,
+                    &seed.child,
+                    &project,
+                    direct_child_branch_name(&project)?,
+                )
+                .await?;
+        }
         Ok(())
     }
 
@@ -3305,7 +3340,8 @@ impl PersistentLocalSwarm {
         }
         let child_count = seeds.len();
         for seed in seeds {
-            self.register_project_child(&seed, parent.reducer()).await?;
+            self.register_project_child(&seed, parent_task, parent.reducer())
+                .await?;
         }
         self.observe(LocalSwarmObservation::ParentAggregateHydrated {
             task: parent_task,
@@ -6082,7 +6118,8 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        self.register_project_child(&seed, parent.reducer()).await?;
+        self.register_project_child(&seed, request.parent, parent.reducer())
+            .await?;
         Ok(seed)
     }
 

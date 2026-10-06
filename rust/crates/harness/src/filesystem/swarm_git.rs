@@ -37,6 +37,13 @@ pub struct LocalProjectChildBinding {
 
 pub type LocalProjectChildren = Arc<RwLock<BTreeMap<WorkspaceId, LocalProjectChildBinding>>>;
 
+/// Stable compatibility branch name for a published project child. The name
+/// is derived from the immutable project identity, so restart and replay do
+/// not depend on mutable task labels or host paths.
+pub fn direct_child_branch_name(project: &VolumeRef) -> Result<String> {
+    Ok(format!("child-{}", project.storage_name()?))
+}
+
 type DirectProjectJoin = Arc<
     dyn Fn(
             FilesystemOperationId,
