@@ -120,22 +120,36 @@ fn generated_facades_serialize_every_rust_operation_policy() {
             "unexpected facade target"
         );
         for operation in &operations {
-            let mut offset = 0;
-            let mut serialized_entries = 0;
-            while let Some(relative) = output.source[offset..].find(operation.rpc) {
-                let index = offset + relative;
-                if matches!(
-                    output.source.as_bytes().get(index + operation.rpc.len()),
-                    Some(b'"' | b'\'')
-                ) {
-                    serialized_entries += 1;
-                }
-                offset = index + operation.rpc.len();
-            }
+            let quoted_rpc = format!("{:?}", operation.rpc);
+            let serialized_entries = output
+                .source
+                .lines()
+                .filter(|line| {
+                    let line = line.trim_start();
+                    match output.language.name() {
+                        "python" | "go" => line.starts_with(&format!("{quoted_rpc}:")),
+                        "ruby" => {
+                            line.starts_with(&format!("{quoted_rpc} =>"))
+                                && line.contains("client_streaming:")
+                        }
+                        "php" => {
+                            line.starts_with(&format!("'{rpc}' =>", rpc = operation.rpc))
+                                && line.contains("'client_streaming'")
+                        }
+                        "java" => line.contains(&format!(".put({quoted_rpc}, new Operation(")),
+                        "csharp" => line.contains(&format!("[{quoted_rpc}] = new(")),
+                        "dart" => {
+                            line.starts_with(&format!("{quoted_rpc}: <String, Object?>"))
+                                && line.contains("'clientStreaming'")
+                        }
+                        language => panic!("unexpected generated facade language {language}"),
+                    }
+                })
+                .count();
             assert_eq!(
                 serialized_entries,
                 1,
-                "{} does not serialize exactly one entry for {}",
+                "{} does not serialize exactly one semantic policy entry for {}",
                 output.language.name(),
                 operation.rpc
             );
