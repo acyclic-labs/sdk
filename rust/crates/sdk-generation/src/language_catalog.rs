@@ -2340,16 +2340,71 @@ pub fn catalog() -> serde_json::Value {
 /// Return the typed-consumer requirement from the Rust-owned target metadata.
 /// HTTP/OpenAPI-only targets deliberately do not enter the protobuf receipt
 /// gate, while every full-gRPC target does.
-pub fn target_requires_typed_consumer(target_id: &str) -> bool {
+pub fn target_requires_typed_consumer(target_id: &str) -> Result<bool, String> {
     assert_language_inventory_matches_type_policy();
     CATALOG
         .targets
         .iter()
         .find(|target| target.id == target_id)
-        .is_some_and(|target| {
+        .map(|target| {
             target.remote.wire == WireKind::ProtobufGrpc
                 && target.remote.level == RemoteLevel::FullGrpc
         })
+        .ok_or_else(|| format!("unknown Rust language target: {target_id}"))
+}
+
+/// Approve only the pinned language runner family for a Rust-catalogued
+/// target. The staged receipt may select arguments, but cannot replace the
+/// consumer with a shell or an unrelated executable.
+pub fn approve_typed_consumer_program(target_id: &str, program: &str) -> Result<(), String> {
+    assert_language_inventory_matches_type_policy();
+    if !CATALOG.targets.iter().any(|target| target.id == target_id) {
+        return Err(format!("unknown Rust language target: {target_id}"));
+    }
+    let basename = std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let allowed = match target_id {
+        "rust" => ["cargo"].as_slice(),
+        "typescript" => ["node", "node.exe", "bun", "deno", "tsx"].as_slice(),
+        "python" => ["python", "python.exe", "python3"].as_slice(),
+        "go" => ["go", "go.exe"].as_slice(),
+        "dart" => ["dart", "dart.exe"].as_slice(),
+        "kotlin" | "java" | "scala" => ["java", "java.exe", "mvn", "gradle", "kotlinc", "scala"].as_slice(),
+        "csharp" => ["dotnet", "dotnet.exe"].as_slice(),
+        "swift" => ["swift", "swift.exe"].as_slice(),
+        "elixir" => ["elixir", "elixir.bat", "mix", "mix.bat"].as_slice(),
+        "ballerina" => ["bal", "bal.exe"].as_slice(),
+        "objective-c" => ["clang", "clang.exe", "xcrun"].as_slice(),
+        "erlang" => ["erl", "erl.exe", "rebar3", "rebar3.cmd"].as_slice(),
+        "ocaml" => ["ocaml", "dune", "opam"].as_slice(),
+        "common-lisp" => ["sbcl", "sbcl.exe", "clisp", "ros"].as_slice(),
+        "haskell" => ["cabal", "stack", "runghc", "ghc"].as_slice(),
+        "ruby" => ["ruby", "ruby.exe"].as_slice(),
+        "php" => ["php", "php.exe"].as_slice(),
+        "cpp" => ["c++", "g++", "clang++", "cl"].as_slice(),
+        "c" => ["cc", "gcc", "clang", "cl"].as_slice(),
+        "clojure" => ["clojure", "clojure.exe", "java"].as_slice(),
+        "elm" => ["elm", "elm.exe"].as_slice(),
+        "gdscript" => ["godot", "godot.exe"].as_slice(),
+        "bash" => ["bash", "bash.exe"].as_slice(),
+        "perl" => ["perl", "perl.exe"].as_slice(),
+        "powershell" => ["pwsh", "pwsh.exe", "powershell", "powershell.exe"].as_slice(),
+        "ada" => ["gnatmake", "gnatmake.exe", "gprbuild"].as_slice(),
+        "crystal" => ["crystal", "crystal.exe"].as_slice(),
+        "nim" => ["nim", "nim.exe"].as_slice(),
+        "r" => ["r", "rscript", "rscript.exe"].as_slice(),
+        _ => return Err(format!("Rust language target has no typed-consumer program manifest: {target_id}")),
+    };
+    if allowed.iter().any(|candidate| *candidate == basename) {
+        Ok(())
+    } else {
+        Err(format!(
+            "typed-consumer program {program} is not approved for Rust target {target_id}"
+        ))
+    }
 }
 
 /// Compatibility projection for consumers of the former package inventory.
@@ -2484,10 +2539,17 @@ mod tests {
 
     #[test]
     fn typed_consumer_gate_follows_rust_target_wire_capability() {
-        assert!(target_requires_typed_consumer("ruby"));
-        assert!(target_requires_typed_consumer("cpp"));
-        assert!(!target_requires_typed_consumer("bash"));
-        assert!(!target_requires_typed_consumer("unknown-target"));
+        assert_eq!(target_requires_typed_consumer("ruby"), Ok(true));
+        assert_eq!(target_requires_typed_consumer("cpp"), Ok(true));
+        assert_eq!(target_requires_typed_consumer("bash"), Ok(false));
+        assert!(target_requires_typed_consumer("unknown-target").is_err());
+    }
+
+    #[test]
+    fn typed_consumer_program_manifest_rejects_shell_substitution() {
+        assert!(approve_typed_consumer_program("python", "python").is_ok());
+        assert!(approve_typed_consumer_program("python", "sh").is_err());
+        assert!(approve_typed_consumer_program("unknown-target", "python").is_err());
     }
 
     #[test]

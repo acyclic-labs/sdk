@@ -1555,6 +1555,7 @@ export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: 
 }
 
 "#);
+    output.push_str("/** Validates a Rust-owned fixed-width byte identity at a thin adapter boundary. */\nexport function validateRustOwnedFixedBytes(value: Uint8Array, length: 16 | 32, label: string): void {\n  if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new RangeError(`${label} must be exactly ${length} bytes`);\n}\n\n/** Validates a Rust-owned positive bounded integer before crossing a thin adapter boundary. */\nexport function validateRustOwnedPositiveInteger(value: number, label: string): void {\n  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${label} must be a positive safe integer`);\n}\n\n");
     output.push_str("/** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */\nexport function isRustOwnedNativeLoadError(error: unknown): boolean {\n  if (error === null || typeof error !== \"object\") return false;\n  const candidate = error as { readonly code?: unknown; readonly message?: unknown };\n  if (candidate.code === \"ERR_DLOPEN_FAILED\" || candidate.code === \"DLOPEN_FAILED\") return true;\n  return typeof candidate.message === \"string\" && (/native companion did not export/i.test(candidate.message) || /failed to load native (?:companion|module)/i.test(candidate.message));\n}\n\n");
     output
         .push_str("import { create, fromJsonString, toJsonString } from \"@bufbuild/protobuf\";\n");

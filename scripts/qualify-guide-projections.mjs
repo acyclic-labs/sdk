@@ -153,13 +153,33 @@ function artifact(root, pattern) {
   const normalized = pattern.replaceAll("\\", "/");
   if (!normalized.includes("*")) {
     const path = resolve(root, normalized);
-    return existsSync(path) && statSync(path).isFile() ? path : null;
+    if (!existsSync(path) || !statSync(path).isFile() || !within(root, path)) return null;
+    // Do not follow a symlink from the source snapshot to an unbounded file.
+    const canonicalRoot = realpathSync(root);
+    const canonicalPath = realpathSync(path);
+    return canonicalPath === canonicalRoot || canonicalPath.startsWith(`${canonicalRoot}${sep}`)
+      ? path
+      : null;
   }
   const expression = new RegExp(`^${normalized.split("*").map((part) => part.replace(/[.+?^${}()|[\\]\\]/g, "\\$&")).join(".*")}$`, "i");
   const staticPrefix = normalized.slice(0, normalized.indexOf("*"));
   const prefixSlash = staticPrefix.lastIndexOf("/");
   const searchRoot = resolve(root, prefixSlash >= 0 ? staticPrefix.slice(0, prefixSlash) : ".");
-  return allFiles(searchRoot).find((path) => expression.test(relative(root, path).replaceAll("\\", "/"))) ?? null;
+  const canonicalRoot = realpathSync(root);
+  const matches = allFiles(searchRoot).filter((path) => {
+    if (!within(root, path) || !existsSync(path)) return false;
+    let canonicalPath;
+    try {
+      canonicalPath = realpathSync(path);
+    } catch {
+      return false;
+    }
+    return (canonicalPath === canonicalRoot || canonicalPath.startsWith(`${canonicalRoot}${sep}`))
+      && expression.test(relative(root, path).replaceAll("\\", "/"));
+  });
+  // A wildcard is a producer declaration, not permission to choose an
+  // arbitrary archive. Exactly one staged archive must satisfy it.
+  return matches.length === 1 ? matches[0] : null;
 }
 
 const archivePattern = /\.(?:tgz|tar\.gz|crate)$/i;

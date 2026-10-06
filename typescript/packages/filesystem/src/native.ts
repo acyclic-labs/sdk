@@ -956,7 +956,6 @@ function adaptWorkspace(
       nativeBoundary<Parameters<typeof workspaceOperations>[0]>(raw),
       value => scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(value)),
       value => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(value)),
-      scope.validateU32Bound,
     ),
     async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());

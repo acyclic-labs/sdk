@@ -4964,8 +4964,8 @@ fn run_language_producers(
                                 "exit_code": process.status.code(),
                             });
                         } else {
-                            if language_catalog::target_requires_typed_consumer(id) {
-                                language_catalog::typed_consumer_receipt::verify_file(
+                            if language_catalog::target_requires_typed_consumer(id).map_err(CliError::new)? {
+                                language_catalog::typed_consumer_receipt::supervise_file(
                                     &target_output.join("typed-consumer-receipt.json"),
                                     &target_output,
                                     id,

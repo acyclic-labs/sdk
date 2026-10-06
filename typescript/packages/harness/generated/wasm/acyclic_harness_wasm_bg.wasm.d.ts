@@ -123,6 +123,7 @@ export const validateRemoteWebFilesystemHandshake: (a: number, b: number) => [nu
 export const validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
 export const validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
 export const validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];
+export const validate_remote_web_credential: (a: number, b: number) => [number, number];
 export const validate_remote_web_endpoint: (a: number, b: number) => [number, number];
 export const validate_remote_web_grpc_endpoint: (a: number, b: number) => [number, number];
 export const validate_remote_web_message_limit: (a: bigint) => [number, number];

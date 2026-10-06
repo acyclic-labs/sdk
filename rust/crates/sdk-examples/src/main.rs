@@ -101,7 +101,7 @@ fn run() -> Result<(), String> {
             let bundle = build_bundle(&source_root, &output)?;
             match mode {
                 Mode::Generate => write_bundle(&output, &bundle),
-                Mode::Check => check_bundle(&output, &bundle),
+                Mode::Check => check_bundle(&source_root, &output, &bundle),
             }
         }
         CliCommand::Fixtures(mode) => {
@@ -377,11 +377,20 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                 other => return Err(format!("unregistered guide scenario {other}")),
             }
             .map_err(|error| format!("guide scenario {} failed: {error}", spec.id))?;
+            let guide = match guide_projections::project(spec.id, Language::Rust) {
+                Some(projection) => guide_fence_evidence(
+                    source_root,
+                    projection.guide,
+                    Some(&projection.code),
+                )?,
+                None => Value::Null,
+            };
             Ok(json!({
                 "id": spec.id,
                 "family": spec.family,
                 "source": spec.source,
                 "source_sha256": source_sha256,
+                "guide": guide,
                 "status": result["status"],
                 "scope": result["scope"],
                 "evidence": result["evidence"],
@@ -439,6 +448,14 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
     let build_target = option_env!("SDK_EXAMPLES_BUILD_TARGET");
     let build_recipe_sha256 = source_closure::recipe_digest(source_root, build_target)?;
     let source_files = source_closure::closure_files(source_root)?;
+    for (_, _, _, guide) in guide_projections::GUIDE_PROJECTION_SCENARIOS {
+        if !source_files.iter().any(|path| path == guide.guide_path) {
+            return Err(format!(
+                "guide fence path is outside the source closure: {}",
+                guide.guide_path
+            ));
+        }
+    }
     ensure_compiled_source_matches(&source_sha256)?;
     let source_revision = git_revision(source_root);
     // TypeScript packages are generated before this producer in the primary
@@ -458,12 +475,32 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
                 )
             })?,
         );
-        let validation = validate_snippet(
+        let guide = match snippet.metadata.guide {
+            Some(spec) if snippet.metadata.language == Language::Rust => Some(
+                guide_fence_evidence(source_root, spec, Some(&snippet.code))?,
+            ),
+            Some(spec) => Some(guide_fence_evidence(source_root, spec, None)?),
+            None => None,
+        };
+        let mut validation = validate_snippet(
             source_root,
             &snippet,
             &snippet_source_sha256,
             &output.join(".validation"),
         )?;
+        if let Some(object) = validation.as_object_mut() {
+            object.insert(
+                "source_file_sha256".to_owned(),
+                json!(snippet_source_sha256),
+            );
+            object.insert(
+                "source_closure_sha256".to_owned(),
+                json!(source_sha256),
+            );
+            if let Some(guide) = &guide {
+                object.insert("guide".to_owned(), guide.clone());
+            }
+        }
         let relative = format!(
             "snippets/{}/{}.{}",
             snippet.metadata.id,
@@ -479,8 +516,10 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
             "language_name": snippet.metadata.language.language_name(),
             "source": snippet.metadata.source,
             "source_sha256": snippet_source_sha256,
+            "source_file_sha256": snippet_source_sha256,
             "source_closure_sha256": source_sha256,
             "snippet_source_sha256": snippet_source_sha256,
+            "guide": guide,
             "capability": snippet.capability.as_str(),
             "validation": {
                 "declared_level": format!("{:?}", snippet.metadata.validation.level).to_ascii_lowercase(),
@@ -3047,6 +3086,84 @@ fn prepare_typescript_archives(output: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn canonical_fence_body(body: &str) -> String {
+    let normalized = body.replace("\r\n", "\n").replace('\r', "\n");
+    format!("{}\n", normalized.trim_end_matches('\n'))
+}
+
+/// Resolve and hash one explicitly marked Markdown fence. The Rust projection
+/// is the executable source of the fence body; the guide may not silently
+/// substitute a separately authored example.
+fn guide_fence_evidence(
+    source_root: &Path,
+    spec: guide_projections::GuideFenceSpec,
+    expected_rust_code: Option<&str>,
+) -> Result<Value, String> {
+    let path = source_root.join(spec.guide_path);
+    let bytes = fs::read(&path)
+        .map_err(|error| format!("read guide fence source {}: {error}", path.display()))?;
+    let text = String::from_utf8(bytes.clone())
+        .map_err(|error| format!("guide fence source is not UTF-8 {}: {error}", path.display()))?;
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines = normalized.split('\n').collect::<Vec<_>>();
+    let mut ordinal = 0_u32;
+    let mut found = None;
+    let mut index = 0;
+    while index < lines.len() {
+        let opening = lines[index];
+        if opening.starts_with("```")
+            && opening != "```"
+            && !opening.starts_with("````")
+        {
+            let info = opening[3..].trim();
+            let close = (index + 1..lines.len())
+                .find(|candidate| lines[*candidate] == "```")
+                .ok_or_else(|| format!("guide fence is unclosed: {}", path.display()))?;
+            ordinal += 1;
+            if ordinal == spec.fence_ordinal {
+                if index == 0 || lines[index - 1].trim() != spec.marker {
+                    return Err(format!(
+                        "guide fence marker mismatch for {} fence {}",
+                        spec.guide_path, spec.fence_ordinal
+                    ));
+                }
+                if info != spec.fence_language {
+                    return Err(format!(
+                        "guide fence language mismatch for {} fence {}: expected {}, observed {}",
+                        spec.guide_path, spec.fence_ordinal, spec.fence_language, info
+                    ));
+                }
+                let body = canonical_fence_body(&lines[index + 1..close].join("\n"));
+                if let Some(expected) = expected_rust_code {
+                    if body != canonical_fence_body(expected) {
+                        return Err(format!(
+                            "guide fence body differs from Rust projection: {} fence {}",
+                            spec.guide_path, spec.fence_ordinal
+                        ));
+                    }
+                }
+                found = Some(json!({
+                    "path": spec.guide_path,
+                    "fence_ordinal": spec.fence_ordinal,
+                    "fence_language": spec.fence_language,
+                    "marker": spec.marker,
+                    "guide_file_sha256": hash(&bytes),
+                    "guide_fence_sha256": hash(body.as_bytes()),
+                }));
+                break;
+            }
+            index = close;
+        }
+        index += 1;
+    }
+    found.ok_or_else(|| {
+        format!(
+            "guide fence ordinal {} is absent from {} (found {})",
+            spec.fence_ordinal, spec.guide_path, ordinal
+        )
+    })
+}
+
 fn write_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<(), String> {
     let snippets = manifest
         .get("snippets")
@@ -3139,6 +3256,14 @@ fn write_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
                 .and_then(|path| fs::read(output.join(path)).ok())
                 .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
                 .ok_or_else(|| format!("guide projection source file is absent: {}", projection.scenario_id))?;
+            let guide = snippet
+                .get("guide")
+                .ok_or_else(|| format!("guide projection fence binding is absent: {}", projection.scenario_id))?;
+            let source_file_sha256 = snippet
+                .get("source_file_sha256")
+                .and_then(Value::as_str)
+                .or_else(|| snippet.pointer("/validation/receipt/source_file_sha256").and_then(Value::as_str))
+                .ok_or_else(|| format!("guide projection source file hash is absent: {}", projection.scenario_id))?;
             Ok(json!({
                 "scenario_id": projection.scenario_id,
                 "family": projection.family,
@@ -3147,7 +3272,10 @@ fn write_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
                 "mode": format!("{:?}", projection.mode).to_ascii_lowercase(),
                 "source": projection.source,
                 "source_sha256": source_sha256,
+                "source_file_sha256": source_file_sha256,
+                "source_closure_sha256": source_sha256,
                 "source_git_revision": source_revision,
+                "guide": guide,
                 "capability": projection.capability.as_str(),
                 "package_manager": projection.package.package_manager,
                 "package_name": projection.package.package_name,
@@ -3175,7 +3303,11 @@ fn write_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
     .map_err(|error| format!("write guide projection manifest: {error}"))
 }
 
-fn check_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<(), String> {
+fn check_guide_projection_manifest(
+    source_root: &Path,
+    output: &Path,
+    manifest: &Value,
+) -> Result<(), String> {
     let path = output.join("guide-projections.json");
     let actual: Value = serde_json::from_slice(
         &fs::read(&path).map_err(|error| format!("read guide projection manifest: {error}"))?,
@@ -3195,6 +3327,7 @@ fn check_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
             expected_count
         ));
     }
+    let mut pair_guides = BTreeMap::new();
     for projection in projections {
         let artifact_path = projection
             .get("artifact_path")
@@ -3226,6 +3359,37 @@ fn check_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
             .get("language")
             .and_then(Value::as_str)
             .ok_or("guide projection language is missing")?;
+        let guide = projection
+            .get("guide")
+            .ok_or("guide projection fence binding is missing")?;
+        for key in [
+            "path",
+            "fence_ordinal",
+            "fence_language",
+            "marker",
+            "guide_file_sha256",
+            "guide_fence_sha256",
+        ] {
+            if guide.get(key).is_none() {
+                return Err(format!("guide projection fence field is missing: {key}"));
+            }
+        }
+        let expected_projection = guide_projections::all()
+            .into_iter()
+            .find(|candidate| {
+                candidate.scenario_id == id && candidate.language.as_str() == language
+            })
+            .ok_or_else(|| format!("unknown guide projection identity: {id}/{language}"))?;
+        let expected_rust_code = (language == Language::Rust.as_str())
+            .then_some(expected_projection.code.as_str());
+        let observed_guide = guide_fence_evidence(
+            source_root,
+            expected_projection.guide,
+            expected_rust_code,
+        )?;
+        if guide != &observed_guide {
+            return Err(format!("guide fence content drift detected: {id}/{language}"));
+        }
         let snippet = manifest
             .get("snippets")
             .and_then(Value::as_array)
@@ -3245,11 +3409,41 @@ fn check_guide_projection_manifest(output: &Path, manifest: &Value) -> Result<()
         if projection.get("code").and_then(Value::as_str) != Some(snippet_code.as_str()) {
             return Err(format!("guide projection code drift detected: {id}/{language}"));
         }
+        let snippet_guide = snippet
+            .get("validation")
+            .and_then(Value::as_object)
+            .and_then(|validation| validation.get("receipt"))
+            .and_then(Value::as_object)
+            .and_then(|receipt| receipt.get("guide"))
+            .ok_or("guide snippet fence binding is missing")?;
+        if snippet_guide != guide {
+            return Err(format!("guide fence binding drift detected: {id}/{language}"));
+        }
+        if language == Language::Rust.as_str() {
+            let rust_code = projection
+                .get("code")
+                .and_then(Value::as_str)
+                .ok_or("Rust guide projection code is missing")?;
+            pair_guides.insert(id.to_owned(), (guide.clone(), rust_code.to_owned()));
+        } else if language == Language::TypeScript.as_str() {
+            let Some((rust_guide, _)) = pair_guides.get(id) else {
+                return Err(format!("Rust guide projection precedes TypeScript pair: {id}"));
+            };
+            if rust_guide != guide {
+                return Err(format!("Rust/TypeScript guide fence mismatch: {id}"));
+            }
+        }
+    }
+    if pair_guides.len() != 6 {
+        return Err(format!(
+            "guide projection Rust/TypeScript pair set has {}; expected 6",
+            pair_guides.len()
+        ));
     }
     Ok(())
 }
 
-fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
+fn check_bundle(source_root: &Path, output: &Path, manifest: &Value) -> Result<(), String> {
     let path = output.join(MANIFEST);
     let actual = serde_json::from_slice::<Value>(
         &fs::read(&path).map_err(|error| format!("read manifest: {error}"))?,
@@ -3277,7 +3471,7 @@ fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
             return Err(format!("snippet drift detected: {relative}"));
         }
     }
-    check_guide_projection_manifest(output, manifest)?;
+    check_guide_projection_manifest(source_root, output, manifest)?;
     Ok(())
 }
 
@@ -3367,6 +3561,90 @@ fn hash(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    // Cargo's resolved graph intentionally omits dev-only packages, while the
+    // build-recipe normalizer still records every declared local dependency
+    // path. The live source fixture therefore needs minimal source-owned
+    // package directories for those paths even though they are not part of
+    // `closure_files`. Walk the manifests recursively so this remains true
+    // when a reachable package adds another local dev/build dependency.
+    fn copy_unresolved_path_dependency_fixture(
+        source_root: &Path,
+        fixture_root: &Path,
+        source_files: &[String],
+    ) {
+        let mut pending = source_files
+            .iter()
+            .filter(|relative| relative.ends_with("Cargo.toml"))
+            .map(PathBuf::from)
+            .collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        while let Some(manifest) = pending.pop() {
+            if !visited.insert(manifest.clone()) {
+                continue;
+            }
+            let source_manifest = source_root.join(&manifest);
+            let manifest_text = fs::read_to_string(&source_manifest)
+                .expect("source dependency manifest");
+            for line in manifest_text.lines() {
+                let Some(path_start) = line.find("path") else {
+                    continue;
+                };
+                let assignment = line[path_start + "path".len()..].trim_start();
+                let Some(assignment) = assignment.strip_prefix('=') else {
+                    continue;
+                };
+                let assignment = assignment.trim_start();
+                let Some(quote) = assignment.chars().next() else {
+                    continue;
+                };
+                if quote != '"' && quote != '\'' {
+                    continue;
+                }
+                let value = &assignment[quote.len_utf8()..];
+                let Some(end) = value.find(quote) else {
+                    continue;
+                };
+                let dependency = &value[..end];
+                if !dependency.starts_with("../") {
+                    continue;
+                }
+                let dependency_dir = source_manifest
+                    .parent()
+                    .expect("source manifest parent")
+                    .join(dependency);
+                let dependency_manifest = dependency_dir.join("Cargo.toml");
+                let dependency_manifest = dependency_manifest
+                    .strip_prefix(source_root)
+                    .expect("dependency stays in source root")
+                    .to_owned();
+                let source = source_root.join(&dependency_manifest);
+                let destination = fixture_root.join(&dependency_manifest);
+                fs::create_dir_all(destination.parent().expect("fixture dependency parent"))
+                    .expect("fixture dependency directory");
+                fs::copy(source, destination).expect("fixture dependency input");
+
+                let dependency_dir = dependency_manifest
+                    .parent()
+                    .expect("dependency manifest parent")
+                    .to_owned();
+                for target in ["src/lib.rs", "src/main.rs", "build.rs"] {
+                    let relative = dependency_dir.join(target);
+                    let source = source_root.join(&relative);
+                    if source.is_file() {
+                        let destination = fixture_root.join(&relative);
+                        fs::create_dir_all(
+                            destination.parent().expect("fixture dependency target parent"),
+                        )
+                        .expect("fixture dependency target directory");
+                        fs::copy(source, destination).expect("fixture dependency target input");
+                    }
+                }
+                pending.push(dependency_manifest);
+            }
+        }
+    }
 
     #[test]
     fn language_extensions_are_stable() {
@@ -3466,6 +3744,7 @@ mod tests {
             fs::create_dir_all(path.parent().expect("source parent")).expect("source directory");
             fs::copy(source_root.join(relative), &path).expect("source input");
         }
+        copy_unresolved_path_dependency_fixture(&source_root, &root, &source_files);
 
         let before = scenario_source_sha256(&root).expect("initial source hash");
         ensure_source_unchanged(&root, &before).expect("unchanged source accepted");
@@ -3481,6 +3760,7 @@ mod tests {
                 .expect("relocated source directory");
             fs::copy(root.join(relative), &path).expect("relocated source input");
         }
+        copy_unresolved_path_dependency_fixture(&root, &relocated, &source_files);
         let relocated_digest = scenario_source_sha256(&relocated).expect("relocated source hash");
         assert_eq!(
             before, relocated_digest,

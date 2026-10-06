@@ -10,6 +10,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 
 pub const SCHEMA: &str = "acyclic.sdk.typed-consumer-receipt.v1";
 
@@ -58,6 +59,154 @@ pub fn verify_file(
     Ok(value)
 }
 
+/// Execute the producer-declared typed consumer under Rust supervision.
+/// The receipt supplies only argv; Rust captures the process itself into
+/// fixed paths, so producer-provided execution flags and log files cannot
+/// turn a declaration into runtime evidence.
+pub fn supervise_file(
+    receipt_path: &Path,
+    output_root: &Path,
+    expected_target: &str,
+    expected_source_revision: &str,
+    expected_model_digest: &str,
+) -> Result<Value, String> {
+    let bytes = fs::read(receipt_path)
+        .map_err(|error| format!("read typed-consumer receipt {}: {error}", receipt_path.display()))?;
+    let mut receipt: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse typed-consumer receipt {}: {error}", receipt_path.display()))?;
+    if receipt.get("schema").and_then(Value::as_str) != Some(SCHEMA)
+        || receipt.get("target").and_then(Value::as_str) != Some(expected_target)
+    {
+        return Err("typed-consumer receipt schema or target is not Rust-bound".into());
+    }
+    require_identity(&receipt, "source_revision", expected_source_revision)?;
+    require_identity(&receipt, "source_digest", expected_model_digest)?;
+    require_identity(&receipt, "rust_model_digest", expected_model_digest)?;
+    let generated = receipt
+        .get("generated_consumer")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "typed-consumer receipt has no generated_consumer object".to_owned())?;
+    let generated_path = relative_file(generated, "path", "generated consumer")?;
+    let generated_hash = required_sha256(generated, "sha256", "generated consumer")?.to_owned();
+    require_object_identity(generated, "source_revision", expected_source_revision)?;
+    require_object_identity(generated, "source_digest", expected_model_digest)?;
+    verify_generated_source(output_root, &generated_path, &generated_hash)?;
+    let command = receipt
+        .get("command")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "typed-consumer receipt has no command object".to_owned())?;
+    require_object_identity(command, "source_revision", expected_source_revision)?;
+    require_object_identity(command, "source_digest", expected_model_digest)?;
+    let argv = command
+        .get("argv")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "typed-consumer command has no argv".to_owned())?;
+    if argv.is_empty() || argv.iter().any(|part| part.as_str().is_none_or(str::is_empty)) {
+        return Err("typed-consumer command argv is empty or contains a non-string".into());
+    }
+    let argv = argv
+        .iter()
+        .map(|part| part.as_str().expect("checked above").to_owned())
+        .collect::<Vec<_>>();
+    super::approve_typed_consumer_program(expected_target, &argv[0])?;
+    if argv.iter().skip(1).any(|part| {
+        matches!(
+            part.to_ascii_lowercase().as_str(),
+            "-c" | "/c" | "-command" | "/command" | "-encodedcommand" | "/encodedcommand" | "-e"
+        )
+    }) {
+        return Err("typed-consumer command may not use inline shell or evaluator flags".into());
+    }
+    let source_marker = generated_path.to_string_lossy().replace('\\', "/");
+    if !argv.iter().skip(1).any(|part| {
+        part.replace('\\', "/") == source_marker
+            || part.replace('\\', "/").ends_with(&format!("/{source_marker}"))
+    }) {
+        return Err("typed-consumer command does not execute the declared generated source".into());
+    }
+    let stdout_path = PathBuf::from("typed-consumer-supervisor.stdout");
+    let stderr_path = PathBuf::from("typed-consumer-supervisor.stderr");
+    let process = Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(output_root)
+        .env("ACYCLIC_RUST_GENERATION_ENTRYPOINT", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| format!("start typed-consumer command: {error}"))?;
+    for path in [&stdout_path, &stderr_path] {
+        if let Ok(metadata) = fs::symlink_metadata(output_root.join(path)) {
+            if metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "refusing to overwrite symlinked supervised log {}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    fs::write(output_root.join(&stdout_path), &process.stdout)
+        .map_err(|error| format!("write supervised typed-consumer stdout: {error}"))?;
+    fs::write(output_root.join(&stderr_path), &process.stderr)
+        .map_err(|error| format!("write supervised typed-consumer stderr: {error}"))?;
+    if !process.status.success() {
+        return Err(format!(
+            "typed-consumer command failed under Rust supervision with exit code {:?}",
+            process.status.code()
+        ));
+    }
+    verify_runtime_assertion_output(&process.stdout, &generated_hash)?;
+    let stdout_sha256 = format!("sha256:{:x}", Sha256::digest(&process.stdout));
+    let stderr_sha256 = format!("sha256:{:x}", Sha256::digest(&process.stderr));
+    let command = receipt
+        .get_mut("command")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "typed-consumer receipt has no mutable command object".to_owned())?;
+    command.insert("executed".into(), Value::Bool(true));
+    command.insert("exit_code".into(), Value::from(0));
+    command.insert("source_revision".into(), Value::String(expected_source_revision.to_owned()));
+    command.insert("source_digest".into(), Value::String(expected_model_digest.to_owned()));
+    command.insert("stdout_path".into(), Value::String(stdout_path.to_string_lossy().into_owned()));
+    command.insert("stdout_sha256".into(), Value::String(stdout_sha256.clone()));
+    command.insert("stderr_path".into(), Value::String(stderr_path.to_string_lossy().into_owned()));
+    command.insert("stderr_sha256".into(), Value::String(stderr_sha256.clone()));
+    if let Some(assertions) = receipt.get_mut("assertions").and_then(Value::as_array_mut) {
+        for assertion in assertions {
+            if let Some(evidence) = assertion
+                .get_mut("evidence")
+                .and_then(Value::as_object_mut)
+            {
+                evidence.insert("runtime".into(), Value::Bool(true));
+                evidence.insert(
+                    "generated_consumer_path".into(),
+                    Value::String(generated_path.to_string_lossy().replace('\\', "/")),
+                );
+                evidence.insert(
+                    "stdout_path".into(),
+                    Value::String(stdout_path.to_string_lossy().into_owned()),
+                );
+                evidence.insert(
+                    "stderr_path".into(),
+                    Value::String(stderr_path.to_string_lossy().into_owned()),
+                );
+                evidence.insert("generated_consumer_sha256".into(), Value::String(generated_hash.clone()));
+                evidence.insert("stdout_sha256".into(), Value::String(stdout_sha256.clone()));
+                evidence.insert("stderr_sha256".into(), Value::String(stderr_sha256.clone()));
+            }
+        }
+    }
+    let receipt_bytes = serde_json::to_vec_pretty(&receipt)
+        .map_err(|error| format!("serialize supervised typed-consumer receipt: {error}"))?;
+    fs::write(receipt_path, [receipt_bytes.as_slice(), b"\n"].concat())
+        .map_err(|error| format!("write supervised typed-consumer receipt: {error}"))?;
+    verify_file(
+        receipt_path,
+        output_root,
+        expected_target,
+        expected_source_revision,
+        expected_model_digest,
+    )
+}
+
 pub fn verify_value(
     receipt: &Value,
     output_root: &Path,
@@ -92,7 +241,8 @@ pub fn verify_value(
     require_object_identity(generated, "source_revision", expected_source_revision)?;
     require_object_identity(generated, "source_digest", expected_model_digest)?;
     verify_generated_source(
-        &output_root.join(&generated_path),
+        output_root,
+        &generated_path,
         required_sha256(generated, "sha256", "generated consumer")?,
     )?;
 
@@ -118,8 +268,8 @@ pub fn verify_value(
     let stderr_path = relative_file(command, "stderr_path", "typed-consumer stderr")?;
     let stdout_hash = required_sha256(command, "stdout_sha256", "typed-consumer stdout")?;
     let stderr_hash = required_sha256(command, "stderr_sha256", "typed-consumer stderr")?;
-    verify_file_hash(&output_root.join(&stdout_path), stdout_hash, "typed-consumer stdout")?;
-    verify_file_hash(&output_root.join(&stderr_path), stderr_hash, "typed-consumer stderr")?;
+    verify_file_hash(output_root, &stdout_path, stdout_hash, "typed-consumer stdout")?;
+    verify_file_hash(output_root, &stderr_path, stderr_hash, "typed-consumer stderr")?;
 
     let assertions = receipt
         .get("assertions")
@@ -171,6 +321,15 @@ pub fn verify_value(
         {
             return Err(format!(
                 "typed-consumer assertion evidence is detached from generated source and command output: {id}"
+            ));
+        }
+        if evidence.get("generated_consumer_sha256").and_then(Value::as_str)
+            != Some(required_sha256(generated, "sha256", "generated consumer")?)
+            || evidence.get("stdout_sha256").and_then(Value::as_str) != Some(stdout_hash)
+            || evidence.get("stderr_sha256").and_then(Value::as_str) != Some(stderr_hash)
+        {
+            return Err(format!(
+                "typed-consumer assertion evidence hashes are detached from supervised facts: {id}"
             ));
         }
     }
@@ -245,9 +404,15 @@ fn required_sha256<'a>(
     Ok(digest)
 }
 
-fn verify_file_hash(path: &Path, expected: &str, label: &str) -> Result<(), String> {
-    let bytes =
-        fs::read(path).map_err(|error| format!("read {label} {}: {error}", path.display()))?;
+fn verify_file_hash(
+    output_root: &Path,
+    path: &Path,
+    expected: &str,
+    label: &str,
+) -> Result<(), String> {
+    let contained = canonical_contained_file(output_root, path, label)?;
+    let bytes = fs::read(&contained)
+        .map_err(|error| format!("read {label} {}: {error}", path.display()))?;
     let actual = format!("sha256:{:x}", Sha256::digest(bytes));
     if actual != expected {
         return Err(format!(
@@ -257,8 +422,21 @@ fn verify_file_hash(path: &Path, expected: &str, label: &str) -> Result<(), Stri
     Ok(())
 }
 
-fn verify_generated_source(path: &Path, expected: &str) -> Result<(), String> {
-    let bytes = fs::read(path)
+fn canonical_contained_file(root: &Path, relative: &Path, label: &str) -> Result<PathBuf, String> {
+    let root = fs::canonicalize(root)
+        .map_err(|error| format!("canonicalize {label} root {}: {error}", root.display()))?;
+    let path = root.join(relative);
+    let candidate = fs::canonicalize(&path)
+        .map_err(|error| format!("canonicalize {label} {}: {error}", path.display()))?;
+    if !candidate.starts_with(&root) {
+        return Err(format!("{label} resolves outside its output root"));
+    }
+    Ok(candidate)
+}
+
+fn verify_generated_source(root: &Path, relative: &Path, expected: &str) -> Result<(), String> {
+    let path = canonical_contained_file(root, relative, "generated consumer")?;
+    let bytes = fs::read(&path)
         .map_err(|error| format!("read generated consumer {}: {error}", path.display()))?;
     let actual = format!("sha256:{:x}", Sha256::digest(&bytes));
     if actual != expected {
@@ -273,6 +451,41 @@ fn verify_generated_source(path: &Path, expected: &str) -> Result<(), String> {
     }
     if serde_json::from_str::<Value>(source).is_ok() {
         return Err("generated consumer is a JSON document, not typed source".into());
+    }
+    Ok(())
+}
+
+fn verify_runtime_assertion_output(bytes: &[u8], generated_hash: &str) -> Result<(), String> {
+    let output: Value = serde_json::from_slice(bytes)
+        .map_err(|error| format!("typed-consumer stdout is not machine-readable assertion output: {error}"))?;
+    if output.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.typed-consumer-runtime.v1")
+        || output.get("generated_consumer_sha256").and_then(Value::as_str) != Some(generated_hash)
+    {
+        return Err("typed-consumer runtime output is not bound to the generated source hash".into());
+    }
+    let assertions = output
+        .get("assertions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "typed-consumer runtime output has no assertions array".to_owned())?;
+    let mut observed = BTreeSet::new();
+    for assertion in assertions {
+        let object = assertion
+            .as_object()
+            .ok_or_else(|| "typed-consumer runtime assertion is not an object".to_owned())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "typed-consumer runtime assertion has no id".to_owned())?;
+        if !REQUIRED_ASSERTIONS.contains(&id)
+            || object.get("status").and_then(Value::as_str) != Some("passed")
+            || !observed.insert(id)
+        {
+            return Err(format!("typed-consumer runtime assertion failed or duplicated: {id}"));
+        }
+    }
+    if observed.len() != REQUIRED_ASSERTIONS.len() {
+        return Err("typed-consumer runtime output does not cover every required assertion".into());
     }
     Ok(())
 }

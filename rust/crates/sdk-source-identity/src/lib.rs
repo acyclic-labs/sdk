@@ -163,7 +163,9 @@ pub fn normalized_dependencies(package: &Value, source_root: &Path) -> Result<Ve
                     };
                     let path = path
                         .canonicalize()
-                        .map_err(|error| format!("canonicalize dependency path: {error}"))?;
+                        .map_err(|error| {
+                            format!("canonicalize dependency path {}: {error}", path.display())
+                        })?;
                     path.strip_prefix(source_root)
                         .map(|relative| relative.to_string_lossy().replace('\\', "/"))
                         .map_err(|_| {

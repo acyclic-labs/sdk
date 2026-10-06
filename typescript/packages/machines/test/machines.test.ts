@@ -171,9 +171,10 @@ describe("Machines simulation", () => {
     expect(eventLimit).toBe(1024);
   });
 
-  test("constructs a hosted client from explicit or process environment", () => {
-    expect(Machines.fromEnv({ endpoint: "https://example.test", token: "token" }).provider).toBeInstanceOf(HttpMachinesProvider);
-    expect(() => Machines.fromEnv({})).toThrow("ACYCLIC_MACHINES_ENDPOINT is required");
+  test("constructs a hosted client from explicit environment after Rust admission", async () => {
+    const client = await Machines.fromEnv({ endpoint: "https://example.test", token: "token" });
+    expect(client.provider).toBeInstanceOf(HttpMachinesProvider);
+    await expect(Machines.fromEnv({ endpoint: "https://example.test", token: "" })).rejects.toThrow("invalid bearer credential");
   });
 
   test("replays exact create and rejects key rebinding", async () => {

@@ -157,3 +157,19 @@ This table maps each legacy topic to its Rust authority. `client::Client::connec
 validates the endpoint and authenticated Rust-owned handshake, while the
 selected provider supplies model access, authentication, billing, and service
 policy.
+<!-- acyclic-guide-scenario: inference-run-watch-roundtrip -->
+```rust
+// capability: supported; scope: rust-wire-validation
+use acyclic_inference::{WatchRunState, validate_customer_wire, watch_run_start_state_wire, wire};
+use prost::Message;
+
+let view = wire::RunView { run_id: vec![2; 16], input: vec![3; 32], model: "model.example.v1".into(), last_sequence: 0, ..Default::default() };
+validate_customer_wire("run_view", &view.encode_to_vec(), &[2; 16], &[])?;
+let mut state: WatchRunState = watch_run_start_state_wire(&view.encode_to_vec(), &[2; 16], "0")?;
+for (sequence, event) in [(0, wire::run_event::Event::Progress(wire::RunProgress { kind: "queued".into() })), (1, wire::run_event::Event::Terminal(wire::RunTerminal::Completed.into()))] {
+    let event = wire::RunEvent { sequence, event: Some(event) };
+    validate_customer_wire("run_event", &event.encode_to_vec(), &[], &[])?;
+    state.advance_wire(&event.encode_to_vec())?;
+}
+state.finish()?;
+```

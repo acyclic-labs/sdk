@@ -46,6 +46,16 @@ export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: 
   });
 }
 
+/** Validates a Rust-owned fixed-width byte identity at a thin adapter boundary. */
+export function validateRustOwnedFixedBytes(value: Uint8Array, length: 16 | 32, label: string): void {
+  if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new RangeError(`${label} must be exactly ${length} bytes`);
+}
+
+/** Validates a Rust-owned positive bounded integer before crossing a thin adapter boundary. */
+export function validateRustOwnedPositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${label} must be a positive safe integer`);
+}
+
 /** Identifies a native adapter load failure that is safe for the Rust-qualified fallback. */
 export function isRustOwnedNativeLoadError(error: unknown): boolean {
   if (error === null || typeof error !== "object") return false;

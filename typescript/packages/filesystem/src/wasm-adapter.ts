@@ -270,7 +270,7 @@ function adaptWorkspace(
   const workspace: FsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
-    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult, validatePositiveBound),
+    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");

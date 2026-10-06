@@ -82,3 +82,27 @@ also exercises the native local provider and records its checkpoint receipt.
 `MountedView` controls path routing only. It does not grant authority across
 volumes; the checkout and its provider still enforce their configured access,
 consistency, and mutation modes.
+<!-- acyclic-guide-scenario: filesystem-mounted-workspace -->
+```rust
+use acyclic_fs::{CancellationToken, Fs, LocalOptions, MountedView, WorkBudget};
+use acyclic_fs::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode, VolumeConfig};
+use acyclic_fs::path::PortablePath;
+
+let root = std::env::temp_dir().join(format!("acyclic-sdk-guide-fs-{}", std::process::id()));
+std::fs::create_dir_all(&root)?;
+let fs = Fs::local(LocalOptions::new(&root)).await?;
+let cancel = CancellationToken::default();
+let workspace = fs.create_volume(VolumeConfig::portable(Lifecycle::Durable), WorkBudget::UNBOUNDED, &cancel).await?.value;
+let scratch = fs.create_volume(VolumeConfig::portable(Lifecycle::Ephemeral), WorkBudget::UNBOUNDED, &cancel).await?.value;
+let mode = CheckoutMode { access: AccessMode::ReadWrite, consistency: ConsistencyMode::TrackingSafe, mutations: MutationMode::PrivateOverlay };
+let workspace_checkout = workspace.checkout(GenerationSelector::Head, mode, WorkBudget::UNBOUNDED, &cancel).await?.value;
+let checkpoint = workspace_checkout.checkpoint(WorkBudget::UNBOUNDED, &cancel).await?.value;
+let mut view = MountedView::builder()
+    .mount("/", workspace_checkout)?
+    .mount("/.scratch", scratch.checkout(GenerationSelector::Head, mode, WorkBudget::UNBOUNDED, &cancel).await?.value)?
+    .build()?;
+let routed = view.route_mut(&PortablePath::parse("/.scratch/tool-output.txt", acyclic_fs::model::VolumeLimits::default())?)?;
+routed.checkout.create_file(routed.path, bytes::Bytes::from_static(b"tool output"), WorkBudget::UNBOUNDED, &cancel).await?;
+assert_eq!(view.snapshot().bindings.len(), 2);
+let _ = std::fs::remove_dir_all(&root);
+```

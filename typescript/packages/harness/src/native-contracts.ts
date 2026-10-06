@@ -503,7 +503,7 @@ export class NativeContracts {
 
   /** Admit a retryable command through the Rust-owned outbox policy. */
   validateOfflineCommand<Command>(value: Command): Command {
-    return this.native.validateOfflineCommand(value) as Command;
+    return normalizeOfflineCommand(this.native.validateOfflineCommand(value)) as Command;
   }
 
   /** Validate replay generation, authority, and cursor continuity in Rust. */
@@ -629,6 +629,66 @@ function normalizeNativeValue(value: unknown, safeJsonNumbers = false, preserveL
 function normalizeTypedNativeValue<Value>(value: Value): Value {
   return normalizeNativeValue(value) as Value;
 }
+
+function normalizeOfflineCommand(value: unknown): unknown {
+  const command = normalizeNativeValue(value);
+  if (!isNativeRecord(command) || !isNativeRecord(command.payload)) return command;
+  const payload = command.payload;
+  return {
+    ...command,
+    payload: {
+      ...payload,
+      ...(payload.content === undefined ? {} : { content: normalizeOfflineFile(payload.content) }),
+      ...(payload.attachments === undefined ? {} : { attachments: normalizeOfflineAttachments(payload.attachments) }),
+      ...(payload.artifacts === undefined ? {} : { artifacts: normalizeOfflineFiles(payload.artifacts) }),
+      ...(payload.references === undefined ? {} : { references: normalizeOfflineFiles(payload.references) }),
+    },
+  };
+}
+
+function normalizeOfflineFiles(value: unknown): unknown {
+  return Array.isArray(value) ? value.map(normalizeOfflineFile) : value;
+}
+
+function normalizeOfflineAttachments(value: unknown): unknown {
+  if (!isNativeRecord(value)) return value;
+  if (value.kind === "inline" && Array.isArray(value.items)) {
+    return {
+      ...value,
+      items: value.items.map(item => isNativeRecord(item)
+        ? { ...item, file: normalizeOfflineFile(item.file) }
+        : item),
+    };
+  }
+  if (value.kind === "manifest") return { ...value, manifest: normalizeOfflineFile(value.manifest) };
+  return value;
+}
+
+function normalizeOfflineFile(value: unknown): unknown {
+  if (!isNativeRecord(value) || !isNativeRecord(value.descriptor)) return value;
+  const descriptor = value.descriptor;
+  return {
+    ...value,
+    descriptor: {
+      ...descriptor,
+      ...(Array.isArray(descriptor.sha256)
+        ? { sha256: descriptor.sha256.map(normalizeOfflineSafeNumber) } : {}),
+      ...(descriptor.byte_length === undefined ? {}
+        : { byte_length: normalizeOfflineSafeNumber(descriptor.byte_length) }),
+    },
+  };
+}
+
+function normalizeOfflineSafeNumber(value: unknown): unknown {
+  if (typeof value === "bigint") return boundedJsonNumber(value);
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  throw new TypeError("Rust offline file descriptor contains an unsafe integer");
+}
+
+function isNativeRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function boundedJsonNumber(value: bigint): number {
   const exact = Number(value);
   if (!Number.isSafeInteger(exact)) throw new TypeError("native JSON integer exceeds JavaScript precision");

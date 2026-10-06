@@ -240,6 +240,13 @@ export interface WasmModelMessageInput {
 }
 
 /**
+ * Stable error-code vocabulary emitted by the browser adapter.
+ *
+ * These values are the JavaScript boundary representation of [`crate::StreamError`].
+ */
+export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
+
+/**
  * Stable wire identity used during compatibility handshakes.
  */
 export interface ProtocolIdentity {
@@ -406,8 +413,6 @@ export interface WasmToolDependencyDefinition {
     version: string;
 }
 
-export type StreamErrorCode = "invalid_path" | "invalid_argument" | "limit_exceeded" | "not_found" | "already_exists" | "prefix_not_retained" | "out_of_range" | "idempotency_mismatch" | "capacity" | "access_denied" | "unavailable" | "hierarchy_changed" | "deadline_elapsed" | "unsupported";
-
 export type WasmFileProjectionPolicy = "reference" | "bounded_full" | "native";
 
 export type WasmModelContent = string | WasmModelContentPart | WasmModelContentPart[];
@@ -450,45 +455,17 @@ export class BrowserFilesystemClient {
 
 /**
  * Authenticated Rust-owned Harness gRPC-Web client for browser WASM.
- *
- * Harness has no HTTP/JSON projection. Browser consumers use the same
- * generated protobuf service through gRPC-Web, with all protocol checks
- * and operation-control semantics retained in Rust.
  */
 export class BrowserHarnessClient {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
-    /**
-     * Cancels an encoded Rust Harness operation request.
-     */
     cancel(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Returns the negotiated Harness protocol identity.
-     */
     capabilities(): any;
-    /**
-     * Connects from JavaScript using the Rust-owned authenticated
-     * handshake and gRPC-Web adapter with Rust-owned safe bounds.
-     */
     static connect(endpoint: string, bearer_token: string): Promise<BrowserHarnessClient>;
-    /**
-     * Connects with explicit request and response bounds.
-     */
     static connectWithLimits(endpoint: string, bearer_token: string, maximum_request_bytes: bigint, maximum_response_bytes: bigint): Promise<BrowserHarnessClient>;
-    /**
-     * Observes an encoded Rust Harness operation request.
-     */
     observe(request: Uint8Array): Promise<Uint8Array>;
-    /**
-     * Collects a bounded replay page into encoded deliveries. The Rust
-     * API remains streaming for callers that need a live follow stream.
-     */
     replay(request: Uint8Array): Promise<Array<any>>;
-    /**
-     * Submits an encoded Rust Harness command and returns its encoded
-     * admission. The protobuf bytes preserve the generated wire types.
-     */
     submit(request: Uint8Array): Promise<Uint8Array>;
 }
 
@@ -538,14 +515,44 @@ export class BrowserHarnessRemoteClient {
 export class HttpFollowCursor {
     free(): void;
     [Symbol.dispose](): void;
+    /**
+     * Accepts a contiguous hosted read page and advances the follow cursor.
+     */
     acceptRead(response_json: string): void;
+    /**
+     * Accepts a validated hosted tail response without advancing the cursor.
+     */
     acceptTail(response_json: string): void;
+    /**
+     * Closes the cursor; subsequent request or response operations fail closed.
+     */
     close(): void;
+    /**
+     * Returns whether the cursor has been closed.
+     */
     isClosed(): boolean;
+    /**
+     * Creates a follow cursor from a canonical protobuf follow request.
+     *
+     * The cursor starts at the request position and remains Rust-owned while JavaScript
+     * supplies only the hosted HTTP responses.
+     */
     constructor(input: Uint8Array);
+    /**
+     * Returns the canonical delay before the next empty-page poll.
+     */
     pollDelayMillis(): number;
+    /**
+     * Encodes the next bounded canonical read request for the follow cursor.
+     */
     readRequest(): Uint8Array;
+    /**
+     * Returns whether the caller should poll again after the last accepted page.
+     */
     shouldPoll(): boolean;
+    /**
+     * Encodes the next canonical tail request for the follow cursor.
+     */
     tailRequest(): Uint8Array;
 }
 
@@ -667,6 +674,9 @@ export class WasmMemoryStream {
      * Executes one finite unary operation over canonical protobuf bytes.
      */
     dispatch(operation: string, input: Uint8Array): Promise<Uint8Array>;
+    /**
+     * Creates an empty browser provider backed by the canonical Rust memory state machine.
+     */
     constructor();
     /**
      * Opens a live follow cursor backed by the canonical provider.
@@ -1170,10 +1180,7 @@ export function validateOfflineCommand(value: any): any;
 export function validatePath(path: string): string;
 
 /**
- * Validates an encoded Filesystem handshake response and returns the
- * canonical negotiated capabilities. Keeping decoding and admission in
- * this Rust boundary prevents hosted TypeScript clients from re-owning
- * protocol identity or capability validation.
+ * Validate a wire handshake and return its canonical Rust-owned capabilities.
  */
 export function validateRemoteWebFilesystemHandshake(response: Uint8Array): Uint8Array;
 
@@ -1313,6 +1320,11 @@ export function validate_remote_web_ca_certificate(certificate: string): void;
  * Checks an HTTP content-length without first narrowing it through a JS number.
  */
 export function validate_remote_web_content_length(content_length: string, maximum: bigint): void;
+
+/**
+ * Validates one bearer credential according to the shared Rust policy.
+ */
+export function validate_remote_web_credential(token: string): void;
 
 /**
  * Validates the HTTPS or loopback-HTTP endpoint shared by Actors and Workers.
@@ -1480,6 +1492,7 @@ export interface InitOutput {
     readonly validate_actors_invoke: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validate_remote_web_ca_certificate: (a: number, b: number) => [number, number];
     readonly validate_remote_web_content_length: (a: number, b: number, c: bigint) => [number, number];
+    readonly validate_remote_web_credential: (a: number, b: number) => [number, number];
     readonly validate_remote_web_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_grpc_endpoint: (a: number, b: number) => [number, number];
     readonly validate_remote_web_message_limit: (a: bigint) => [number, number];

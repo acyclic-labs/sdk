@@ -143,8 +143,11 @@ function Require-ReceiptFile([object] $Object, [string] $PathName, [string] $Has
 function Require-TypedConsumerReceipt {
     param([string] $Target)
 
-    # The Rust-owned catalog decides whether this target has a protobuf
-    # consumer to qualify. HTTP/OpenAPI-only targets are explicitly excluded.
+    # Rust is the sole typed-consumer authority. It reads this staged receipt,
+    # executes the declared source-bound consumer under supervision, captures
+    # fixed logs, and verifies every assertion against those bytes. Keeping
+    # this producer hook to existence prevents a weaker JSON self-attestation
+    # gate from qualifying output before the Rust supervisor runs.
     $catalogPath = Join-Path $SourceRoot 'languages/generation-targets.json'
     Require-File $catalogPath 'Rust language catalog'
     $catalog = Get-Content -LiteralPath $catalogPath -Raw | ConvertFrom-Json
@@ -152,95 +155,9 @@ function Require-TypedConsumerReceipt {
     if ($null -eq $catalogTarget) {
         throw "Rust language catalog has no target $Target"
     }
-    if ([string]$catalogTarget.remote.wire -ne 'protobuf-grpc' -or
-        [string]$catalogTarget.remote.level -ne 'full-grpc') {
-        return
-    }
-    $receiptPath = Join-Path $TargetOutput 'typed-consumer-receipt.json'
-    Require-File $receiptPath 'typed-consumer receipt'
-    $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
-    if ([string](Require-ReceiptValue $receipt 'schema' 'typed-consumer receipt') -ne 'acyclic.sdk.typed-consumer-receipt.v1') {
-        throw 'typed-consumer receipt has an unsupported schema'
-    }
-    if ([string](Require-ReceiptValue $receipt 'target' 'typed-consumer receipt') -ne $Target) {
-        throw 'typed-consumer receipt target differs from producer target'
-    }
-    foreach ($identity in @(
-        @{ object = $receipt; name = 'source_revision'; expected = $sourceGitSha.ToLowerInvariant() },
-        @{ object = $receipt; name = 'source_digest'; expected = $sourceModelDigest.ToLowerInvariant() },
-        @{ object = $receipt; name = 'rust_model_digest'; expected = $sourceModelDigest.ToLowerInvariant() }
-    )) {
-        if ([string](Require-ReceiptValue $identity.object $identity.name 'typed-consumer receipt').ToLowerInvariant() -ne $identity.expected) {
-            throw "typed-consumer receipt $($identity.name) is not bound to the Rust generation"
-        }
-    }
-    $generated = Require-ReceiptValue $receipt 'generated_consumer' 'typed-consumer receipt'
-    $generatedPath = Require-ReceiptFile $generated 'path' 'sha256' 'generated consumer'
-    if ([IO.Path]::GetExtension($generatedPath) -in @('.json', '.yaml', '.yml')) {
-        throw 'generated consumer points to a data projection rather than typed source'
-    }
-    $generatedSource = Get-Content -LiteralPath $generatedPath -Raw
-    if ([string]::IsNullOrWhiteSpace($generatedSource)) {
-        throw 'generated consumer source is empty'
-    }
-    $generatedIsJson = $false
-    try {
-        $null = $generatedSource | ConvertFrom-Json
-        $generatedIsJson = $true
-    } catch {
-        # Typed source is expected to fail JSON parsing.
-    }
-    if ($generatedIsJson) {
-        throw 'generated consumer is a JSON document rather than typed source'
-    }
-    foreach ($identity in @(
-        @{ object = $generated; name = 'source_revision'; expected = $sourceGitSha.ToLowerInvariant() },
-        @{ object = $generated; name = 'source_digest'; expected = $sourceModelDigest.ToLowerInvariant() }
-    )) {
-        if ([string](Require-ReceiptValue $identity.object $identity.name 'generated consumer').ToLowerInvariant() -ne $identity.expected) {
-            throw "generated consumer $($identity.name) is not bound to the Rust generation"
-        }
-    }
-    $command = Require-ReceiptValue $receipt 'command' 'typed-consumer receipt'
-    if ((Require-ReceiptValue $command 'executed' 'typed-consumer command') -ne $true -or
-        [int](Require-ReceiptValue $command 'exit_code' 'typed-consumer command') -ne 0) {
-        throw 'typed-consumer command did not execute successfully'
-    }
-    $argv = @(Require-ReceiptValue $command 'argv' 'typed-consumer command')
-    if ($argv.Count -eq 0 -or @($argv | Where-Object { [string]::IsNullOrWhiteSpace([string]$_) }).Count -gt 0) {
-        throw 'typed-consumer command argv is empty or contains an empty argument'
-    }
-    foreach ($identity in @(
-        @{ object = $command; name = 'source_revision'; expected = $sourceGitSha.ToLowerInvariant() },
-        @{ object = $command; name = 'source_digest'; expected = $sourceModelDigest.ToLowerInvariant() }
-    )) {
-        if ([string](Require-ReceiptValue $identity.object $identity.name 'typed-consumer command').ToLowerInvariant() -ne $identity.expected) {
-            throw "typed-consumer command $($identity.name) is not bound to the Rust generation"
-        }
-    }
-    Require-ReceiptFile $command 'stdout_path' 'stdout_sha256' 'typed-consumer stdout' | Out-Null
-    Require-ReceiptFile $command 'stderr_path' 'stderr_sha256' 'typed-consumer stderr' | Out-Null
-
-    $requiredAssertions = @('field-identities', 'presence-oneof', 'bytes', 'uint64', 'enums', 'rpc-stream-signatures')
-    $seenAssertions = [System.Collections.Generic.HashSet[string]]::new()
-    foreach ($assertion in @(Require-ReceiptValue $receipt 'assertions' 'typed-consumer receipt')) {
-        $id = [string](Require-ReceiptValue $assertion 'id' 'typed-consumer assertion')
-        if ($requiredAssertions -notcontains $id -or -not $seenAssertions.Add($id)) {
-            throw "typed-consumer assertion is unknown or duplicated: $id"
-        }
-        if ([string](Require-ReceiptValue $assertion 'status' 'typed-consumer assertion') -ne 'passed' -or
-            (Require-ReceiptValue $assertion 'executed' 'typed-consumer assertion') -ne $true -or
-            (Require-ReceiptValue $assertion 'source_bound' 'typed-consumer assertion') -ne $true) {
-            throw "typed-consumer assertion did not pass: $id"
-        }
-        $evidence = Require-ReceiptValue $assertion 'evidence' 'typed-consumer assertion'
-        if ((Require-ReceiptValue $evidence 'runtime' 'typed-consumer assertion evidence') -ne $true) {
-            throw "typed-consumer assertion lacks runtime evidence: $id"
-        }
-    }
-    $missing = @($requiredAssertions | Where-Object { -not $seenAssertions.Contains($_) })
-    if ($missing.Count -gt 0) {
-        throw "typed-consumer assertions are missing: $($missing -join ', ')"
+    if ([string]$catalogTarget.remote.wire -eq 'protobuf-grpc' -and
+        [string]$catalogTarget.remote.level -eq 'full-grpc') {
+        Require-File (Join-Path $TargetOutput 'typed-consumer-receipt.json') 'typed-consumer receipt'
     }
 }
 

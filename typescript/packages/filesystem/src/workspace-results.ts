@@ -4,6 +4,21 @@ import type { JoinOptions, JoinResult, JoinStatus, MergeConflict, MergePreparati
   WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseOptions, WorkspaceRebaseResult, WorkspaceRebaseStatus, WasmRawMergeConflict,
 } from "./contracts.js";
 
+/** Validates a Rust-owned fixed-width byte identity at a thin adapter boundary. */
+export function validateRustOwnedFixedBytes(value: Uint8Array, length: 16 | 32, label: string): void {
+  if (!(value instanceof Uint8Array) || value.byteLength !== length) throw new RangeError(`${label} must be exactly ${length} bytes`);
+}
+
+/** Validates a Rust-owned positive bounded integer before crossing a thin adapter boundary. */
+export function validateRustOwnedPositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${label} must be a positive safe integer`);
+}
+
+/** Validates a Rust-owned positive byte-count bound before crossing a thin adapter boundary. */
+export function validateRustOwnedPositiveBigInt(value: bigint, label: string): void {
+  if (typeof value !== "bigint" || value <= 0n) throw new RangeError(`${label} must be positive`);
+}
+
 const JOIN_STATUSES: readonly JoinStatus[] = ["applied", "already-applied", "no-changes", "stale-target", "conflicted", "fenced", "idempotency-conflict"];
 const REBASE_STATUSES: readonly WorkspaceRebaseStatus[] = ["rebased", "already-rebased", "current", "stale", "conflicted", "fenced", "idempotency-conflict"];
 const COMMIT_STATUSES: readonly WorkspaceCommit["status"][] = ["committed", "already-committed", "conflict", "fenced", "idempotency-conflict"];
