@@ -226,14 +226,14 @@ test("final evidence rejects fixture-only commands for non-mock suites", () => {
 test("final evidence rejects a suite with invalid named coverage", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-scope-"));
   try {
-    const suite = suiteFixture(directory, "native", "INVALID_SCOPE");
+    const suite = suiteFixture(directory, "native", "UNKNOWN-999");
     makeFinalDescriptor(suite);
     const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.cases.find(item => item.id === "SCOPE-01").status = "passed";
     receipt.cases.find(item => item.id === "SCOPE-01").evidence = [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }];
     receipt.gate = { final: true, failed: 0, skipped: 0, flaky: 0, missing: 67 };
-    assert.throws(() => validate(receipt, { final: true }), /receipt schema validation failed/u);
+    assert.throws(() => validate(receipt, { final: true }), /is not a locked requirement/u);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
