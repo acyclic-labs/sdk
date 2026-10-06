@@ -255,11 +255,12 @@ impl ToolExecutor for EditExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_runtime_task(&context, self.task, "edit")?;
-            require_project(context.scope(), &self.project, VolumeOperation::Write)?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_runtime_task(&context, self.task, "edit")
+            .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Write))
+        {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn execute_in_model_batch<'a>(
@@ -267,10 +268,10 @@ impl ToolExecutor for EditExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_model_task(&context, &invocation, self.task, "edit")?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_model_task(&context, &invocation, self.task, "edit") {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn reconcile_in_model_batch<'a>(
@@ -278,10 +279,10 @@ impl ToolExecutor for EditExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
-            require_model_task(&context, &invocation, self.task, "edit")?;
-            self.reconcile_workspace(invocation).await
-        })
+        if let Err(error) = require_model_task(&context, &invocation, self.task, "edit") {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.reconcile_workspace(invocation))
     }
 
     fn reconcile<'a>(
@@ -295,11 +296,12 @@ impl ToolExecutor for EditExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async move {
-            require_runtime_task(&context, self.task, "edit")?;
-            require_project(context.scope(), &self.project, VolumeOperation::Write)?;
-            self.reconcile_workspace(invocation).await
-        })
+        if let Err(error) = require_runtime_task(&context, self.task, "edit")
+            .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Write))
+        {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.reconcile_workspace(invocation))
     }
 }
 
@@ -406,11 +408,12 @@ impl ToolExecutor for ReadExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_runtime_task(&context, self.task, "read")?;
-            require_project(context.scope(), &self.project, VolumeOperation::Read)?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_runtime_task(&context, self.task, "read")
+            .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Read))
+        {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn execute_in_model_batch<'a>(
@@ -418,10 +421,10 @@ impl ToolExecutor for ReadExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_model_task(&context, &invocation, self.task, "read")?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_model_task(&context, &invocation, self.task, "read") {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn reconcile<'a>(
@@ -550,11 +553,12 @@ impl ToolExecutor for SearchExecutor {
         context: ToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_runtime_task(&context, self.task, "search")?;
-            require_project(context.scope(), &self.project, VolumeOperation::Read)?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_runtime_task(&context, self.task, "search")
+            .and_then(|()| require_project(context.scope(), &self.project, VolumeOperation::Read))
+        {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn execute_in_model_batch<'a>(
@@ -562,10 +566,10 @@ impl ToolExecutor for SearchExecutor {
         context: crate::tool::ModelToolContext,
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async move {
-            require_model_task(&context, &invocation, self.task, "search")?;
-            self.execute_workspace(invocation).await
-        })
+        if let Err(error) = require_model_task(&context, &invocation, self.task, "search") {
+            return Box::pin(async move { Err(error) });
+        }
+        Box::pin(self.execute_workspace(invocation))
     }
 
     fn reconcile<'a>(
