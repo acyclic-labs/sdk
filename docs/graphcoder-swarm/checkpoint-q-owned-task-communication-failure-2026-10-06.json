@@ -1,0 +1,36 @@
+{
+  "passed": 0,
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test local_model_swarm -j1 default_local_composition_runs_recursive_models_and_reopens_without_dispatch -- --exact --nocapture",
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "exit_code": 101,
+  "qualification": "Diagnostic progress only; recursive acceptance remains unmet.",
+  "platform": "Windows native",
+  "stack_override": false,
+  "failed": 1,
+  "observation": "Owned resolver tasks returned fresh preparations and published two children without stack overflow. Root then failed Indeterminate after ToolStarted default-message-child; both child journals had ModelInputPrepared. No complete recursive case passed.",
+  "artifacts": [
+    {
+      "sha256": "c6f34112ef8e1d7eb82796239f4f17a543a94beac4b9c867d6c613b9e1577855",
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f195400b5-owned-fork-task\\source.tar"
+    },
+    {
+      "sha256": "41e072888594876e109805e33d48c78ed6a891248e6f831dcfff228eefd7cde9",
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f195400b5-owned-fork-task\\native.log"
+    },
+    {
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f195400b5-owned-fork-task\\exit-code"
+    },
+    {
+      "sha256": "0a22962e7fad56545c0c6d9048f697d9232d1fee56d1dfaddc720f4874e32760",
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f195400b5-owned-fork-task\\failure-journal.json"
+    },
+    {
+      "sha256": "489505230bfcdca7a80c04900b58e9157bed9055c37042000e132a4fad98c189",
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\f195400b5-owned-fork-task\\local_model_swarm.exe"
+    }
+  ],
+  "source": "f195400b567ff4ce29887ebd77f838cbe28aff7a",
+  "filtered": 5,
+  "result": "failed"
+}
