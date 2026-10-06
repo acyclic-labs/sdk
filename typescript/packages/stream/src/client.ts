@@ -8,7 +8,7 @@ import type {
   StreamProvider,
 } from "./types.js";
 import { StreamError } from "./types.js";
-import { STREAM_REMOTE_POLICY } from "./generated-client.js";
+import { isRustOwnedTransportUnavailable, selectRustOwnedTransport, STREAM_REMOTE_POLICY } from "./generated-client.js";
 import { ensureStreamWasm, normalizeWireCommit, projectChildrenPage, validateChildrenPageRequest, validatePathValue, validateReadRequest, validateSequenceValue, validateRecordBatch, validateWireAppend, validateWireRequest } from "./contract.js";
 
 export interface Codec<Value> {
@@ -156,19 +156,13 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
   const endpoint = environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT");
   const token = environment?.token ?? environmentValue("ACYCLIC_API_KEY");
   const runtime = isNativeRuntime() ? "native" : "browser";
-  const options = STREAM_REMOTE_POLICY.transport[runtime];
-  const selected = environment?.transport === undefined
-    ? options[0]
-    : options.find(option => option.kind === environment.transport);
-  if (selected === undefined) {
-    const requested = environment?.transport ?? "the default";
-    throw new StreamError("unsupported", `Stream transport ${requested} is unavailable in the ${runtime} runtime`);
-  }
-  if (selected.kind === "http") {
+  const requested = environment?.transport;
+  const selected = selectRustOwnedTransport(STREAM_REMOTE_POLICY, runtime, requested);
+  if (selected === "http") {
     if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream HTTP transport requires fetch in this runtime");
     return new StreamClient(new HttpStreamProvider({ endpoint, token }));
   }
-  if (selected.kind === "grpc") {
+  if (selected === "grpc") {
     if (runtime !== "native") throw new StreamError("unsupported", "Stream gRPC transport requires a native Node or Bun runtime");
     try {
       // Keep the native companion out of browser bundles. The Rust policy has
@@ -186,6 +180,13 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
         return new StreamClient(new GrpcStreamProvider({ endpoint, token }));
       }
     } catch (error) {
+      // The default Rust policy prefers native gRPC, but an installation may
+      // omit both optional native companions.  In that case the Rust policy's
+      // next option is HTTP; explicit gRPC requests still fail clearly.
+      if (requested === undefined && isRustOwnedTransportUnavailable(error)) {
+        if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream native transport is unavailable and HTTP fallback requires fetch in this runtime");
+        return new StreamClient(new HttpStreamProvider({ endpoint, token }));
+      }
       const reason = error instanceof Error ? `: ${error.message}` : "";
       throw new StreamError("unavailable", `Stream native transport is unavailable in this runtime${reason}`);
     }
