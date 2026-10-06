@@ -52,10 +52,12 @@ artifact hashes. The script keeps all outputs under `cpp/embedded-consumer/.buil
 so a root-level build directory cannot be mistaken for a package artifact.
 
 The smoke and installed-consumer test passed on the qualification host on 2026-10-03 with Rust 1.98.1,
-Clang 17.0.2, CMake 3.26.4, and Ninja. The generated cbindgen header is a C
-header, so the consumer imports it inside `extern "C"` and defines the C23
-conditional typedef branch for C++ parsing. This is an integration requirement
-of the current header generator, not a new ABI surface.
+Clang 17.0.2, CMake 3.26.4, and Ninja. The
+`embedded_abi_cpp_raw_generated_header` test also compiles and runs a C++20
+consumer against the generated header directly, without the RAII adapter or a
+consumer-side `extern "C"`/typedef shim. The Rust `cbindgen` build is configured
+with C++ compatibility, so the generated header provides the fixed-width enum
+branch and C linkage itself.
 
 The current generated header used by that run has SHA-256
 `64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109`.

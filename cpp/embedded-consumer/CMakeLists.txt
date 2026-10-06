@@ -76,6 +76,15 @@ if(NOT WIN32)
   target_link_libraries(acyclic_cpp_embedded_cross_thread PRIVATE Threads::Threads)
 endif()
 
+# Compile the generated Rust-owned header directly. This target intentionally
+# does not include the C++ RAII adapter: the exported header must be valid C++
+# on its own and must carry C linkage for the Rust symbols.
+add_executable(acyclic_cpp_embedded_raw_header raw_header_consumer.cpp)
+target_compile_features(acyclic_cpp_embedded_raw_header PRIVATE cxx_std_20)
+target_include_directories(acyclic_cpp_embedded_raw_header PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/include")
+target_link_libraries(acyclic_cpp_embedded_raw_header PRIVATE acyclic_embedded_runtime)
+
 add_custom_command(TARGET acyclic_cpp_embedded_consumer POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${ACYCLIC_RUNTIME_PATH}"
@@ -88,11 +97,16 @@ add_custom_command(TARGET acyclic_cpp_embedded_cross_thread POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${ACYCLIC_RUNTIME_PATH}"
     "$<TARGET_FILE_DIR:acyclic_cpp_embedded_cross_thread>")
+add_custom_command(TARGET acyclic_cpp_embedded_raw_header POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${ACYCLIC_RUNTIME_PATH}"
+    "$<TARGET_FILE_DIR:acyclic_cpp_embedded_raw_header>")
 
 enable_testing()
 add_test(NAME embedded_abi_cpp_smoke COMMAND acyclic_cpp_embedded_consumer)
 add_test(NAME embedded_abi_cpp_lifetime_negative COMMAND acyclic_cpp_embedded_negative)
 add_test(NAME embedded_abi_cpp_cross_thread_cancel COMMAND acyclic_cpp_embedded_cross_thread)
+add_test(NAME embedded_abi_cpp_raw_generated_header COMMAND acyclic_cpp_embedded_raw_header)
 
 install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/include/acyclic_embedded_prototype.h"
