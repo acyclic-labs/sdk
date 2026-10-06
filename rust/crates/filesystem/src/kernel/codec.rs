@@ -1,5 +1,6 @@
 //! Small fail-closed codec used by every hash-bearing filesystem object.
 
+use crate::model::VolumeConfig;
 use thiserror::Error;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +47,20 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
+    /// Bounds every page a volume with `config` may have written.
+    pub(crate) fn for_volume(config: VolumeConfig) -> Self {
+        Self {
+            maximum_object_bytes: config.limits.maximum_object_bytes,
+            maximum_name_bytes: config.limits.maximum_component_bytes,
+            maximum_page_items: config.limits.maximum_directory_page_entries,
+            maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes)
+                .unwrap_or(u32::MAX),
+            maximum_page_height: config.limits.maximum_page_height,
+            maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
+                .unwrap_or(u32::MAX),
+        }
+    }
+
     pub(crate) fn maximum_page_object_bytes(self) -> u64 {
         self.maximum_object_bytes
             .min(u64::from(self.maximum_page_bytes))

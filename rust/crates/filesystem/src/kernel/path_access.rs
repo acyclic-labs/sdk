@@ -646,7 +646,7 @@ pub async fn lookup_path_async<S: AsyncObjectStore>(
             OperationFailure::before_work(PathLookupError::Tree(TreeReadError::Cancelled))
         })?;
         validate_path(path, config)?;
-        let limits = decode_limits(config);
+        let limits = DecodeLimits::for_volume(config);
         let maximum_cache_entries = maximum_cache_entries(path, config)?;
         let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
         let root = lookup_file_record_async(
@@ -786,7 +786,7 @@ async fn observe_path_with_terminal_async<S: AsyncObjectStore>(
         })?;
         validate_path(path, config)?;
 
-        let limits = decode_limits(config);
+        let limits = DecodeLimits::for_volume(config);
         let maximum_cache_entries = maximum_cache_entries(path, config)?;
         let (cache, mut work) = OperationReadCache::new(store, maximum_cache_entries, budget)?;
         let mut allocations = AllocationLedger::default();
@@ -1231,7 +1231,7 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     );
     current.resize(count, None);
     done.resize(count, 0);
-    let limits = decode_limits(config);
+    let limits = DecodeLimits::for_volume(config);
     let root = lookup_file_record_async(
         &cache,
         generation.file_table,
@@ -1565,18 +1565,6 @@ fn validate_path(path: &NamespacePath, config: VolumeConfig) -> Result<(), PathL
         }
     }
     Ok(())
-}
-
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
-    }
 }
 
 fn reserve_fixed<T>(

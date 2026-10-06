@@ -348,7 +348,7 @@ pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
             maximum_spans: config.limits.maximum_mutations_per_batch,
             maximum_mutations: config.limits.maximum_mutations_per_batch,
         },
-        decode_limits(config),
+        DecodeLimits::for_volume(config),
         remaining(work, budget)?,
         cancellation,
     )
@@ -573,7 +573,7 @@ async fn try_inline<S: AsyncObjectStore>(
                     offset: content_offset,
                     length,
                 },
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 budget,
                 cancellation,
             )
@@ -671,7 +671,7 @@ async fn promote_inline<S: AsyncObjectStore>(
         let written = put_extent_page_async(
             store,
             &page,
-            decode_limits(config),
+            DecodeLimits::for_volume(config),
             page_budget,
             cancellation,
         )
@@ -816,7 +816,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
             &[extent_mutation],
             ExtentMutationOptions {
                 maximum_mutations: 1,
-                limits: decode_limits(config),
+                limits: DecodeLimits::for_volume(config),
                 budget: remaining(prior, budget)?,
             },
             cancellation,
@@ -931,7 +931,7 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
             &plan.mutations,
             ExtentMutationOptions {
                 maximum_mutations: config.limits.maximum_mutations_per_batch,
-                limits: decode_limits(config),
+                limits: DecodeLimits::for_volume(config),
                 budget: nested_budget,
             },
             cancellation,
@@ -985,7 +985,7 @@ async fn plan_sparse_preallocation<S: AsyncObjectStore>(
                     length: existing_length,
                 },
                 maximum_spans: config.limits.maximum_mutations_per_batch,
-                limits: decode_limits(config),
+                limits: DecodeLimits::for_volume(config),
                 budget: remaining(prior, budget)?,
             },
             cancellation,
@@ -1125,7 +1125,7 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
                     length: target_size,
                 },
                 maximum_spans: config.limits.maximum_mutations_per_batch,
-                limits: decode_limits(config),
+                limits: DecodeLimits::for_volume(config),
                 budget,
             },
             cancellation,
@@ -1165,7 +1165,7 @@ async fn try_demote_sparse_async<S: AsyncObjectStore>(
                     offset: object_offset,
                     length: span.length,
                 },
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 nested_budget,
                 cancellation,
             )
@@ -1272,18 +1272,6 @@ async fn put_extent_page_async<S: AsyncObjectStore>(
         object,
         work: simultaneous(hashed, receipt.work, encoded_bytes, budget)?,
     })
-}
-
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
-    }
 }
 
 fn add(prior: WorkCounters, next: WorkCounters) -> Result<WorkCounters, RegularMutationFailure> {

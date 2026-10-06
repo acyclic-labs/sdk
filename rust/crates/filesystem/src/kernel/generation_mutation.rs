@@ -348,7 +348,7 @@ async fn verify_created_identities<S: AsyncObjectStore>(
             context.generation.file_table,
             &created_ids,
             context.config.limits.maximum_mutations_per_batch,
-            decode_limits(context.config),
+            DecodeLimits::for_volume(context.config),
             nested_budget(*work, context.budget, allocations.live_bytes())?,
             context.cancellation,
         )
@@ -507,7 +507,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
             &identity_ids,
             u32::try_from(identity_ids.len())
                 .map_err(|_| failed(WorkError::Overflow.into(), *work))?,
-            decode_limits(context.config),
+            DecodeLimits::for_volume(context.config),
             nested_budget(*work, context.budget, allocations.live_bytes())?,
             context.cancellation,
         )
@@ -1781,7 +1781,7 @@ impl TransactionState {
                     entries,
                     mutations,
                     config.limits.maximum_mutations_per_batch,
-                    decode_limits(config),
+                    DecodeLimits::for_volume(config),
                     nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                     cancellation,
                 )
@@ -1856,7 +1856,7 @@ impl TransactionState {
                 entries,
                 None,
                 1,
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                 cancellation,
             )
@@ -1947,7 +1947,7 @@ impl TransactionState {
                 mutations,
                 u32::try_from(mutation_count)
                     .map_err(|_| failed(WorkError::Overflow.into(), self.work))?,
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                 cancellation,
             )
@@ -2156,18 +2156,6 @@ fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, GenerationMutationFailur
         .ok_or_else(|| {
             OperationFailure::before_work(GenerationMutationError::Work(WorkError::Overflow))
         })
-}
-
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
-    }
 }
 
 #[inline]
