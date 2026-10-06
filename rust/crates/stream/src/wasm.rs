@@ -37,86 +37,8 @@ pub enum StreamErrorCode {
     Unsupported,
 }
 
-impl StreamErrorCode {
-    #[cfg(test)]
-    const ALL: [Self; 14] = [
-        Self::InvalidPath,
-        Self::InvalidArgument,
-        Self::LimitExceeded,
-        Self::NotFound,
-        Self::AlreadyExists,
-        Self::PrefixNotRetained,
-        Self::OutOfRange,
-        Self::IdempotencyMismatch,
-        Self::Capacity,
-        Self::AccessDenied,
-        Self::Unavailable,
-        Self::HierarchyChanged,
-        Self::DeadlineElapsed,
-        Self::Unsupported,
-    ];
-
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::InvalidPath => "invalid_path",
-            Self::InvalidArgument => "invalid_argument",
-            Self::LimitExceeded => "limit_exceeded",
-            Self::NotFound => "not_found",
-            Self::AlreadyExists => "already_exists",
-            Self::PrefixNotRetained => "prefix_not_retained",
-            Self::OutOfRange => "out_of_range",
-            Self::IdempotencyMismatch => "idempotency_mismatch",
-            Self::Capacity => "capacity",
-            Self::AccessDenied => "access_denied",
-            Self::Unavailable => "unavailable",
-            Self::HierarchyChanged => "hierarchy_changed",
-            Self::DeadlineElapsed => "deadline_elapsed",
-            Self::Unsupported => "unsupported",
-        }
-    }
-
-    fn from_str(value: &str) -> Option<Self> {
-        Some(match value {
-            "invalid_path" => Self::InvalidPath,
-            "invalid_argument" => Self::InvalidArgument,
-            "limit_exceeded" => Self::LimitExceeded,
-            "not_found" => Self::NotFound,
-            "already_exists" => Self::AlreadyExists,
-            "prefix_not_retained" => Self::PrefixNotRetained,
-            "out_of_range" => Self::OutOfRange,
-            "idempotency_mismatch" => Self::IdempotencyMismatch,
-            "capacity" => Self::Capacity,
-            "access_denied" => Self::AccessDenied,
-            "unavailable" => Self::Unavailable,
-            "hierarchy_changed" => Self::HierarchyChanged,
-            "deadline_elapsed" => Self::DeadlineElapsed,
-            "unsupported" => Self::Unsupported,
-            _ => return None,
-        })
-    }
-}
-
-fn error_code(error: &StreamError) -> StreamErrorCode {
-    match error {
-        StreamError::InvalidPath => StreamErrorCode::InvalidPath,
-        StreamError::InvalidArgument => StreamErrorCode::InvalidArgument,
-        StreamError::LimitExceeded => StreamErrorCode::LimitExceeded,
-        StreamError::NotFound => StreamErrorCode::NotFound,
-        StreamError::AlreadyExists => StreamErrorCode::AlreadyExists,
-        StreamError::PrefixNotRetained => StreamErrorCode::PrefixNotRetained,
-        StreamError::OutOfRange => StreamErrorCode::OutOfRange,
-        StreamError::IdempotencyMismatch => StreamErrorCode::IdempotencyMismatch,
-        StreamError::Capacity => StreamErrorCode::Capacity,
-        StreamError::AccessDenied => StreamErrorCode::AccessDenied,
-        StreamError::Unavailable => StreamErrorCode::Unavailable,
-        StreamError::HierarchyChanged => StreamErrorCode::HierarchyChanged,
-        StreamError::DeadlineElapsed => StreamErrorCode::DeadlineElapsed,
-        StreamError::Unsupported => StreamErrorCode::Unsupported,
-    }
-}
-
 fn error_code_str(error: &StreamError) -> &'static str {
-    error_code(error).as_str()
+    error.code()
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -125,7 +47,7 @@ fn js_error(error: StreamError) -> JsValue {
     let _property_result = Reflect::set(
         value.as_ref(),
         &JsValue::from_str("code"),
-        &JsValue::from_str(error_code(&error).as_str()),
+        &JsValue::from_str(error.code()),
     );
     value.into()
 }
@@ -136,7 +58,7 @@ fn js_error(error: StreamError) -> JsValue {
 /// maintaining a second, potentially stale list of base Stream error codes.
 #[wasm_bindgen]
 pub fn is_stream_error_code(value: &str) -> bool {
-    StreamErrorCode::from_str(value).is_some()
+    StreamError::from_code(value).is_some()
 }
 
 /// Project a hosted HTTP error code onto the public Stream error vocabulary.
@@ -150,27 +72,12 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
         "destination_exists" => "destination_exists",
         "capacity_exhausted" => "capacity_exhausted",
         "commit_not_found" => "commit_not_found",
-        _ => match StreamErrorCode::from_str(raw)? {
-            StreamErrorCode::InvalidPath => "invalid_path",
-            StreamErrorCode::InvalidArgument => "invalid_argument",
-            StreamErrorCode::LimitExceeded => "limit_exceeded",
-            StreamErrorCode::NotFound => {
-                if route == "commits/read" {
-                    "commit_not_found"
-                } else {
-                    "stream_not_found"
-                }
-            }
-            StreamErrorCode::AlreadyExists => "destination_exists",
-            StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
-            StreamErrorCode::OutOfRange => "out_of_range",
-            StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
-            StreamErrorCode::Capacity => "capacity_exhausted",
-            StreamErrorCode::AccessDenied => "access_denied",
-            StreamErrorCode::Unavailable => "unavailable",
-            StreamErrorCode::HierarchyChanged => "hierarchy_changed",
-            StreamErrorCode::DeadlineElapsed => "deadline_elapsed",
-            StreamErrorCode::Unsupported => "unsupported",
+        _ => match StreamError::from_code(raw)? {
+            StreamError::NotFound if route == "commits/read" => "commit_not_found",
+            StreamError::NotFound => "stream_not_found",
+            StreamError::AlreadyExists => "destination_exists",
+            StreamError::Capacity => "capacity_exhausted",
+            other => other.code(),
         },
     };
     if code == "commit_not_found" && route != "commits/read" {
@@ -1082,8 +989,8 @@ mod tests {
 
     #[test]
     fn stream_error_codes_are_closed_and_stable() {
-        for code in StreamErrorCode::ALL {
-            assert!(is_stream_error_code(code.as_str()));
+        for error in StreamError::ALL {
+            assert!(is_stream_error_code(error.code()));
         }
         assert!(!is_stream_error_code("stream_not_found"));
         assert!(!is_stream_error_code("unknown"));

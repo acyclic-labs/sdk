@@ -576,20 +576,10 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
 }
 fn contract_error(code: &str) -> StreamError {
     match code {
-        "invalid_path" => StreamError::InvalidPath,
-        "invalid_argument" => StreamError::InvalidArgument,
-        "limit_exceeded" => StreamError::LimitExceeded,
-        "not_found" | "stream_not_found" | "commit_not_found" => StreamError::NotFound,
-        "already_exists" | "destination_exists" => StreamError::AlreadyExists,
-        "out_of_range" => StreamError::OutOfRange,
-        "hierarchy_changed" => StreamError::HierarchyChanged,
-        "capacity" | "capacity_exhausted" => StreamError::Capacity,
-        "access_denied" => StreamError::AccessDenied,
-        "idempotency_mismatch" => StreamError::IdempotencyMismatch,
-        "prefix_not_retained" => StreamError::PrefixNotRetained,
-        "deadline_elapsed" => StreamError::DeadlineElapsed,
-        "unsupported" => StreamError::Unsupported,
-        _ => StreamError::Unavailable,
+        "stream_not_found" | "commit_not_found" => StreamError::NotFound,
+        "destination_exists" => StreamError::AlreadyExists,
+        "capacity_exhausted" => StreamError::Capacity,
+        _ => StreamError::from_code(code).unwrap_or(StreamError::Unavailable),
     }
 }
 
