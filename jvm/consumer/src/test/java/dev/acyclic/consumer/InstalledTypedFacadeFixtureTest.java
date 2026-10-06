@@ -56,7 +56,7 @@ final class InstalledTypedFacadeFixtureTest {
           RustTypedClients.actorsActorsCreateActor(actors, actorRequest);
       assertTrue(actorResponse.hasActor());
       assertEquals("fixture-actor", actorResponse.actorActorId().value());
-      assertEquals("fixture", actorResponse.actor().getHomeRegion());
+      assertEquals("fixture", actorResponse.actor().homeRegion());
 
       StreamServiceGrpc.StreamServiceBlockingStub stream = StreamServiceGrpc.newBlockingStub(channel);
       Stream.AppendRequest appendWire = Stream.AppendRequest.newBuilder()
@@ -74,7 +74,7 @@ final class InstalledTypedFacadeFixtureTest {
       RustTypedResponses.StreamStreamAppendResponse committed =
           RustTypedClients.streamStreamAppend(stream, appendRequest);
       assertTrue(committed.hasCommitted());
-      assertEquals(1L, committed.committed().getTail());
+      assertEquals(1L, committed.committed().tail().value());
       assertEquals(32, committed.committedCommitId().value().size());
 
       RustTypedResponses.StreamStreamAppendResponse replay =
@@ -104,7 +104,7 @@ final class InstalledTypedFacadeFixtureTest {
           RustTypedClients.streamStreamAppend(
               stream, new RustTypedRequests.StreamStreamAppendRequest(recoveryWire));
       assertTrue(resumed.hasCommitted());
-      assertEquals(2L, resumed.committed().getTail());
+      assertEquals(2L, resumed.committed().tail().value());
 
       RustTypedRequests.StreamStreamReadRequest readRequest =
           new RustTypedRequests.StreamStreamReadRequest(Stream.ReadRequest.newBuilder()
@@ -115,7 +115,7 @@ final class InstalledTypedFacadeFixtureTest {
       Iterator<RustTypedResponses.StreamStreamReadResponse> read =
           RustTypedClients.streamStreamRead(stream, readRequest);
       assertTrue(read.hasNext());
-      assertEquals(1L, read.next().record().getSequence());
+      assertEquals(1L, read.next().record().sequence());
     } finally {
       channel.shutdownNow();
       channel.awaitTermination(5, TimeUnit.SECONDS);
