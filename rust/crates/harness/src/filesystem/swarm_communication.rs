@@ -300,13 +300,9 @@ impl DurableTaskHost for SwarmCommunicationHost {
             }
             .await;
             if let Err(error) = &result {
-                tracing::warn!(
-                    sender = %sender,
-                    recipient = %recipient,
-                    message = %message,
-                    error = %error,
-                    "local swarm message publication failed"
-                );
+                crate::stack_diagnostics::message_failure(&format!(
+                    "sender={sender} recipient={recipient} message={message} error={error}"
+                ));
             }
             result
         })
