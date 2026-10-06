@@ -1,0 +1,31 @@
+{
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "exit_code": -1073741571,
+  "source": "735ca71d100d5bd3ae6f5429cb5ef9ce97ac4e3d",
+  "qualification": "Diagnostic failure only; no acceptance requirement closed.",
+  "platform": "Windows native",
+  "stack_override": false,
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\735ca71d1-tool-return-trace\\source.tar",
+      "sha256": "148b6dbf4e6769c82adffa451c6d8187ed1b9f666a286b633ddbaa049d72dc7a"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\735ca71d1-tool-return-trace\\native.log",
+      "sha256": "bd8a7f3841e1c617d2edf6f655d61e2ba018318700debb16ece8f12eb4d03b97"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\735ca71d1-tool-return-trace\\exit-code",
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\735ca71d1-tool-return-trace\\unified_runtime_swarm.exe",
+      "sha256": "e4de5d535bb11909cdb27642b0bac1a9766a34d1d82f9bf6676576f5c5d8c1aa"
+    }
+  ],
+  "observation": "Edit and a following tool completed result validation, projection, staging, durable append and message insertion. Overflow happened before completed-batch-entry; next invocation must be traced.",
+  "failed": 1,
+  "result": "failed",
+  "passed": 0,
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test unified_runtime_swarm -j1 default_local_runtime_executes_two_children_grandchild_and_communication -- --exact --nocapture"
+}
