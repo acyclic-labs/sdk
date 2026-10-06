@@ -1667,7 +1667,15 @@ impl StockExecutor {
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<Option<ToolRejectionFeedback>> {
+        crate::stack_diagnostics::message_failure(&format!(
+            "resolve-tool-enter step={step} call_id={} name={}",
+            invocation.call_id, invocation.name
+        ));
         let records = journal.replay(operation_id).await?;
+        crate::stack_diagnostics::message_failure(&format!(
+            "resolve-tool-after-replay step={step} call_id={} name={}",
+            invocation.call_id, invocation.name
+        ));
         invocation.validate()?;
         let mut started = None;
         let mut completed_tool = None;
@@ -2394,6 +2402,10 @@ impl StockExecutor {
                     });
                 }
                 for invocation in calls {
+                    crate::stack_diagnostics::message_failure(&format!(
+                        "run-step-before-tool-call step={step} call_id={} name={}",
+                        invocation.call_id, invocation.name
+                    ));
                     let message = ModelMessage {
                         role: ModelRole::Assistant,
                         content: ModelContent::Part(ModelContentPart::ToolCall {
@@ -2404,18 +2416,26 @@ impl StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    if let Some(feedback) = self
-                        .resolve_tool_call(
-                            journal,
-                            input.operation_id,
-                            step,
-                            invocation,
-                            &mut prior_messages,
-                        )
-                        .await?
+                    let call_id = invocation.call_id.clone();
+                    let name = invocation.name.clone();
+                    let resolved = self.resolve_tool_call(
+                        journal,
+                        input.operation_id,
+                        step,
+                        invocation,
+                        &mut prior_messages,
+                    );
+                    crate::stack_diagnostics::future_size("resolve-tool-call", &resolved);
+                    crate::stack_diagnostics::message_failure(&format!(
+                        "run-step-after-tool-future step={step} call_id={call_id} name={name}"
+                    ));
+                    if let Some(feedback) = resolved.await?
                     {
                         rejection_evidence.push(feedback);
                     }
+                    crate::stack_diagnostics::message_failure(&format!(
+                        "run-step-after-tool-call step={step} call_id={call_id} name={name}"
+                    ));
                 }
                 let completed = prior_messages
                     .get(batch_start..)
