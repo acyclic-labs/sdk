@@ -6,11 +6,12 @@
 //! feature flag or instantiate a generated channel themselves.
 
 use super::{FACADE_SELECTION_POLICY, facade_operations};
+use std::sync::OnceLock;
 use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
     type_policy::{
-        resolved_request_fields, resolved_response_fields, resolved_rpc_methods, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
+        resolved_enum_fields, resolved_oneof_members, resolved_presence_fields, resolved_request_fields, resolved_response_fields, resolved_rpc_methods, FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldBinding,
         PublicFieldDirection, PublicNestedFieldKind, PublicNestedRoute, SEMANTIC_TYPES,
         ResolvedRequestField, ResolvedRpcMethod, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, semantic_type,
     },
@@ -271,6 +272,11 @@ fn python_public_type_exports() -> String {
         names.push(format!("{}Value", item.rust_name));
         names.push(snake_case(item.id));
     }
+    let mut enum_names = std::collections::BTreeSet::new();
+    for field in resolved_enum_inventory() {
+        enum_names.insert(descriptor_enum_projection_name(&field.enum_type));
+    }
+    names.extend(enum_names);
     for binding in PUBLIC_FIELD_BINDINGS {
         names.push(python_public_binding_name(binding));
     }
@@ -405,7 +411,8 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
                 | FieldType::Uint64
                 | FieldType::Fixed64,
             ) => "int".to_owned(),
-            Some(FieldType::Enum) => "OpenEnumValue".to_owned(),
+            Some(FieldType::Enum) if python_enum_type(field).is_some() => python_enum_type(field).unwrap(),
+            Some(FieldType::Enum) => "int".to_owned(),
             Some(FieldType::Message | FieldType::Group) => field
                 .type_name
                 .as_deref()
@@ -415,7 +422,7 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
         }
     };
     let repeated = field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry;
-    let optional = field.proto3_optional || field.oneof_index.is_some();
+    let optional = descriptor_has_presence(field);
     let value = if repeated { format!("tuple[{base}, ...]") } else { base };
     if optional { format!("{value} | None") } else { value }
 }
@@ -435,7 +442,14 @@ fn python_response_field_expression(field: &ResolvedRequestField, receiver: &str
         return format!("{}({wire})", item.rust_name);
     }
     match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
-        Some(FieldType::Enum) => format!("OpenEnumValue({wire})"),
+        Some(FieldType::Enum) => {
+            let enum_type = python_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned());
+            if field.label == Some(FieldLabel::Repeated as i32) {
+                format!("tuple({enum_type}.from_wire(item) for item in {wire})")
+            } else {
+                format!("{enum_type}.from_wire({wire})")
+            }
+        }
         Some(FieldType::Message | FieldType::Group) => field
             .type_name
             .as_deref()
@@ -450,7 +464,7 @@ fn python_response_field_property(field: &ResolvedRequestField) -> String {
     let name = field.json_name.as_str();
     let annotation = python_response_field_type(field);
     let expression = python_response_field_expression(field, "self._wire");
-    let presence = if field.proto3_optional || field.oneof_index.is_some() {
+    let presence = if descriptor_has_presence(field) {
         format!("        if not self._wire.HasField({name:?}):\n            return None\n")
     } else {
         String::new()
@@ -986,18 +1000,118 @@ fn python_type_projection() -> String {
         .expect("Rust policy must define UnknownOneof")
         .tag;
     output.push_str("@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n");
+    let enum_fields = resolved_enum_inventory();
+    let mut enum_types = std::collections::BTreeMap::<String, Vec<(String, i32)>>::new();
+    for entry in enum_fields {
+        let name = descriptor_enum_projection_name(&entry.enum_type);
+        let values = enum_types.entry(name).or_default();
+        for value in &entry.values {
+            if !values.iter().any(|(known, number)| known == &value.name && number == &value.number) {
+                values.push((value.name.clone(), value.number));
+            }
+        }
+    }
+    for (name, values) in &enum_types {
+        let known = values.iter().map(|(_, number)| number.to_string()).collect::<Vec<_>>().join(", ");
+        let names = values.iter().map(|(known, number)| format!("({number}, {known:?})")).collect::<Vec<_>>().join(", ");
+        output.push_str(&format!(
+            "@dataclass(frozen=True)\nclass {name}:\n    value: int\n\n    @classmethod\n    def from_wire(cls, value: int) -> \"{name}\":\n        return cls(value=int(value))\n\n    @property\n    def is_known(self) -> bool:\n        return self.value in ({known},)\n\n    @property\n    def is_unknown(self) -> bool:\n        return not self.is_known\n\n    @property\n    def name(self) -> str | None:\n        return dict(({names},)).get(self.value)\n\n\n",
+            name = name,
+            known = known,
+            names = names,
+        ));
+    }
+    output.push_str(
+        "@dataclass(frozen=True)\nclass EnumFieldMetadata:\n    enum_type: str\n    values: tuple[tuple[str, int], ...]\n    preserves_unknown_numeric: bool = True\n\n\nENUM_FIELDS: dict[tuple[str, str, str], EnumFieldMetadata] = {\n",
+    );
+    let mut emitted_enum_keys = std::collections::BTreeSet::new();
+    for entry in enum_fields {
+        let enum_key = format!("{}|{}|{}", entry.field.family, entry.field.message_path, entry.field.field);
+        if !emitted_enum_keys.insert(enum_key) { continue; }
+        let values = entry
+            .values
+            .iter()
+            .map(|value| format!("({:?}, {})", value.name, value.number))
+            .collect::<Vec<_>>()
+            .join(", ");
+        output.push_str(&format!(
+            "    ({family:?}, {message:?}, {field:?}): EnumFieldMetadata(enum_type={enum_type:?}, values=({values},), preserves_unknown_numeric={preserves}),\n",
+            family = entry.field.family,
+            message = entry.field.message_path,
+            field = entry.field.field,
+            enum_type = entry.enum_type,
+            values = values,
+            preserves = py_bool(entry.preserves_unknown_numeric),
+        ));
+    }
+    output.push_str("}\n\n");
+    let presence_fields = resolved_presence_inventory();
+    output.push_str("PRESENCE_FIELDS: dict[tuple[str, str, str, str], str] = {\n");
+    let mut emitted_presence_keys = std::collections::BTreeSet::new();
+    for entry in presence_fields {
+        let presence_key = format!("{}|{}|{}|{}", entry.field.family, entry.field.rpc, entry.field.message_path, entry.field.field);
+        if !emitted_presence_keys.insert(presence_key) { continue; }
+        output.push_str(&format!(
+            "    ({family:?}, {rpc:?}, {message:?}, {field:?}): {kind:?},\n",
+            family = entry.field.family,
+            rpc = entry.field.rpc,
+            message = entry.field.message_path,
+            field = entry.field.field,
+            kind = format!("{:?}", entry.kind),
+        ));
+    }
+    output.push_str("}\n\n");
+    let oneof_members = resolved_oneof_members()
+        .expect("Rust oneof members must resolve before Python projection");
+    let payload_names = oneof_members
+        .iter()
+        .map(generated_oneof_arm_name)
+        .collect::<Vec<_>>();
+    let payload_union = if payload_names.is_empty() {
+        "bytes".to_owned()
+    } else {
+        payload_names.join(" | ")
+    };
+    let mut emitted_oneof_arms = std::collections::BTreeSet::new();
+    for member in &oneof_members {
+        let arm = generated_oneof_arm_name(member);
+        if !emitted_oneof_arms.insert(arm.clone()) { continue; }
+        let payload_type = python_oneof_payload_type(member);
+        output.push_str(&format!(
+            "@dataclass(frozen=True)\nclass {arm}:\n    arm: Literal[{field:?}]\n    value: {payload_type}\n\n",
+            arm = arm,
+            field = member.field.field,
+            payload_type = payload_type,
+        ));
+    }
+    if let Some(member) = oneof_members.first() {
+        let arm = generated_oneof_arm_name(member);
+        output.push_str(&format!(
+            "def known_oneof_payload_for_test() -> KnownOneofPayload:\n    return {arm}(arm={field:?}, value={value})\n\n",
+            arm = arm,
+            field = member.field.field,
+            value = python_oneof_test_value(member),
+        ));
+    }
     output.push_str(&format!(
-        "class WirePayload(Protocol):\n    \"\"\"Named payload boundary for known Rust oneof arms.\"\"\"\n    pass\n\n\n@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    payload: WirePayload\n\n\n"
+        "KnownOneofPayload: TypeAlias = {payload_union}\n\n@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    arm: str\n    payload: KnownOneofPayload\n\n\n",
+        payload_union = payload_union,
     ));
     output.push_str(&format!(
         "@dataclass(frozen=True)\nclass UnknownOneof:\n    raw_payload: bytes\n    tag: Literal[{unknown_tag:?}] = {unknown_tag:?}\n\n\n"
     ));
     output.push_str(
-        &format!("def known_oneof(payload: WirePayload) -> KnownOneof:\n    return KnownOneof(tag={known_tag:?}, payload=payload)\n\n\n")
+        &format!("def known_oneof(payload: KnownOneofPayload) -> KnownOneof:\n    return KnownOneof(tag={known_tag:?}, arm=payload.arm, payload=payload)\n\n\n")
     );
     output.push_str(&format!(
-        "def encode_wire_choice(value: WireChoice) -> dict[str, object]:\n    checked = oneof_arm(value)\n    if isinstance(checked, KnownOneof):\n        return {{\"tag\": {known_tag:?}, \"payload\": checked.payload}}\n    return {{\"tag\": {unknown_tag:?}, \"raw_payload\": checked.raw_payload}}\n\n\ndef decode_wire_choice(value: object) -> WireChoice:\n    if not isinstance(value, dict):\n        raise TypeError(\"wire_choice must decode from an object\")\n    tag = value.get(\"tag\")\n    if tag == {known_tag:?}:\n        return KnownOneof(tag={known_tag:?}, payload=value.get(\"payload\"))\n    if tag == {unknown_tag:?}:\n        raw_payload = value.get(\"raw_payload\")\n        if not isinstance(raw_payload, bytes):\n            raise TypeError(\"unknown oneof payload must be bytes\")\n        return UnknownOneof(raw_payload=raw_payload)\n    raise ValueError(\"wire_choice has an unknown discriminant\")\n\n\n"
+        "def encode_wire_choice(value: WireChoice) -> dict[str, object]:\n    checked = oneof_arm(value)\n    if isinstance(checked, KnownOneof):\n        return {{\"tag\": {known_tag:?}, \"arm\": checked.arm, \"payload\": checked.payload}}\n    return {{\"tag\": {unknown_tag:?}, \"raw_payload\": checked.raw_payload}}\n\n\ndef decode_wire_choice(value: object) -> WireChoice:\n    if not isinstance(value, dict):\n        raise TypeError(\"wire_choice must decode from an object\")\n    tag = value.get(\"tag\")\n    if tag == {known_tag:?}:\n        payload = value.get(\"payload\")\n        if not isinstance(payload, tuple(KNOWN_ONEOF_PAYLOAD_TYPES)):\n            raise TypeError(\"known oneof payload must be a generated Rust arm\")\n        arm = value.get(\"arm\")\n        if arm != payload.arm:\n            raise ValueError(\"known oneof arm does not match payload\")\n        return KnownOneof(tag={known_tag:?}, arm=arm, payload=payload)\n    if tag == {unknown_tag:?}:\n        raw_payload = value.get(\"raw_payload\")\n        if not isinstance(raw_payload, bytes):\n            raise TypeError(\"unknown oneof payload must be bytes\")\n        return UnknownOneof(raw_payload=raw_payload)\n    raise ValueError(\"wire_choice has an unknown discriminant\")\n\n\n"
     ));
+    output.push_str("KNOWN_ONEOF_PAYLOAD_TYPES: tuple[type[object], ...] = (");
+    for (index, arm) in payload_names.iter().enumerate() {
+        if index != 0 { output.push_str(", "); }
+        output.push_str(arm);
+    }
+    output.push_str(",)\n\n");
     output.push_str("SEMANTIC_TYPE_RULES: dict[str, tuple[str, ...]] = {\n");
     for item in SEMANTIC_TYPES {
         output.push_str(&format!(
@@ -1337,6 +1451,108 @@ fn python_message_name(type_name: &str) -> &str {
     type_name.rsplit('.').next().unwrap_or(type_name)
 }
 
+fn descriptor_has_presence(field: &ResolvedRequestField) -> bool {
+    resolved_presence_inventory()
+        .iter()
+        .any(|entry| {
+            let candidate = &entry.field;
+            candidate.family == field.family
+                && candidate.rpc == field.rpc
+                && candidate.message_path == field.message_path
+                && candidate.field == field.field
+                && candidate.number == field.number
+        })
+}
+
+fn resolved_presence_inventory() -> &'static [crate::type_policy::ResolvedPresenceField] {
+    static INVENTORY: OnceLock<Vec<crate::type_policy::ResolvedPresenceField>> = OnceLock::new();
+    INVENTORY
+        .get_or_init(|| resolved_presence_fields().expect("Rust presence fields must resolve before facade generation"))
+}
+
+fn resolved_enum_inventory() -> &'static [crate::type_policy::ResolvedEnumField] {
+    static INVENTORY: OnceLock<Vec<crate::type_policy::ResolvedEnumField>> = OnceLock::new();
+    INVENTORY
+        .get_or_init(|| resolved_enum_fields().expect("Rust enum fields must resolve before facade generation"))
+}
+
+fn descriptor_enum_field(field: &ResolvedRequestField) -> Option<crate::type_policy::ResolvedEnumField> {
+    resolved_enum_inventory()
+        .into_iter()
+        .find(|entry| {
+            entry.field.family == field.family
+                && entry.field.rpc == field.rpc
+                && entry.field.message_path == field.message_path
+                && entry.field.field == field.field
+                && entry.field.number == field.number
+        })
+        .cloned()
+}
+
+/// Project a fully-qualified Rust descriptor enum into a collision-safe public
+/// type name.  Package and message identity stay in the name so two enums
+/// with the same protobuf leaf name cannot collapse into one target type.
+fn descriptor_enum_projection_name(enum_type: &str) -> String {
+    enum_type
+        .split('.')
+        .filter(|part| {
+            let version = part.len() > 1
+                && part.starts_with('v')
+                && part[1..].chars().all(|c| c.is_ascii_digit());
+            !part.is_empty() && *part != "acyclic" && !version
+        })
+        .map(pascal_case)
+        .collect::<String>()
+}
+
+fn python_enum_type(field: &ResolvedRequestField) -> Option<String> {
+    descriptor_enum_field(field).map(|entry| descriptor_enum_projection_name(&entry.enum_type))
+}
+
+fn go_enum_type(field: &ResolvedRequestField) -> Option<String> {
+    descriptor_enum_field(field).map(|entry| descriptor_enum_projection_name(&entry.enum_type))
+}
+
+fn generated_oneof_arm_name(member: &crate::type_policy::ResolvedOneofMember) -> String {
+    let rpc = member
+        .field
+        .rpc
+        .rsplit('/')
+        .next()
+        .unwrap_or(&member.field.rpc);
+    let path = member.field.message_path.replace('.', "_");
+    pascal_case(&format!(
+        "oneof_arm_{}_{}_{}_{}",
+        member.field.family, rpc, path, member.field.field
+    ))
+}
+
+fn python_oneof_payload_type(member: &crate::type_policy::ResolvedOneofMember) -> String {
+    let type_name = python_descriptor_field_type(&member.field);
+    type_name.strip_suffix(" | None").unwrap_or(&type_name).to_owned()
+}
+
+fn go_oneof_payload_type(member: &crate::type_policy::ResolvedOneofMember) -> String {
+    let type_name = go_rpc_field_type(&member.field);
+    type_name.strip_prefix('*').unwrap_or(&type_name).to_owned()
+}
+
+fn python_oneof_test_value(member: &crate::type_policy::ResolvedOneofMember) -> String {
+    match member.field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+        Some(FieldType::Message | FieldType::Group) => member
+            .field
+            .type_name
+            .as_deref()
+            .map(|name| format!("{}.{}()", python_module_for_type(name, &member.field.family), python_message_name(name)))
+            .unwrap_or_else(|| "None".to_owned()),
+        Some(FieldType::String) => "\"\"".to_owned(),
+        Some(FieldType::Bytes) => "b\"\"".to_owned(),
+        Some(FieldType::Bool) => "False".to_owned(),
+        Some(FieldType::Float | FieldType::Double) => "0.0".to_owned(),
+        _ => "0".to_owned(),
+    }
+}
+
 fn python_descriptor_field_type(field: &ResolvedRequestField) -> String {
     let base = if let Some(semantic) = field.semantic_type.as_deref().and_then(semantic_type) {
         semantic.rust_name.to_owned()
@@ -1347,7 +1563,7 @@ fn python_descriptor_field_type(field: &ResolvedRequestField) -> String {
             Some(FieldType::Bool) => "bool".to_owned(),
             Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Uint32 | FieldType::Fixed32 | FieldType::Uint64 | FieldType::Fixed64) => "int".to_owned(),
             Some(FieldType::Float | FieldType::Double) => "float".to_owned(),
-            Some(FieldType::Enum) => "int".to_owned(),
+            Some(FieldType::Enum) => python_enum_type(field).unwrap_or_else(|| "int".to_owned()),
             Some(FieldType::Message | FieldType::Group) => {
                 let type_name = field.type_name.as_deref().unwrap_or("google.protobuf.Timestamp");
                 if type_name == "google.protobuf.Timestamp" {
@@ -1366,7 +1582,7 @@ fn python_descriptor_field_type(field: &ResolvedRequestField) -> String {
     } else {
         base
     };
-    if field.proto3_optional || field.oneof_index.is_some() {
+    if descriptor_has_presence(field) {
         format!("{value} | None")
     } else {
         value
@@ -1413,14 +1629,24 @@ fn python_request_assignment(field: &ResolvedRequestField) -> String {
     let semantic = field.semantic_type.as_deref().and_then(semantic_type);
     let expression = semantic
         .map(|item| format!("{}({source})", snake_case(item.id)))
-        .unwrap_or(source.clone());
+        .unwrap_or_else(|| {
+            if matches!(kind, FieldType::Enum) {
+                if field.label == Some(FieldLabel::Repeated as i32) {
+                    format!("[item.value for item in {source}]")
+                } else {
+                    format!("{source}.value")
+                }
+            } else {
+                source.clone()
+            }
+        });
     if field.map_entry {
         return format!("        if {source} is not None:\n            {wire_field}.update({source})\n");
     }
     if field.label == Some(FieldLabel::Repeated as i32) {
         return format!("        if {source} is not None:\n            {wire_field}.extend({expression})\n");
     }
-    if field.proto3_optional || field.oneof_index.is_some() {
+    if descriptor_has_presence(field) {
         if matches!(kind, FieldType::Message | FieldType::Group) {
             return format!("        if {source} is not None:\n            {wire_field}.CopyFrom({expression})\n");
         }
@@ -1541,9 +1767,7 @@ fn python_public_field_models() -> String {
                     expression = python_public_binding_from_wire_value(binding, &field_name, &function),
                 ));
             }
-            PublicFieldDirection::Request
-            | PublicFieldDirection::NestedMessage
-            | PublicFieldDirection::EmbeddedOnly => {
+            PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
                 let expression =
                     python_public_binding_wire_value(binding, item, &field_name, &function);
                 let presence = if public_binding_requires_presence(binding) {
@@ -1560,6 +1784,27 @@ fn python_public_field_models() -> String {
                     expression = expression,
                     wire_field = binding.wire_field,
                     presence = presence,
+                ));
+            }
+            PublicFieldDirection::EmbeddedOnly => {
+                // Embedded bindings are usable in both directions: they are
+                // carried by nested request messages, while the same Rust
+                // semantic model must decode the nested value when it is
+                // returned by an embedded operation. Keep both projections
+                // generated from this single Rust-owned binding.
+                let to_wire_expression =
+                    python_public_binding_wire_value(binding, item, &field_name, &function);
+                let from_wire_expression =
+                    python_public_binding_from_wire_value(binding, &field_name, &function);
+                output.push_str(&format!(
+                    "    @classmethod\n    def from_wire(cls, message: {module}.{message}) -> \"{class_name}\":\n        return cls({field_name}={from_wire_expression})\n\n    def to_wire(self) -> {module}.{message}:\n        value = {to_wire_expression}\n        return {module}.{message}({wire_field}=value)\n\n",
+                    module = module,
+                    message = binding.message,
+                    field_name = field_name,
+                    class_name = class_name,
+                    from_wire_expression = from_wire_expression,
+                    to_wire_expression = to_wire_expression,
+                    wire_field = binding.wire_field,
                 ));
             }
         }
@@ -1660,6 +1905,7 @@ from acyclic_sdk.remote import (
     ActorInvokeRequest,
     ActorInvokeResponse,
     Client,
+    ENUM_FIELDS,
     HarnessFileRefPath,
     InferenceEvaluationSpecSpecDigest,
     KnownOneof,
@@ -1669,6 +1915,7 @@ from acyclic_sdk.remote import (
     ObjectsGetObjectResponse,
     ObjectsCreateBucketRequest,
     InferenceCreateEvaluationRequest,
+    PRESENCE_FIELDS,
     SemanticFieldValues,
     UnknownOneof,
     WorkersSelectDeploymentRequestAlias,
@@ -1678,12 +1925,14 @@ from acyclic_sdk.remote import (
     idempotency_key_bytes,
     idempotency_key_text,
     known_oneof,
+    known_oneof_payload_for_test,
     method,
     oneof_arm,
     page_limit,
     revision_digest,
     sha256_digest,
     harness_pb2,
+    actors_pb2,
     inference_pb2,
     objects_pb2,
 )
@@ -1695,9 +1944,16 @@ def test_rust_owned_refinements_accept_valid_values():
     assert page_limit(1) == 1
     assert revision_digest(b"r" * 32) == b"r" * 32
     assert sha256_digest(b"d" * 32) == b"d" * 32
-    assert oneof_arm(known_oneof({"payload": 1})).tag == "known"
+    assert oneof_arm(known_oneof(known_oneof_payload_for_test())).tag == "known"
     assert oneof_arm(UnknownOneof(raw_payload=b"future")).tag == "unknown"
     assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
+    assert ENUM_FIELDS and all(item.preserves_unknown_numeric for item in ENUM_FIELDS.values())
+    unknown_enum = actors_pb2.ActorObservation(state=123)
+    round_tripped_enum = actors_pb2.ActorObservation.FromString(unknown_enum.SerializeToString())
+    assert round_tripped_enum.state == 123
+    present_oneof = actors_pb2.SubscriptionStart(cursor=7)
+    assert present_oneof.WhichOneof("start") == "cursor"
+    assert PRESENCE_FIELDS
     request = ActorInvokeRequest(actor_id=actor_id("actor"), method=method("run"))
     assert request.to_wire().actor_id == "actor"
     fields = SemanticFieldValues(
@@ -1863,9 +2119,63 @@ fn go_type_projection() -> String {
         ));
     }
     output.push_str("}\n\n");
-    output.push_str(&format!(
-        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\n// WirePayload is the Rust-owned boundary for a known oneof arm.\n// Concrete generated payload views implement this sealed interface.\ntype WirePayload interface {{ isWirePayload() }}\n\n// JsonWirePayload preserves an open known arm until a generated concrete view\n// is available, without erasing the public API to any.\ntype JsonWirePayload map[string]json.RawMessage\n\nfunc (JsonWirePayload) isWirePayload() {{}}\n\ntype KnownOneof struct {{ Tag string; Payload WirePayload }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload WirePayload) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\ntype WireChoiceEnvelope struct {{\n\tTag string `json:\"tag\"`\n\tPayload WirePayload `json:\"payload,omitempty\"`\n\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n}}\n\nfunc EncodeWireChoice(value WireChoice) (WireChoiceEnvelope, error) {{\n\tif value == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof has invalid tag\") }}\n\t\tif choice.Payload == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {known_tag:?}, Payload: choice.Payload}}, nil\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), choice.RawPayload...)}}, nil\n\tdefault:\n\t\treturn WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n}}\n\nfunc EncodeWireChoiceJSON(value WireChoice) ([]byte, error) {{\n\tenvelope, err := EncodeWireChoice(value)\n\tif err != nil {{ return nil, err }}\n\treturn json.Marshal(envelope)\n}}\n\nfunc DecodeWireChoice(envelope WireChoiceEnvelope) (WireChoice, error) {{\n\tswitch envelope.Tag {{\n\tcase {known_tag:?}:\n\t\tif envelope.Payload == nil {{ return nil, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn KnownOneof{{Tag: {known_tag:?}, Payload: envelope.Payload}}, nil\n\tcase {unknown_tag:?}:\n\t\treturn UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), envelope.RawPayload...)}}, nil\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unknown discriminant\")\n\t}}\n}}\n\nfunc DecodeWireChoiceJSON(payload []byte) (WireChoice, error) {{\n\tvar raw struct {{\n\t\tTag string `json:\"tag\"`\n\t\tPayload json.RawMessage `json:\"payload,omitempty\"`\n\t\tRawPayload []byte `json:\"raw_payload,omitempty\"`\n\t}}\n\tif err := json.Unmarshal(payload, &raw); err != nil {{ return nil, err }}\n\tenvelope := WireChoiceEnvelope{{Tag: raw.Tag, RawPayload: raw.RawPayload}}\n\tif raw.Tag == {known_tag:?} {{\n\t\tvar known JsonWirePayload\n\t\tif err := json.Unmarshal(raw.Payload, &known); err != nil {{ return nil, err }}\n\t\tenvelope.Payload = known\n\t}}\n\treturn DecodeWireChoice(envelope)\n}}\n\n"
-    ));
+    let enum_fields = resolved_enum_inventory();
+    output.push_str("type EnumFieldMetadata struct { EnumType string; Values map[string]int32; PreservesUnknownNumeric bool }\n\nvar EnumFields = map[string]EnumFieldMetadata{\n");
+    let mut emitted_enum_keys = std::collections::BTreeSet::new();
+    for entry in enum_fields {
+        let enum_key = format!("{}|{}|{}", entry.field.family, entry.field.message_path, entry.field.field);
+        if !emitted_enum_keys.insert(enum_key) { continue; }
+        let values = entry.values.iter().map(|value| format!("{:?}: {}", value.name, value.number)).collect::<Vec<_>>().join(", ");
+        output.push_str(&format!("\t{key:?}: {{EnumType: {enum_type:?}, Values: map[string]int32{{{values}}}, PreservesUnknownNumeric: {preserves}}},\n", key = format!("{}.{}.{}", entry.field.family, entry.field.message_path, entry.field.field), enum_type = entry.enum_type, values = values, preserves = entry.preserves_unknown_numeric));
+    }
+    output.push_str("}\n\n");
+    let mut enum_types = std::collections::BTreeMap::<String, Vec<(String, i32)>>::new();
+    for entry in enum_fields {
+        let name = descriptor_enum_projection_name(&entry.enum_type);
+        let values = enum_types.entry(name).or_default();
+        for value in &entry.values {
+            if !values.iter().any(|(known, number)| known == &value.name && number == &value.number) {
+                values.push((value.name.clone(), value.number));
+            }
+        }
+    }
+    for (name, values) in &enum_types {
+        output.push_str(&format!(
+            "type {name} struct {{ Value int32 }}\n\nfunc New{name}(value int32) {name} {{ return {name}{{Value: value}} }}\n\nfunc (value {name}) IsKnown() bool {{ switch value.Value {{ {known_cases} default: return false }} }}\n\nfunc (value {name}) IsUnknown() bool {{ return !value.IsKnown() }}\n\nfunc (value {name}) Name() string {{ switch value.Value {{ {name_cases} default: return \"\" }} }}\n\n",
+            name = name,
+            known_cases = values.iter().map(|(_, number)| format!("case {number}: return true;")).collect::<String>(),
+            name_cases = values.iter().map(|(known, number)| format!("case {number}: return {known:?};")).collect::<String>(),
+        ));
+    }
+    let presence_fields = resolved_presence_inventory();
+    output.push_str("type PresenceKind string\n\nconst (\n\tPresenceMessage PresenceKind = \"Message\"\n\tPresenceOneof PresenceKind = \"Oneof\"\n\tPresenceExplicitOptional PresenceKind = \"ExplicitOptional\"\n)\n\nvar PresenceFields = map[string]PresenceKind{\n");
+    let mut emitted_presence_keys = std::collections::BTreeSet::new();
+    for entry in presence_fields {
+        let presence_key = format!("{}|{}|{}|{}", entry.field.family, entry.field.rpc, entry.field.message_path, entry.field.field);
+        if !emitted_presence_keys.insert(presence_key) { continue; }
+        let kind = match entry.kind {
+            crate::type_policy::ResolvedPresenceKind::Message => "PresenceMessage",
+            crate::type_policy::ResolvedPresenceKind::Oneof => "PresenceOneof",
+            crate::type_policy::ResolvedPresenceKind::ExplicitOptional => "PresenceExplicitOptional",
+        };
+        output.push_str(&format!("\t{key:?}: {kind},\n", key = format!("{}|{}|{}|{}", entry.field.family, entry.field.rpc, entry.field.message_path, entry.field.field)));
+    }
+    output.push_str("}\n\n");
+    let oneof_members = resolved_oneof_members().expect("Rust oneof members must resolve before Go projection");
+    output.push_str("type WireChoice interface { isWireChoice() }\n\ntype KnownOneofPayload interface { isKnownOneofPayload() }\n\n");
+    let mut emitted_oneof_arms = std::collections::BTreeSet::new();
+    for member in &oneof_members {
+        let arm = generated_oneof_arm_name(member);
+        if !emitted_oneof_arms.insert(arm.clone()) { continue; }
+        let payload_type = go_oneof_payload_type(member);
+        output.push_str(&format!("type {arm} struct {{ Arm string; Value {payload_type} }}\n\nfunc ({arm}) isKnownOneofPayload() {{}}\n\n", arm = arm, payload_type = payload_type));
+    }
+    if let Some(member) = oneof_members.first() {
+        let arm = generated_oneof_arm_name(member);
+        let payload_type = go_oneof_payload_type(member);
+        output.push_str(&format!("func newKnownOneofPayloadForTest() KnownOneofPayload {{ var value {payload_type}; return {arm}{{Arm: {field:?}, Value: value}} }}\n\n", arm = arm, payload_type = payload_type, field = member.field.field));
+    }
+    output.push_str(&format!("type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype KnownOneof struct {{ Tag string; Arm string; Payload KnownOneofPayload }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload KnownOneofPayload) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\ntype WireChoiceEnvelope struct {{ Tag string `json:\"tag\"`; Arm string `json:\"arm,omitempty\"`; Payload KnownOneofPayload `json:\"payload,omitempty\"`; RawPayload []byte `json:\"raw_payload,omitempty\"` }}\n\nfunc EncodeWireChoice(value WireChoice) (WireChoiceEnvelope, error) {{\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} || choice.Payload == nil {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {known_tag:?}, Arm: choice.Arm, Payload: choice.Payload}}, nil\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return WireChoiceEnvelope{{}}, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\t\treturn WireChoiceEnvelope{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), choice.RawPayload...)}}, nil\n\tdefault:\n\t\treturn WireChoiceEnvelope{{}}, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n}}\n\nfunc EncodeWireChoiceJSON(value WireChoice) ([]byte, error) {{ envelope, err := EncodeWireChoice(value); if err != nil {{ return nil, err }}; return json.Marshal(envelope) }}\n\nfunc DecodeWireChoice(envelope WireChoiceEnvelope) (WireChoice, error) {{\n\tswitch envelope.Tag {{\n\tcase {known_tag:?}:\n\t\tif envelope.Payload == nil {{ return nil, fmt.Errorf(\"known oneof payload must be present\") }}\n\t\treturn KnownOneof{{Tag: {known_tag:?}, Arm: envelope.Arm, Payload: envelope.Payload}}, nil\n\tcase {unknown_tag:?}:\n\t\treturn UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), envelope.RawPayload...)}}, nil\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unknown discriminant\")\n\t}}\n}}\n\nfunc DecodeWireChoiceJSON(payload []byte) (WireChoice, error) {{\n\tvar raw struct {{ Tag string `json:\"tag\"`; RawPayload []byte `json:\"raw_payload,omitempty\"` }}\n\tif err := json.Unmarshal(payload, &raw); err != nil {{ return nil, err }}\n\tif raw.Tag == {unknown_tag:?} {{ return DecodeWireChoice(WireChoiceEnvelope{{Tag: raw.Tag, RawPayload: raw.RawPayload}}) }}\n\treturn nil, fmt.Errorf(\"known oneof JSON requires a generated typed payload\")\n}}\n\n", known_tag = known_tag, unknown_tag = unknown_tag));
     let mut emitted_go_types = Vec::new();
     for item in SEMANTIC_TYPES {
         if item.wire_kind == WireValueKind::Oneof {
@@ -2119,7 +2429,7 @@ fn go_public_field_models() -> String {
             "type {type_name} struct {{ {field_name} {field_type} }}\n\n"
         ));
         match binding.direction {
-            PublicFieldDirection::Response => {
+            PublicFieldDirection::Response | PublicFieldDirection::EmbeddedOnly => {
                 output.push_str(&format!(
                     "func {type_name}FromWire(message *{module}.{message}) ({type_name}, error) {{\n\tvalue, err := {constructor}\n\tif err != nil {{ return {type_name}{{}}, err }}\n\treturn {type_name}{{{field_name}: value}}, nil\n}}\n\n",
                     type_name = type_name,
@@ -2128,10 +2438,11 @@ fn go_public_field_models() -> String {
                     constructor = go_constructor_call(item, &go_public_binding_from_wire_expression(binding, &wire_field)),
                     field_name = field_name,
                 ));
+                if matches!(binding.direction, PublicFieldDirection::Response) {
+                    continue;
+                }
             }
-            PublicFieldDirection::Request
-            | PublicFieldDirection::NestedMessage
-            | PublicFieldDirection::EmbeddedOnly => {
+            PublicFieldDirection::Request | PublicFieldDirection::NestedMessage => {
                 if public_binding_requires_presence(binding) && public_binding_is_message(binding) {
                     output.push_str(&format!(
                         "func (request {type_name}) ToWire() (*{module}.{message}, error) {{\n\tif request.{field_name} == nil {{ return nil, fmt.Errorf(\"{field_name} must be present\") }}\n\treturn &{module}.{message}{{{wire_field}: request.{field_name}}}, nil\n}}\n\n",
@@ -2345,7 +2656,7 @@ fn go_rpc_field_type(field: &ResolvedRequestField) -> String {
             Some(FieldType::Double) => "float64".to_owned(), Some(FieldType::Float) => "float32".to_owned(),
             Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32) => "int32".to_owned(), Some(FieldType::Uint32 | FieldType::Fixed32) => "uint32".to_owned(),
             Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64) => "int64".to_owned(), Some(FieldType::Uint64 | FieldType::Fixed64) => "uint64".to_owned(),
-            Some(FieldType::Enum) => "OpenEnumValue".to_owned(), Some(FieldType::Message | FieldType::Group) => field.type_name.as_deref().map(|name| go_message_wire_type(&field.family, name)).unwrap_or_else(|| "proto.Message".to_owned()), _ => "[]byte".to_owned(),
+            Some(FieldType::Enum) => go_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned()), Some(FieldType::Message | FieldType::Group) => field.type_name.as_deref().map(|name| go_message_wire_type(&field.family, name)).unwrap_or_else(|| "proto.Message".to_owned()), _ => "[]byte".to_owned(),
         }
     };
     if field.map_entry { base = "map[string]string".to_owned(); }
@@ -2358,6 +2669,10 @@ fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
     let target = format!("wire.{}", go_rpc_field_identifier(field));
     let source = format!("request.{}", go_rpc_field_identifier(field));
     let Some(kind) = field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) else { return String::new() };
+    if matches!(kind, FieldType::Enum) && field.label == Some(FieldLabel::Repeated as i32) {
+        let wire_enum = go_proto_enum_type(field);
+        return format!("\tfor _, item := range {source} {{ wire.{target} = append(wire.{target}, {wire_enum}(item.Value)) }}\n", source = source, target = go_rpc_field_identifier(field), wire_enum = wire_enum);
+    }
     let expression = if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
         match item.id {
             "machine_id" => format!("&machinesv1.MachineId{{Value: {}[:]}}", source),
@@ -2372,7 +2687,12 @@ fn go_rpc_assignment(field: &ResolvedRequestField) -> String {
             _ => source.clone(),
         }
     } else if matches!(kind, FieldType::Enum) {
-        format!("{}({})", go_enum_wire_type(field), go_deref_if_pointer(field, &source))
+        let value = if descriptor_has_presence(field) {
+            format!("(*{source}).Value")
+        } else {
+            format!("{source}.Value")
+        };
+        value
     } else { go_deref_if_pointer(field, &source) };
     if field.oneof_index.is_some() && !field.proto3_optional {
         let oneof = field.oneof_name.as_deref().map(pascal_case).unwrap_or_else(|| "Selector".to_owned());
@@ -2393,7 +2713,7 @@ fn go_deref_if_pointer(field: &ResolvedRequestField, source: &str) -> String {
     if field.oneof_index.is_some() && !field.proto3_optional { format!("*{source}") } else { source.to_owned() }
 }
 
-fn go_enum_wire_type(field: &ResolvedRequestField) -> String {
+fn go_proto_enum_type(field: &ResolvedRequestField) -> String {
     let type_name = field.type_name.as_deref().unwrap_or("int32");
     let module = if type_name.contains(".protocol.") { "protocolv1" } else { go_module_for_family(&field.family) };
     format!("{}.{}", module, type_name.rsplit('.').next().unwrap_or(type_name))
@@ -2672,7 +2992,7 @@ fn go_response_field_type(field: &ResolvedRequestField) -> String {
             Some(FieldType::Uint32 | FieldType::Fixed32) => "uint32".to_owned(),
             Some(FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64) => "int64".to_owned(),
             Some(FieldType::Uint64 | FieldType::Fixed64) => "uint64".to_owned(),
-            Some(FieldType::Enum) => "OpenEnumValue".to_owned(),
+            Some(FieldType::Enum) => go_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned()),
             Some(FieldType::Message | FieldType::Group) => field
                 .type_name
                 .as_deref()
@@ -2683,7 +3003,7 @@ fn go_response_field_type(field: &ResolvedRequestField) -> String {
     };
     if field.label == Some(FieldLabel::Repeated as i32) && !field.map_entry {
         format!("[]{base}")
-    } else if field.proto3_optional || field.oneof_index.is_some() {
+    } else if descriptor_has_presence(field) {
         if base.starts_with('*') {
             base
         } else {
@@ -2701,7 +3021,8 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
     }
     if field.label == Some(FieldLabel::Repeated as i32) {
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Enum)) {
-            return format!("func() []OpenEnumValue {{ result := make([]OpenEnumValue, 0, len({getter})); for _, item := range {getter} {{ result = append(result, OpenEnumValue(item)) }}; return result }}()", getter = getter);
+            let enum_type = go_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned());
+            return format!("func() []{enum_type} {{ result := make([]{enum_type}, 0, len({getter})); for _, item := range {getter} {{ result = append(result, {enum_type}{{Value: int32(item)}}) }}; return result }}()", enum_type = enum_type, getter = getter);
         }
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group))
             && let Some(type_name) = field.type_name.as_deref()
@@ -2714,6 +3035,9 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
     if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
         if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
             let alias = go_type_name(item.rust_name);
+            if descriptor_has_presence(field) {
+                return format!("func() *{alias} {{ var result {alias}; copy(result[:], {getter}.GetValue()); return &result }}()", alias = alias, getter = getter);
+            }
             return format!("func() {alias} {{ var result {alias}; copy(result[:], {getter}.GetValue()); return result }}()", alias = alias, getter = getter);
         }
         if item.wire_kind == WireValueKind::Message {
@@ -2723,14 +3047,17 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
             return getter;
         }
         let expression = format!("{}({getter})", go_type_name(item.rust_name));
-        if field.proto3_optional || field.oneof_index.is_some() {
+        if descriptor_has_presence(field) {
             let ty = go_response_field_type(field).trim_start_matches('*').to_owned();
             return format!("func() *{ty} {{ value := {expression}; return &value }}()", ty = ty, expression = expression);
         }
         return expression;
     }
     let expression = match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
-        Some(FieldType::Enum) => format!("OpenEnumValue({getter})"),
+        Some(FieldType::Enum) => {
+            let enum_type = go_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned());
+            format!("{enum_type}{{Value: int32({getter})}}")
+        }
         Some(FieldType::Message | FieldType::Group) => field
             .type_name
             .as_deref()
@@ -2741,7 +3068,7 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
             .unwrap_or(getter),
         _ => getter,
     };
-    if field.proto3_optional || field.oneof_index.is_some() {
+    if descriptor_has_presence(field) {
         if matches!(field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()), Some(FieldType::Message | FieldType::Group)) {
             return expression;
         }
@@ -2991,8 +3318,9 @@ package acyclicsdk
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 )
 
 import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
@@ -3006,7 +3334,15 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
-	if _, err := NewWireChoice(NewKnownOneof(JsonWirePayload{"payload": json.RawMessage("1")})); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewKnownOneof(newKnownOneofPayloadForTest())); err != nil { t.Fatal(err) }
+	if len(EnumFields) == 0 || len(PresenceFields) == 0 { t.Fatal("Rust enum and presence inventories are empty") }
+	for _, field := range EnumFields { if !field.PreservesUnknownNumeric { t.Fatal("enum unknown values are not preserved") } }
+	unknownEnum := &actorsv1.ActorObservation{State: actorsv1.ActorState(123)}
+	encodedEnum, err := proto.Marshal(unknownEnum); if err != nil { t.Fatal(err) }
+	decodedEnum := &actorsv1.ActorObservation{}; if err := proto.Unmarshal(encodedEnum, decodedEnum); err != nil { t.Fatal(err) }
+	if decodedEnum.GetState() != actorsv1.ActorState(123) { t.Fatalf("unknown enum changed: %v", decodedEnum.GetState()) }
+	presentOneof := &actorsv1.SubscriptionStart{Start: &actorsv1.SubscriptionStart_Cursor{Cursor: 7}}
+	if presentOneof.GetStart() == nil || presentOneof.GetCursor() != 7 { t.Fatal("oneof presence was not retained") }
 	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
 	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
 	if err != nil { t.Fatal(err) }
