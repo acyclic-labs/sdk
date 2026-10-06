@@ -107,6 +107,7 @@ const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 struct LocalHarnessEffectRecorder {
     journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
     owner: SwarmOwnerFence,
+    global_root: bool,
 }
 
 impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
@@ -129,6 +130,16 @@ impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
                 )
                 .await
         })
+    }
+
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        if !self.global_root {
+            return None;
+        }
+        self.journal
+            .try_lock()
+            .ok()
+            .and_then(|journal| journal.root_remaining_execution_time_ms().ok())
     }
 }
 
@@ -2047,6 +2058,7 @@ impl LocalModelForkPublisher {
             budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
                 journal: swarm.budget_journal.clone(),
                 owner: swarm.config.budget.owner.clone(),
+                global_root: false,
             }));
             budget
         };
@@ -5426,6 +5438,7 @@ impl PersistentLocalSwarm {
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
             owner: self.config.budget.owner.clone(),
+            global_root: true,
         }));
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
         let declaration = self.declarations.lock().await.get(&task).cloned();
@@ -6340,6 +6353,7 @@ impl PersistentLocalSwarm {
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
             owner: self.config.budget.owner.clone(),
+            global_root: false,
         }));
         let child_result = Self::run_owned_child_turn(
             harness.clone(), bundle, admission, request.clone(), budget_token.clone(),

@@ -194,6 +194,13 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_resource_limits()
     }
 
+    /// Returns the current root execution remainder from the durable session
+    /// projection. Long-lived provider boundaries use this to observe child
+    /// reservations admitted after their initial context was created.
+    pub fn root_remaining_execution_time_ms(&self) -> Result<u64> {
+        Ok(self.budget.root_usage_limiter()?.remaining_execution_time_ms())
+    }
+
     /// Creates the provider guard that root model work must use before it
     /// consumes another session resource slice.
     pub fn root_usage_limiter(

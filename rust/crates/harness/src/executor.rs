@@ -503,6 +503,14 @@ pub trait HarnessEffectRecorder: Send + Sync {
         effect_id: IdempotencyKey,
         elapsed_ms: u64,
     ) -> BoxFuture<'a, Result<()>>;
+
+    /// Returns the session-global execution remainder when the recorder is
+    /// backed by the same durable budget journal. This lets a long-lived root
+    /// dispatch observe descendant reservations admitted after its context
+    /// was constructed.
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Erased provider-side budget guard used by the canonical stock loop.
@@ -571,6 +579,11 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
 
     /// Admits one model step before invoking the provider.
     pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        if self.remaining_execution_time_ms() == 0 {
+            return Err(Error::Conflict(
+                "provider execution time ceiling exhausted".into(),
+            ));
+        }
         self.context.admit_model_step()
     }
 
@@ -613,7 +626,11 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// dispatch context.
     #[must_use]
     pub fn remaining_execution_time_ms(&self) -> u64 {
-        self.context.remaining_execution_time_ms()
+        let local = self.context.remaining_execution_time_ms();
+        self.effect_recorder
+            .as_ref()
+            .and_then(|recorder| recorder.remaining_execution_time_ms())
+            .map_or(local, |global| local.min(global))
     }
 
     /// Issues the next provider-authenticated cumulative usage receipt.
@@ -716,6 +733,11 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
 
     /// Admits one root model step before invoking the provider.
     pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        if self.remaining_execution_time_ms() == 0 {
+            return Err(Error::Conflict(
+                "provider execution time ceiling exhausted".into(),
+            ));
+        }
         self.context.admit_model_step()
     }
 
@@ -756,7 +778,11 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// Returns the remaining root execution ceiling.
     #[must_use]
     pub fn remaining_execution_time_ms(&self) -> u64 {
-        self.context.remaining_execution_time_ms()
+        let local = self.context.remaining_execution_time_ms();
+        self.effect_recorder
+            .as_ref()
+            .and_then(|recorder| recorder.remaining_execution_time_ms())
+            .map_or(local, |global| local.min(global))
     }
 
     /// Issues the next provider-authenticated cumulative root usage receipt.
@@ -1598,6 +1624,7 @@ impl StockExecutor {
         operation: OperationId,
         step: u32,
         completed: &[ModelMessage],
+        budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<()> {
         let records = journal.replay(operation).await?;
         let (manifest_file, request_file) = prepared_model_input(&records, step)?
@@ -1665,8 +1692,15 @@ impl StockExecutor {
                 },
             )
             .await?;
-        self.publish_completed_batch(journal, operation, step, request_file.clone(), reference)
-            .await
+        self.publish_completed_batch(
+            journal,
+            operation,
+            step,
+            request_file.clone(),
+            reference,
+            budget,
+        )
+        .await
     }
 
     fn validate_batch_publisher(&self, publisher: &dyn ModelBatchPublisher) -> Result<()> {
@@ -1687,6 +1721,7 @@ impl StockExecutor {
         step: u32,
         request: FileRef,
         boundary: FileRef,
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<()> {
         let Some(publisher) = &self.batch_publisher else {
             return Ok(());
@@ -1748,13 +1783,26 @@ impl StockExecutor {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
                 crate::stack_diagnostics::marker("fork-publication-enter-retry");
+                let publish_started = self.execution_clock.now_unix_millis();
                 let publish = publisher.publish(publication.clone());
                 crate::stack_diagnostics::future_size("fork-publication-handle-retry", &publish);
                 crate::stack_diagnostics::future_size(
                     "fork-publication-inner-retry",
                     &*publish,
                 );
-                publish.await?;
+                let publish_result = publish.await;
+                // The publication retry is a claimed Harness effect. Persist
+                // its measured elapsed time before exposing either success or
+                // a provider error to the model loop.
+                admit_effect_elapsed(
+                    &mut budget,
+                    self.execution_clock.as_ref(),
+                    publish_started,
+                    operation,
+                    IdempotencyKey::new(format!("model:{step}:publication"))?,
+                )
+                .await?;
+                publish_result?;
                 crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
@@ -1776,10 +1824,22 @@ impl StockExecutor {
                 return Err(Error::Indeterminate(publication.operation_id));
             }
             crate::stack_diagnostics::marker("fork-publication-enter");
+            let publish_started = self.execution_clock.now_unix_millis();
             let publish = publisher.publish(publication.clone());
             crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
             crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
-            publish.await?;
+            let publish_result = publish.await;
+            // Persist the publication cost before the terminal completion
+            // event or the next provider request can become visible.
+            admit_effect_elapsed(
+                &mut budget,
+                self.execution_clock.as_ref(),
+                publish_started,
+                operation,
+                IdempotencyKey::new(format!("model:{step}:publication"))?,
+            )
+            .await?;
+            publish_result?;
             crate::stack_diagnostics::marker("fork-publication-complete");
         }
         if publisher.identity() != publication.publisher
@@ -2248,73 +2308,34 @@ impl StockExecutor {
                         .ok_or(Error::Indeterminate(operation_id))
                 })
                 .transpose()?;
-            let result = if claimed {
+            // Keep the executor result as data until the claimed effect has
+            // crossed the durable Harness measurement boundary. Returning a
+            // timeout or provider error first would make the elapsed cost
+            // invisible to the session budget.
+            let execution_result = if claimed {
                 let execution = tool
                     .executor
                     .execute_in_model_batch(tool_context, invocation.clone());
-                let outcome = match effect_deadline {
-                    Some(deadline) => tokio::time::timeout_at(deadline, execution)
-                        .await
-                        .map_err(|_| Error::Indeterminate(operation_id))?,
-                    None => execution.await,
-                };
-                match outcome {
-                    Ok(result) => result,
-                    Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                        return Err(Error::Indeterminate(operation_id));
-                    }
-                    Err(error) => match tool.executor.classify_post_claim_error(&error) {
-                        PostClaimFailureDisposition::KnownRejection => {
-                            self.record_tool_failure(
-                                journal,
-                                operation_id,
-                                step,
-                                &invocation.call_id,
-                                ToolFailureKind::ExecutorRejected,
-                            )
-                            .await?;
-                            return Err(Error::Invalid(
-                                ToolFailureKind::ExecutorRejected.message().into(),
-                            ));
-                        }
-                        PostClaimFailureDisposition::Indeterminate => {
-                            return Err(Error::Indeterminate(operation_id));
-                        }
+                match effect_deadline {
+                    Some(deadline) => match tokio::time::timeout_at(deadline, execution).await {
+                        Ok(result) => result,
+                        Err(_) => Err(Error::Indeterminate(operation_id)),
                     },
+                    None => execution.await,
                 }
             } else {
                 let reconciliation = tool
                     .executor
                     .reconcile_in_model_batch(tool_context, invocation.clone());
-                let outcome = match effect_deadline {
-                    Some(deadline) => tokio::time::timeout_at(deadline, reconciliation)
-                        .await
-                        .map_err(|_| Error::Indeterminate(operation_id))?,
-                    None => reconciliation.await,
-                };
-                match outcome {
-                    Ok(Some(result)) => result,
-                    Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
-                        return Err(Error::Indeterminate(operation_id));
-                    }
-                    Err(error) => match tool.executor.classify_post_claim_error(&error) {
-                        PostClaimFailureDisposition::KnownRejection => {
-                            self.record_tool_failure(
-                                journal,
-                                operation_id,
-                                step,
-                                &invocation.call_id,
-                                ToolFailureKind::ExecutorRejected,
-                            )
-                            .await?;
-                            return Err(Error::Invalid(
-                                ToolFailureKind::ExecutorRejected.message().into(),
-                            ));
-                        }
-                        PostClaimFailureDisposition::Indeterminate => {
-                            return Err(Error::Indeterminate(operation_id));
-                        }
+                match effect_deadline {
+                    Some(deadline) => match tokio::time::timeout_at(deadline, reconciliation).await
+                    {
+                        Ok(result) => result,
+                        Err(_) => Err(Error::Indeterminate(operation_id)),
                     },
+                    None => reconciliation.await.and_then(|result| {
+                        result.ok_or_else(|| Error::Indeterminate(operation_id))
+                    }),
                 }
             };
             if claimed {
@@ -2330,6 +2351,30 @@ impl StockExecutor {
                 )
                 .await?;
             }
+            let result = match execution_result {
+                Ok(result) => result,
+                Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                Err(error) => match tool.executor.classify_post_claim_error(&error) {
+                    PostClaimFailureDisposition::KnownRejection => {
+                        self.record_tool_failure(
+                            journal,
+                            operation_id,
+                            step,
+                            &invocation.call_id,
+                            ToolFailureKind::ExecutorRejected,
+                        )
+                        .await?;
+                        return Err(Error::Invalid(
+                            ToolFailureKind::ExecutorRejected.message().into(),
+                        ));
+                    }
+                    PostClaimFailureDisposition::Indeterminate => {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                },
+            };
             if validate_value(&tool.definition.output_schema, &result.value, "tool output").is_err()
             {
                 self.record_tool_failure(
@@ -2646,8 +2691,14 @@ impl StockExecutor {
                 let completed = prior_messages
                     .get(batch_start..)
                     .ok_or_else(|| Error::Storage("completed batch range is invalid".into()))?;
-                self.record_completed_batch(journal, input.operation_id, step, completed)
-                    .await?;
+                self.record_completed_batch(
+                    journal,
+                    input.operation_id,
+                    step,
+                    completed,
+                    budget.as_deref_mut(),
+                )
+                .await?;
                 visible_text.clear();
             }
             Err(Error::Conflict("executor step limit reached".into()))
@@ -5473,7 +5524,8 @@ mod tests {
                         operation,
                         0,
                         request.clone(),
-                        boundary.clone()
+                        boundary.clone(),
+                        None,
                     )
                     .await,
                 Err(Error::Storage(_))
@@ -5485,7 +5537,14 @@ mod tests {
                 ExecutionEvent::BatchPublicationStarted { .. }
             ));
             let result = executor
-                .publish_completed_batch(&journal, operation, 0, request.clone(), boundary.clone())
+                .publish_completed_batch(
+                    &journal,
+                    operation,
+                    0,
+                    request.clone(),
+                    boundary.clone(),
+                    None,
+                )
                 .await;
             if success {
                 result?;
@@ -5496,6 +5555,7 @@ mod tests {
                         0,
                         request.clone(),
                         boundary.clone(),
+                        None,
                     )
                     .await?;
                 assert_eq!(journal.replay(operation).await?.len(), 2);
@@ -5512,7 +5572,7 @@ mod tests {
                 stage_json(&journal, operation, "changed", &json!({"boundary": 2})).await?;
             assert!(matches!(
                 executor
-                    .publish_completed_batch(&journal, operation, 0, request, changed)
+                    .publish_completed_batch(&journal, operation, 0, request, changed, None)
                     .await,
                 Err(Error::Conflict(_))
             ));
@@ -6296,7 +6356,7 @@ mod tests {
             .await?;
         let corrupted_records = journal.replay(operation).await?;
         assert!(
-            matches!(executor.record_completed_batch(&journal, operation, 1, &[]).await,
+            matches!(executor.record_completed_batch(&journal, operation, 1, &[], None).await,
             Err(Error::Storage(message)) if message.contains("duplicate prepared model input"))
         );
         assert_eq!(corrupted_records, journal.replay(operation).await?);
@@ -6464,7 +6524,8 @@ mod tests {
                             value: current_value,
                         }),
                     },
-                ],
+                    ],
+                None,
             )
             .await?;
         let boundary_ref = journal

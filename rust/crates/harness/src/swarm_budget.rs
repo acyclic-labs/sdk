@@ -240,6 +240,15 @@ impl SwarmUsageLimiter {
         self.limits
     }
 
+    /// Returns the execution budget still available to this authenticated
+    /// dispatch.
+    #[must_use]
+    pub const fn remaining_execution_time_ms(self) -> u64 {
+        self.limits
+            .execution_time_ms
+            .saturating_sub(self.usage.execution_time_ms)
+    }
+
     /// Reserves one model step before invoking the model.
     pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
         let next = self
