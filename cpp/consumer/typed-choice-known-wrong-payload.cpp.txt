@@ -1,0 +1,13 @@
+#include <acyclic/rust_typed_clients.hpp>
+#include <cstdint>
+#include <vector>
+
+int main() {
+  using Choice = acyclic::rust_typed::InferenceCustomerRunResultContextChoiceValue;
+  // Expected compile failure: a descriptor-known Context arm accepts only
+  // the generated InferenceContextViewWire pointer.
+  const std::vector<std::uint8_t> wrong{0, 1, 255};
+  Choice invalid =
+      acyclic::rust_typed::InferenceCustomerRunResultContextChoiceContext{wrong};
+  (void)invalid;
+}

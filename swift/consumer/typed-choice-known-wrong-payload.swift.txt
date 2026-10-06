@@ -1,0 +1,9 @@
+import Foundation
+
+func checkWrongKnownChoice() {
+  // Expected compile failure: a descriptor-known Context arm accepts only
+  // its Rust-owned InferenceContextViewWire payload.
+  let invalid: InferenceCustomerRunResultContextChoice =
+    .Context(Data([0, 1, 255]))
+  _ = invalid
+}
