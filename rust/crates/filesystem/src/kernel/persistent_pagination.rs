@@ -3,6 +3,7 @@
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
 use super::persistent_btree::{Child, Format, Page};
 use super::persistent_io::{self, OwnedPage};
+use super::search::counted_partition_point;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -722,51 +723,15 @@ fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize
 }
 
 fn bound_values<F: Format>(values: &[F::Value], cursor: &F::Key, inclusive: bool) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = values.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= values.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< values.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= values.len()"
-        )]
-        if F::key(&values[middle]) < cursor || (!inclusive && F::key(&values[middle]) == cursor) {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
+    counted_partition_point(values, |value| {
+        let key = F::key(value);
+        key < cursor || (!inclusive && key == cursor)
+    })
 }
 
 fn upper_bound_children<K: Ord>(children: &[Child<K>], cursor: &K) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= children.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< children.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= children.len()"
-        )]
-        if children[middle].first <= *cursor {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left.saturating_sub(1), comparisons)
+    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *cursor);
+    (after.saturating_sub(1), comparisons)
 }
 
 fn charge_items(work: &mut WorkCounters, count: u64, budget: WorkBudget) -> Result<(), Failure> {

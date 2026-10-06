@@ -3,6 +3,7 @@
 use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
 use super::codec::DecodedPageKind;
 use super::extent::{extent_page_decode_shape, extent_page_encoded_length};
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
     decode_extent_page, encode_extent_page,
@@ -674,29 +675,12 @@ fn coordinate_index(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<usize, ExtentMutationFailure> {
-    let mut left = 0_usize;
-    let mut right = values.len();
-    while left < right {
+    let (found, probes) = counted_binary_search(values, |value| value.cmp(&target));
+    // One item per probe, as a failed charge reports the probes before it.
+    for _ in 0..probes {
         charge_items(work, budget, 1)?;
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to values.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < values.len()` always holds here"
-        )]
-        let ordering = values[middle].cmp(&target);
-        match ordering {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return Ok(middle),
-        }
     }
-    Err(OperationFailure::new(
-        ExtentMutationError::PatchInvariant,
-        *work,
-    ))
+    found.map_err(|_| OperationFailure::new(ExtentMutationError::PatchInvariant, *work))
 }
 
 #[allow(
@@ -1503,27 +1487,7 @@ fn has_overlapping_patch(patches: &[Patch], start: u64, end: u64) -> (bool, u64)
 }
 
 fn lower_bound(patches: &[Patch], before: impl Fn(&Patch) -> bool) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = patches.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to patches.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < patches.len()` always holds here"
-        )]
-        let below = before(&patches[middle]);
-        if below {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
+    counted_partition_point(patches, before)
 }
 
 fn extent_end(extent: &Extent) -> Result<u64, ExtentMutationError> {

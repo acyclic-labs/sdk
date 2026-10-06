@@ -3,6 +3,7 @@
 use super::allocation::{AllocationError, AllocationLedger, LogicalVecCapacity, VisitedObjectSet};
 use super::persistent_btree::{Child, Format, Page};
 use super::persistent_io;
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
@@ -734,19 +735,7 @@ fn equal_group<K: Eq>(values: &[IndexedKey<'_, K>], start: usize, end: usize) ->
               values.len()`"
 )]
 fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    let mut left = 0;
-    let mut right = values.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        match F::key(&values[middle]).cmp(key) {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(values, |value| F::key(value).cmp(key))
 }
 
 #[allow(
@@ -757,19 +746,8 @@ fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>
               children.len()`"
 )]
 fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
-    let mut left = 0;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        if children[middle].first <= *key {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left.saturating_sub(1), comparisons)
+    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
+    (after.saturating_sub(1), comparisons)
 }
 
 fn validate_values<F: Format>(

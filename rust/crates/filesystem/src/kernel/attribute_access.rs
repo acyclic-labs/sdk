@@ -5,6 +5,7 @@ use super::attribute::attribute_page_decode_shape;
 use super::attribute_mutation::AttributeFormat;
 use super::codec::DecodedPageKind;
 use super::persistent_batch;
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     AttributeChild, AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
     DecodeLimits, decode_attribute_page,
@@ -404,51 +405,11 @@ async fn read_page<S: AsyncObjectStore>(
 }
 
 fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<usize, usize>, u64) {
-    let mut left = 0_usize;
-    let mut right = entries.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to entries.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < entries.len()` always holds here"
-        )]
-        let ordering = entries[middle].name.cmp(name);
-        match ordering {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(entries, |entry| entry.name.cmp(name))
 }
 
 fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (usize, u64) {
-    let mut left = 0_usize;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to children.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < children.len()` always holds here"
-        )]
-        let below_name = children[middle].first_name <= *name;
-        if below_name {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
+    counted_partition_point(children, |child| child.first_name <= *name)
 }
 
 fn validate_leaf(

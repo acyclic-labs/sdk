@@ -3,6 +3,7 @@
 use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
 use super::codec::DecodedPageShape;
 use super::persistent_io::{self, OwnedPage};
+use super::search::counted_binary_search;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -1122,27 +1123,7 @@ where
 }
 
 fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    let mut left = 0;
-    let mut right = entries.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= entries.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< entries.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= entries.len()"
-        )]
-        match F::key(&entries[middle]).cmp(key) {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(entries, |entry| F::key(entry).cmp(key))
 }
 
 fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
