@@ -55,7 +55,6 @@ if (!options.get("manifest")) usage("--manifest is required");
 if (!language) usage("--language is required");
 if (!commandArgs.length) usage("a consumer command is required after --");
 if (!existsSync(manifestPath)) usage(`manifest does not exist: ${manifestPath}`);
-if (!existsSync(fixturePath)) usage(`fixture binary does not exist: ${fixturePath}`);
 
 const manifestBytes = readFileSync(manifestPath);
 const manifest = JSON.parse(manifestBytes.toString("utf8"));
@@ -65,6 +64,7 @@ if (manifest.complete !== true || !Array.isArray(manifest.execution_plan) || man
 if (manifest.execution_plan_count !== manifest.execution_plan.length) {
   usage("manifest execution_plan_count does not match execution_plan length");
 }
+if (!existsSync(fixturePath)) usage(`fixture binary does not exist: ${fixturePath}`);
 
 function hostPort(address) {
   return String(address).replace(/^https?:\/\//, "");
