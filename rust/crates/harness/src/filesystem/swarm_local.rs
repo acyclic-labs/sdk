@@ -147,15 +147,7 @@ impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
                 .map(|limits| limits.execution_time_ms)
                 .unwrap_or(0);
             let own = projection
-                .reservation(self.operation)
-                .ok()
-                .flatten()
-                .map(|reservation| {
-                    reservation
-                        .resources
-                        .execution_time_ms
-                        .saturating_sub(reservation.usage.execution_time_ms)
-                })
+                .operation_execution_time_remaining(self.operation)
                 .unwrap_or(0);
             Ok(Some(if self.root {
                 global

@@ -2,7 +2,7 @@
 
 use crate::{
     Error, InteractionId, OperationId, Result,
-    core::{AuthorityVerifier, Scope},
+    core::{AuthorityVerifier, EffectGuarantee, Scope},
     registry::validate_component_label,
 };
 use crate::conversation::FileRef;
@@ -617,6 +617,13 @@ pub enum PostClaimFailureDisposition {
 
 /// Replaceable execution behavior for a tool.
 pub trait ToolExecutor: Send + Sync {
+    /// Declares whether an in-flight reconciliation may be repeated after a
+    /// crash. The conservative default prevents a second physical recovery
+    /// call when the prior attempt's outcome is unknown.
+    fn reconcile_guarantee(&self) -> EffectGuarantee {
+        EffectGuarantee::AtMostOnce
+    }
+
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(

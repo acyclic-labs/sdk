@@ -1401,6 +1401,30 @@ impl SwarmBudget {
         Ok(self.lock()?.reservations.get(&operation_id).cloned())
     }
 
+    /// Returns the execution ceiling still available to one operation after
+    /// both provider receipt usage and durable Harness effect measurements.
+    /// Keeping this calculation in the journal projection prevents callers
+    /// from treating provider usage as the complete operation cost.
+    pub(crate) fn operation_execution_time_remaining(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<u64> {
+        let state = self.lock()?;
+        if operation_id == state.session_id {
+            return Ok(root_resource_limits(&state)?.execution_time_ms);
+        }
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        let consumed = reservation
+            .usage
+            .execution_time_ms
+            .checked_add(harness_effect_time(&state, operation_id)?)
+            .ok_or_else(|| Error::Invalid("swarm execution time usage exhausted".into()))?;
+        Ok(reservation.resources.execution_time_ms.saturating_sub(consumed))
+    }
+
     /// Returns the current owner fence.
     pub fn owner(&self) -> Result<SwarmOwnerFence> {
         Ok(self.lock()?.owner.clone())
@@ -1537,6 +1561,12 @@ impl SwarmBudget {
                     "swarm parent is not an active direct ancestor".into(),
                 ));
             }
+            let parent_harness_time = harness_effect_time(&state, parent.operation_id)?;
+            let parent_execution_time = parent
+                .usage
+                .execution_time_ms
+                .checked_add(parent_harness_time)
+                .ok_or_else(|| Error::Invalid("swarm parent time usage exhausted".into()))?;
             let remaining = SwarmResourceRequest {
                 model_steps: parent
                     .resources
@@ -1549,7 +1579,7 @@ impl SwarmBudget {
                 execution_time_ms: parent
                     .resources
                     .execution_time_ms
-                    .saturating_sub(parent.usage.execution_time_ms),
+                    .saturating_sub(parent_execution_time),
             };
             // A parent may admit more than one child. Each live direct child
             // holds a portion of the parent's ceiling, so a retry or a
@@ -1793,7 +1823,7 @@ impl SwarmBudget {
         }
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        let mut child_reservation = if operation_id == state.session_id {
+        let child_reservation = if operation_id == state.session_id {
             None
         } else {
             Some(
@@ -1829,13 +1859,17 @@ impl SwarmBudget {
         if next > state.limits.max_execution_time_ms {
             return Err(Error::Conflict("swarm execution time budget exceeded".into()));
         }
-        if let Some(reservation) = child_reservation.as_mut() {
-            reservation.usage.execution_time_ms = reservation
-                .usage
-                .execution_time_ms
+        if let Some(reservation) = child_reservation.as_ref() {
+            let measured = harness_effect_time(&state, operation_id)?
                 .checked_add(elapsed_ms)
+                .and_then(|effect_time| {
+                    reservation
+                        .usage
+                        .execution_time_ms
+                        .checked_add(effect_time)
+                })
                 .ok_or_else(|| Error::Invalid("swarm child time usage exhausted".into()))?;
-            if reservation.usage.execution_time_ms > reservation.resources.execution_time_ms {
+            if measured > reservation.resources.execution_time_ms {
                 return Err(Error::Conflict("Harness effect exceeds child time reservation".into()));
             }
             state.usage.reserved.execution_time_ms = state
@@ -1846,9 +1880,6 @@ impl SwarmBudget {
                 .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
         }
         state.usage.consumed.execution_time_ms = next;
-        if let Some(reservation) = child_reservation {
-            state.reservations.insert(operation_id, reservation);
-        }
         state.harness_effects.insert(key, elapsed_ms);
         Ok(true)
     }
@@ -1888,7 +1919,8 @@ impl SwarmBudget {
         if reservation.state == SwarmReservationState::Cancelled {
             return Ok(reservation);
         }
-        release_remaining(&mut state.usage, &reservation)?;
+        let harness_time = harness_effect_time(&state, operation_id)?;
+        release_remaining(&mut state.usage, &reservation, harness_time)?;
         state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
         let reservation = state
             .reservations
@@ -2076,6 +2108,10 @@ fn reservation_subtree_usage(
         .get(&operation_id)
         .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
     let mut total = reservation.usage;
+    total.execution_time_ms = total
+        .execution_time_ms
+        .checked_add(harness_effect_time(state, operation_id)?)
+        .ok_or_else(|| Error::Invalid("swarm Harness effect usage exhausted".into()))?;
     for child in state
         .reservations
         .values()
@@ -2084,6 +2120,18 @@ fn reservation_subtree_usage(
         total = add_usage(total, reservation_subtree_usage(state, child.operation_id)?)?;
     }
     Ok(total)
+}
+
+fn harness_effect_time(state: &SwarmBudgetState, operation_id: OperationId) -> Result<u64> {
+    state
+        .harness_effects
+        .iter()
+        .filter(|((effect_operation, _, _), _)| *effect_operation == operation_id)
+        .try_fold(0_u64, |total, (_, elapsed)| {
+            total
+                .checked_add(*elapsed)
+                .ok_or_else(|| Error::Invalid("swarm Harness effect usage exhausted".into()))
+        })
 }
 
 fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
@@ -2209,7 +2257,11 @@ mod harness_effect_tests {
         assert!(budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
         assert!(!budget.record_harness_effect(child, &owner, &dispatch, &effect, 3)?);
         let stored = budget.reservation(child)?.expect("child reservation");
-        assert_eq!(stored.usage.execution_time_ms, 3);
+        // Provider usage remains the authenticated cumulative receipt cursor;
+        // Harness effect time is durable separately and must not poison the
+        // provider receipt sequence.
+        assert_eq!(stored.usage.execution_time_ms, 0);
+        assert_eq!(budget.operation_execution_time_remaining(child)?, 5);
         assert_eq!(budget.usage()?.reserved.execution_time_ms, 5);
         assert_eq!(budget.usage()?.consumed.execution_time_ms, 3);
         Ok(())
@@ -2382,6 +2434,7 @@ fn reserve_resources(
 fn release_remaining(
     usage: &mut SwarmBudgetUsage,
     reservation: &SwarmForkReservation,
+    harness_time: u64,
 ) -> Result<()> {
     usage.reserved.model_steps = usage
         .reserved
@@ -2403,15 +2456,15 @@ fn release_remaining(
                 .saturating_sub(reservation.usage.output_bytes),
         )
         .ok_or_else(|| Error::Storage("swarm output reservation underflow".into()))?;
+    let consumed_execution_time = reservation
+        .usage
+        .execution_time_ms
+        .checked_add(harness_time)
+        .ok_or_else(|| Error::Invalid("swarm execution time usage exhausted".into()))?;
     usage.reserved.execution_time_ms = usage
         .reserved
         .execution_time_ms
-        .checked_sub(
-            reservation
-                .resources
-                .execution_time_ms
-                .saturating_sub(reservation.usage.execution_time_ms),
-        )
+        .checked_sub(reservation.resources.execution_time_ms.saturating_sub(consumed_execution_time))
         .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
     Ok(())
 }
@@ -2458,7 +2511,14 @@ fn update_usage(
             "child usage exceeds its reservation".into(),
         ));
     }
-    validate_ancestor_ceilings(state, &reservation, usage, complete)?;
+    let effective_usage = SwarmUsage {
+        execution_time_ms: usage
+            .execution_time_ms
+            .checked_add(harness_effect_time(state, operation_id)?)
+            .ok_or_else(|| Error::Invalid("swarm Harness effect usage exhausted".into()))?,
+        ..usage
+    };
+    validate_ancestor_ceilings(state, &reservation, effective_usage, complete)?;
     state.usage.reserved.model_steps = state
         .usage
         .reserved
@@ -2500,7 +2560,8 @@ fn update_usage(
         reservation.usage_sequence = receipt.sequence;
     }
     if complete {
-        release_remaining(&mut state.usage, &reservation)?;
+        let harness_time = harness_effect_time(state, operation_id)?;
+        release_remaining(&mut state.usage, &reservation, harness_time)?;
         state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
         reservation.state = SwarmReservationState::Completed;
     }

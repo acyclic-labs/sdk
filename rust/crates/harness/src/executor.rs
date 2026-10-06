@@ -2256,36 +2256,55 @@ impl StockExecutor {
                 }
             };
             if !claimed {
-                // Reconciliation is itself a physical provider boundary. Give
-                // every invocation a durable, unique attempt identity before
-                // dispatch so a retry cannot reuse the original ToolStarted
-                // effect key or silently overwrite its measured time.
-                let reconcile_attempt = IdempotencyKey::new(format!(
-                    "tool-reconcile-attempt:{}",
-                    OperationId::new()
-                ))?;
-                let reconcile_claim = format!(
-                    "tool:{step}:{}:reconcile:{}",
-                    invocation.call_id,
-                    OperationId::new()
-                );
                 let current = journal.replay(operation_id).await?;
-                if !journal
-                    .append_if_tail(
-                        operation_id,
-                        current.len() as u64,
-                        reconcile_claim,
+                if let Some(prior_attempt) = current.iter().rev().find_map(|record| {
+                    match &record.event {
                         ExecutionEvent::ToolReconcileAttemptStarted {
-                            step,
-                            call_id: invocation.call_id.clone(),
-                            attempt_id: reconcile_attempt.clone(),
-                        },
-                    )
-                    .await?
-                {
-                    return Err(Error::Indeterminate(operation_id));
+                            step: event_step,
+                            call_id,
+                            attempt_id,
+                        } if *event_step == step && call_id == &invocation.call_id => {
+                            Some(attempt_id.clone())
+                        }
+                        _ => None,
+                    }
+                }) {
+                    if tool.executor.reconcile_guarantee() != EffectGuarantee::IdempotentRetry {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    // Reuse the durable identity for an interrupted retry;
+                    // a genuinely new physical attempt needs a new admission.
+                    attempt_id = prior_attempt.as_str().to_owned();
+                } else {
+                    // Reconciliation is itself a physical provider boundary.
+                    // Persist its identity before dispatch so crash recovery
+                    // cannot invent one after the effect has started.
+                    let reconcile_attempt = IdempotencyKey::new(format!(
+                        "tool-reconcile-attempt:{}",
+                        OperationId::new()
+                    ))?;
+                    let reconcile_claim = format!(
+                        "tool:{step}:{}:reconcile:{}",
+                        invocation.call_id,
+                        OperationId::new()
+                    );
+                    if !journal
+                        .append_if_tail(
+                            operation_id,
+                            current.len() as u64,
+                            reconcile_claim,
+                            ExecutionEvent::ToolReconcileAttemptStarted {
+                                step,
+                                call_id: invocation.call_id.clone(),
+                                attempt_id: reconcile_attempt.clone(),
+                            },
+                        )
+                        .await?
+                    {
+                        return Err(Error::Indeterminate(operation_id));
+                    }
+                    attempt_id = reconcile_attempt.as_str().to_owned();
                 }
-                attempt_id = reconcile_attempt.as_str().to_owned();
             }
             let tool_context = ModelToolContext {
                 parent_operation: operation_id,
