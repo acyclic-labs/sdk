@@ -130,7 +130,7 @@ pub struct ToolResult {
 }
 
 /// Replaceable execution behavior for a tool.
-pub trait ToolExecutor: Send + Sync {
+pub trait ToolExecutor: crate::PlatformServiceBounds {
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(
@@ -173,13 +173,13 @@ pub trait ToolExecutor: Send + Sync {
 }
 
 /// Replaceable mapping from tool results into model-visible context.
-pub trait ToolProjection: Send + Sync {
+pub trait ToolProjection: crate::PlatformServiceBounds {
     /// Projects an invocation/result pair without side effects.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }
 
 /// Trusted journal check for a resolved approval bound to one exact tool definition.
-pub trait ToolApprovalVerifier: Send + Sync {
+pub trait ToolApprovalVerifier: crate::PlatformServiceBounds {
     /// Rejects absent, declined, mismatched, or indeterminate approvals.
     fn verify<'a>(
         &'a self,

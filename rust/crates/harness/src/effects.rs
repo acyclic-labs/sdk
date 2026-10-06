@@ -74,7 +74,7 @@ pub struct EffectObservation {
 }
 
 /// Provider-owned effect capability boundary.
-pub trait EffectProvider: Send + Sync {
+pub trait EffectProvider: crate::PlatformServiceBounds {
     /// Stable provider identity.
     fn id(&self) -> &str;
 

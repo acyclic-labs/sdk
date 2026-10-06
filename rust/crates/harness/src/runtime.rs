@@ -27,8 +27,8 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
     workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
 };
-use crate::BoxFuture;
-use futures::{StreamExt as _, stream, stream::BoxStream};
+use crate::{BoxFuture, SendBoxFuture, PlatformStreamExt, PlatformTaskCallback, PlatformTaskFuture};
+use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -53,7 +53,10 @@ pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
 pub const MAX_BATCH_INPUTS: usize = 65_536;
 
-type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
+#[cfg(not(target_arch = "wasm32"))]
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> SendBoxFuture<'static, Result<O>> + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> SendBoxFuture<'static, Result<O>> + Send + Sync;
 
 enum TaskImplementation<I, O> {
     Live(Arc<LiveHandler<I, O>>),
@@ -79,8 +82,8 @@ impl<I, O> TaskDefinition<I, O> {
         handler: F,
     ) -> Result<Self>
     where
-        F: Fn(TaskContext, I) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<O>> + Send + 'static,
+        F: Fn(TaskContext, I) -> Fut + PlatformTaskCallback + 'static,
+        Fut: Future<Output = Result<O>> + PlatformTaskFuture + 'static,
     {
         let name = name.into();
         let version = version.into();
@@ -291,8 +294,13 @@ struct TaskEntry {
     input_schema: Value,
     output_schema: Value,
     requirements: BTreeSet<String>,
-    definition: Arc<dyn Any + Send + Sync>,
+    definition: Arc<dyn TaskDefinitionValue>,
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+type TaskDefinitionValue = dyn Any + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type TaskDefinitionValue = dyn Any;
 
 /// Immutable typed definitions indexed by their exact name and version.
 #[derive(Clone, Default)]
@@ -305,7 +313,7 @@ impl TaskRegistry {
         definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
-        TaskDefinition<I, O>: Send + Sync,
+        TaskDefinition<I, O>: crate::PlatformServiceBounds,
     {
         let name = definition.identity.name.clone();
         let version = definition.identity.version.clone();
@@ -845,7 +853,7 @@ pub trait DurableTaskHost: crate::PlatformServiceBounds {
 
 /// Owner-bound durable task state, independently replaceable from admission
 /// and execution. Returned observations are authoritative for typed handles.
-pub trait TaskStateProvider: Send + Sync {
+pub trait TaskStateProvider: crate::PlatformServiceBounds {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -1064,7 +1072,7 @@ impl TaskStateProvider for HostTaskState {
 /// Independently replaceable durable admission boundary. A spawner commits
 /// identities and requests; the bound state host remains the authority for
 /// typed observation, resumed scope, and cancellation.
-pub trait TaskSpawner: Send + Sync {
+pub trait TaskSpawner: crate::PlatformServiceBounds {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route this spawner can actually dispatch to.
@@ -1192,7 +1200,7 @@ impl TaskSpawner for HostTaskSpawner {
 /// One replaceable execution route. It packages a qualified placement with
 /// the exact admission and observation authorities that can run it; selecting
 /// it never falls back to a process-local task or another host.
-pub trait ExecutionProvider: Send + Sync {
+pub trait ExecutionProvider: crate::PlatformServiceBounds {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
     /// Durable spawner for this provider's task build and environment.
@@ -1232,7 +1240,7 @@ pub trait DurableEffectObserver: crate::PlatformServiceBounds {
 
 /// Replaceable local interaction router. Durable interactions instead use the
 /// host's recorded request/answer boundary.
-pub trait InteractionRouter: Send + Sync {
+pub trait InteractionRouter: crate::PlatformServiceBounds {
     /// Returns a typed outcome while retaining request and answer bytes in its
     /// own provider; callers must not journal either body.
     fn route<'a>(
@@ -1248,7 +1256,7 @@ pub trait InteractionRouter: Send + Sync {
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
-pub trait InteractionResolver: Send + Sync {
+pub trait InteractionResolver: crate::PlatformServiceBounds {
     /// Reads the admitted request and current decision before a CAS reply.
     fn inspect<'a>(
         &'a self,
@@ -1540,7 +1548,7 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
 /// caller needs explicit descendant cancellation.
 pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
-) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
+) -> crate::PlatformBoxStream<'static, (String, Result<Outcome<O>>)> {
     let concurrency = tasks.len().clamp(1, 64);
     stream::iter(tasks)
         .map(|task| async move {
@@ -1548,7 +1556,7 @@ pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
             (id, task.result().await)
         })
         .buffer_unordered(concurrency)
-        .boxed()
+        .platform_boxed()
 }
 
 /// Folds observed outcomes in admission order, regardless of completion order.
@@ -1730,7 +1738,7 @@ pub enum ToolPolicyDecision {
 }
 
 /// Replaceable policy evaluated after schema and scope validation, before dispatch.
-pub trait ToolPolicy: Send + Sync {
+pub trait ToolPolicy: crate::PlatformServiceBounds {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
     /// Policy implementations must be deterministic for an admitted revision.
@@ -5472,7 +5480,7 @@ impl RuntimeGroup {
     pub fn as_completed<O: DeserializeOwned + Send + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
-    ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
+    ) -> crate::PlatformBoxStream<'static, (String, Result<Outcome<O>>)> {
         completion_stream_runtime(tasks)
     }
 

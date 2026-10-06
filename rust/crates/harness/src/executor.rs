@@ -15,8 +15,9 @@ use crate::{
         RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    BoxFuture,
 };
-use futures::{StreamExt as _, future::BoxFuture};
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
@@ -263,7 +264,7 @@ pub struct TurnOutput {
 }
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
-pub trait Executor: Send + Sync {
+pub trait Executor: crate::PlatformServiceBounds {
     /// Executes or resumes one turn using only explicit durable host services.
     fn execute<'a>(
         &'a self,

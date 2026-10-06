@@ -72,7 +72,7 @@ const CODING_TOOLS: &[(&str, &str)] = &[
 ];
 
 /// Single host boundary implementing the complete public coding tool vocabulary.
-pub trait CodingToolHost: Send + Sync {
+pub trait CodingToolHost: crate::PlatformServiceBounds {
     /// Returns the pinned contract implemented by this host for a stock tool.
     /// The factory checks its name and registers its exact revision and schemas;
     /// a generic catch-all schema must not be silently invented by the runtime.
@@ -310,7 +310,7 @@ impl HarnessBuilder {
     /// Registers one pinned typed task without replacing the rest of the registry.
     pub fn task<I: 'static, O: 'static>(mut self, value: TaskDefinition<I, O>) -> Result<Self>
     where
-        TaskDefinition<I, O>: Send + Sync,
+        TaskDefinition<I, O>: crate::PlatformServiceBounds,
     {
         self.bindings.tasks.register(value)?;
         Ok(self)
