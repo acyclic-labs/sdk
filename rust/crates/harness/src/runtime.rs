@@ -294,13 +294,11 @@ struct TaskEntry {
     input_schema: Value,
     output_schema: Value,
     requirements: BTreeSet<String>,
-    definition: Arc<dyn TaskDefinitionValue>,
+    #[cfg(not(target_arch = "wasm32"))]
+    definition: Arc<dyn Any + Send + Sync>,
+    #[cfg(target_arch = "wasm32")]
+    definition: Arc<dyn Any>,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-type TaskDefinitionValue = dyn Any + Send + Sync;
-#[cfg(target_arch = "wasm32")]
-type TaskDefinitionValue = dyn Any;
 
 /// Immutable typed definitions indexed by their exact name and version.
 #[derive(Clone, Default)]
