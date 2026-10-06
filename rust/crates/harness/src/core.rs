@@ -1700,7 +1700,7 @@ impl Reducer {
     /// Hosts append the returned event to Stream and call [`Self::apply_committed`]
     /// only after the append is known to have committed.
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
-        self.plan_with_migration_boundary(command, false)
+        self.plan_with_migration_boundary(command, Migration::Unverified)
     }
 
     /// Provider admission has verified residency and independently executed
@@ -1711,7 +1711,7 @@ impl Reducer {
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, true)
+        self.plan_with_migration_boundary(command, Migration::Verified)
     }
 
     #[allow(
@@ -1721,7 +1721,7 @@ impl Reducer {
     fn plan_with_migration_boundary(
         &self,
         command: &Command,
-        migration_verified: bool,
+        migration: Migration,
     ) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         IdempotencyKey::new(command.idempotency_key.0.clone())?;
@@ -1743,87 +1743,35 @@ impl Reducer {
                 command.expected_revision, self.revision
             )));
         }
-        require_capability(&command.scope, command.action.required_capability())?;
-        if let Action::MigrateExtensionState { content, .. } = &command.action {
-            ContentGrant::verify(
-                &self.authority_verifier,
-                &command.scope,
-                content.volume(),
-                VolumeOperation::Write,
-            )?;
-            if !migration_verified {
-                return Err(Error::Unsupported(
-                    "extension migration requires an executing content-admission host".into(),
-                ));
-            }
-        }
-        if let Action::BindConversation { agent } = &command.action
-            && command.scope.agent().is_some_and(|acting| acting != *agent)
-        {
-            return Err(Error::Unauthorized(
-                "conversation binding does not match the authenticated agent".into(),
-            ));
-        }
+        self.authorize(
+            |capability| require_capability(&command.scope, capability),
+            command.scope.agent(),
+            command.operation_id,
+            command.action.kind(),
+        )?;
         match &command.action {
-            Action::PlanEffect { .. } => {
-                require_capability(&command.scope, capability::EFFECT_PLAN)?;
-            }
-            Action::MarkEffectDispatched { effect_id, .. } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                require_capability(
+            Action::MigrateExtensionState { content, .. } => {
+                ContentGrant::verify(
+                    &self.authority_verifier,
                     &command.scope,
-                    &capability::effect_provider(&effect.provider),
+                    content.volume(),
+                    VolumeOperation::Write,
                 )?;
+                if migration != Migration::Verified {
+                    return Err(Error::Unsupported(
+                        "extension migration requires an executing content-admission host".into(),
+                    ));
+                }
             }
-            Action::ResolveEffect { observation } => {
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                require_capability(
-                    &command.scope,
-                    &capability::effect_provider(&effect.provider),
-                )?;
-            }
-            Action::ResolveInteraction { resolution } => {
-                validate_interaction_operation(resolution, command.operation_id)?;
-                let (ticket, _) = self
-                    .interactions
-                    .get(&resolution.id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-                require_capability(&command.scope, &ticket.responder_grant())?;
-            }
-            _ => {}
-        }
-        if let Action::PublishFork { seed } = &command.action {
-            if self.conversation.agent.is_none() || command.scope.agent() != self.conversation.agent
+            Action::BindConversation { agent }
+                if command.scope.agent().is_some_and(|acting| acting != *agent) =>
             {
                 return Err(Error::Unauthorized(
-                    "fork must be published by the parent agent".into(),
+                    "conversation binding does not match the authenticated agent".into(),
                 ));
             }
-            if seed.validate().is_err()
-                || seed.operation_id != command.operation_id
-                || seed.parent != self.authority
-                || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err()
-            {
-                return Err(Error::Invalid(
-                    "fork manifest is not bound to its command and parent revision".into(),
-                ));
-            }
-            self.require_fresh_fork(seed)?;
-        }
-        if let Action::PublishProjectMerge { receipt } = &command.action
-            && (receipt.operation_id != command.operation_id
-                || command.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "merge receipt is not bound to the parent agent and operation".into(),
-            ));
+            Action::PublishFork { seed } => self.require_fresh_fork(seed)?,
+            _ => {}
         }
         validate_causal_parent(
             &self.authority,
@@ -1846,6 +1794,62 @@ impl Reducer {
         };
         event.attestation = self.authority_verifier.attest_event(&event)?;
         Ok(ApplyResult::Applied { event })
+    }
+
+    /// Authorizes one transition identically when planned and when committed.
+    fn authorize(
+        &self,
+        require: impl Fn(&str) -> Result<()>,
+        agent: Option<AgentId>,
+        operation_id: OperationId,
+        (kind, subject): (TransitionKind, Subject<'_>),
+    ) -> Result<()> {
+        require(kind.spec().2)?;
+        match subject {
+            Subject::None => Ok(()),
+            Subject::PlannedEffect => require(capability::EFFECT_PLAN),
+            Subject::Effect(effect_id) => {
+                let effect = self
+                    .effects
+                    .get(effect_id)
+                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                require(&capability::effect_provider(&effect.provider))
+            }
+            Subject::Interaction(resolution) => {
+                validate_interaction_operation(resolution, operation_id)?;
+                let (ticket, _) = self
+                    .interactions
+                    .get(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                require(&ticket.responder_grant())
+            }
+            Subject::Fork(seed) => {
+                if self.conversation.agent.is_none() || agent != self.conversation.agent {
+                    return Err(Error::Unauthorized(
+                        "fork must be published by the parent agent".into(),
+                    ));
+                }
+                if seed.validate().is_err()
+                    || seed.operation_id != operation_id
+                    || seed.parent != self.authority
+                    || seed.parent_revision != self.revision
+                    || self.validate_fork_reference_ownership(seed).is_err()
+                {
+                    return Err(Error::Invalid(
+                        "fork manifest is not bound to its operation and parent revision".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Subject::Merge(receipt) => {
+                if receipt.operation_id != operation_id || agent != self.conversation.agent {
+                    return Err(Error::Unauthorized(
+                        "merge receipt is not bound to the parent agent and operation".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -1872,66 +1876,13 @@ impl Reducer {
             )));
         }
         self.authority_verifier.verify_event(&event)?;
-        require_recorded_capability(&event.scope, event.payload.required_capability())?;
-        match &event.payload {
-            EventPayload::EffectPlanned { .. } => {
-                require_recorded_capability(&event.scope, capability::EFFECT_PLAN)?;
-            }
-            EventPayload::EffectDispatched { effect_id, .. } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                require_recorded_capability(
-                    &event.scope,
-                    &capability::effect_provider(&effect.provider),
-                )?;
-            }
-            EventPayload::EffectResolved { observation } => {
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                require_recorded_capability(
-                    &event.scope,
-                    &capability::effect_provider(&effect.provider),
-                )?;
-            }
-            EventPayload::InteractionResolved { resolution } => {
-                validate_interaction_operation(resolution, event.operation_id)?;
-                let (ticket, _) = self
-                    .interactions
-                    .get(&resolution.id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-                require_recorded_capability(&event.scope, &ticket.responder_grant())?;
-            }
-            _ => {}
-        }
+        self.authorize(
+            |capability| require_recorded_capability(&event.scope, capability),
+            event.scope.agent(),
+            event.operation_id,
+            event.payload.kind(),
+        )?;
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
-        if matches!(&event.payload, EventPayload::ForkPublished { .. })
-            && (self.conversation.agent.is_none() || event.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "fork was not published by the parent agent".into(),
-            ));
-        }
-        if let EventPayload::ForkPublished { seed } = &event.payload
-            && (seed.validate().is_err()
-                || seed.operation_id != event.operation_id
-                || seed.parent != self.authority
-                || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err())
-        {
-            return Err(Error::Invalid("fork event binding is invalid".into()));
-        }
-        if let EventPayload::ProjectMergePublished { receipt } = &event.payload
-            && (receipt.operation_id != event.operation_id
-                || event.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "project merge was not published by the parent agent".into(),
-            ));
-        }
         self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
         self.events.push(event.clone());
@@ -2846,47 +2797,135 @@ impl Reducer {
     }
 }
 
-impl Action {
-    fn required_capability(&self) -> &'static str {
-        match self {
-            Self::TransitionLifecycle { .. } => capability::LIFECYCLE_MANAGE,
-            Self::AppendCustom { .. } => capability::EVENT_APPEND,
-            Self::MigrateExtensionState { .. } => capability::EXTENSION_MIGRATE,
-            Self::SelectExtensions { .. } => capability::EXTENSION_ACTIVATE,
-            Self::ConfigureExtension { .. } => capability::EXTENSION_CONFIGURE,
-            Self::PlanEffect { .. }
-            | Self::MarkEffectDispatched { .. }
-            | Self::ResolveEffect { .. } => capability::EFFECT_RUN,
-            Self::PublishFork { .. } => capability::FORK_PUBLISH,
-            Self::PublishProjectMerge { .. } => capability::PROJECT_MERGE,
-            Self::BindConversation { .. } => capability::CONVERSATION_BIND,
-            Self::AppendConversationMessage { .. } => capability::CONVERSATION_APPEND,
-            Self::SelectModelContext { .. } => capability::CONVERSATION_SELECT_CONTEXT,
-            Self::OpenInteraction { .. } => capability::INTERACTION_OPEN,
-            Self::ResolveInteraction { .. } => capability::INTERACTION_RESOLVE,
+/// Whether provider admission executed a migration before planning it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Migration {
+    Unverified,
+    Verified,
+}
+
+/// Declares [`TransitionKind`] from one table: each transition's serde `kind`
+/// tag as an [`Action`], as an [`EventPayload`], and the capability both require.
+macro_rules! transition_kinds {
+    ($($kind:ident => $action:literal, $event:literal, $capability:ident;)*) => {
+        /// One reducer transition, shared by its command and its committed event.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub(crate) enum TransitionKind {
+            $($kind,)*
         }
+
+        impl TransitionKind {
+            #[cfg(test)]
+            const ALL: &[Self] = &[$(Self::$kind,)*];
+
+            const fn spec(self) -> (&'static str, &'static str, &'static str) {
+                match self {
+                    $(Self::$kind => ($action, $event, capability::$capability),)*
+                }
+            }
+        }
+    };
+}
+
+transition_kinds! {
+    Lifecycle => "transition_lifecycle", "lifecycle_transitioned", LIFECYCLE_MANAGE;
+    Custom => "append_custom", "custom", EVENT_APPEND;
+    Migration => "migrate_extension_state", "extension_state_migrated", EXTENSION_MIGRATE;
+    Selection => "select_extensions", "extensions_selected", EXTENSION_ACTIVATE;
+    Configuration => "configure_extension", "extension_configured", EXTENSION_CONFIGURE;
+    PlanEffect => "plan_effect", "effect_planned", EFFECT_RUN;
+    DispatchEffect => "mark_effect_dispatched", "effect_dispatched", EFFECT_RUN;
+    ResolveEffect => "resolve_effect", "effect_resolved", EFFECT_RUN;
+    Fork => "publish_fork", "fork_published", FORK_PUBLISH;
+    ProjectMerge => "publish_project_merge", "project_merge_published", PROJECT_MERGE;
+    BindConversation => "bind_conversation", "conversation_bound", CONVERSATION_BIND;
+    AppendMessage => "append_conversation_message", "conversation_message_appended", CONVERSATION_APPEND;
+    SelectContext => "select_model_context", "model_context_selected", CONVERSATION_SELECT_CONTEXT;
+    OpenInteraction => "open_interaction", "interaction_opened", INTERACTION_OPEN;
+    ResolveInteraction => "resolve_interaction", "interaction_resolved", INTERACTION_RESOLVE;
+}
+
+/// Transition input whose authorization depends on reducer state.
+enum Subject<'a> {
+    None,
+    PlannedEffect,
+    Effect(&'a EffectId),
+    Interaction(&'a InteractionResolution),
+    Fork(&'a ForkSeed),
+    Merge(&'a ProjectMergeReceipt),
+}
+
+impl Action {
+    fn kind(&self) -> (TransitionKind, Subject<'_>) {
+        use TransitionKind as Kind;
+        match self {
+            Self::TransitionLifecycle { .. } => (Kind::Lifecycle, Subject::None),
+            Self::AppendCustom { .. } => (Kind::Custom, Subject::None),
+            Self::MigrateExtensionState { .. } => (Kind::Migration, Subject::None),
+            Self::SelectExtensions { .. } => (Kind::Selection, Subject::None),
+            Self::ConfigureExtension { .. } => (Kind::Configuration, Subject::None),
+            Self::PlanEffect { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::MarkEffectDispatched { effect_id, .. } => {
+                (Kind::DispatchEffect, Subject::Effect(effect_id))
+            }
+            Self::ResolveEffect { observation } => {
+                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+            }
+            Self::PublishFork { seed } => (Kind::Fork, Subject::Fork(seed)),
+            Self::PublishProjectMerge { receipt } => (Kind::ProjectMerge, Subject::Merge(receipt)),
+            Self::BindConversation { .. } => (Kind::BindConversation, Subject::None),
+            Self::AppendConversationMessage { .. } => (Kind::AppendMessage, Subject::None),
+            Self::SelectModelContext { .. } => (Kind::SelectContext, Subject::None),
+            Self::OpenInteraction { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::ResolveInteraction { resolution } => {
+                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+            }
+        }
+    }
+
+    /// Serde `kind` tag, carried beside canonical action JSON on the wire.
+    #[cfg_attr(
+        not(all(feature = "wasm", target_arch = "wasm32")),
+        allow(dead_code, reason = "only the WASM command decoder reads it")
+    )]
+    pub(crate) fn tag(&self) -> &'static str {
+        self.kind().0.spec().0
     }
 }
 
 impl EventPayload {
-    fn required_capability(&self) -> &'static str {
+    fn kind(&self) -> (TransitionKind, Subject<'_>) {
+        use TransitionKind as Kind;
         match self {
-            Self::LifecycleTransitioned { .. } => capability::LIFECYCLE_MANAGE,
-            Self::Custom { .. } => capability::EVENT_APPEND,
-            Self::ExtensionStateMigrated { .. } => capability::EXTENSION_MIGRATE,
-            Self::ExtensionsSelected { .. } => capability::EXTENSION_ACTIVATE,
-            Self::ExtensionConfigured { .. } => capability::EXTENSION_CONFIGURE,
-            Self::EffectPlanned { .. }
-            | Self::EffectDispatched { .. }
-            | Self::EffectResolved { .. } => capability::EFFECT_RUN,
-            Self::ForkPublished { .. } => capability::FORK_PUBLISH,
-            Self::ProjectMergePublished { .. } => capability::PROJECT_MERGE,
-            Self::ConversationBound { .. } => capability::CONVERSATION_BIND,
-            Self::ConversationMessageAppended { .. } => capability::CONVERSATION_APPEND,
-            Self::ModelContextSelected { .. } => capability::CONVERSATION_SELECT_CONTEXT,
-            Self::InteractionOpened { .. } => capability::INTERACTION_OPEN,
-            Self::InteractionResolved { .. } => capability::INTERACTION_RESOLVE,
+            Self::LifecycleTransitioned { .. } => (Kind::Lifecycle, Subject::None),
+            Self::Custom { .. } => (Kind::Custom, Subject::None),
+            Self::ExtensionStateMigrated { .. } => (Kind::Migration, Subject::None),
+            Self::ExtensionsSelected { .. } => (Kind::Selection, Subject::None),
+            Self::ExtensionConfigured { .. } => (Kind::Configuration, Subject::None),
+            Self::EffectPlanned { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::EffectDispatched { effect_id, .. } => {
+                (Kind::DispatchEffect, Subject::Effect(effect_id))
+            }
+            Self::EffectResolved { observation } => {
+                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+            }
+            Self::ForkPublished { seed } => (Kind::Fork, Subject::Fork(seed)),
+            Self::ProjectMergePublished { receipt } => {
+                (Kind::ProjectMerge, Subject::Merge(receipt))
+            }
+            Self::ConversationBound { .. } => (Kind::BindConversation, Subject::None),
+            Self::ConversationMessageAppended { .. } => (Kind::AppendMessage, Subject::None),
+            Self::ModelContextSelected { .. } => (Kind::SelectContext, Subject::None),
+            Self::InteractionOpened { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::InteractionResolved { resolution } => {
+                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+            }
         }
+    }
+
+    /// Serde `kind` tag, carried beside canonical payload JSON on the wire.
+    pub(crate) fn tag(&self) -> &'static str {
+        self.kind().0.spec().1
     }
 }
 
@@ -3121,6 +3160,40 @@ fn json_digest(value: &Value) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn transition_tags_and_capabilities_are_pinned() {
+        const PINNED: &str = "\
+transition_lifecycle lifecycle_transitioned lifecycle:manage
+append_custom custom event:append
+migrate_extension_state extension_state_migrated extension:migrate
+select_extensions extensions_selected extension:activate
+configure_extension extension_configured extension:configure
+plan_effect effect_planned effect:run
+mark_effect_dispatched effect_dispatched effect:run
+resolve_effect effect_resolved effect:run
+publish_fork fork_published fork:publish
+publish_project_merge project_merge_published project:merge
+bind_conversation conversation_bound conversation:bind
+append_conversation_message conversation_message_appended conversation:append
+select_model_context model_context_selected conversation:select_context
+open_interaction interaction_opened interaction:open
+resolve_interaction interaction_resolved interaction:resolve";
+        let mut actual = Vec::new();
+        for kind in TransitionKind::ALL {
+            let (action, event, capability) = kind.spec();
+            actual.push(format!("{action} {event} {capability}"));
+            // Each tag names a real serde variant: decoding fails on its
+            // missing fields, never on an unknown variant.
+            let action = serde_json::from_value::<Action>(json!({ "kind": action }));
+            let event = serde_json::from_value::<EventPayload>(json!({ "kind": event }));
+            for error in [action.err(), event.err()] {
+                let error = error.map(|error| error.to_string()).unwrap_or_default();
+                assert!(error.contains("missing field"), "{kind:?}: {error}");
+            }
+        }
+        assert_eq!(actual.join("\n"), PINNED);
+    }
 
     #[test]
     fn v2_extension_record_fixture_round_trips_canonically() -> Result<()> {

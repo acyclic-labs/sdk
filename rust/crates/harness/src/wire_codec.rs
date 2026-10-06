@@ -35,7 +35,7 @@ pub(crate) fn encode_event(authority: &Authority, event: &Event) -> Result<Vec<u
             agent_id: agent.map_or_else(String::new, |value| value.to_string()),
         }),
         causal_parent: event.causal_parent.as_ref().map(encode_reference),
-        event_type: event_type(&event.payload).into(),
+        event_type: event.payload.tag().into(),
         canonical_payload_json: payload,
         attestation: event.attestation.to_vec(),
     }
@@ -66,7 +66,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
         .ok_or_else(|| Error::Storage("event scope is missing".into()))?;
     let payload: EventPayload = serde_json::from_slice(&envelope.canonical_payload_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
-    if envelope.event_type != event_type(&payload) {
+    if envelope.event_type != payload.tag() {
         return Err(Error::Storage(
             "event type disagrees with its payload".into(),
         ));
@@ -105,7 +105,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
 pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
     let payload: EventPayload =
         serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
-    if event_type_name != event_type(&payload) {
+    if event_type_name != payload.tag() {
         return Err(Error::Storage(
             "event type disagrees with its payload".into(),
         ));
@@ -138,7 +138,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
             "command action is not canonical JSON".into(),
         ));
     }
-    if envelope.action_type != action_type(&action) {
+    if envelope.action_type != action.tag() {
         return Err(Error::Invalid(
             "command action type disagrees with its payload".into(),
         ));
@@ -217,47 +217,6 @@ pub(crate) fn validate_protocol(
         None => Err(missing("protocol identity is missing".into())),
         Some(actual) if actual == expected => Ok(()),
         Some(_) => Err(Error::Unsupported("protocol identity mismatch".into())),
-    }
-}
-
-fn event_type(payload: &EventPayload) -> &'static str {
-    match payload {
-        EventPayload::LifecycleTransitioned { .. } => "lifecycle_transitioned",
-        EventPayload::Custom { .. } => "custom",
-        EventPayload::ExtensionStateMigrated { .. } => "extension_state_migrated",
-        EventPayload::ExtensionsSelected { .. } => "extensions_selected",
-        EventPayload::ExtensionConfigured { .. } => "extension_configured",
-        EventPayload::EffectPlanned { .. } => "effect_planned",
-        EventPayload::EffectDispatched { .. } => "effect_dispatched",
-        EventPayload::EffectResolved { .. } => "effect_resolved",
-        EventPayload::ForkPublished { .. } => "fork_published",
-        EventPayload::ProjectMergePublished { .. } => "project_merge_published",
-        EventPayload::ConversationBound { .. } => "conversation_bound",
-        EventPayload::ConversationMessageAppended { .. } => "conversation_message_appended",
-        EventPayload::ModelContextSelected { .. } => "model_context_selected",
-        EventPayload::InteractionOpened { .. } => "interaction_opened",
-        EventPayload::InteractionResolved { .. } => "interaction_resolved",
-    }
-}
-
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-fn action_type(action: &Action) -> &'static str {
-    match action {
-        Action::TransitionLifecycle { .. } => "transition_lifecycle",
-        Action::AppendCustom { .. } => "append_custom",
-        Action::MigrateExtensionState { .. } => "migrate_extension_state",
-        Action::SelectExtensions { .. } => "select_extensions",
-        Action::ConfigureExtension { .. } => "configure_extension",
-        Action::PlanEffect { .. } => "plan_effect",
-        Action::MarkEffectDispatched { .. } => "mark_effect_dispatched",
-        Action::ResolveEffect { .. } => "resolve_effect",
-        Action::PublishFork { .. } => "publish_fork",
-        Action::PublishProjectMerge { .. } => "publish_project_merge",
-        Action::BindConversation { .. } => "bind_conversation",
-        Action::AppendConversationMessage { .. } => "append_conversation_message",
-        Action::SelectModelContext { .. } => "select_model_context",
-        Action::OpenInteraction { .. } => "open_interaction",
-        Action::ResolveInteraction { .. } => "resolve_interaction",
     }
 }
 
