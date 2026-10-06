@@ -228,6 +228,8 @@ def main() -> int:
     if args.manifest is not None:
         manifest, plan = load_typed_manifest(args.manifest)
         validate_manifest_binding(manifest, authority)
+        if args.source_revision and args.source_revision != manifest["source_revision"]:
+            raise RuntimeError("--source-revision does not match the Rust typed manifest source_revision")
         inventory = [(record.get("family", "unknown"), record["rpc"]) for record in plan]
     else:
         # Keep the legacy authority-only invocation available for local diagnostics;

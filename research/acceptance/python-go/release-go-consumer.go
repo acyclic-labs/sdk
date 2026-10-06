@@ -275,6 +275,9 @@ func main() {
 		if err := validateManifestBinding(manifest, root); err != nil {
 			panic(err)
 		}
+		if *revision != "" && *revision != manifest.SourceRevision {
+			panic("--source-revision does not match the Rust typed manifest source_revision")
+		}
 		inventory = make([]inventoryItem, 0, len(manifest.ExecutionPlan))
 		for _, record := range manifest.ExecutionPlan {
 			inventory = append(inventory, inventoryItem{record.Family, record.RPC, ""})
