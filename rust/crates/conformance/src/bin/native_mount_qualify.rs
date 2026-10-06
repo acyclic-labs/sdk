@@ -564,8 +564,7 @@ fn wait_for_child(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate_descendants()?;
-            let _ = child.process.wait();
+            child.process.terminate()?;
             return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
         }
         if let Some(status) = child.process.try_wait()? {

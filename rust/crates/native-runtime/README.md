@@ -59,3 +59,26 @@ release qualification additionally requires mounted Cargo and Lean workloads.
 
 The API documentation is available on
 [`docs.rs`](https://docs.rs/acyclic-native-runtime).
+
+`ProcessTree` retains the direct child and OS containment through collection
+and cleanup. `wait_with_output(timeout, max_bytes)` closes stdin, polls both
+pipes without reader threads, and cleans up on exit, overflow, or timeout.
+The output bound covers retained payload across both streams, with an 8 KiB
+scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
+Existing temporary-file capture consumers retain their separate file-size
+polling policy, which is not a hard disk-usage limit.
+
+| Invariant | Production mechanism | Assumptions | Verification / evidence |
+| --- | --- | --- | --- |
+| Windows successful cleanup leaves no executing owned descendant | Suspended spawn, non-breakaway kill-on-close Job, termination followed by `ActiveProcesses == 0` | Trusted OS Job semantics; no transfer of Job authority | Real child/grandchild termination, drop and exited-parent tests; Windows lane |
+| Unix cleanup kills descendants remaining in the owned group and reaps the direct child | Process group SIGKILL and direct-child polling | Trusted OS; descendants do not escape groups/sessions; OS eventually completes termination and reparents/reaps descendants | Same real fixtures; existing Linux/macOS lanes. Signal success is not proof of descendant reaping |
+| Repeated completed cleanup has no further OS effect | Guard becomes inactive only at its platform completion boundary; child removed only after observed exit | Exclusive owner; no reuse of containment before cleanup | Idempotence fixture |
+| Captured payload never exceeds the shared byte budget; overflow is an error | Checked subtraction before append; fallible exact reservation | Exclusive pipe readers; allocator/OS calls progress | Real two-stream fixture and flood rejection |
+| Deadline expires without detached readers or successful rollback claims | Nonblocking Unix reads / Windows pipe peek; separate five-second cleanup observation windows; errors retain child ownership | OS calls and scheduling progress; no hard real-time return guarantee | Real timeout and descendant-held-pipe fixtures; Windows reduced-rights Job test establishes cleanup-error precedence and retained ownership |
+| Host-configured environment is preserved | Command builder owns `env_clear` and explicit `env` policy; containment does not add environment entries | Trusted host builder applies the required policy | Cleared-environment real fixture with explicit input and closed stdin; generic primitive provides no default credential policy |
+
+These are implementation checks and test evidence, not machine-checked or
+unrestricted correctness proofs. Reproduce with `cargo test -p
+acyclic-native-runtime --locked --lib` and `cargo clippy -p
+acyclic-native-runtime --locked --all-targets -- -D warnings` on each platform.
+The existing ignored I/O performance baseline is not a process gate.

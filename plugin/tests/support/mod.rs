@@ -448,9 +448,8 @@ pub fn output_after_provider_admission(
         if captured_output_exceeds_limit(&stdout, &stderr).expect("inspect provider output capture")
         {
             process_tree
-                .terminate_descendants()
+                .terminate()
                 .expect("terminate output-flooding provider descendants");
-            let _ = process_tree.wait();
             panic!("provider output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes");
         }
         match process_tree
@@ -511,8 +510,7 @@ fn try_output_with_timeout_and_stdin(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_output_exceeds_limit(&stdout, &stderr)? {
-            process_tree.terminate_descendants()?;
-            let _ = process_tree.wait();
+            process_tree.terminate()?;
             return Err(std::io::Error::new(
                 std::io::ErrorKind::FileTooLarge,
                 format!("host output exceeded {MAX_CAPTURED_OUTPUT_BYTES} bytes"),

@@ -1,7 +1,8 @@
 #![allow(unsafe_code)]
 
-use std::io;
+use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};
+use std::time::{Duration, Instant};
 
 /// One child and descendants that remain in its operating-system containment.
 ///
@@ -10,6 +11,7 @@ use std::process::{Child, Command, ExitStatus, Output};
 pub struct ProcessTree {
     child: Option<Child>,
     guard: platform::Guard,
+    output_taken: bool,
 }
 
 impl ProcessTree {
@@ -18,6 +20,7 @@ impl ProcessTree {
         Ok(Self {
             child: Some(child),
             guard,
+            output_taken: false,
         })
     }
 
@@ -37,19 +40,82 @@ impl ProcessTree {
             .wait()
     }
 
-    /// Collects the direct child's output while retaining the descendant guard.
-    pub fn wait_with_output(&mut self) -> io::Result<Output> {
-        self.child
-            .take()
-            .ok_or_else(|| io::Error::other("process output was already collected"))?
-            .wait_with_output()
+    /// Collects at most `max_bytes` across both pipes, with a deadline measured
+    /// from this call. Closes stdin and terminates containment after child exit,
+    /// timeout, or capture failure. A timeout does not imply effects rolled back.
+    /// Cleanup has its own five-second observation window per platform phase;
+    /// OS calls and scheduling are assumed to progress. Cleanup errors take
+    /// precedence over capture errors. No rollback of child effects is implied.
+    pub fn wait_with_output(&mut self, timeout: Duration, max_bytes: usize) -> io::Result<Output> {
+        if self.output_taken {
+            return Err(io::Error::other("process output was already collected"));
+        }
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+        })?;
+        let child = self
+            .child
+            .as_mut()
+            .ok_or_else(|| io::Error::other("process output was already collected"))?;
+        self.output_taken = true;
+        drop(child.stdin.take());
+        let mut stdout = child.stdout.take();
+        let mut stderr = child.stderr.take();
+        let mut output = [Vec::new(), Vec::new()];
+        let mut remaining = max_bytes;
+        let result = (|| {
+            let mut status = None;
+            loop {
+                drain_pipe(&mut stdout, &mut output[0], &mut remaining)?;
+                drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
+                if status.is_none() {
+                    status = self.try_wait()?;
+                    if status.is_some() {
+                        self.terminate_descendants()?;
+                    }
+                }
+                if let Some(status) = status
+                    && stdout.is_none()
+                    && stderr.is_none()
+                {
+                    let [stdout, stderr] = output;
+                    return Ok(Output {
+                        status,
+                        stdout,
+                        stderr,
+                    });
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "process output deadline exceeded; effects may have occurred",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        })();
+        // Cleanup errors take precedence: a capture timeout alone does not
+        // describe an unresolved termination. Keep Child ownership on error.
+        self.terminate()?;
+        result
     }
 
-    /// Terminates every process in the tree and reaps the direct child.
+    /// Terminates containment and reaps the direct child. Windows confirms the
+    /// Job is empty; Unix confirms signal delivery, not descendant reaping.
+    /// Repeated successful cleanup is a no-op. An error retains ownership.
     pub fn terminate(&mut self) -> io::Result<()> {
         self.terminate_descendants()?;
         if let Some(child) = self.child.as_mut() {
-            child.wait()?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait()?.is_none() {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "direct child termination is still unresolved",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
             self.child.take();
         }
         Ok(())
@@ -62,6 +128,37 @@ impl ProcessTree {
     }
 }
 
+fn drain_pipe<T: Read + platform::Pipe>(
+    pipe: &mut Option<T>,
+    output: &mut Vec<u8>,
+    remaining: &mut usize,
+) -> io::Result<()> {
+    let Some(reader) = pipe.as_mut() else {
+        return Ok(());
+    };
+    let mut buffer = [0; 8192];
+    match platform::read_pipe(reader, &mut buffer)? {
+        Some(0) => {
+            pipe.take();
+        }
+        Some(read) => {
+            *remaining = remaining.checked_sub(read).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::FileTooLarge,
+                    "process output limit exceeded; effects may have occurred",
+                )
+            })?;
+            let bytes = buffer
+                .get(..read)
+                .ok_or_else(|| io::Error::other("pipe returned an invalid length"))?;
+            output.try_reserve_exact(read).map_err(io::Error::other)?;
+            output.extend_from_slice(bytes);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 impl Drop for ProcessTree {
     fn drop(&mut self) {
         let _ = self.terminate();
@@ -71,8 +168,36 @@ impl Drop for ProcessTree {
 #[cfg(unix)]
 mod platform {
     use std::io;
+    use std::io::Read;
+    pub(super) use std::os::fd::AsRawFd as Pipe;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
+
+    pub(super) fn read_pipe(
+        pipe: &mut (impl Read + Pipe),
+        buffer: &mut [u8],
+    ) -> io::Result<Option<usize>> {
+        // SAFETY: this owned pipe is used exclusively by the collector. Setting
+        // O_NONBLOCK prevents an escaped descendant from holding up cleanup.
+        let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+        if flags == -1
+            || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
+                == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+        match pipe.read(buffer) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                Ok(None)
+            }
+            result => result.map(Some),
+        }
+    }
 
     pub(super) struct Guard {
         process_group: libc::pid_t,
@@ -120,6 +245,7 @@ mod platform {
 mod tests {
     use super::ProcessTree;
     use std::fs;
+    use std::io::{Read as _, Write as _};
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -127,55 +253,194 @@ mod tests {
     const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
     const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
 
+    pub(super) fn command(mode: &str, root: &std::path::Path) -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args([
+                "--exact",
+                "process_tree::tests::process_tree_helper",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(MODE, mode)
+            .env(ROOT, root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+
+    pub(super) fn ready(root: &std::path::Path, name: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join(name).exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(root.join(name).exists(), "helper readiness timed out");
+    }
+
     #[test]
+    #[allow(clippy::zombie_processes)] // exit-parent deliberately tests parent-before-descendant exit.
     fn process_tree_helper() {
         let Ok(mode) = std::env::var(MODE) else {
             return;
         };
         let root = std::path::PathBuf::from(std::env::var_os(ROOT).expect("helper root"));
-        if mode == "grandchild" {
-            fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
-            thread::sleep(Duration::from_millis(750));
-            fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
-            return;
+        match mode.as_str() {
+            "grandchild" => {
+                fs::write(root.join("grandchild-ready"), b"ready").expect("grandchild ready");
+                thread::sleep(Duration::from_millis(750));
+                fs::write(root.join("escaped"), b"descendant survived").expect("escaped marker");
+            }
+            "child" | "exit-parent" => {
+                let mut grandchild = command("grandchild", &root);
+                grandchild.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+                let mut grandchild = grandchild.spawn().expect("spawn grandchild");
+                ready(&root, "grandchild-ready");
+                fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
+                if mode == "child" {
+                    let _ = grandchild.wait();
+                }
+            }
+            "flood" => loop {
+                std::io::stdout()
+                    .write_all(&[b'o'; 8192])
+                    .expect("stdout flood");
+                std::io::stderr()
+                    .write_all(&[b'e'; 8192])
+                    .expect("stderr flood");
+            },
+            "output" => {
+                // The host cleared the environment. Generic containment must
+                // neither restore ambient credentials nor discard explicit input.
+                assert_eq!(
+                    std::env::var("EXPLICIT_PROCESS_INPUT").expect("explicit input"),
+                    "allowed"
+                );
+                assert!(std::env::var_os("PATH").is_none());
+                assert!(std::env::var_os("HOME").is_none());
+                assert!(std::env::var_os("CODEX_HOME").is_none());
+                std::io::stdout()
+                    .write_all(b"stdout-marker")
+                    .expect("stdout");
+                std::io::stderr()
+                    .write_all(b"stderr-marker")
+                    .expect("stderr");
+                let mut input = Vec::new();
+                std::io::stdin()
+                    .read_to_end(&mut input)
+                    .expect("closed stdin");
+                assert!(input.is_empty());
+                // Avoid test-harness stdout in the exact shared-budget fixture.
+                std::process::exit(0);
+            }
+            _ => assert_eq!(mode, "known helper mode"),
         }
-        assert_eq!(mode, "child");
-        let mut grandchild = Command::new(std::env::current_exe().expect("test executable"));
-        grandchild
-            .args(["--exact", "process_tree::tests::process_tree_helper"])
-            .env(MODE, "grandchild")
-            .env(ROOT, &root)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut grandchild = grandchild.spawn().expect("spawn grandchild");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !root.join("grandchild-ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
-        assert!(root.join("grandchild-ready").exists());
-        fs::write(root.join("tree-ready"), b"ready").expect("tree ready");
-        let _ = grandchild.wait();
     }
 
     #[test]
-    fn termination_contains_descendants() {
-        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
-        let mut command = Command::new(std::env::current_exe().expect("test executable"));
-        command
-            .args(["--exact", "process_tree::tests::process_tree_helper"])
-            .env(MODE, "child")
-            .env(ROOT, temporary.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !temporary.path().join("tree-ready").exists() && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
+    fn spawn_failure_does_not_return_an_unowned_child() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let error = ProcessTree::spawn(&mut Command::new(temporary.path().join("missing")))
+            .err()
+            .expect("missing executable must not spawn");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn cleanup_is_idempotent_and_drop_contains_descendants() {
+        for explicit in [false, true] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let mut tree =
+                ProcessTree::spawn(&mut command("child", temporary.path())).expect("spawn tree");
+            ready(temporary.path(), "tree-ready");
+            if explicit {
+                tree.terminate().expect("terminate tree");
+                tree.terminate().expect("repeat termination");
+                assert!(tree.child.is_none());
+            }
+            drop(tree);
+            thread::sleep(Duration::from_secs(1));
+            assert!(!temporary.path().join("escaped").exists());
         }
-        assert!(temporary.path().join("tree-ready").exists());
-        tree.terminate().expect("terminate process tree");
+    }
+
+    #[test]
+    fn collection_closes_stdin_and_preserves_explicit_environment() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("output", temporary.path());
+        command
+            .env("EXPLICIT_PROCESS_INPUT", "allowed")
+            .stdin(Stdio::piped());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
+        let output = tree
+            .wait_with_output(Duration::from_secs(5), 4096)
+            .expect("collect output");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.ends_with(b"stdout-marker"));
+        assert_eq!(output.stderr, b"stderr-marker");
+        assert!(tree.child.is_none());
+        assert!(tree.wait_with_output(Duration::ZERO, 0).is_err());
+        tree.terminate().expect("repeat cleanup");
+        let mut command = self::command("output", temporary.path());
+        command.env("EXPLICIT_PROCESS_INPUT", "allowed");
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn tree");
+        assert_eq!(
+            tree.wait_with_output(
+                Duration::from_secs(5),
+                output.stdout.len() + output.stderr.len() - 1
+            )
+            .expect_err("combined pipes exceed budget")
+            .kind(),
+            std::io::ErrorKind::FileTooLarge
+        );
+    }
+
+    #[test]
+    fn capture_timeout_and_output_overflow_reap_owned_tree() {
+        for (mode, timeout, limit, kind) in [
+            (
+                "child",
+                Duration::from_millis(20),
+                4096,
+                std::io::ErrorKind::TimedOut,
+            ),
+            (
+                "flood",
+                Duration::from_secs(5),
+                16384,
+                std::io::ErrorKind::FileTooLarge,
+            ),
+        ] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let mut tree =
+                ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
+            if mode == "child" {
+                ready(temporary.path(), "tree-ready");
+            }
+            let started = Instant::now();
+            let error = tree
+                .wait_with_output(timeout, limit)
+                .expect_err("capture must fail");
+            assert_eq!(error.kind(), kind);
+            assert!(error.to_string().contains("effects may have occurred"));
+            assert!(started.elapsed() < Duration::from_secs(7));
+            assert!(tree.child.is_none());
+            tree.terminate().expect("repeat cleanup");
+            thread::sleep(Duration::from_secs(1));
+            assert!(!temporary.path().join("escaped").exists());
+        }
+    }
+
+    #[test]
+    fn exited_parent_does_not_leave_descendant_holding_output_open() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut tree =
+            ProcessTree::spawn(&mut command("exit-parent", temporary.path())).expect("spawn tree");
+        let output = tree
+            .wait_with_output(Duration::from_secs(5), 4096)
+            .expect("collect exited parent");
+        assert!(output.status.success());
+        ready(temporary.path(), "tree-ready");
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
     }
@@ -184,22 +449,65 @@ mod tests {
 #[cfg(windows)]
 mod platform {
     use std::io;
+    use std::io::Read;
     use std::mem::{size_of, zeroed};
-    use std::os::windows::io::AsRawHandle as _;
     use std::os::windows::process::CommandExt as _;
     use std::process::{Child, Command};
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_BROKEN_PIPE, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
+    use windows_sys::Win32::System::Pipes::PeekNamedPipe;
     use windows_sys::Win32::System::Threading::{
         CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, OpenThread, ResumeThread, THREAD_SUSPEND_RESUME,
     };
+
+    pub(super) use std::os::windows::io::AsRawHandle as Pipe;
+
+    pub(super) fn read_pipe(
+        pipe: &mut (impl Read + Pipe),
+        buffer: &mut [u8],
+    ) -> io::Result<Option<usize>> {
+        let mut available = 0;
+        // SAFETY: this live, owned anonymous pipe has one reader. Peek does not
+        // consume data; only that reader can reduce the available byte count.
+        if unsafe {
+            PeekNamedPipe(
+                pipe.as_raw_handle().cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &raw mut available,
+                std::ptr::null_mut(),
+            )
+        } == 0
+        {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(ERROR_BROKEN_PIPE.cast_signed()) {
+                Ok(Some(0))
+            } else {
+                Err(error)
+            };
+        }
+        if available == 0 {
+            return Ok(None);
+        }
+        let length = buffer.len().min(available as usize);
+        pipe.read(
+            buffer
+                .get_mut(..length)
+                .ok_or_else(|| io::Error::other("invalid pipe read length"))?,
+        )
+        .map(Some)
+    }
 
     pub(super) struct Guard {
         job: HANDLE,
@@ -222,6 +530,7 @@ mod platform {
         }
         if let Err(error) = resume_process(child.id()) {
             let _ = guard.terminate();
+            let _ = child.kill();
             let _ = child.wait();
             return Err(error);
         }
@@ -265,20 +574,109 @@ mod platform {
             }
             // SAFETY: `job` remains owned until Drop closes it.
             if unsafe { TerminateJobObject(self.job, 1) } == 0 {
-                Err(io::Error::last_os_error())
-            } else {
-                self.active = false;
-                Ok(())
+                return Err(io::Error::last_os_error());
+            }
+            // TerminateJobObject initiates termination; success alone does not
+            // establish that descendants have stopped executing.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                // SAFETY: this plain Win32 structure is initialized before the
+                // query writes its exact size through an owned live Job handle.
+                let mut accounting: JOBOBJECT_BASIC_ACCOUNTING_INFORMATION = unsafe { zeroed() };
+                if unsafe {
+                    QueryInformationJobObject(
+                        self.job,
+                        JobObjectBasicAccountingInformation,
+                        (&raw mut accounting).cast(),
+                        u32::try_from(size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>())
+                            .map_err(|_| {
+                                io::Error::other("Job accounting structure is too large")
+                            })?,
+                        std::ptr::null_mut(),
+                    )
+                } == 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+                if accounting.ActiveProcesses == 0 {
+                    self.active = false;
+                    return Ok(());
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "process Job termination is still unresolved",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
     }
 
     impl Drop for Guard {
         fn drop(&mut self) {
-            let _ = self.terminate();
-            // SAFETY: `job` is owned by this guard and closed exactly once.
+            // SAFETY: this is the final owned Job handle. Kill-on-close is the
+            // fallback after explicit cleanup fails; closing it does not
+            // manufacture a successful cleanup observation.
             unsafe { CloseHandle(self.job) };
         }
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn denied_job_cleanup_retains_child_and_reports_failure() {
+        use windows_sys::Win32::Foundation::DuplicateHandle;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut tree =
+            super::ProcessTree::spawn(&mut super::tests::command("child", temporary.path()))
+                .expect("spawn tree");
+        super::tests::ready(temporary.path(), "tree-ready");
+        let mut restricted = std::ptr::null_mut();
+        // SAFETY: both source and target are this process; the duplicate has
+        // zero access rights. Keep the original handle for mandatory cleanup.
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    tree.guard.job,
+                    GetCurrentProcess(),
+                    &raw mut restricted,
+                    0,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let original = std::mem::replace(
+            &mut tree.guard,
+            Guard {
+                job: restricted,
+                active: true,
+            },
+        );
+        let started = std::time::Instant::now();
+        let result = tree.wait_with_output(std::time::Duration::ZERO, 4096);
+        let retained = tree.child.is_some() && tree.guard.active;
+        let recollection = tree.wait_with_output(std::time::Duration::ZERO, 4096);
+        let restricted = std::mem::replace(&mut tree.guard, original);
+        drop(restricted);
+        tree.terminate().expect("cleanup with original authority");
+        assert_eq!(
+            result.expect_err("cleanup must fail").kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(retained);
+        assert!(
+            recollection
+                .expect_err("consumed pipes cannot be collected again")
+                .to_string()
+                .contains("already collected")
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert!(!temporary.path().join("escaped").exists());
     }
 
     fn resume_process(process_id: u32) -> io::Result<()> {
