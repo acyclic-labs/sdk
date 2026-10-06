@@ -21,8 +21,31 @@ function missing(label, service, rpc, path, replace, flag) {
     assert.equal(inspect(service, method)[flag], false);
   });
 }
+const actorsBuildOwnedGrpc = (rpc, source = read) => {
+  const contract = source("rust/crates/actors/src/contract.rs");
+  const codegen = source("rust/crates/actors/src/codegen.rs");
+  const build = source("rust/crates/actors/build.rs");
+  const wire = source("rust/crates/actors/src/wire.rs");
+  return build.includes("codegen::generate(out_dir)")
+    && codegen.includes(".build_client(true)")
+    && codegen.includes(".build_server(true)")
+    && wire.includes('include!(concat!(env!("OUT_DIR"), "/rust/acyclic.actors.v1.rs"))')
+    && new RegExp(`\\b${rpc.name}\\s*\\{`).test(contract);
+};
 missing("missing Rust HTTP operation", WorkersService, "InvokeVersion", "rust/crates/workers/src/http.rs", s => s.replace("async fn invoke_version(", "async fn removed_invoke("), "rustHttp");
-missing("missing generated Rust gRPC operation", ActorsService, ActorsService.methods[0].name, "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs", s => s.replace(`async fn ${ActorsService.methods[0].localName.replace(/[A-Z]/g, c => `_${c.toLowerCase()}`)}(`, "async fn removed("), "rustGrpc");
+test("Actors Rust gRPC operation is build-owned", () => {
+  const rpc = ActorsService.methods[0];
+  assert.equal(actorsBuildOwnedGrpc(rpc), true);
+});
+test("missing build-owned Actors Rust gRPC operation", () => {
+  const rpc = ActorsService.methods[0];
+  const path = "rust/crates/actors/src/contract.rs";
+  const original = read(path);
+  const changed = original.replace(new RegExp(`(\\s)${rpc.name}(\\s*\\{)`), "$1RemovedActorsOperation$2");
+  assert.notEqual(changed, original, "negative fixture must remove actual contract operation");
+  const inspect = candidate => actorsBuildOwnedGrpc(rpc, pathName => pathName === path ? changed : read(pathName));
+  assert.equal(inspect(), false);
+});
 missing("missing TypeScript gRPC factory", WorkersService, "InvokeVersion", "typescript/packages/workers/src/grpc.ts", s => s.replace("function createWorkersGrpcClient(", "function removed("), "typescriptGrpcNodeBun");
 missing("missing TypeScript HTTP operation", WorkersService, "InvokeVersion", "typescript/packages/workers/src/http.ts", s => s.replace("async invokeVersion(", "async removed("), "typescriptHttp");
 missing("missing package gRPC export", WorkersService, "InvokeVersion", "typescript/packages/workers/package.json", s => { const manifest = JSON.parse(s); delete manifest.exports["./grpc"]; return JSON.stringify(manifest); }, "typescriptPackageExported");

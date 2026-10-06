@@ -22,9 +22,11 @@ pub struct NativeActorsErrorMetadata {
     pub code: String,
     /// Human-readable contract or service message.
     pub message: String,
+    #[napi(js_name = "grpcCode")]
     #[serde(rename = "grpcCode", skip_serializing_if = "Option::is_none")]
     /// gRPC status name when a transport status exists.
     pub grpc_code: Option<String>,
+    #[napi(js_name = "serviceCode")]
     #[serde(rename = "serviceCode", skip_serializing_if = "Option::is_none")]
     /// Numeric service detail code, including zero and unknown values.
     pub service_code: Option<i32>,
@@ -128,6 +130,12 @@ fn client_error_metadata(error: client::Error) -> ErrorMetadata {
             grpc_code: None,
             service_code: None,
         },
+        client::Error::Semantic(message) => ErrorMetadata {
+            code: String::from("semantic_error"),
+            message,
+            grpc_code: None,
+            service_code: None,
+        },
         client::Error::Service { grpc_code, detail } => ErrorMetadata {
             code: grpc_code_name(grpc_code),
             message: detail
@@ -141,6 +149,20 @@ fn client_error_metadata(error: client::Error) -> ErrorMetadata {
             code: String::from("cancelled"),
             message: String::from("Actors operation cancelled"),
             grpc_code: Some(String::from("cancelled")),
+            service_code: None,
+        },
+    }
+}
+
+fn domain_error_metadata(error: acyclic_actors::domain::DomainError) -> ErrorMetadata {
+    match error {
+        acyclic_actors::domain::DomainError::Contract(error) => {
+            client_error_metadata(client::Error::Contract(error))
+        }
+        error => ErrorMetadata {
+            code: String::from("semantic_error"),
+            message: error.to_string(),
+            grpc_code: None,
             service_code: None,
         },
     }
@@ -261,49 +283,87 @@ fn cancellation_state(
 }
 
 macro_rules! typed_operation {
-    ($name:ident, $request:ty, $method:ident) => {
+    ($name:ident, $wire_request:ty, $request:ty, $wire_response:ty, $response:ty, $method:ident) => {
         async fn $name(
             client: &client::Client,
             request: Buffer,
             cancellation: Option<&NativeActorsCancellation>,
         ) -> std::result::Result<Buffer, ErrorMetadata> {
-            let request = decode_wire_metadata::<$request>(&request, stringify!($method))?;
-            let response =
+            let request = decode_wire_metadata::<$wire_request>(&request, stringify!($method))?;
+            let request = <$request>::try_from(request).map_err(domain_error_metadata)?;
+            let response: $response =
                 cancellable_metadata(client.$method(&request), cancellation_state(cancellation))
                     .await?;
+            let response: $wire_response = response.into();
             encode_wire_metadata(&response, stringify!($method))
         }
     };
 }
 
-typed_operation!(create_actor_typed, wire::CreateActorRequest, create_actor);
-typed_operation!(update_actor_typed, wire::UpdateActorRequest, update_actor);
+typed_operation!(
+    create_actor_typed,
+    wire::CreateActorRequest,
+    acyclic_actors::domain::CreateActorRequest,
+    wire::CreateActorResponse,
+    acyclic_actors::domain::CreateActorResponse,
+    create_actor
+);
+typed_operation!(
+    update_actor_typed,
+    wire::UpdateActorRequest,
+    acyclic_actors::domain::UpdateActorRequest,
+    wire::UpdateActorResponse,
+    acyclic_actors::domain::UpdateActorResponse,
+    update_actor
+);
 typed_operation!(
     inspect_actor_typed,
     wire::InspectActorRequest,
+    acyclic_actors::domain::InspectActorRequest,
+    wire::InspectActorResponse,
+    acyclic_actors::domain::InspectActorResponse,
     inspect_actor
 );
 typed_operation!(
     add_subscription_typed,
     wire::AddSubscriptionRequest,
+    acyclic_actors::domain::AddSubscriptionRequest,
+    wire::AddSubscriptionResponse,
+    acyclic_actors::domain::AddSubscriptionResponse,
     add_subscription
 );
 typed_operation!(
     remove_subscription_typed,
     wire::RemoveSubscriptionRequest,
+    acyclic_actors::domain::RemoveSubscriptionRequest,
+    wire::RemoveSubscriptionResponse,
+    acyclic_actors::domain::RemoveSubscriptionResponse,
     remove_subscription
 );
 typed_operation!(
     resume_subscription_typed,
     wire::ResumeSubscriptionRequest,
+    acyclic_actors::domain::ResumeSubscriptionRequest,
+    wire::ResumeSubscriptionResponse,
+    acyclic_actors::domain::ResumeSubscriptionResponse,
     resume_subscription
 );
 typed_operation!(
     checkpoint_actor_typed,
     wire::CheckpointActorRequest,
+    acyclic_actors::domain::CheckpointActorRequest,
+    wire::CheckpointActorResponse,
+    acyclic_actors::domain::CheckpointActorResponse,
     checkpoint_actor
 );
-typed_operation!(invoke_actor_typed, wire::InvokeActorRequest, invoke_actor);
+typed_operation!(
+    invoke_actor_typed,
+    wire::InvokeActorRequest,
+    acyclic_actors::domain::InvokeActorRequest,
+    wire::InvokeActorResponse,
+    acyclic_actors::domain::InvokeActorResponse,
+    invoke_actor
+);
 
 async fn operation_result<F>(operation: F) -> Result<NativeActorsOperationResult>
 where
@@ -494,6 +554,33 @@ mod tests {
             ));
         };
         assert!(error.to_string().contains("invoke_actor request"));
+        Ok(())
+    }
+
+    #[test]
+    fn error_metadata_keeps_camel_case_and_zero_service_codes() -> Result<()> {
+        let metadata = client_error_metadata(client::Error::Service {
+            grpc_code: 13,
+            detail: Some(wire::Error {
+                code: 0,
+                message: String::from("service detail"),
+            }),
+        });
+        let json = serde_json::to_value(metadata)
+            .map_err(|error| native_error("error metadata test", error))?;
+        assert_eq!(json["grpcCode"], "internal");
+        assert_eq!(json["serviceCode"], 0);
+
+        let unknown = client_error_metadata(client::Error::Service {
+            grpc_code: 2,
+            detail: Some(wire::Error {
+                code: 99,
+                message: String::from("unknown detail"),
+            }),
+        });
+        let unknown = serde_json::to_value(unknown)
+            .map_err(|error| native_error("error metadata test", error))?;
+        assert_eq!(unknown["serviceCode"], 99);
         Ok(())
     }
 

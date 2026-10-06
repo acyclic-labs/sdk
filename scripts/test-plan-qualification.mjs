@@ -49,6 +49,12 @@ test("root documentation changes reuse every lane", () => {
   assert.deepEqual(differing(laneKeys(lanes, tree), laneKeys(lanes, changed("README.md"))), []);
 });
 
+test("full qualification has a separate cache identity from the core gate", () => {
+  const core = laneKeys(lanes, tree, "core");
+  const full = laneKeys(lanes, tree, "full");
+  assert.deepEqual(differing(core, full), lanes.map(lane => lane.lane).sort());
+});
+
 test("crate documentation reaches rustdoc and every lane", () => {
   const before = laneKeys(lanes, tree);
   const after = laneKeys(lanes, changed("rust/crates/stream/README.md"));
@@ -153,8 +159,10 @@ test("the workflow keeps full qualification off routine pull requests", () => {
   assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
 });
 
-test("the fast gate covers standalone Rust docs and generation crates", () => {
+test("the fast gate covers the Rust workspace, docs, and generation crates", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8");
-  assert.match(script, /cargo test -p acyclic-actors --locked --lib/);
+  assert.match(script, /cargo test --workspace --locked --lib/);
+  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
+  assert.match(script, /cargo clippy --workspace --lib --locked -- -D warnings/);
 });

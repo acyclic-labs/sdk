@@ -79,13 +79,17 @@ export const ignored = {
 };
 
 // `entries` are `git ls-tree -r` records: "<mode> <type> <object>\t<path>".
-export function laneKeys(lanes, entries) {
+// Core and full qualification must have separate cache identities. A full run
+// otherwise could restore a marker written by a cheap pull-request run and
+// skip its coverage and downstream checks.
+export function laneKeys(lanes, entries, scope = "core") {
+  if (scope !== "core" && scope !== "full") throw new Error(`unknown qualification scope ${scope}`);
   const keys = {};
   for (const lane of lanes) {
     const predicate = ignored[lane.inputs];
     if (!predicate) throw new Error(`lane ${lane.lane} names unknown inputs ${lane.inputs}`);
     const digest = createHash("sha256");
-    digest.update(`${SCHEMA}\0${JSON.stringify(lane)}\0`);
+    digest.update(`${SCHEMA}\0${scope}\0${JSON.stringify(lane)}\0`);
     for (const entry of entries) {
       if (predicate(entry.slice(entry.indexOf("\t") + 1))) continue;
       digest.update(entry);
@@ -143,7 +147,14 @@ const readLanes = () => JSON.parse(readFileSync(".github/qualification-lanes.jso
 function fingerprints() {
   const lanes = readLanes();
   const entries = git("ls-tree", "-r", "-z", "--full-tree", "HEAD").split("\0").filter(Boolean);
-  const keys = laneKeys(lanes, entries);
+  const force = process.env.FORCE === "true";
+  const event = classifyQualificationEvent({
+    eventName: process.env.GITHUB_EVENT_NAME,
+    ref: process.env.GITHUB_REF,
+    force,
+  });
+  const scope = requiresFullQualification(event) ? "full" : "core";
+  const keys = laneKeys(lanes, entries, scope);
   output("keys", keys);
   output("lanes", lanes.map(lane => lane.lane));
 }

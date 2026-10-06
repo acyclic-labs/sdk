@@ -4,19 +4,11 @@
 //! error decoding live in `acyclic_actors::client`. This module only owns the
 //! JavaScript byte boundary, cancellation, and JS error projection.
 
-use std::{
-    cell::{Cell, RefCell},
-    future::Future,
-    rc::Rc,
-};
+use std::{future::Future, rc::Rc};
 
 use acyclic_actors::{ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, client, wire};
-use futures::{
-    channel::oneshot,
-    future::{Either, select},
-    pin_mut,
-};
 use prost::Message;
+use tokio_util::sync::CancellationToken;
 use wasm_bindgen::{JsValue, prelude::*};
 
 /// JavaScript names and byte-level aliases are emitted from this Rust boundary.
@@ -28,6 +20,12 @@ export interface ActorsError extends Error {
   readonly code: string;
   readonly grpcCode?: string;
   readonly serviceCode?: number;
+  /** Stable Rust-owned semantic conversion category. */
+  readonly semanticCode?: string;
+  /** Raw enum value preserved when the semantic category carries one. */
+  readonly semanticValue?: number;
+  /** Contract admission category nested inside a semantic conversion error. */
+  readonly contractCode?: string;
 }
 
 export function validateCreateActor(request: ActorsWireBytes): void;
@@ -43,13 +41,6 @@ fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {
 
 fn invalid(message: impl AsRef<str>) -> JsValue {
     js_error("invalid_argument", message)
-}
-
-fn busy() -> JsValue {
-    js_error(
-        "client_busy",
-        "the Actors client is already executing an operation",
-    )
 }
 
 fn decode<M: Message + Default>(bytes: &[u8]) -> Result<M, JsValue> {
@@ -116,10 +107,74 @@ fn grpc_code(code: i32) -> &'static str {
     }
 }
 
+fn semantic_error(error: acyclic_actors::domain::DomainError) -> JsValue {
+    let message = error.to_string();
+    let (semantic_code, semantic_value, contract_code, code) = match error {
+        acyclic_actors::domain::DomainError::EmptyActorId => {
+            ("empty_actor_id", None, None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::InvalidCodeSha256 => {
+            ("invalid_code_sha256", None, None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::Contract(contract) => {
+            let contract_code = match contract {
+                ContractError::InvalidArgument => "invalid_argument",
+                ContractError::LimitExceeded => "limit_exceeded",
+                ContractError::DuplicateName => "duplicate_name",
+            };
+            ("contract", None, Some(contract_code), contract_code)
+        }
+        acyclic_actors::domain::DomainError::UnknownActorState(value) => {
+            ("unknown_actor_state", Some(value), None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::UnknownSubscriptionState(value) => (
+            "unknown_subscription_state",
+            Some(value),
+            None,
+            "semantic_error",
+        ),
+        acyclic_actors::domain::DomainError::UnknownErrorCode(value) => {
+            ("unknown_error_code", Some(value), None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::MissingMessage => {
+            ("missing_message", None, None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::InvalidSubscription => {
+            ("invalid_subscription", None, None, "semantic_error")
+        }
+        acyclic_actors::domain::DomainError::InvalidBinding => {
+            ("invalid_binding", None, None, "semantic_error")
+        }
+    };
+    let error = js_error(code, message);
+    let _ = js_sys::Reflect::set(
+        &error,
+        &JsValue::from_str("semanticCode"),
+        &JsValue::from_str(semantic_code),
+    );
+    if let Some(value) = semantic_value {
+        let _ = js_sys::Reflect::set(
+            &error,
+            &JsValue::from_str("semanticValue"),
+            &JsValue::from_f64(f64::from(value)),
+        );
+    }
+    if let Some(contract_code) = contract_code {
+        let _ = js_sys::Reflect::set(
+            &error,
+            &JsValue::from_str("contractCode"),
+            &JsValue::from_str(contract_code),
+        );
+    }
+    error
+}
+
 fn facade_error(error: client::Error) -> JsValue {
     match error {
         client::Error::Configuration(message) => invalid(message),
         client::Error::Transport(message) => js_error("unavailable", message),
+        client::Error::Contract(error) => contract_error(error),
+        client::Error::Semantic(error) => semantic_error(error),
         client::Error::Service {
             grpc_code: code,
             detail,
@@ -139,15 +194,16 @@ fn facade_error(error: client::Error) -> JsValue {
             }
             error
         }
+        client::Error::Cancelled => {
+            js_error("cancelled", "Actors operation cancelled by the caller")
+        }
     }
 }
 
-/// One explicit cancellation source. A cancelled handle is terminal and must
-/// be replaced for the next operation.
+/// Thin JavaScript handle over the canonical Rust cancellation token.
 #[wasm_bindgen]
 pub struct CancellationHandle {
-    sender: Rc<RefCell<Option<oneshot::Sender<()>>>>,
-    requested: Rc<Cell<bool>>,
+    token: CancellationToken,
 }
 
 #[wasm_bindgen]
@@ -155,46 +211,28 @@ impl CancellationHandle {
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         Self {
-            sender: Rc::new(RefCell::new(None)),
-            requested: Rc::new(Cell::new(false)),
+            token: CancellationToken::new(),
         }
     }
 
     pub fn cancel(&self) {
-        self.requested.set(true);
-        if let Ok(mut sender) = self.sender.try_borrow_mut() {
-            if let Some(sender) = sender.take() {
-                let _ = sender.send(());
-            }
-        }
+        self.token.cancel();
     }
 
     pub fn cancelled(&self) -> bool {
-        self.requested.get()
+        self.token.is_cancelled()
     }
 }
 
 impl CancellationHandle {
-    fn begin(&self) -> Result<oneshot::Receiver<()>, JsValue> {
-        let (sender, receiver) = oneshot::channel();
-        let mut current = self.sender.try_borrow_mut().map_err(|_| busy())?;
-        if self.requested.get() {
+    fn token(&self) -> Result<CancellationToken, JsValue> {
+        if self.token.is_cancelled() {
             return Err(js_error(
                 "client_busy",
                 "a cancelled handle cannot be reused",
             ));
         }
-        if current.is_some() {
-            return Err(busy());
-        }
-        *current = Some(sender);
-        Ok(receiver)
-    }
-
-    fn finish(&self) {
-        if let Ok(mut sender) = self.sender.try_borrow_mut() {
-            sender.take();
-        }
+        Ok(self.token.clone())
     }
 }
 
@@ -205,26 +243,10 @@ async fn await_operation<F, T>(
 where
     F: Future<Output = Result<T, client::Error>>,
 {
-    let operation = async { future.await.map_err(facade_error) };
-    let Some(cancellation) = cancellation else {
-        return operation.await;
-    };
-    let receiver = cancellation.begin()?;
-    let cancel = async {
-        let _ = receiver.await;
-        Err(js_error(
-            "cancelled",
-            "Actors operation cancelled by the caller",
-        ))
-    };
-    pin_mut!(operation);
-    pin_mut!(cancel);
-    let result = match select(operation, cancel).await {
-        Either::Left((result, _)) => result,
-        Either::Right((result, _)) => result,
-    };
-    cancellation.finish();
-    result
+    let token = cancellation.map(CancellationHandle::token).transpose()?;
+    client::run_with_cancellation(future, token)
+        .await
+        .map_err(facade_error)
 }
 
 async fn encode_operation<T, F>(
@@ -251,7 +273,7 @@ fn request_bytes(value: JsValue) -> Result<Vec<u8>, JsValue> {
 /// Browser Actors client backed by the canonical Rust facade.
 #[wasm_bindgen]
 pub struct ActorsClient {
-    inner: RefCell<client::Client>,
+    inner: Rc<client::Client>,
 }
 
 #[wasm_bindgen]
@@ -262,7 +284,7 @@ impl ActorsClient {
     pub fn new(endpoint: String, token: String) -> Result<Self, JsValue> {
         let inner = client::Client::from_browser(&endpoint, &token).map_err(facade_error)?;
         Ok(Self {
-            inner: RefCell::new(inner),
+            inner: Rc::new(inner),
         })
     }
 
@@ -288,8 +310,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CreateActorRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.create_actor(&request), cancellation).await
+        encode_operation(self.inner.wire_create_actor(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = updateActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -299,8 +320,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::UpdateActorRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.update_actor(&request), cancellation).await
+        encode_operation(self.inner.wire_update_actor(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = inspectActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -310,8 +330,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InspectActorRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.inspect_actor(&request), cancellation).await
+        encode_operation(self.inner.wire_inspect_actor(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = addSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -321,8 +340,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::AddSubscriptionRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.add_subscription(&request), cancellation).await
+        encode_operation(self.inner.wire_add_subscription(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = removeSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -332,8 +350,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::RemoveSubscriptionRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.remove_subscription(&request), cancellation).await
+        encode_operation(self.inner.wire_remove_subscription(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = resumeSubscription, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -343,8 +360,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::ResumeSubscriptionRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.resume_subscription(&request), cancellation).await
+        encode_operation(self.inner.wire_resume_subscription(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = checkpointActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -354,8 +370,7 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CheckpointActorRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.checkpoint_actor(&request), cancellation).await
+        encode_operation(self.inner.wire_checkpoint_actor(&request), cancellation).await
     }
 
     #[wasm_bindgen(js_name = invokeActor, unchecked_param_type = "ActorsWireBytes", unchecked_return_type = "ActorsWireBytes")]
@@ -365,69 +380,9 @@ impl ActorsClient {
         cancellation: Option<&CancellationHandle>,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InvokeActorRequest>(&request_bytes(request)?)?;
-        let client = self.inner.try_borrow_mut().map_err(|_| busy())?;
-        encode_operation(client.invoke_actor(&request), cancellation).await
+        encode_operation(self.inner.wire_invoke_actor(&request), cancellation).await
     }
 }
 
 #[allow(dead_code)]
 const _CONTRACT_LIMITS: (usize, usize) = (MAX_SUBSCRIPTIONS, MAX_BINDINGS);
-
-#[cfg(test)]
-mod cancellation_tests {
-    use super::*;
-
-    #[test]
-    fn handle_starts_idle_and_cancel_is_explicit() {
-        let handle = CancellationHandle::new();
-        assert!(!handle.cancelled());
-        handle.cancel();
-        assert!(handle.cancelled());
-    }
-
-    #[test]
-    fn normal_completion_allows_handle_reuse() {
-        let handle = CancellationHandle::new();
-        let first = handle.begin();
-        assert!(first.is_ok());
-        assert!(!handle.cancelled());
-        handle.finish();
-
-        let second = handle.begin();
-        assert!(second.is_ok());
-        assert!(!handle.cancelled());
-        handle.finish();
-    }
-
-    #[test]
-    fn begin_rejects_concurrent_use_until_finished() {
-        let handle = CancellationHandle::new();
-        let active = handle.begin();
-        assert!(active.is_ok());
-        assert!(handle.begin().is_err());
-
-        handle.finish();
-        assert!(handle.begin().is_ok());
-        handle.finish();
-    }
-
-    #[test]
-    fn inflight_cancellation_is_terminal_and_requires_fresh_handle() {
-        let handle = CancellationHandle::new();
-        let mut polls = 0;
-        let operation =
-            futures::future::poll_fn(|_| -> std::task::Poll<Result<(), client::Error>> {
-                polls += 1;
-                if polls == 1 {
-                    handle.cancel();
-                }
-                std::task::Poll::Pending
-            });
-
-        let result = futures::executor::block_on(await_operation(operation, Some(&handle)));
-        assert!(result.is_err());
-        assert_eq!(polls, 1);
-        assert!(handle.cancelled());
-        assert!(handle.begin().is_err());
-    }
-}

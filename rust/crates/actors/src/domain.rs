@@ -156,6 +156,34 @@ impl TryFrom<wire::Binding> for Binding {
 }
 
 impl Binding {
+    /// Constructs a binding while applying the same non-empty admission rule
+    /// used by the canonical create and update validators.
+    pub fn new(name: String, capability: String, resource: String) -> Result<Self, DomainError> {
+        if name.is_empty() || capability.is_empty() || resource.is_empty() {
+            return Err(DomainError::InvalidBinding);
+        }
+        Ok(Self {
+            name,
+            capability,
+            resource,
+        })
+    }
+
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub fn capability(&self) -> &str {
+        &self.capability
+    }
+
+    #[must_use]
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+
     fn from_validated(value: wire::Binding) -> Self {
         Self {
             name: value.name,
@@ -603,7 +631,7 @@ impl From<ActorObservation> for wire::ActorObservation {
     fn from(value: ActorObservation) -> Self {
         Self {
             actor_id: value.actor_id.0,
-            code_sha256: value.code_sha256.as_bytes().to_vec(),
+            code_sha256: value.code_sha256.as_bytes().to_vec().into(),
             home_region: value.home_region,
             state: value.state.into(),
             subscriptions: value.subscriptions.into_iter().map(Into::into).collect(),
@@ -1020,7 +1048,7 @@ mod tests {
         assert_eq!(ActorId::new(String::new()), Err(DomainError::EmptyActorId));
         assert_eq!(
             ActorId::new("  ".into()).map(|value| value.as_str().to_owned()),
-            Ok("  ")
+            Ok(String::from("  "))
         );
     }
 

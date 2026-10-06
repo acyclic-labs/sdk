@@ -9,9 +9,9 @@ reconstruct those declarations.
 
 | Responsibility | Pinned candidate | Working evidence | Remaining acceptance |
 | --- | --- | --- | --- |
-| Rust declarations to protobuf | Protify 0.1.4, Prost 0.14.4 | Direct message encoding and schema rendering; checked digest projection and unknown enum preservation | Full Actors descriptor, options, streaming signatures, tonic generation and drift checks |
-| TypeScript static types | ts-rs 12.0.1 | Seven Rust tests; generated positive and negative TS consumers for nominal identity, digest, bigint and tagged union | Installed native/browser Actors clients and complete operation coverage |
-| Rust documentation input | rustdoc-types 0.60.0, Rustdoc 1.98.1, format 60 | Real public/re-export/private-path fixtures; docs and spans joined by item identity | Complete input provenance, source coverage and immutable bundles |
+| Rust declarations to protobuf | Protify 0.1.4, Prost 0.14.4 | Rust-owned Actors contract plus shared `build.rs`/`codegen.rs`; fresh descriptor structural golden match recorded below | Full release drift gate over descriptor, options, streaming signatures, and tonic generation |
+| TypeScript static types | ts-rs 12.0.1 | Semantic export roots and `ts-rs` metadata live in `actors/src/domain.rs`; the Actors package consumes generated proto types through its HTTP and gRPC wrappers | Connect the Rust semantic export step to the standalone generation bundle, then qualify installed native/browser clients and complete operation coverage |
+| Rust documentation input | rustdoc-types 0.60.0, Rustdoc 1.98.1, format 60 | Real public/re-export/private-path fixtures; pinned typed input with docs and spans available by item identity | A typed Rustdoc-to-public-API join is not claimed until its provenance, source coverage and immutable bundle checks pass |
 | API signature formatting | public-api 0.52.2 | Integrated checked format adapter; real generic methods, repeated aliases, enum fields and associated items; custom formatter removed | Full SDK source coverage |
 | Shared language bindings | UniFFI 0.31.0 | Installed Windows Python wheel calling canonical Rust Stream memory behavior, typed errors, finite reads and cancellation; Swift generated-source type checks | Actual remote backend, installed target packages and complete capability coverage |
 | Browser gRPC | tonic-web-wasm-client 0.9.2, tonic 0.14.6 | Generic Actors client completed all eight unary operations against a local gRPC-Web service in headless Chrome | Production Rust-source package and public gRPC-Web ingress |
@@ -21,14 +21,54 @@ They do not extract executable Rust behavior. Independently generated foreign
 transport runtimes would create another behavioral authority; public SDKs instead
 call the canonical Rust runtime through maintained bindings.
 
+The Actors generation boundary is intentionally a thin physical build step.
+`rust/crates/actors/build.rs` declares the contract inputs and delegates to the
+shared `src/codegen.rs`; that code renders the Rust-owned contract through
+`src/contract.rs`, then invokes the maintained prost/tonic builder for the proto,
+descriptor set, and transport facade. A fresh structural golden comparison passed
+on 2026-10-06: the fresh descriptor SHA-256 was
+`c565b7d1fa43b3e96fc068ec7db687e504603a377e9e592d15033f15cd02e9e9`, compared
+with baseline `70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c`.
+The comparator reported `descriptor structural golden match`; it compares the
+descriptor's files, options, messages, fields, enums, services, and RPC shape,
+so this check does not depend on protobuf byte ordering.
+
+## Current migration inventory
+
+The Actors Rust bootstrap is now explicit and bounded. The Rust-owned contract
+is declared in `rust/crates/actors/src/contract.rs` and `domain.rs`; the thin
+`build.rs` invokes the shared `src/codegen.rs`, which renders the intermediate
+proto and descriptor before the tonic facade is generated. The standalone
+`sdk-generation` launcher imports that same codegen module, stages the outputs
+under its bundle, and then passes typed Rustdoc JSON to `sdk-docs`. Generated
+proto, Rust, and descriptor files remain artifacts and are not source inputs.
+
+The TypeScript wiring is a separate current path: `ts-rs` export roots are
+defined in `actors/src/domain.rs`, while
+`typescript/packages/actors/src/index.ts`, `http.ts`, and `grpc.ts` consume the
+checked-in generated proto package. No caller currently connects
+`export_typescript` to the standalone Rust generation launcher. That connection,
+followed by installed-client qualification, is the remaining Actors TypeScript
+migration work; this document does not treat existing generated files as proof
+that it is complete.
+
+The Rust docs slice currently ends at generated data. `sdk-docs` emits the
+versioned `sdk-docs-data.v1` projection, schema, and release or preview index;
+`sdk-generation` records their source and artifact digests in its manifest.
+There is no website renderer, route registration, or deployment step in this
+Rust source foundation. Website consumption and presentation remain a later
+handoff from the generated data contract.
+
 Protify's proxied conversion generates infallible `From` implementations and can
 normalize unknown enums. Validated domain values therefore use raw executable
 wire types followed by explicit Rust `TryFrom` admission. Rejected input must
 return a typed error, rather than panic or become a default value.
 
-Protify does not capture Rust comments. A narrow typed Rustdoc join by canonical
-Rust path and field name supplies documentation without defining fields or tags
-again.
+Protify 0.1.4 does not capture Rust comments in its service/schema model. A
+narrow typed Rustdoc join by canonical Rust path and field name is the selected
+research direction, but it is not an implemented generation claim in this
+source-selection document. It must supply documentation without redefining
+fields, tags, or transport behavior when its provenance checks are accepted.
 
 The public-api dependency accepts format 59. Format 60 adds nullable unstable
 default metadata to functions and associated constants/types. The adapter accepts

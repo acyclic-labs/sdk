@@ -10,11 +10,11 @@ protobuf decoding, response encoding, error codes, and message limits stay in
 Rust; the JavaScript adapter only passes bytes and an optional
 `CancellationHandle`.
 
-The native companion in `src/native.rs` uses the same generated client with a
-native tonic channel and bearer interceptor. The generated client must remain
-transport-generic (`build_transport(false)`) so browser and native paths share
-one Rust client definition.
+The native companion in `src/native.rs` delegates to the canonical native
+Actors client. The shared client owns transport construction, validation, and
+typed operation behavior for both browser and native targets.
 
-Cancellation is explicit: calling `CancellationHandle.cancel()` races the
-operation with a Rust cancellation signal and returns the canonical gRPC
-`cancelled` status. A transport error is never inferred to be cancellation.
+Cancellation is explicit: calling `CancellationHandle.cancel()` delegates to
+the shared Rust `CancellationToken` and returns the canonical `cancelled`
+error. A cancelled handle is terminal; create a fresh handle for the next
+operation. A transport error is never inferred to be cancellation.

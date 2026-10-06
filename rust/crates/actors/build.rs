@@ -1,3 +1,5 @@
+//! Build the Actors descriptor and transport directly from the Rust contract.
+
 #[path = "src/codegen.rs"]
 mod codegen;
 #[path = "src/contract.rs"]

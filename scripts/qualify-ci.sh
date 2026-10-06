@@ -68,7 +68,7 @@ fork_join_conformance() {
 case "$lane" in
   gate)
     if [[ "$full_qualification" != true ]]; then
-      cargo test -p acyclic-actors --locked --lib
+      cargo test --workspace --locked --lib
       cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
       cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"
@@ -276,7 +276,7 @@ case "$lane" in
     ;;
   policy)
     if [[ "$full_qualification" != true ]]; then
-      cargo clippy -p acyclic-actors --all-targets --locked -- -D warnings
+      cargo clippy --workspace --lib --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
       cargo fmt --all -- --check
       exit 0

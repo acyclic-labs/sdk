@@ -13,19 +13,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-actors = { path = "../actors", version = "0.2.0", default-features = false }
-futures = "0.3.31"
 prost = "0.14.4"
-thiserror = "2.0.17"
-tonic = { version = "0.14.6", default-features = false, features = ["codegen"] }
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tonic = { version = "0.14.6", features = ["transport", "tls-ring", "tls-webpki-roots"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3.94"
-tonic-web-wasm-client = "0.9.2"
+tokio-util = { version = "=0.7.19", features = ["rt"] }
 wasm-bindgen = "=0.2.117"
-wasm-bindgen-futures = "0.4.67"
 
 [lints.rust]
 unsafe_code = "deny"
