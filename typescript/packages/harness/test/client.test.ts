@@ -25,7 +25,7 @@ const content: FileRef = {
   volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
     id: "project", class: "project", owner: { kind: "project", id: "project" } },
   path: "messages/committed.txt", version: "generation-1",
-  descriptor: { sha256: Array(32).fill(0), byte_length: 0, media_type: "text/plain" },
+  descriptor: { sha256: Array(32).fill(0n), byte_length: 0n, media_type: "text/plain" },
   display_name: "committed.txt",
 };
 
@@ -45,6 +45,23 @@ test("offline outbox accepts only explicitly safe non-approval commands", async 
   await expect(
     client.submit({ ...safe, kind: "interaction.resolve.approval" }),
   ).rejects.toThrow("not safe");
+});
+
+test("offline outbox preserves Rust-owned u64 metadata exactly as bigint", async () => {
+  const outbox = new MemoryOutbox();
+  const exactSequence = (1n << 53n) + 1n;
+  const command: ClientCommand = {
+    operationId: "11111111-1111-1111-1111-111111111111" as OperationId,
+    authority,
+    kind: "message.append",
+    payload: { metadata: { sequence: exactSequence } },
+    offlineSafe: true,
+  };
+  await outbox.put(command);
+  const restored = (await outbox.load())[0];
+  expect(restored?.payload).toEqual({ metadata: { sequence: exactSequence } });
+  expect((restored?.payload as { metadata: { sequence: bigint } }).metadata.sequence)
+    .toBe(9007199254740993n);
 });
 
 test("IndexedDB atomically persists outbox acknowledgements and replay cursors across restart", async () => {
@@ -92,7 +109,7 @@ test("IndexedDB outbox enforces configured command and byte bounds", async () =>
   const customArray: unknown[] & { extra?: string } = [];
   customArray.extra = "x".repeat(10_000);
   await expect(store.put({ operationId, authority, kind: "message.append", payload: customArray as unknown as OfflinePayload, offlineSafe: true }))
-    .rejects.toThrow("custom properties");
+    .rejects.toThrow("offline outbox payload must be a ref-only record");
   const accessor = {} as { value: string };
   Object.defineProperty(accessor, "value", { enumerable: true, get: () => "x".repeat(10_000) });
   await expect(store.put({ operationId, authority, kind: "message.append", payload: accessor as unknown as OfflinePayload, offlineSafe: true }))
@@ -105,14 +122,17 @@ test("IndexedDB rejects non-canonical structured-clone payloads", async () => {
     databaseName: "canonical-client",
     maximumBytes: 128,
   });
-  for (const payload of [new Map([["large", "x".repeat(1_024)]]), new Set(["x".repeat(1_024)])]) {
+  for (const payload of [
+    new Map([["large", "x".repeat(1_024)]]),
+    new Set(["x".repeat(1_024)]),
+  ] as const) {
     await expect(store.put({
       operationId,
       authority,
       kind: "message.append",
       payload: payload as unknown as OfflinePayload,
       offlineSafe: true,
-    })).rejects.toThrow("non-canonical structured value");
+    })).rejects.toThrow(/offline outbox payload contains an unsupported field|command contains a non-canonical structured value/);
   }
   await expect(store.put({
     operationId,
@@ -120,21 +140,21 @@ test("IndexedDB rejects non-canonical structured-clone payloads", async () => {
     kind: "message.append",
     payload: Number.POSITIVE_INFINITY as unknown as OfflinePayload,
     offlineSafe: true,
-  })).rejects.toThrow("non-finite number");
+  })).rejects.toThrow("JSON contains an unsafe JavaScript Number");
   await expect(store.put({
     operationId,
     authority,
     kind: "message.append",
     payload: { toJSON: () => ({}) } as unknown as OfflinePayload,
     offlineSafe: true,
-  })).rejects.toThrow("non-data value");
+  })).rejects.toThrow("value is not canonical JSON");
   await expect(store.put({
     operationId,
     authority,
     kind: "message.append",
     payload: new ArrayBuffer(1_024) as unknown as OfflinePayload,
     offlineSafe: true,
-  })).rejects.toThrow("inline bytes or credentials");
+  })).rejects.toThrow("command contains a non-canonical structured value");
 });
 
 test("offline outboxes never retain bearer scopes, inline bodies, or mutable caller objects", async () => {
@@ -143,15 +163,15 @@ test("offline outboxes never retain bearer scopes, inline bodies, or mutable cal
     payload: { content, metadata: { sequence: 1 } }, offlineSafe: true };
   await outbox.put(safe);
   (safe.payload.metadata as { sequence: number }).sequence = 2;
-  expect((await outbox.load())[0]?.payload).toEqual({ content, metadata: { sequence: 1 } });
+  expect((await outbox.load())[0]?.payload).toEqual({ content, metadata: { sequence: 1n } });
   await expect(outbox.put({ ...safe, payload: { scope: { id: "signed", proof: [1] } } as unknown as OfflinePayload }))
-    .rejects.toThrow("inline bytes or credentials");
+    .rejects.toThrow("offline outbox payload contains an unsupported field");
   await expect(outbox.put({ ...safe, payload: { text: "uncommitted body" } as unknown as OfflinePayload }))
-    .rejects.toThrow("inline bytes or credentials");
+    .rejects.toThrow("offline outbox payload contains an unsupported field");
   await expect(outbox.put({ ...safe, payload: { content: new Uint8Array([1]) } as unknown as OfflinePayload }))
-    .rejects.toThrow("inline bytes or credentials");
+    .rejects.toThrow("offline outbox content reference is invalid");
   await expect(outbox.put({ ...safe, payload: { metadata: { sequence: Number.MAX_SAFE_INTEGER + 1 } } }))
-    .rejects.toThrow("inexact integer");
+    .rejects.toThrow("JSON contains an unsafe JavaScript Number");
   const credentialField = { ...safe, authorization: "Bearer secret" };
   await expect(outbox.put(credentialField)).rejects.toThrow("unsupported field");
   const bearerAuthority = { ...safe, authority: { ...authority, proof: [1] } };

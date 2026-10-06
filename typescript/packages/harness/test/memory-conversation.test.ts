@@ -37,7 +37,7 @@ test("ephemeral content retention bounds bytes and zero-byte versions without di
   await expect(MemoryConversation.create({ agent, wasm, maxResidentBytes: Number.POSITIVE_INFINITY }))
     .rejects.toThrow("maximum_resident_bytes must be a safe non-negative integer");
   await expect(MemoryConversation.create({ agent, wasm, maxResidentFiles: 0 }))
-    .rejects.toThrow("maximum_resident_files must be a safe non-negative integer");
+    .rejects.toThrow("invalid request: maximum resident file count must be positive");
   const host = await MemoryConversation.create({ agent, wasm, maxResidentBytes: 3, maxResidentFiles: 3 });
   const first = await host.stage("files/one", new Uint8Array([1, 2]), "application/octet-stream", "one");
   const second = await host.stage("files/two", new Uint8Array([3]), "application/octet-stream", "two");
@@ -174,7 +174,7 @@ test("local conversation publishes staged refs and pinned context before model d
   expect(history.agent).toBe(agent);
   expect(history.messages.map(message => message.kind)).toEqual(["user", "assistant"]);
   expect(typeof history.messages[0]!.sequence).toBe("bigint");
-  expect(typeof history.messages[1]!.content.descriptor.byte_length).toBe("number");
+  expect(history.messages[1]!.content.descriptor.byte_length).toBe(6);
   const eventJson = JSON.stringify(host.snapshot().events,
     (_key, value: unknown) => typeof value === "bigint" ? value.toString() : value);
   expect(eventJson).not.toContain("question");
