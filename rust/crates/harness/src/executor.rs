@@ -494,14 +494,19 @@ pub trait Executor: Send + Sync {
 /// Implementations must perform checks against their journal-issued limiter;
 /// callers never supply or derive ceilings from model output.
 pub trait SwarmProviderAdmission: Send {
+    /// Reserves one model step before provider dispatch.
     fn admit_model_step(&mut self) -> Result<SwarmUsage>;
+    /// Reserves measured provider output bytes before accepting them.
     fn admit_output_bytes(&mut self, bytes: u64) -> Result<SwarmUsage>;
+    /// Reserves measured provider execution time at a scheduling boundary.
     fn admit_execution_time_ms(&mut self, elapsed_ms: u64) -> Result<SwarmUsage>;
+    /// Returns transport provenance bound to the admitted provider attempt.
     fn provider_dispatch_context(
         &self,
         step: u32,
         request_digest: [u8; 32],
-    ) -> Result<ProviderDispatchContext>;}
+    ) -> Result<ProviderDispatchContext>;
+}
 
 /// Provider-side admission and measurement boundary for one child dispatch.
 ///

@@ -14,7 +14,7 @@ use super::{
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
-    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
@@ -33,7 +33,7 @@ use crate::{
         InteractionTicket,
     },
     model::{
-        Model, ModelContent, ModelMessage, ModelProvider, ModelRole, ProviderDispatchContext,
+        Model, ModelContent, ModelMessage, ModelProvider, ModelRole,
     },
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -43,7 +43,6 @@ use crate::{
     swarm_budget::{
         SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
-        SwarmUsage,
     },
     swarm_budget_journal::SwarmBudgetJournal,
     tool::{
@@ -74,6 +73,12 @@ use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
+};
+#[cfg(test)]
+use crate::{
+    IdempotencyKey,
+    model::ProviderDispatchContext,
+    swarm_budget::SwarmUsage,
 };
 
 #[path = "swarm_read_projection.rs"]
@@ -7712,6 +7717,7 @@ async fn load_records_range(
     Ok(decoded)
 }
 
+#[cfg(test)]
 async fn append_record(
     stream: &acyclic_stream::Stream<LocalStream>,
     event: StoredEvent,

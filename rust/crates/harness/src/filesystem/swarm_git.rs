@@ -30,11 +30,15 @@ use std::sync::{Arc, RwLock};
 /// provider still rechecks the child lineage and target generation at join.
 #[derive(Clone)]
 pub struct LocalProjectChildBinding {
+    /// Reducer snapshot for the direct parent project at publication time.
     pub parent: Reducer,
+    /// Authority identifying the child project in the parent relationship.
     pub child: Authority,
+    /// Project volume containing the child workspace generations.
     pub project: VolumeRef,
 }
 
+/// Shared registry of direct parent-child project bindings keyed by workspace.
 pub type LocalProjectChildren = Arc<RwLock<BTreeMap<WorkspaceId, LocalProjectChildBinding>>>;
 
 type DirectProjectJoin = Arc<
