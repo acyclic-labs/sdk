@@ -31,7 +31,8 @@ process bridge. Loading is lazy and capability-checked: a companion without
 the versioned native process-owner capability fails explicitly, so a host never
 mistakes ordinary Node process groups for Windows Job ownership. The owner
 returns typed termination outcomes and keeps uncertain cleanup visible to the
-caller.
+caller. Production launchers that require descendant cleanup should fail
+before spawning when this capability is unavailable.
 
 Standalone Node hosts that do not have a native companion can import the
 bounded fallback owner from `/native-process-node`. It starts an owned process

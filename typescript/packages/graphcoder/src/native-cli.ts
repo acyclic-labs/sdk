@@ -1,32 +1,51 @@
 #!/usr/bin/env node
 
-import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "./owned-process.js";
+import { openNativeProcessOwner } from "@acyclic-labs/fs/native";
+import type { NativeProcessOwner, NativeProcessTermination } from "@acyclic-labs/fs/native-process";
 
 const executable = process.env.GRAPHCODER_RUNTIME;
 const args = process.argv.slice(2);
 
-if (executable === undefined || executable.trim() === "") {
-  process.stderr.write("GRAPHCODER_RUNTIME must name the installed graphcoder-runtime executable\n");
-  process.exitCode = 2;
-} else if (!args.some(value => value === "--model-fixture" || value.startsWith("--model-fixture="))) {
-  process.stderr.write("the native runtime requires an explicit --model-fixture\n");
-  process.exitCode = 2;
-} else {
+async function run(): Promise<void> {
+  if (executable === undefined || executable.trim() === "") {
+    process.stderr.write("GRAPHCODER_RUNTIME must name the installed graphcoder-runtime executable\n");
+    process.exitCode = 2;
+    return;
+  }
+  if (!args.some(value => value === "--model-fixture" || value.startsWith("--model-fixture="))) {
+    process.stderr.write("the native runtime requires an explicit --model-fixture\n");
+    process.exitCode = 2;
+    return;
+  }
+
+  // Production terminal execution requires the native owner before any
+  // runtime process is started. A bounded Node fallback cannot prove that
+  // descendants were cleaned up, so an unavailable companion is fatal here.
+  let owner: NativeProcessOwner;
+  try {
+    owner = await openNativeProcessOwner();
+  } catch (error) {
+    process.stderr.write(`native process owner unavailable: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
   // Do not inherit host credentials or ambient provider settings. The native
   // runtime receives only explicit command-line configuration.
-  const child = spawnOwnedProcess(executable, args, {
+  const child = owner.spawn(executable, args, {
     env: {},
     shell: false,
     stdio: "inherit",
+    windowsHide: true,
   });
   let finished = false;
-  let cleanupPromise: Promise<OwnedProcessTermination> | undefined;
+  let cleanupPromise: Promise<NativeProcessTermination> | undefined;
   let cleanupReported = false;
-  const cleanup = (): Promise<OwnedProcessTermination> => {
-    cleanupPromise ??= terminateOwnedProcess(child);
+  const cleanup = (): Promise<NativeProcessTermination> => {
+    cleanupPromise ??= owner.terminate(child);
     return cleanupPromise;
   };
-  const surfaceCleanup = (outcome: OwnedProcessTermination): void => {
+  const surfaceCleanup = (outcome: NativeProcessTermination): void => {
     if (cleanupReported) return;
     cleanupReported = true;
     if (outcome.kind === "terminated") return;
@@ -52,3 +71,5 @@ if (executable === undefined || executable.trim() === "") {
     surfaceCleanup(await cleanup());
   });
 }
+
+await run();

@@ -133,7 +133,9 @@ descendant cleanup explicitly uncertain when no native ownership proof exists.
 `HarnessGraphCoderTransport` and returns both objects. The host must call
 `connection.bridge.close()` when the runtime process should stop; process
 launch, executable selection, and environment policy remain explicit host
-decisions.
+decisions. Production callers can use `openNativeGraphCoderConnection` to
+load and validate the native process owner before any runtime process is
+spawned; it fails closed when the companion is unavailable.
 
 After building, the Windows PTY qualification can be run when Python's
 `winpty` binding is installed:

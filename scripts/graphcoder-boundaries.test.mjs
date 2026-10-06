@@ -8,7 +8,11 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageRoot = join(root, "typescript", "packages", "graphcoder");
 const sourceRoot = join(packageRoot, "src");
 const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-const allowedHostPackageImports = new Set(["@acyclic-labs/fs/native-process-node"]);
+const allowedHostPackageImports = new Set([
+  "@acyclic-labs/fs/native",
+  "@acyclic-labs/fs/native-process",
+  "@acyclic-labs/fs/native-process-node",
+]);
 
 function sourceInventory(directory = sourceRoot) {
   const files = new Map();
@@ -181,7 +185,7 @@ test("GraphCoder source has no web, cloud, production-model, or sandbox imports"
     for (const specifier of importedSpecifiers(source)) {
       assert.equal(forbidden.test(specifier), false, modulePath(path) + " imports forbidden capability " + specifier);
       assert.equal(
-        specifier.startsWith("@acyclic-labs/") && !(path.endsWith("owned-process.ts") && allowedHostPackageImports.has(specifier)),
+        specifier.startsWith("@acyclic-labs/") && !((path.endsWith("owned-process.ts") || path.endsWith("native-cli.ts") || path.endsWith("node.ts")) && allowedHostPackageImports.has(specifier)),
         false,
         modulePath(path) + " reaches an undeclared product package directly",
       );

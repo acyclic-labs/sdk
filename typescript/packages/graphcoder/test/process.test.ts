@@ -6,7 +6,7 @@ import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess,
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
+import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, openNativeGraphCoderConnection, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
 import { GraphCoderTerminal } from "../src/terminal.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
 
@@ -231,7 +231,7 @@ describe("JSON-lines process bridge", () => {
     }
   });
 
-  test("native CLI awaits cleanup on a natural runtime exit", async () => {
+  test("native CLI fails before spawn when the native owner is unavailable", async () => {
     const cli = fileURLToPath(new URL("../src/native-cli.ts", import.meta.url));
     const child = spawnChild(process.execPath, [cli, "-e", "process.exit(0)", "--model-fixture=test"], {
       cwd: process.cwd(),
@@ -244,7 +244,15 @@ describe("JSON-lines process bridge", () => {
     child.stderr?.on("data", chunk => { stderr += String(chunk); });
     await waitForChildClose(child, 5_000);
     expect(child.exitCode).toBe(1);
-    expect(stderr).toContain("runtime process cleanup unknown");
+    expect(stderr).toContain("native process owner unavailable");
+  });
+
+  test("production Node connections resolve native ownership before spawning", async () => {
+    await expect(openNativeGraphCoderConnection({
+      executable: testRuntimeExecutable(),
+      args: ["-e", childScript],
+      env: env(),
+    })).rejects.toThrow();
   });
 
   test("delegates runtime ownership to one injected native boundary", async () => {

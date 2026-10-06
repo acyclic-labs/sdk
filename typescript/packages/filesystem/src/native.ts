@@ -208,8 +208,9 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
  * Opens the optional native process owner without starting a worker.
  *
  * The companion owns the platform Job/process-group handle. A filesystem
- * companion built without that capability fails explicitly; callers must then
- * choose the bounded Node owner or another host policy themselves.
+ * companion built without that capability fails explicitly; callers that
+ * require descendant cleanup must fail before spawning rather than silently
+ * substituting the bounded Node fallback.
  */
 export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   const binding = await bindings();
