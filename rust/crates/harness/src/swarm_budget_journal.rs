@@ -227,6 +227,32 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_dispatch_id()
     }
 
+    /// Returns the authenticated projection rebuilt from the journal tail.
+    pub fn live_projection(&self) -> SwarmBudget { self.budget.clone() }
+
+    /// Persists measured Harness effect time before exposing its outcome.
+    pub async fn record_harness_effect_time_ms(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: &IdempotencyKey,
+        effect_id: &IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<()> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        if !projected.record_harness_effect(operation_id, owner, dispatch_id, effect_id, elapsed_ms)? {
+            return Ok(());
+        }
+        self.commit(SwarmBudgetEvent::HarnessEffectMeasured {
+            operation_id,
+            owner: owner.clone(),
+            dispatch_id: dispatch_id.clone(),
+            effect_id: effect_id.clone(),
+            elapsed_ms,
+        }, operation_id).await?;
+        Ok(())
+    }
+
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;

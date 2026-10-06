@@ -570,7 +570,15 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             request_digest,
             dispatch_id: self.dispatch_id.clone(),
         }
-    }    /// Returns the next sequence expected from this issuer.
+    }
+
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId { self.operation_id }
+
+    #[must_use]
+    pub fn dispatch_id(&self) -> &IdempotencyKey { &self.dispatch_id }
+
+    /// Returns the next sequence expected from this issuer.
     #[must_use]
     pub fn next_sequence(&self) -> Result<u64> {
         self.sequence
@@ -655,7 +663,21 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         Ok(self
             .issuer
             .provider_dispatch_context(step, request_digest))
-    }    /// Returns the mutable pre-work provider limiter.
+    }
+
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId { self.issuer.operation_id() }
+
+    #[must_use]
+    pub fn dispatch_id(&self) -> &IdempotencyKey { self.issuer.dispatch_id() }
+
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.limiter.limits().execution_time_ms
+            .saturating_sub(self.limiter.usage().execution_time_ms)
+    }
+
+    /// Returns the mutable pre-work provider limiter.
     ///
     /// The provider adapter must call its admission methods before each model
     /// step, output write, and elapsed-time slice.
@@ -724,7 +746,21 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         request_digest: [u8; 32],
     ) -> crate::model::ProviderDispatchContext {
         self.issuer.provider_dispatch_context(step, request_digest)
-    }    /// Returns the mutable pre-work provider limiter.
+    }
+
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId { self.issuer.operation_id() }
+
+    #[must_use]
+    pub fn dispatch_id(&self) -> &IdempotencyKey { self.issuer.dispatch_id() }
+
+    #[must_use]
+    pub fn remaining_execution_time_ms(&self) -> u64 {
+        self.limiter.limits().execution_time_ms
+            .saturating_sub(self.limiter.usage().execution_time_ms)
+    }
+
+    /// Returns the mutable pre-work provider limiter.
     pub fn limiter_mut(&mut self) -> &mut SwarmUsageLimiter {
         &mut self.limiter
     }
@@ -1060,6 +1096,14 @@ pub enum SwarmBudgetEvent {
         /// Provider evidence retained with the durable usage transition.
         receipt: SwarmUsageReceipt,
     },
+    /// Records trusted Harness effect time at the physical effect boundary.
+    HarnessEffectMeasured {
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        effect_id: IdempotencyKey,
+        elapsed_ms: u64,
+    },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
         /// Child operation identity.
@@ -1240,6 +1284,7 @@ struct SwarmBudgetState {
     root_dispatch_id: Option<IdempotencyKey>,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
+    harness_effects: BTreeMap<(OperationId, IdempotencyKey, IdempotencyKey), u64>,
 }
 
 /// Thread-safe, atomically updated budget projection for one session.
@@ -1296,6 +1341,7 @@ impl SwarmBudget {
                 root_dispatch_id,
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
+                harness_effects: BTreeMap::new(),
             })),
         })
     }
@@ -1733,6 +1779,49 @@ impl SwarmBudget {
         update_root_usage(&mut state, owner, usage, receipt)
     }
 
+    /// Records one authenticated physical Harness effect exactly once.
+    pub(crate) fn record_harness_effect(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: &IdempotencyKey,
+        effect_id: &IdempotencyKey,
+        elapsed_ms: u64,
+    ) -> Result<bool> {
+        if elapsed_ms == 0 {
+            return Err(Error::Invalid("Harness effect time must be measured".into()));
+        }
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        if operation_id == state.session_id {
+            if state.root_dispatch_id.as_ref() != Some(dispatch_id) {
+                return Err(Error::Unauthorized("effect is not bound to the canonical root dispatch".into()));
+            }
+        } else {
+            let reservation = state.reservations.get(&operation_id)
+                .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+            if reservation.owner != *owner
+                || reservation.dispatch_id.as_ref() != Some(dispatch_id)
+                || !matches!(reservation.state, SwarmReservationState::Reserved | SwarmReservationState::Active)
+            {
+                return Err(Error::Conflict("effect dispatch lease is not active".into()));
+            }
+        }
+        let key = (operation_id, dispatch_id.clone(), effect_id.clone());
+        if let Some(previous) = state.harness_effects.get(&key) {
+            if *previous == elapsed_ms { return Ok(false); }
+            return Err(Error::Conflict("Harness effect measurement changed for an existing physical effect".into()));
+        }
+        let next = state.usage.consumed.execution_time_ms.checked_add(elapsed_ms)
+            .ok_or_else(|| Error::Invalid("swarm time usage exhausted".into()))?;
+        if next > state.limits.max_execution_time_ms {
+            return Err(Error::Conflict("swarm execution time budget exceeded".into()));
+        }
+        state.usage.consumed.execution_time_ms = next;
+        state.harness_effects.insert(key, elapsed_ms);
+        Ok(true)
+    }
+
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
     pub fn cancel(
         &self,
@@ -1848,6 +1937,19 @@ impl SwarmBudget {
             } => self
                 .report_root_usage_event(&owner, usage, Some(&receipt))
                 .map(|_| ()),
+            SwarmBudgetEvent::HarnessEffectMeasured {
+                operation_id,
+                owner,
+                dispatch_id,
+                effect_id,
+                elapsed_ms,
+            } => self.record_harness_effect(
+                operation_id,
+                &owner,
+                &dispatch_id,
+                &effect_id,
+                elapsed_ms,
+            ).map(|_| ()),
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
                 owner,
@@ -1995,6 +2097,40 @@ fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest
         ));
     }
     Ok(limits)
+}
+
+#[cfg(test)]
+mod harness_effect_tests {
+    use super::*;
+
+    #[test]
+    fn harness_effect_measurement_is_idempotent_and_fenced() -> Result<()> {
+        let session = OperationId::from_bytes([0x41; 16]);
+        let owner = SwarmOwnerFence::new("test-owner", 0)?;
+        let dispatch = IdempotencyKey::new("root-dispatch")?;
+        let effect = IdempotencyKey::new("tool:0:call-1")?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            session,
+            owner.clone(),
+            SwarmBudgetLimits {
+                max_execution_time_ms: 10,
+                ..SwarmBudgetLimits::default()
+            },
+            Some(dispatch.clone()),
+        )?;
+        assert!(budget.record_harness_effect(
+            session, &owner, &dispatch, &effect, 3
+        )?);
+        assert!(!budget.record_harness_effect(
+            session, &owner, &dispatch, &effect, 3
+        )?);
+        assert!(matches!(
+            budget.record_harness_effect(session, &owner, &dispatch, &effect, 4),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(budget.usage()?.consumed.execution_time_ms, 3);
+        Ok(())
+    }
 }
 
 /// Returns the commitment held by an operation's direct descendants.  A live

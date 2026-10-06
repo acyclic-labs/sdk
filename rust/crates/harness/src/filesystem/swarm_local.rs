@@ -14,14 +14,14 @@ use super::{
     PersistentLocalHarness, workspace_ref, workspace_tools,
 };
 use crate::{
-    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{
-        ExecutionEvent, SwarmProviderBoundary, SwarmRootProviderBoundary,
+        ExecutionEvent, HarnessEffectRecorder, SwarmProviderBoundary, SwarmRootProviderBoundary,
         TerminalFailureState, TurnOutput,
     },
     fork::{
@@ -41,7 +41,7 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
+        SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
     },
     swarm_budget_journal::SwarmBudgetJournal,
@@ -76,7 +76,6 @@ use std::{
 };
 #[cfg(test)]
 use crate::{
-    IdempotencyKey,
     model::ProviderDispatchContext,
     swarm_budget::SwarmUsage,
 };
@@ -106,6 +105,30 @@ const LOCAL_DEPTH_LIMIT_REASON: &str = "depth_limit";
 const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
+
+/// Host-owned bridge for effect measurements outside provider receipts.
+struct LocalHarnessEffectRecorder {
+    journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
+    projection: SwarmBudget,
+    owner: SwarmOwnerFence,
+    root: bool,
+}
+
+impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
+    fn record<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
+        effect_id: &'a IdempotencyKey, elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.journal.lock().await.record_harness_effect_time_ms(
+                operation_id, &self.owner, dispatch_id, effect_id, elapsed_ms,
+            ).await
+        })
+    }
+
+    fn remaining_execution_time_ms(&self) -> Option<u64> {
+        self.root.then(|| self.projection.root_resource_limits().ok()
+            .map(|limits| limits.execution_time_ms)).flatten()
+    }
+}
 
 #[cfg(test)]
 type MessageAdmissionPause = (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Notify>);
@@ -2333,8 +2356,17 @@ impl LocalModelForkPublisher {
             let source = swarm.bindings.budget_usage_source.clone().ok_or_else(|| {
                 Error::Unauthorized("provider usage source is required before child dispatch".into())
             })?;
-            let context = swarm.budget_journal.lock().await.usage_context(&budget_token, source)?;
-            SwarmProviderBoundary::new(context)
+            let journal = swarm.budget_journal.lock().await;
+            let context = journal.usage_context(&budget_token, source)?;
+            let projection = journal.live_projection();
+            let mut boundary = SwarmProviderBoundary::new(context);
+            boundary.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
+                journal: swarm.budget_journal.clone(),
+                projection,
+                owner: budget_token.owner().clone(),
+                root: false,
+            }));
+            boundary
         };
         let output = PersistentLocalSwarm::run_owned_child_turn(
             harness.clone(), bundle, admission, request.clone(), budget_token.clone(),
@@ -5747,12 +5779,17 @@ impl PersistentLocalSwarm {
         let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
             Error::Unauthorized("provider usage source is required before root dispatch".into())
         })?;
-        let context = self
-            .budget_journal
-            .lock()
-            .await
-            .root_usage_context(source.clone())?;
+        let (context, projection) = {
+            let journal = self.budget_journal.lock().await;
+            (journal.root_usage_context(source.clone())?, journal.live_projection())
+        };
         let mut provider_budget = SwarmRootProviderBoundary::new(context);
+        provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
+            journal: self.budget_journal.clone(),
+            projection,
+            owner: self.config.budget.owner.clone(),
+            root: true,
+        }));
         self.observe(LocalSwarmObservation::ModelWorkerStarted { task });
         let declaration = self.declarations.lock().await.get(&task).cloned();
         let run = async {
@@ -6658,12 +6695,17 @@ impl PersistentLocalSwarm {
         let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
             Error::Unauthorized("provider usage source is required before child dispatch".into())
         })?;
-        let context = self
-            .budget_journal
-            .lock()
-            .await
-            .usage_context(&budget_token, source)?;
+        let (context, projection) = {
+            let journal = self.budget_journal.lock().await;
+            (journal.usage_context(&budget_token, source)?, journal.live_projection())
+        };
         let mut provider_budget = SwarmProviderBoundary::new(context);
+        provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
+            journal: self.budget_journal.clone(),
+            projection,
+            owner: budget_token.owner().clone(),
+            root: false,
+        }));
         let child_result = Self::run_owned_child_turn(
             harness.clone(), bundle, admission, request.clone(), budget_token.clone(),
             max_steps, cancelled, &mut provider_budget,

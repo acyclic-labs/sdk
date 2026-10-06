@@ -1,7 +1,7 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
 use crate::{
-    Error, InteractionId, OperationId, Result, TaskId,
+    Error, IdempotencyKey, InteractionId, OperationId, Result, TaskId,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
@@ -29,7 +29,7 @@ use acyclic_stream::{SystemUnixMillisClock, UnixMillisClock};
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, future::Future, sync::Arc};
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -490,6 +490,13 @@ pub trait Executor: Send + Sync {
     }
 }
 
+/// Trusted Harness-side effect measurement sink bound to one durable budget.
+pub trait HarnessEffectRecorder: Send + Sync {
+    fn record<'a>(&'a self, operation_id: OperationId, dispatch_id: &'a IdempotencyKey,
+        effect_id: &'a IdempotencyKey, elapsed_ms: u64) -> BoxFuture<'a, Result<()>>;
+    fn remaining_execution_time_ms(&self) -> Option<u64> { None }
+}
+
 /// Erased provider-side budget guard used by the canonical stock loop.
 /// Implementations must perform checks against their journal-issued limiter;
 /// callers never supply or derive ceilings from model output.
@@ -506,6 +513,12 @@ pub trait SwarmProviderAdmission: Send {
         step: u32,
         request_digest: [u8; 32],
     ) -> Result<ProviderDispatchContext>;
+    fn record_harness_effect_async<'a>(&'a self, _effect_id: &'a IdempotencyKey,
+        _elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) })
+    }
+    fn supports_harness_effect_time(&self) -> bool { false }
+    fn remaining_execution_time_ms(&self) -> Option<u64> { None }
 }
 
 /// Provider-side admission and measurement boundary for one child dispatch.
@@ -517,13 +530,32 @@ pub trait SwarmProviderAdmission: Send {
 /// [`crate::swarm_budget_journal::SwarmBudgetJournal`].
 pub struct SwarmProviderBoundary<S: SwarmUsageSource> {
     context: SwarmDispatchContext<S>,
+    effect_recorder: Option<Arc<dyn HarnessEffectRecorder>>,
 }
 
 impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     /// Creates a boundary from the journal-issued dispatch context.
     #[must_use]
     pub fn new(context: SwarmDispatchContext<S>) -> Self {
-        Self { context }
+        Self { context, effect_recorder: None }
+    }
+
+    pub fn set_harness_effect_recorder(&mut self, recorder: Arc<dyn HarnessEffectRecorder>) {
+        self.effect_recorder = Some(recorder);
+    }
+
+    pub fn record_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        let Some(recorder) = &self.effect_recorder else {
+            return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
+        };
+        recorder.record(self.context.operation_id(), self.context.dispatch_id(), effect_id, elapsed_ms)
+    }
+
+    pub fn remaining_execution_time_ms(&self) -> Option<u64> {
+        let local = self.context.remaining_execution_time_ms();
+        self.effect_recorder.as_ref().and_then(|r| r.remaining_execution_time_ms())
+            .map(|global| local.min(global)).or(Some(local))
     }
 
     /// Admits one model step before invoking the provider.
@@ -601,19 +633,45 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmProviderBoundary<S> {
     ) -> Result<ProviderDispatchContext> {
         Self::provider_dispatch_context(self, step, request_digest)
     }
+    fn record_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        Self::record_harness_effect_async(self, effect_id, elapsed_ms)
+    }
+    fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
+    fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
 }
 /// Provider-side admission and measurement boundary for the canonical root
 /// dispatch lease. Root work is accepted only when the journal has a real
 /// scheduler/provider lease and measurement source.
 pub struct SwarmRootProviderBoundary<S: SwarmUsageSource> {
     context: SwarmRootDispatchContext<S>,
+    effect_recorder: Option<Arc<dyn HarnessEffectRecorder>>,
 }
 
 impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     /// Creates a root boundary from the journal-issued context.
     #[must_use]
     pub fn new(context: SwarmRootDispatchContext<S>) -> Self {
-        Self { context }
+        Self { context, effect_recorder: None }
+    }
+
+    pub fn set_harness_effect_recorder(&mut self, recorder: Arc<dyn HarnessEffectRecorder>) {
+        self.effect_recorder = Some(recorder);
+    }
+
+    pub fn record_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        let Some(recorder) = &self.effect_recorder else {
+            return Box::pin(async { Err(Error::Unsupported("Harness effect recorder is not bound".into())) });
+        };
+        recorder.record(self.context.operation_id(), self.context.dispatch_id(), effect_id, elapsed_ms)
+    }
+
+    pub fn remaining_execution_time_ms(&self) -> Option<u64> {
+        let Some(recorder) = &self.effect_recorder else {
+            return Some(self.context.remaining_execution_time_ms());
+        };
+        recorder.remaining_execution_time_ms().map(|global| global.min(self.context.remaining_execution_time_ms()))
     }
 
     /// Admits one root model step before invoking the provider.
@@ -677,6 +735,12 @@ impl<S: SwarmUsageSource> SwarmProviderAdmission for SwarmRootProviderBoundary<S
     ) -> Result<ProviderDispatchContext> {
         Ok(Self::provider_dispatch_context(self, step, request_digest))
     }
+    fn record_harness_effect_async<'a>(&'a self, effect_id: &'a IdempotencyKey,
+        elapsed_ms: u64) -> BoxFuture<'a, Result<()>> {
+        Self::record_harness_effect_async(self, effect_id, elapsed_ms)
+    }
+    fn supports_harness_effect_time(&self) -> bool { self.effect_recorder.is_some() }
+    fn remaining_execution_time_ms(&self) -> Option<u64> { Self::remaining_execution_time_ms(self) }
 }
 /// Complete default streaming model/tool loop assembled from replaceable values.
 #[derive(Clone)]
@@ -1400,6 +1464,17 @@ impl StockExecutor {
         step: u32,
         completed: &[ModelMessage],
     ) -> Result<()> {
+        self.record_completed_batch_with_budget(journal, operation, step, completed, None).await
+    }
+
+    async fn record_completed_batch_with_budget(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        completed: &[ModelMessage],
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
+    ) -> Result<()> {
         let records = journal.replay(operation).await?;
         let (manifest_file, request_file) = prepared_model_input(&records, step)?
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
@@ -1466,7 +1541,7 @@ impl StockExecutor {
                 },
             )
             .await?;
-        self.publish_completed_batch(journal, operation, step, request_file.clone(), reference)
+        self.publish_completed_batch(journal, operation, step, request_file.clone(), reference, budget.as_deref_mut())
             .await
     }
 
@@ -1488,6 +1563,7 @@ impl StockExecutor {
         step: u32,
         request: FileRef,
         boundary: FileRef,
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<()> {
         let Some(publisher) = &self.batch_publisher else {
             return Ok(());
@@ -1555,7 +1631,17 @@ impl StockExecutor {
                     "fork-publication-inner-retry",
                     &*publish,
                 );
-                publish.await?;
+                let effect_id = IdempotencyKey::new(format!(
+                    "model:{step}:publication:retry"
+                ))?;
+                await_publication(
+                    publish,
+                    budget.as_deref_mut(),
+                    self.execution_clock.as_ref(),
+                    publication.operation_id,
+                    &effect_id,
+                )
+                .await?;
                 crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
@@ -1580,7 +1666,17 @@ impl StockExecutor {
             let publish = publisher.publish(publication.clone());
             crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
             crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
-            publish.await?;
+            let effect_id = IdempotencyKey::new(format!(
+                "model:{step}:publication:initial"
+            ))?;
+            await_publication(
+                publish,
+                budget.as_deref_mut(),
+                self.execution_clock.as_ref(),
+                publication.operation_id,
+                &effect_id,
+            )
+            .await?;
             crate::stack_diagnostics::marker("fork-publication-complete");
         }
         if publisher.identity() != publication.publisher
@@ -1656,6 +1752,7 @@ impl StockExecutor {
         step: u32,
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
+        mut budget: Option<&mut dyn SwarmProviderAdmission>,
     ) -> Result<Option<ToolRejectionFeedback>> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
@@ -2026,12 +2123,22 @@ impl StockExecutor {
                 task_id: self.authenticated_task,
             };
             tool_context.validate_invocation(&invocation)?;
+            let effect_id = IdempotencyKey::new(format!(
+                "tool:{step}:{}:{}",
+                invocation.call_id,
+                if claimed { "execute" } else { "reconcile" }
+            ))?;
             let result = if claimed {
-                match tool
+                let effect = tool
                     .executor
-                    .execute_in_model_batch(tool_context, invocation.clone())
-                    .await
-                {
+                    .execute_in_model_batch(tool_context, invocation.clone());
+                match run_timed_harness_effect(
+                    effect,
+                    budget.as_deref_mut(),
+                    self.execution_clock.as_ref(),
+                    operation_id,
+                    &effect_id,
+                ).await {
                     Ok(result) => result,
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -2056,11 +2163,16 @@ impl StockExecutor {
                     },
                 }
             } else {
-                match tool
+                let effect = tool
                     .executor
-                    .reconcile_in_model_batch(tool_context, invocation.clone())
-                    .await
-                {
+                    .reconcile_in_model_batch(tool_context, invocation.clone());
+                match run_timed_harness_effect(
+                    effect,
+                    budget.as_deref_mut(),
+                    self.execution_clock.as_ref(),
+                    operation_id,
+                    &effect_id,
+                ).await {
                     Ok(Some(result)) => result,
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -2391,6 +2503,7 @@ impl StockExecutor {
                             step,
                             invocation,
                             &mut prior_messages,
+                            budget.as_deref_mut(),
                         )
                         .await?
                     {
@@ -2400,7 +2513,13 @@ impl StockExecutor {
                 let completed = prior_messages
                     .get(batch_start..)
                     .ok_or_else(|| Error::Storage("completed batch range is invalid".into()))?;
-                self.record_completed_batch(journal, input.operation_id, step, completed)
+                self.record_completed_batch_with_budget(
+                    journal,
+                    input.operation_id,
+                    step,
+                    completed,
+                    budget.as_deref_mut(),
+                )
                     .await?;
                 visible_text.clear();
             }
@@ -3575,6 +3694,59 @@ fn elapsed_provider_delta(
     elapsed_ms
         .checked_sub(admitted_time_ms)
         .ok_or(Error::Indeterminate(operation_id))
+}
+
+/// Bounds publication I/O by the same admission ceiling used for provider
+/// work. A timed-out publication remains indeterminate and therefore cannot
+/// be followed by another model request or child dispatch.
+async fn await_publication<'a>(
+    publish: BoxFuture<'a, Result<()>>,
+    budget: Option<&mut dyn SwarmProviderAdmission>,
+    clock: &'a dyn UnixMillisClock,
+    operation: OperationId,
+    effect_id: &'a IdempotencyKey,
+) -> Result<()> {
+    run_timed_harness_effect(publish, budget, clock, operation, effect_id).await
+}
+
+/// Runs one Harness effect under the live budget ceiling and persists its
+/// measured duration before returning either success or failure to the loop.
+async fn run_timed_harness_effect<'a, T, F>(
+    effect: F,
+    mut budget: Option<&mut dyn SwarmProviderAdmission>,
+    clock: &'a dyn UnixMillisClock,
+    operation: OperationId,
+    effect_id: &'a IdempotencyKey,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>> + 'a,
+{
+    let started_at = clock.now_unix_millis();
+    let outcome = if let Some(admission) = budget.as_deref_mut() {
+        if let Some(remaining) = admission.remaining_execution_time_ms() {
+            if remaining == 0 {
+                return Err(Error::Conflict("provider execution time ceiling exhausted".into()));
+            }
+            match tokio::time::timeout(std::time::Duration::from_millis(remaining), effect).await {
+                Ok(result) => result,
+                Err(_) => Err(Error::Indeterminate(operation)),
+            }
+        } else {
+            effect.await
+        }
+    } else {
+        effect.await
+    };
+    let elapsed = elapsed_provider_time(clock, started_at, operation)?;
+    if elapsed > 0 {
+        if let Some(admission) = budget.as_deref_mut() {
+            if admission.supports_harness_effect_time() {
+                admission.record_harness_effect_async(effect_id, elapsed).await?;
+            }
+            admission.admit_execution_time_ms(elapsed)?;
+        }
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -5167,7 +5339,8 @@ mod tests {
                         operation,
                         0,
                         request.clone(),
-                        boundary.clone()
+                        boundary.clone(),
+                        None,
                     )
                     .await,
                 Err(Error::Storage(_))
@@ -5179,7 +5352,7 @@ mod tests {
                 ExecutionEvent::BatchPublicationStarted { .. }
             ));
             let result = executor
-                .publish_completed_batch(&journal, operation, 0, request.clone(), boundary.clone())
+                .publish_completed_batch(&journal, operation, 0, request.clone(), boundary.clone(), None)
                 .await;
             if success {
                 result?;
@@ -5190,6 +5363,7 @@ mod tests {
                         0,
                         request.clone(),
                         boundary.clone(),
+                        None,
                     )
                     .await?;
                 assert_eq!(journal.replay(operation).await?.len(), 2);
@@ -5206,7 +5380,7 @@ mod tests {
                 stage_json(&journal, operation, "changed", &json!({"boundary": 2})).await?;
             assert!(matches!(
                 executor
-                    .publish_completed_batch(&journal, operation, 0, request, changed)
+                    .publish_completed_batch(&journal, operation, 0, request, changed, None)
                     .await,
                 Err(Error::Conflict(_))
             ));
@@ -5533,6 +5707,7 @@ mod tests {
                     0,
                     changed_call,
                     &mut replay_context,
+                    None,
                 )
                 .await,
             Err(Error::Conflict(_))
@@ -6180,7 +6355,7 @@ mod tests {
         let mut prior = Vec::new();
         assert!(matches!(
             executor
-                .resolve_tool_call(&journal, operation, 0, invocation, &mut prior)
+                .resolve_tool_call(&journal, operation, 0, invocation, &mut prior, None)
                 .await,
             Err(Error::Conflict(message)) if message.contains("feedback changed")
         ));
