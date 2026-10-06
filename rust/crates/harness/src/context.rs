@@ -6,7 +6,7 @@ use crate::{
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -17,6 +17,11 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::StreamExt as _;
+
+#[cfg(not(target_arch = "wasm32"))]
+type StreamProviderHandle = Arc<dyn StreamProvider + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+type StreamProviderHandle = Arc<dyn StreamProvider>;
 
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -48,7 +53,7 @@ pub struct ContextRevision {
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
 pub struct DurableContextProvider {
-    provider: Arc<dyn StreamProvider>,
+    provider: StreamProviderHandle,
     path: StreamPath,
     source: String,
     source_revision: String,
@@ -59,7 +64,7 @@ pub struct DurableContextProvider {
 impl DurableContextProvider {
     /// Creates a bounded durable provider over one permanent Stream path.
     pub fn new(
-        provider: Arc<dyn StreamProvider>,
+        provider: StreamProviderHandle,
         path: StreamPath,
         source: impl Into<String>,
         source_revision: impl Into<String>,
@@ -328,7 +333,7 @@ impl ContextSource for DurableContextProvider {
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
-pub trait ContextSource: Send + Sync {
+pub trait ContextSource: crate::PlatformServiceBounds {
     /// Resolves model-visible messages for the current step.
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
@@ -477,14 +482,12 @@ pub struct ContextInput {
 }
 
 /// Replaceable ordered context transformation.
-pub trait ContextStage: Send + Sync {
-    /// Stable stage name used for diagnostics and composition.
+pub trait ContextStage: crate::PlatformServiceBounds {
+    /// Stable stage name used in the canonical pipeline contract.
     fn name(&self) -> &str;
-
-    /// Immutable serializable identity included in durable execution binding.
+    /// Canonical stage configuration.
     fn contract(&self) -> Value;
-
-    /// Transforms context; stage order is the order supplied by application code.
+    /// Applies the stage to the current context.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,

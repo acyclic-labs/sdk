@@ -27,8 +27,8 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
     workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
 };
-use futures::future::BoxFuture;
-use futures::{StreamExt as _, stream, stream::BoxStream};
+use crate::{BoxFuture, SendBoxFuture, PlatformStreamExt, PlatformTaskCallback, PlatformTaskFuture};
+use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -41,6 +41,8 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 
 /// Maximum number of direct owner-retained children returned by one page.
 pub const MAX_CHILD_PAGE: usize = 1_024;
@@ -53,7 +55,52 @@ pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
 pub const MAX_BATCH_INPUTS: usize = 65_536;
 
-type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
+#[cfg(not(target_arch = "wasm32"))]
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> SendBoxFuture<'static, Result<O>> + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>>;
+
+#[cfg(not(target_arch = "wasm32"))]
+type ErasedTaskDefinition = dyn Any + Send + Sync;
+#[cfg(target_arch = "wasm32")]
+type ErasedTaskDefinition = dyn Any;
+
+#[cfg(not(target_arch = "wasm32"))]
+type TaskDefinitionStorage = Arc<ErasedTaskDefinition>;
+#[cfg(target_arch = "wasm32")]
+type TaskDefinitionStorage = Rc<ErasedTaskDefinition>;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub type TaskDefinitionHandle<I, O> = Arc<TaskDefinition<I, O>>;
+#[cfg(target_arch = "wasm32")]
+pub type TaskDefinitionHandle<I, O> = Rc<TaskDefinition<I, O>>;
+
+fn erase_task_definition<I: 'static, O: 'static>(
+    definition: TaskDefinition<I, O>,
+) -> TaskDefinitionStorage {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Arc::new(definition)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Rc::new(definition)
+    }
+}
+
+fn same_task_definition<I, O>(
+    left: &TaskDefinitionHandle<I, O>,
+    right: &TaskDefinitionHandle<I, O>,
+) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Arc::ptr_eq(left, right)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Rc::ptr_eq(left, right)
+    }
+}
 
 enum TaskImplementation<I, O> {
     Live(Arc<LiveHandler<I, O>>),
@@ -79,8 +126,8 @@ impl<I, O> TaskDefinition<I, O> {
         handler: F,
     ) -> Result<Self>
     where
-        F: Fn(TaskContext, I) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<O>> + Send + 'static,
+        F: Fn(TaskContext, I) -> Fut + PlatformTaskCallback + 'static,
+        Fut: Future<Output = Result<O>> + PlatformTaskFuture + 'static,
     {
         let name = name.into();
         let version = version.into();
@@ -291,7 +338,7 @@ struct TaskEntry {
     input_schema: Value,
     output_schema: Value,
     requirements: BTreeSet<String>,
-    definition: Arc<dyn Any + Send + Sync>,
+    definition: TaskDefinitionStorage,
 }
 
 /// Immutable typed definitions indexed by their exact name and version.
@@ -305,7 +352,7 @@ impl TaskRegistry {
         definition: TaskDefinition<I, O>,
     ) -> Result<()>
     where
-        TaskDefinition<I, O>: Send + Sync,
+        TaskDefinition<I, O>: crate::PlatformServiceBounds,
     {
         let name = definition.identity.name.clone();
         let version = definition.identity.version.clone();
@@ -326,7 +373,7 @@ impl TaskRegistry {
                 input_schema: definition.input_schema.clone(),
                 output_schema: definition.output_schema.clone(),
                 requirements: definition.requirements.clone(),
-                definition: Arc::new(definition),
+                definition: erase_task_definition(definition),
             },
         );
         Ok(())
@@ -334,7 +381,7 @@ impl TaskRegistry {
 
     /// Resolves one Rust input/output pair. An unqualified name is accepted
     /// only when exactly one version is bound; `name@version` is always exact.
-    pub fn get<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
+    pub fn get<I: 'static, O: 'static>(&self, name: &str) -> Result<TaskDefinitionHandle<I, O>> {
         let stored = if let Some((logical, version)) = name.rsplit_once('@') {
             self.0
                 .get(&(logical.to_owned(), version.to_owned()))
@@ -351,7 +398,7 @@ impl TaskRegistry {
             }
             first.1
         };
-        Arc::clone(&stored.definition)
+        TaskDefinitionStorage::clone(&stored.definition)
             .downcast::<TaskDefinition<I, O>>()
             .map_err(|_| Error::Conflict(format!("task {name} has different input/output types")))
     }
@@ -361,12 +408,12 @@ impl TaskRegistry {
         &self,
         name: &str,
         version: &str,
-    ) -> Result<Arc<TaskDefinition<I, O>>> {
+    ) -> Result<TaskDefinitionHandle<I, O>> {
         let stored = self
             .0
             .get(&(name.to_owned(), version.to_owned()))
             .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
-        Arc::clone(&stored.definition)
+        TaskDefinitionStorage::clone(&stored.definition)
             .downcast::<TaskDefinition<I, O>>()
             .map_err(|_| {
                 Error::Conflict(format!(
@@ -618,7 +665,7 @@ impl TaskAdmissionRecord {
 /// Provider boundary for stable durable admission and outcome observation.
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
-pub trait DurableTaskHost: Send + Sync {
+pub trait DurableTaskHost: crate::PlatformServiceBounds {
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -845,7 +892,7 @@ pub trait DurableTaskHost: Send + Sync {
 
 /// Owner-bound durable task state, independently replaceable from admission
 /// and execution. Returned observations are authoritative for typed handles.
-pub trait TaskStateProvider: Send + Sync {
+pub trait TaskStateProvider: crate::PlatformServiceBounds {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -1064,7 +1111,7 @@ impl TaskStateProvider for HostTaskState {
 /// Independently replaceable durable admission boundary. A spawner commits
 /// identities and requests; the bound state host remains the authority for
 /// typed observation, resumed scope, and cancellation.
-pub trait TaskSpawner: Send + Sync {
+pub trait TaskSpawner: crate::PlatformServiceBounds {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route this spawner can actually dispatch to.
@@ -1192,7 +1239,7 @@ impl TaskSpawner for HostTaskSpawner {
 /// One replaceable execution route. It packages a qualified placement with
 /// the exact admission and observation authorities that can run it; selecting
 /// it never falls back to a process-local task or another host.
-pub trait ExecutionProvider: Send + Sync {
+pub trait ExecutionProvider: crate::PlatformServiceBounds {
     /// Immutable provider implementation pinned in every admitted placement.
     fn identity(&self) -> ComponentIdentity;
     /// Durable spawner for this provider's task build and environment.
@@ -1222,7 +1269,7 @@ pub trait ExecutionProvider: Send + Sync {
 
 /// Replaceable owner-bound observer for an already planned provider effect.
 /// Reconciliation never creates a new dispatch attempt.
-pub trait DurableEffectObserver: Send + Sync {
+pub trait DurableEffectObserver: crate::PlatformServiceBounds {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
         &'a self,
@@ -1232,7 +1279,7 @@ pub trait DurableEffectObserver: Send + Sync {
 
 /// Replaceable local interaction router. Durable interactions instead use the
 /// host's recorded request/answer boundary.
-pub trait InteractionRouter: Send + Sync {
+pub trait InteractionRouter: crate::PlatformServiceBounds {
     /// Returns a typed outcome while retaining request and answer bytes in its
     /// own provider; callers must not journal either body.
     fn route<'a>(
@@ -1248,7 +1295,7 @@ pub trait InteractionRouter: Send + Sync {
 pub type InteractionInspection = Option<(InteractionTicket, Option<InteractionResolution>)>;
 
 /// Owner-mediated resolver for versioned questions and approvals.
-pub trait InteractionResolver: Send + Sync {
+pub trait InteractionResolver: crate::PlatformServiceBounds {
     /// Reads the admitted request and current decision before a CAS reply.
     fn inspect<'a>(
         &'a self,
@@ -1540,7 +1587,7 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
 /// caller needs explicit descendant cancellation.
 pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
-) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
+) -> crate::PlatformBoxStream<'static, (String, Result<Outcome<O>>)> {
     let concurrency = tasks.len().clamp(1, 64);
     stream::iter(tasks)
         .map(|task| async move {
@@ -1548,7 +1595,7 @@ pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
             (id, task.result().await)
         })
         .buffer_unordered(concurrency)
-        .boxed()
+        .platform_boxed()
 }
 
 /// Folds observed outcomes in admission order, regardless of completion order.
@@ -1730,7 +1777,7 @@ pub enum ToolPolicyDecision {
 }
 
 /// Replaceable policy evaluated after schema and scope validation, before dispatch.
-pub trait ToolPolicy: Send + Sync {
+pub trait ToolPolicy: crate::PlatformServiceBounds {
     /// Immutable implementation identity pinned across admission and replay.
     fn identity(&self) -> ComponentIdentity;
     /// Policy implementations must be deterministic for an admitted revision.
@@ -2202,7 +2249,7 @@ impl AgentHarness {
     async fn reconcile_scoped_admission<I, O>(
         &self,
         operation_id: OperationId,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         expected: &TaskAdmissionRecord,
         scope: &RuntimeScope,
         host: &Arc<dyn TaskStateProvider>,
@@ -2868,7 +2915,7 @@ impl AgentHarness {
     }
 
     /// Resolves one registered task with exact Rust input/output types.
-    pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
+    pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<TaskDefinitionHandle<I, O>> {
         self.tasks.get(name)
     }
 
@@ -2906,7 +2953,7 @@ impl AgentHarness {
     /// Admits a process-local task after validating its registration and input.
     pub async fn spawn<I, O>(
         self: &Arc<Self>,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
@@ -2928,7 +2975,7 @@ impl AgentHarness {
         group: &TaskGroup,
         scope: RuntimeScope,
         policies: Vec<(ComponentIdentity, Arc<dyn ToolPolicy>)>,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
@@ -2943,7 +2990,7 @@ impl AgentHarness {
         let registered = self
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
+        if !same_task_definition(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
             ));
@@ -3014,7 +3061,7 @@ impl AgentHarness {
     pub async fn admit<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
         parent: Option<TaskId>,
     ) -> Result<Admission<RuntimeTask<O>>>
@@ -3079,12 +3126,12 @@ impl AgentHarness {
     pub async fn attach<I: 'static, O: DeserializeOwned + Send + 'static>(
         &self,
         task_id: TaskId,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
     ) -> Result<RuntimeTask<O>> {
         let registered = self
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition)
+        if !same_task_definition(&registered, definition)
             || !matches!(&definition.implementation, TaskImplementation::Resumable(_))
         {
             return Err(Error::Conflict(
@@ -3138,7 +3185,7 @@ impl AgentHarness {
     async fn admit_scoped<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
         parent: Option<TaskId>,
         scope: RuntimeScope,
@@ -3151,7 +3198,7 @@ impl AgentHarness {
         let registered = self
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
+        if !same_task_definition(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
             ));
@@ -3628,7 +3675,7 @@ impl TaskContext {
     }
 
     /// Resolves one registered task without widening its scope.
-    pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
+    pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<TaskDefinitionHandle<I, O>> {
         self.harness.task(name)
     }
 
@@ -4107,7 +4154,7 @@ impl TaskContext {
     /// Spawns a local child; durable work must use stable host admission instead.
     pub async fn spawn<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
@@ -4163,7 +4210,7 @@ impl TaskContext {
     pub async fn admit<I, O>(
         &self,
         operation_id: OperationId,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
     ) -> Result<Admission<RuntimeTask<O>>>
     where
@@ -4959,7 +5006,7 @@ impl RuntimeGroup {
 
     fn durable_batch_request<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         batch: Batch<I>,
     ) -> Result<DurableBatchRequest>
     where
@@ -4994,7 +5041,7 @@ impl RuntimeGroup {
             .harness
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
+        if !same_task_definition(&registered, definition) {
             return Err(Error::Conflict(
                 "batch task definition is not the registered version".into(),
             ));
@@ -5117,7 +5164,7 @@ impl RuntimeGroup {
     /// acknowledgement retains indexed identities for explicit reconciliation.
     pub async fn spawn_batch<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         batch: Batch<I>,
     ) -> Result<AdmissionBatch<O>>
     where
@@ -5174,7 +5221,7 @@ impl RuntimeGroup {
     /// Observes one exact retained request without admitting absent members.
     pub async fn reconcile_batch<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         batch: Batch<I>,
     ) -> Result<Option<AdmissionBatch<O>>>
     where
@@ -5225,7 +5272,7 @@ impl RuntimeGroup {
     /// without reconstructing the original inputs or resubmitting absent work.
     pub async fn reconcile_batch_id<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         batch_id: BatchId,
     ) -> Result<Option<AdmissionBatch<O>>>
     where
@@ -5246,7 +5293,7 @@ impl RuntimeGroup {
             .harness
             .tasks
             .get_version::<I, O>(&definition.identity.name, &definition.identity.version)?;
-        if !Arc::ptr_eq(&registered, definition) {
+        if !same_task_definition(&registered, definition) {
             return Err(Error::Conflict("batch task definition changed".into()));
         }
         if parent.is_some() {
@@ -5310,7 +5357,7 @@ impl RuntimeGroup {
     /// neither an acknowledgement nor this report asserts terminal outcomes.
     pub async fn cancel_batch_id<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         batch_id: BatchId,
     ) -> Result<Option<BatchCancellationReport>>
     where
@@ -5347,7 +5394,7 @@ impl RuntimeGroup {
     /// Admits one registered typed member into this group.
     pub async fn spawn<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         input: I,
     ) -> Result<RuntimeTask<O>>
     where
@@ -5376,7 +5423,7 @@ impl RuntimeGroup {
     /// fails; unlike `map`, this does not impose a failure policy.
     pub async fn spawn_many<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         inputs: impl IntoIterator<Item = I>,
     ) -> Vec<Result<RuntimeTask<O>>>
     where
@@ -5395,7 +5442,7 @@ impl RuntimeGroup {
     /// helper is local-only; durable batches require retained batch identities.
     pub async fn map<I, O>(
         &self,
-        definition: &Arc<TaskDefinition<I, O>>,
+        definition: &TaskDefinitionHandle<I, O>,
         inputs: impl IntoIterator<Item = I>,
     ) -> RuntimeMap<O>
     where
@@ -5472,7 +5519,7 @@ impl RuntimeGroup {
     pub fn as_completed<O: DeserializeOwned + Send + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
-    ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
+    ) -> crate::PlatformBoxStream<'static, (String, Result<Outcome<O>>)> {
         completion_stream_runtime(tasks)
     }
 

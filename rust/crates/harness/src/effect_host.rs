@@ -9,7 +9,7 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_stream::{StreamClient, StreamProvider};
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use std::sync::Arc;
 
 /// Resolves a pinned provider attempt into its owning conversation history.
@@ -24,7 +24,7 @@ pub struct ConversationEffectHost<P> {
     providers: EffectRegistry,
 }
 
-impl<P: StreamProvider> ConversationEffectHost<P> {
+impl<P: StreamProvider + crate::PlatformServiceBounds> ConversationEffectHost<P> {
     /// Binds one conversation, its signed effect-run scope and provider catalog.
     pub fn new(
         stream: StreamClient<P>,
@@ -71,7 +71,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 }
 
-impl<P: StreamProvider> DurableEffectObserver for ConversationEffectHost<P> {
+impl<P: StreamProvider + crate::PlatformServiceBounds> DurableEffectObserver for ConversationEffectHost<P> {
     fn reconcile<'a>(&'a self, effect_id: EffectId) -> BoxFuture<'a, Result<EffectStatus>> {
         Box::pin(async move {
             let aggregate = self.aggregate().await?;

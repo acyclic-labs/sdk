@@ -30,7 +30,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
-use futures::future::BoxFuture;
+use crate::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -94,7 +94,7 @@ pub struct CoordinatorTaskHost<P> {
     effects: Option<Arc<dyn DurableEffectObserver>>,
 }
 
-impl<P: StreamProvider> CoordinatorTaskHost<P> {
+impl<P: StreamProvider + crate::PlatformServiceBounds> CoordinatorTaskHost<P> {
     /// Binds a trusted owner, its exact task/machine registries, and immutable
     /// admission payload provider. The host validates definitions even when a
     /// caller bypasses the high-level typed runtime.
@@ -529,7 +529,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 }
 
-impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+impl<P: StreamProvider + crate::PlatformServiceBounds> DurableTaskHost for CoordinatorTaskHost<P> {
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.policy.as_ref().map(|policy| policy.identity())
     }
