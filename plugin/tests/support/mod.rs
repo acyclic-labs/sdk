@@ -476,7 +476,7 @@ pub fn output_after_provider_admission(
                     .terminate_descendants()
                     .expect("terminate admitted provider descendants");
                 let status = process_tree
-                    .wait()
+                    .wait(Duration::from_secs(5))
                     .expect("wait for timed-out provider process tree");
                 let output = captured_output(status, &mut stdout, &mut stderr)
                     .expect("collect timed-out provider process tree");
@@ -528,7 +528,7 @@ fn try_output_with_timeout_and_stdin(
             None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             None => {
                 process_tree.terminate_descendants()?;
-                let status = process_tree.wait()?;
+                let status = process_tree.wait(Duration::from_secs(5))?;
                 let output = captured_output(status, &mut stdout, &mut stderr)?;
                 return Ok(BoundedOutput {
                     output,

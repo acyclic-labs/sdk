@@ -572,7 +572,7 @@ fn wait_for_child(
         }
         if Instant::now() >= deadline {
             child.process.terminate_descendants()?;
-            let status = child.process.wait()?;
+            let status = child.process.wait(Duration::from_secs(5))?;
             let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
             return Err(format!(
                 "child process exceeded {} ms: stdout={} stderr={}",

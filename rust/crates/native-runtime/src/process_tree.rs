@@ -31,24 +31,34 @@ impl ProcessTree {
             .as_mut()
             .ok_or_else(|| io::Error::other("process output was already collected"))?;
         #[cfg(unix)]
-        return platform::observe_exit(child, false);
+        return platform::observe_exit(child);
         #[cfg(windows)]
         child.try_wait()
     }
 
-    /// Waits for the direct child while retaining ownership of its descendants.
-    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+    /// Observes direct-child exit within `timeout`, retaining descendant ownership.
+    /// On Unix the exited leader remains unreaped until containment cleanup.
+    pub fn wait(&mut self, timeout: Duration) -> io::Result<ExitStatus> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+        })?;
         let child = self
             .child
             .as_mut()
             .ok_or_else(|| io::Error::other("process output was already collected"))?;
-        // Match Child::wait: an owned piped stdin must not prevent exit.
         drop(child.stdin.take());
-        #[cfg(unix)]
-        return platform::observe_exit(child, true)?
-            .ok_or_else(|| io::Error::other("blocking child observation returned no exit"));
-        #[cfg(windows)]
-        child.wait()
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "process exit deadline exceeded; termination may be unresolved",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     /// Collects at most `max_bytes` across both pipes, with a deadline measured
@@ -116,16 +126,16 @@ impl ProcessTree {
     /// Repeated successful cleanup is a no-op. An error retains ownership.
     pub fn terminate(&mut self) -> io::Result<()> {
         self.terminate_descendants()?;
-        if let Some(child) = self.child.as_mut() {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            while child.try_wait()?.is_none() {
-                if Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "direct child termination is still unresolved",
-                    ));
-                }
-                std::thread::sleep(Duration::from_millis(1));
+        if self.child.is_some() {
+            self.wait(Duration::from_secs(5))?;
+            let child = self
+                .child
+                .as_mut()
+                .ok_or_else(|| io::Error::other("child ownership lost"))?;
+            // Exit was observed above. This reaps the retained Unix leader;
+            // Windows try_wait returns its already-cached terminal status.
+            if child.try_wait()?.is_none() {
+                return Err(io::Error::other("observed child exit is now unresolved"));
             }
             self.child.take();
         }
@@ -185,8 +195,8 @@ mod platform {
     use std::os::unix::process::ExitStatusExt as _;
     use std::process::{Child, Command, ExitStatus};
 
-    pub(super) fn observe_exit(child: &Child, blocking: bool) -> io::Result<Option<ExitStatus>> {
-        let flags = libc::WEXITED | libc::WNOWAIT | if blocking { 0 } else { libc::WNOHANG };
+    pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
+        let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
         loop {
             // SAFETY: initialized OS output storage and the exclusively owned
             // child's ID. WNOWAIT retains the leader until group termination,
@@ -458,6 +468,11 @@ mod tests {
                 ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
             if mode == "child" {
                 ready(temporary.path(), "tree-ready");
+                assert_eq!(
+                    tree.wait(Duration::ZERO).expect_err("wait deadline").kind(),
+                    std::io::ErrorKind::TimedOut
+                );
+                assert!(tree.child.is_some());
             }
             let started = Instant::now();
             let error = tree
@@ -499,11 +514,15 @@ mod tests {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(1));
         }
-        assert!(tree.wait().expect("wait exit").success());
+        assert!(
+            tree.wait(Duration::from_secs(5))
+                .expect("wait exit")
+                .success()
+        );
         // A second real waitid observation fails with ECHILD if try_wait or
         // wait reaped the leader, releasing its PID for reuse before cleanup.
         assert!(
-            super::platform::observe_exit(tree.child.as_ref().expect("retained child"), false)
+            super::platform::observe_exit(tree.child.as_ref().expect("retained child"))
                 .expect("leader remains waitable")
                 .expect("exited leader")
                 .success()
@@ -512,7 +531,12 @@ mod tests {
         assert!(tree.child.is_none());
         let mut tree = ProcessTree::spawn(&mut self::command("exit-code", temporary.path()))
             .expect("spawn nonzero exit");
-        assert_eq!(tree.wait().expect("nonzero exit").code(), Some(7));
+        assert_eq!(
+            tree.wait(Duration::from_secs(5))
+                .expect("nonzero exit")
+                .code(),
+            Some(7)
+        );
         tree.terminate().expect("reap nonzero exit");
 
         let mut tree = ProcessTree::spawn(&mut self::command("child", temporary.path()))
@@ -520,7 +544,9 @@ mod tests {
         tree.terminate_descendants().expect("signal tree");
         use std::os::unix::process::ExitStatusExt as _;
         assert_eq!(
-            tree.wait().expect("signal exit").signal(),
+            tree.wait(Duration::from_secs(5))
+                .expect("signal exit")
+                .signal(),
             Some(libc::SIGKILL)
         );
         tree.terminate().expect("reap signal exit");

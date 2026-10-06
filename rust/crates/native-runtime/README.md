@@ -61,7 +61,8 @@ The API documentation is available on
 [`docs.rs`](https://docs.rs/acyclic-native-runtime).
 
 `ProcessTree` retains the direct child and OS containment through collection
-and cleanup. `wait_with_output(timeout, max_bytes)` closes stdin, polls both
+and cleanup. `wait(timeout)` bounds exit observation; cleanup uses that same
+path before reaping. `wait_with_output(timeout, max_bytes)` closes stdin, polls both
 pipes without reader threads, and cleans up on exit, overflow, or timeout.
 The output bound covers retained payload across both streams, with an 8 KiB
 scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
