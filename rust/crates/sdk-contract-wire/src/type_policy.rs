@@ -3443,7 +3443,12 @@ pub fn audit_generated_descriptor_shape_coverage(
         for enum_type in enum_types {
             let covered = descriptor_projection_aliases(language, &enum_type)
                 .iter()
-                .any(|alias| source_contains_identifier(&source, alias));
+                .any(|alias| match language {
+                    "python" | "go" | "jvm" | "haskell" => {
+                        source_contains_descriptor_enum_projection(language, &source, alias)
+                    }
+                    _ => source_contains_identifier(&source, alias),
+                });
             if !covered {
                 violations.push(GeneratedSurfaceViolation {
                     language,
@@ -3597,6 +3602,7 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
         // the acceptance gate recognizes the same names the emitters derive,
         // rather than forcing either target to maintain an alias table.
         "python" | "go" => vec![prefix],
+        "jvm" => vec![format!("Rust{prefix}Enum")],
         "swift" | "cpp" => vec![format!("{prefix}Wire")],
         "csharp" => vec![format!("Rust{prefix}Enum")],
         // Haskell's generated semantic module uses nominal per-descriptor
@@ -3607,7 +3613,62 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
     }
     .into_iter()
     .filter(|candidate| candidate != &simple)
-    .collect()
+        .collect()
+}
+
+fn source_contains_descriptor_enum_projection(
+    language: &str,
+    source: &str,
+    alias: &str,
+) -> bool {
+    if alias.is_empty() {
+        return false;
+    }
+    match language {
+        "python" => {
+            let lines = source.lines().collect::<Vec<_>>();
+            lines.iter().enumerate().any(|(index, line)| {
+                if is_source_comment(line)
+                    || !line.trim_start().starts_with(&format!("class {alias}:"))
+                {
+                    return false;
+                }
+                let body = lines
+                    .iter()
+                    .skip(index + 1)
+                    .take_while(|candidate| {
+                        let trimmed = candidate.trim_start();
+                        !trimmed.starts_with("class ") && !trimmed.starts_with("@dataclass")
+                    })
+                    .take(32)
+                    .copied()
+                    .collect::<Vec<_>>();
+                body.iter().any(|candidate| candidate.contains("from_wire"))
+                    && body.iter().any(|candidate| candidate.contains("is_known"))
+                    && body.iter().any(|candidate| candidate.contains("is_unknown"))
+            })
+        }
+        "go" => {
+            let declaration = format!("type {alias} struct");
+            source.contains(&declaration)
+                && source.contains(&format!("func (value {alias}) IsKnown"))
+                && source.contains(&format!("func (value {alias}) IsUnknown"))
+        }
+        "jvm" => {
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && line.contains(&format!("record {alias}("))
+                    && line.contains("UNRECOGNIZED")
+                    && line.contains("of(int value)")
+            })
+        }
+        "haskell" => source.lines().any(|line| {
+            !is_source_comment(line)
+                && line.contains(&format!("data {alias} ="))
+                && line.contains("Unknown")
+        }),
+        _ => source_contains_identifier(source, alias),
+    }
 }
 
 fn descriptor_oneof_choice_alias(entry: &ResolvedOneofMember) -> Option<String> {
@@ -5394,6 +5455,10 @@ mod tests {
             descriptor_projection_aliases("go", "inference.customer.v1.EvaluationState"),
             vec!["InferenceCustomerEvaluationState"]
         );
+        assert_eq!(
+            descriptor_projection_aliases("jvm", "acyclic.actors.v1.ActorState"),
+            vec!["RustActorsActorStateEnum"]
+        );
 
         let member = resolved_oneof_members()
             .expect("Rust oneof inventory")
@@ -5555,6 +5620,53 @@ mod tests {
             &member
         ));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn descriptor_enum_projection_rejects_generic_open_enum_aliases() {
+        assert!(!source_contains_descriptor_enum_projection(
+            "python",
+            "class ActorsActorState:\n    value: OpenEnumValue\n",
+            "ActorsActorState"
+        ));
+        assert!(source_contains_descriptor_enum_projection(
+            "python",
+            "class ActorsActorState:\n    value: int\n    @classmethod\n    def from_wire(cls, value: int): ...\n    def is_known(self): ...\n    def is_unknown(self): ...\n",
+            "ActorsActorState"
+        ));
+
+        assert!(!source_contains_descriptor_enum_projection(
+            "go",
+            "type ActorsActorState = OpenEnumValue\n",
+            "ActorsActorState"
+        ));
+        assert!(source_contains_descriptor_enum_projection(
+            "go",
+            "type ActorsActorState struct { Value int32 }\nfunc (value ActorsActorState) IsKnown() bool { return true }\nfunc (value ActorsActorState) IsUnknown() bool { return false }\n",
+            "ActorsActorState"
+        ));
+
+        assert!(!source_contains_descriptor_enum_projection(
+            "jvm",
+            "record RustActorsActorStateEnum(int value) {}\n",
+            "RustActorsActorStateEnum"
+        ));
+        assert!(source_contains_descriptor_enum_projection(
+            "jvm",
+            "record RustActorsActorStateEnum(int value, String name) { static RustActorsActorStateEnum of(int value) { return new RustActorsActorStateEnum(value, \"UNRECOGNIZED\"); } }\n",
+            "RustActorsActorStateEnum"
+        ));
+
+        assert!(!source_contains_descriptor_enum_projection(
+            "haskell",
+            "newtype ActorsActorStateEnum = OpenEnumValue Int\n",
+            "ActorsActorStateEnum"
+        ));
+        assert!(source_contains_descriptor_enum_projection(
+            "haskell",
+            "data ActorsActorStateEnum = ActorsActorStateEnumKnown | ActorsActorStateEnumUnknown Int\n",
+            "ActorsActorStateEnum"
+        ));
     }
 
     #[test]
