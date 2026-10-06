@@ -7796,6 +7796,47 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    #[test]
+    fn fork_tool_v3_definition_matches_pinned_fixture_and_validator() -> Result<()> {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../conformance/vectors/harness/fork-tool-v3.json"
+        ))?;
+        let tool = local_fork_tool(
+            TaskId::from_bytes([0xF1; 16]),
+            Arc::new(LocalModelForkPlans::new()),
+        );
+        let expected = &fixture["tool"];
+        assert_eq!(
+            tool.definition.name,
+            expected["name"].as_str().expect("fixture tool name")
+        );
+        assert_eq!(
+            tool.definition.revision,
+            expected["revision"].as_str().expect("fixture tool revision")
+        );
+        assert_eq!(
+            tool.definition.description,
+            expected["description"]
+                .as_str()
+                .expect("fixture tool description")
+        );
+        assert_eq!(tool.definition.input_schema, expected["input_schema"]);
+
+        for case in fixture["cases"].as_array().expect("fixture cases") {
+            let outcome = crate::tool::validate_value(
+                &tool.definition.input_schema,
+                &case["value"],
+                "fork tool v3 input",
+            );
+            match case["expected"].as_str() {
+                Some("accept") => assert!(outcome.is_ok(), "{}", case["name"]),
+                Some("reject") => assert!(outcome.is_err(), "{}", case["name"]),
+                other => panic!("unknown fixture expectation: {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
     /// Provider used by the activation recovery test. The underlying
     /// provider commits the append normally, while this adapter loses the
     /// acknowledgement exactly once. This models a transport/disconnect
