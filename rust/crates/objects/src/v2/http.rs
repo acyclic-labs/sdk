@@ -147,10 +147,14 @@ impl HttpObjects {
     ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
         let mut endpoint = Url::parse(endpoint).map_err(|_| invalid())?;
-        let loopback = matches!(
-            endpoint.host_str(),
-            Some("localhost" | "127.0.0.1" | "[::1]")
-        );
+        let loopback = endpoint.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
         if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()

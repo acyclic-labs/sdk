@@ -42,7 +42,12 @@ impl HttpStream {
     ) -> Result<Self, ConnectError> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
         let loopback = endpoint.host_str().is_some_and(|host| {
-            host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+            host == "localhost"
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
         });
         if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
             || !endpoint.username().is_empty()
@@ -50,6 +55,7 @@ impl HttpStream {
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
             || token.trim().is_empty()
+            || token.len() > 8192
             || maximum == 0
         {
             return Err(ConnectError);
@@ -589,4 +595,23 @@ fn contract_error(code: &str) -> StreamError {
 
 fn field<'a>(value: &'a Value, name: &str) -> Result<&'a Value, StreamError> {
     value.get(name).ok_or(StreamError::Unavailable)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpStream;
+
+    #[test]
+    fn endpoint_and_credential_policy_matches_other_families() {
+        let long = "t".repeat(8193);
+        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+            assert!(HttpStream::new("https://example.test", token, 1).is_err());
+        }
+        for endpoint in ["http://example.test", "https://u@example.test"] {
+            assert!(HttpStream::new(endpoint, "t", 1).is_err());
+        }
+        for endpoint in ["http://localhost:1", "http://127.0.0.2:1", "http://[::1]:1"] {
+            assert!(HttpStream::new(endpoint, "t", 1).is_ok());
+        }
+    }
 }
