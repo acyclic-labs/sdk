@@ -80,6 +80,7 @@ pub use materialize::{
     MaterializeError, MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
     materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
     restore_checkout_host_path_if_unchanged,
+    restore_checkout_host_path_if_unchanged_with_operation,
 };
 pub(crate) use materialize::{
     MaterializeMode, host_path_matches_expectation, materialize_checkout_paths_with_mode,

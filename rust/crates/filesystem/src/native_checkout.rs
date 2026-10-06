@@ -52,6 +52,10 @@ pub enum HostCheckoutError {
     /// A host entry changed at the conditional publication boundary.
     #[error("host path changed during conditional restore")]
     ConcurrentHostEdit,
+    /// A host publication crossed its mutation boundary without a durable
+    /// receipt; retained artifacts must be reconciled before retry.
+    #[error("host restore publication is uncertain")]
+    UncertainPublication,
     /// Root writeback uses only the sealed atomic native policy.
     #[error("native root writeback policy is not the sealed atomic policy")]
     InvalidRestorePolicy,
@@ -298,7 +302,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
             let current = self.workspace.generation(before.generation_id).await?;
             let target_state = Self::path_state(generation, path).await?;
             let current_state = Self::path_state(&current, path).await?;
-            let target_expectation = host_path_expectation(target_state.as_ref());
+            let target_expectation = host_path_expectation(target_state.as_ref())?;
             let target_on_host = crate::native_mount::host_path_matches_expectation(
                 &options.destination,
                 path,
@@ -334,14 +338,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                 }
                 return Err(HostCheckoutError::ConcurrentHostEdit);
             }
-            let expectation = host_path_expectation(current_state.as_ref());
+            let expectation = host_path_expectation(current_state.as_ref())?;
             self.prepare_publish(&before).await?;
             let receipt = generation
-                .restore_host_path_if_unchanged(
+                .restore_host_path_if_unchanged_with_operation(
                     path,
                     replacement,
                     options,
                     Some(&expectation),
+                    path_reconciliation_key(reconciliation_key, index, path, b"publish"),
                     budget.remaining(work)?,
                     cancellation,
                 )
@@ -351,6 +356,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                         if message.contains("host path changed during conditional restore"))
                     {
                         HostCheckoutError::ConcurrentHostEdit
+                    } else if matches!(error, WorkspaceError::Engine(ref message)
+                        if message.contains("conditional host restore is unsupported"))
+                    {
+                        HostCheckoutError::InvalidRestorePolicy
+                    } else if matches!(error, WorkspaceError::Engine(ref message)
+                        if message.contains("conditional host restore has an uncertain publication"))
+                    {
+                        HostCheckoutError::UncertainPublication
                     } else {
                         HostCheckoutError::Workspace(error)
                     }
@@ -378,7 +391,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         generation: &Generation<A, O>,
         path: &Path,
     ) -> Result<Option<(crate::WorkspaceStat, Option<Vec<u8>>)>, HostCheckoutError> {
-        let mut canonical = path.to_string_lossy().replace('\\', "/");
+        let mut canonical = path.to_string_lossy().into_owned();
+        #[cfg(windows)]
+        {
+            canonical = canonical.replace('\\', "/");
+        }
         if !canonical.starts_with('/') {
             canonical.insert(0, '/');
         }
@@ -398,10 +415,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
 
 fn host_path_expectation(
     state: Option<&(crate::WorkspaceStat, Option<Vec<u8>>)>,
-) -> HostPathExpectation {
+) -> Result<HostPathExpectation, HostCheckoutError> {
     match state {
-        Some((stat, bytes)) => HostPathExpectation::present(stat.kind, bytes.as_deref()),
-        None => HostPathExpectation::absent(),
+        Some((stat, bytes)) if stat.kind == crate::kernel::FileKind::Regular => {
+            Ok(HostPathExpectation::present(stat.kind, bytes.as_deref()))
+        }
+        Some(_) => Err(HostCheckoutError::InvalidRestorePolicy),
+        None => Ok(HostPathExpectation::absent()),
     }
 }
 

@@ -5089,6 +5089,47 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         merge_workspace_work(checkout.work, receipt, budget)
     }
 
+    /// Restores one path with a stable host publication identity retained in
+    /// the native restore witness for cold recovery.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path_if_unchanged_with_operation(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        expected: Option<&crate::HostPathExpectation>,
+        operation: crate::IdempotencyKey,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        let checkout = self
+            .workspace
+            .engine_checkout_measured(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        let mut value = checkout.value;
+        let receipt = crate::restore_checkout_host_path_if_unchanged_with_operation(
+            &mut value,
+            relative,
+            replacement,
+            options,
+            expected,
+            Some(operation),
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
+    }
+
     /// Restores a bounded sequence of paths through one pinned checkout.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn restore_host_paths(

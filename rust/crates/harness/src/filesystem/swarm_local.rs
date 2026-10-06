@@ -112,13 +112,28 @@ fn native_path_digest(paths: &[PathBuf]) -> Result<[u8; 32]> {
                 .ok_or_else(|| {
                     Error::Invalid("native writeback paths must be valid Unicode".into())
                 })
-                .map(|path| path.replace('\\', "/"))
+                .map(|path| {
+                    #[cfg(windows)]
+                    {
+                        path.replace('\\', "/")
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        path.to_owned()
+                    }
+                })
         })
         .collect::<Result<Vec<_>>>()?;
     normalized.sort();
-    normalized.dedup();
     if normalized.is_empty() {
         return Err(Error::Invalid("native writeback path set is empty".into()));
+    }
+    if normalized.windows(2).any(|pair| {
+        pair[0] == pair[1] || pair[1].starts_with(&(pair[0].clone() + "/"))
+    }) {
+        return Err(Error::Invalid(
+            "native writeback path set contains overlapping or duplicate paths".into(),
+        ));
     }
     crate::contract::canonical_json_digest(&normalized)
 }
@@ -8554,6 +8569,27 @@ mod tests {
             native_path_digest(&[path]),
             Err(Error::Invalid(message)) if message.contains("Unicode")
         ));
+    }
+
+    #[cfg(all(
+        feature = "filesystem-local",
+        not(target_arch = "wasm32"),
+        unix
+    ))]
+    #[test]
+    fn native_path_digest_preserves_unix_backslashes_and_rejects_overlap() -> Result<()> {
+        let backslash = native_path_digest(&[PathBuf::from("a\\b")])?;
+        let slash = native_path_digest(&[PathBuf::from("a/b")])?;
+        assert_ne!(backslash, slash);
+        assert!(matches!(
+            native_path_digest(&[PathBuf::from("a"), PathBuf::from("a/b")]),
+            Err(Error::Invalid(message)) if message.contains("overlapping")
+        ));
+        assert!(matches!(
+            native_path_digest(&[PathBuf::from("a"), PathBuf::from("a")]),
+            Err(Error::Invalid(message)) if message.contains("duplicate")
+        ));
+        Ok(())
     }
 
     /// Provider used by the activation recovery test. The underlying

@@ -307,8 +307,8 @@ pub use native_identity::NativeRootIdentity;
 pub use native_mount::recover_native_mount_destination_preserving_residue;
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 pub use native_mount::{
-    CheckoutMountSource, ContentSink, HostPathExpectation, HostPathReplacement, HostPathRestore, LazyMount,
-    LazyWorkingSet, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
+    CheckoutMountSource, ContentSink, HostPathExpectation, HostPathReplacement, HostPathRestore,
+    LazyMount, LazyWorkingSet, MaterializationReceipt, MaterializeError, MaterializeOptions, Mount,
     MountAttributePage, MountContentPin, MountDirectoryEntry, MountDirectoryPage, MountFilesystem,
     MountLifecycleError, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountOptions,
     MountPath, MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError,
@@ -322,7 +322,9 @@ pub use native_mount::{
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
-    recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
+    recover_native_mount_destination, restore_checkout_host_path,
+    restore_checkout_host_path_if_unchanged,
+    restore_checkout_host_path_if_unchanged_with_operation, seal_checkout,
     seal_checkout_with_permit,
 };
 pub use notification::{
