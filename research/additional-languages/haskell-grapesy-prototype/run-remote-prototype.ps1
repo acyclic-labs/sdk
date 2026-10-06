@@ -25,6 +25,10 @@ function To-WslPath([string]$path) {
 if (-not $RustGrpcFixture) {
   throw 'RustGrpcFixture is required: this runner qualifies an installed Haskell consumer against the Rust fixture.'
 }
+$sourceRevision = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+if ([string]::IsNullOrWhiteSpace($sourceRevision)) {
+  throw "Unable to bind the Haskell artifact to a Rust source revision: $Root"
+}
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 $fixtureTarget = Join-Path $work 'rust-target'
 & cargo build --manifest-path (Join-Path $Root 'rust/crates/sdk-examples/Cargo.toml') --locked --release --bin fixture-server --target-dir $fixtureTarget
@@ -85,12 +89,22 @@ $cabal build --with-compiler=$ghc --project-file='$linuxRepo/cabal.project' --bu
 tar -czf '$linuxRepo/dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz' --exclude='dist-*' --exclude='installed' -C '$linuxRepo' .
 archive='$linuxRepo/dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'
 test -n "$archive"
+tar -tzf "$archive" | grep -Eq '(^|/)acyclic-haskell-grapesy-prototype\.cabal$'
+tar -tzf "$archive" | grep -Eq '(^|/)app/RemoteMain\.hs$'
+tar -tzf "$archive" | grep -Eq '(^|/)src/Acyclic/Semantics\.hs$'
 echo "artifact=$archive"
 echo "artifact-sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)"
 $cabal install "$archive" --with-compiler=$ghc --installdir='$linuxRepo/installed' --install-method=copy --overwrite-policy=always --disable-documentation --builddir='$linuxRepo/dist-newstyle-install' >/dev/null
+test -s '$linuxRepo/installed/acyclic-haskell-remote'
 echo "installed-binary=$linuxRepo/installed/acyclic-haskell-remote"
 echo "installed-sha256=$(sha256sum '$linuxRepo/installed/acyclic-haskell-remote' | cut -d ' ' -f 1)"
-ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linuxRepo/installed/acyclic-haskell-remote'
+ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linuxRepo/installed/acyclic-haskell-remote' | tee '$linuxRepo/installed-consumer.log'
+grep -Fx 'remote-status=passed' '$linuxRepo/installed-consumer.log'
+grep -Fx 'h2=passed' '$linuxRepo/installed-consumer.log'
+grep -Fx 'reconnect-policy=configured' '$linuxRepo/installed-consumer.log'
+grep -Eq '^append-response=' '$linuxRepo/installed-consumer.log'
+grep -Eq '^recovery-response=' '$linuxRepo/installed-consumer.log'
+grep -Eq '^cancel-probe=' '$linuxRepo/installed-consumer.log'
 '@
   $cmd = $cmd.Replace('$linuxRepo',$linuxRepo).Replace('$wslRepo',$wslRepo).Replace('$rustProto',$rustProto).Replace('$contractProto',$contractProto).Replace('$cabal',$cabal).Replace('$ghc',$ghc).Replace('$endpoint',$endpoint)
   $cmd = $cmd -replace ([string][char]13 + [char]10), [string][char]10
@@ -101,12 +115,24 @@ ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linux
     $remoteOutput | Write-Output
     throw "Installed Haskell remote consumer failed with exit code $LASTEXITCODE"
   }
+  foreach ($requiredLine in @('remote-status=passed', 'h2=passed', 'reconnect-policy=configured')) {
+    if (-not ($remoteOutput | Where-Object { "$($_)" -eq $requiredLine })) {
+      throw "Installed Haskell consumer did not emit required proof line: $requiredLine"
+    }
+  }
+  foreach ($requiredPrefix in @('append-response=', 'recovery-response=', 'cancel-probe=', 'artifact-sha256=', 'installed-sha256=')) {
+    if (-not ($remoteOutput | Where-Object { "$($_)".StartsWith($requiredPrefix) })) {
+      throw "Installed Haskell consumer did not emit required proof prefix: $requiredPrefix"
+    }
+  }
   $remoteOutput | Write-Output
   $artifactLine = $remoteOutput | Where-Object { "$_" -like 'artifact-sha256=*' } | Select-Object -First 1
+  $installedLine = $remoteOutput | Where-Object { "$_" -like 'installed-sha256=*' } | Select-Object -First 1
   $receipt = [ordered]@{
     schema = 'acyclic.haskell.remote-receipt.v1'
     status = 'passed'
     source = 'Rust contract proto set: proto/**/*.proto plus rust/crates/stream/proto/stream/v2/stream.proto'
+    source_revision = $sourceRevision
     source_sha256 = @(
       Get-ChildItem -LiteralPath (Join-Path $Root 'proto') -Recurse -File -Filter '*.proto'
       Get-Item -LiteralPath (Join-Path $Root 'rust/crates/stream/proto/stream/v2/stream.proto')
@@ -115,8 +141,8 @@ ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linux
     request_manifest_sha256 = (Get-FileHash -LiteralPath (Join-Path $scriptDir 'request-manifest.json') -Algorithm SHA256).Hash.ToLowerInvariant()
     generator = [ordered]@{ package = 'proto-lens-protoc'; version = '0.9.0.1'; ghc = '9.2.8'; cabal = '3.10.2.1'; grapesy = '1.2.1' }
     transport = [ordered]@{ fixture = 'rust/crates/sdk-examples/src/bin/fixture-server.rs'; protocol = 'HTTP/2 gRPC'; endpoint = $endpoint; tls = $false }
-    artifact = [ordered]@{ path = 'dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' } }
-    installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; source_bound = $true; typed_rpc_surface = '106 methods across 18 Rust-derived services' }
+    artifact = [ordered]@{ path = 'dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'; sha256 = if ($artifactLine) { ($artifactLine -split '=',2)[1] } else { '' }; archive_contents_verified = $true }
+    installed_consumer = [ordered]@{ path = 'installed/acyclic-haskell-remote'; status = 'passed'; sha256 = if ($installedLine) { ($installedLine -split '=',2)[1] } else { '' }; source_bound = $true; typed_rpc_surface = '106 methods across 18 Rust-derived services'; output_proof_verified = $true }
     scenarios = [ordered]@{ typed_surface = 'passed'; append = 'passed'; cancellation = 'deadline probe completed before deadline; cancellation API wired but timeout was not forced by the fixture'; recovery = 'passed on the same live HTTP/2 connection'; tls = 'configured and available through ACYCLIC_HASKELL_GRPC_TLS; no TLS Rust fixture supplied' }
   }
   $receipt | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $work 'haskell-remote-receipt.json') -Encoding utf8NoBOM
@@ -124,7 +150,6 @@ ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linux
   if ($fixtureProcess -and -not $fixtureProcess.HasExited) { Stop-Process -Id $fixtureProcess.Id -Force }
 }
 Write-Output "Haskell installed remote receipt: $(Join-Path $work 'haskell-remote-receipt.json')"
-
 
 
 
