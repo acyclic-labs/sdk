@@ -54,6 +54,7 @@ napi-derive = "3.3.3"
 # The macOS FSEvents backend links CoreServices, which would load it into every
 # process at start; acyclic-fs loads FSEvents itself when a watch starts.
 notify = { version = "8.2.0", default-features = false, features = ["macos_kqueue"] }
+proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"
