@@ -660,4 +660,29 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test]
+    async fn usage_receipt_is_stable_across_fresh_rust_fixtures() {
+        let first = collect()
+            .await
+            .expect("first fresh Machines fixture collection");
+        let second = collect()
+            .await
+            .expect("second fresh Machines fixture collection");
+        let usage = |observations: &[MachinesRpcObservation]| {
+            observations
+                .iter()
+                .find(|observation| observation.rpc.ends_with("/Usage"))
+                .expect("Machines Usage observation")
+                .response_frames
+                .first()
+                .cloned()
+                .expect("Machines Usage response frame")
+        };
+        assert_eq!(usage(&first), usage(&second));
+        assert_eq!(
+            sha256(&usage(&first)),
+            "sha256:cc2c5143fbf39130d3686cefd3a997df364014177cc97e4910cf62936eaa6056"
+        );
+    }
 }
