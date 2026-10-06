@@ -307,6 +307,99 @@ impl CheckoutMode {
     }
 }
 
+/// Defines the stable public string for each variant, shared by host bindings.
+macro_rules! public_names {
+    ($($type:ty { $($variant:ident => $name:literal),+ $(,)? })+) => {$(
+        impl $type {
+            /// Returns the stable public string exposed by host bindings.
+            #[must_use]
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
+            }
+
+            /// Parses the stable public string exposed by host bindings.
+            #[must_use]
+            pub fn from_public_str(value: &str) -> Option<Self> {
+                match value {
+                    $($name => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    )+};
+}
+
+public_names! {
+    FilesystemProfile {
+        Portable => "portable",
+        Posix => "posix",
+        Windows => "windows",
+        Browser => "browser",
+    }
+    AccessMode { ReadOnly => "read-only", ReadWrite => "read-write" }
+    ConsistencyMode {
+        Pinned => "pinned",
+        TrackingSafe => "tracking-safe",
+        Live => "live",
+        Manual => "manual",
+    }
+    ConcurrencyMode {
+        ExclusiveWriter => "exclusive-writer",
+        Optimistic => "optimistic",
+        SerializedAuthority => "serialized-authority",
+    }
+    Lifecycle { Ephemeral => "ephemeral", Durable => "durable" }
+    MutationMode {
+        None => "none",
+        PrivateOverlay => "private-cow",
+        DirectLive => "direct-live",
+    }
+    CaseSensitivity { Sensitive => "sensitive", ProfileFolded => "profile-folded" }
+    UnicodePolicy { Preserve => "preserve", RequireNfc => "require-nfc" }
+    crate::kernel::NameEncoding {
+        Utf8 => "utf8",
+        PosixBytes => "posix-bytes",
+        WindowsUtf16Le => "windows-utf16le",
+    }
+    crate::speculation::ResidencyReason {
+        DirectorySuccessor => "directory-successor",
+        SequentialRange => "sequential-range",
+        MetadataSuccessor => "metadata-successor",
+        ConsumerHint => "consumer-hint",
+    }
+    crate::speculation::ResidencyRejection {
+        WrongVolume => "wrong-volume",
+        StaleGeneration => "stale-generation",
+        InvalidRequest => "invalid-request",
+        DuplicateObject => "duplicate-object",
+        DuplicateOperation => "duplicate-operation",
+        OperationCapacity => "operation-capacity",
+        ByteCapacity => "byte-capacity",
+        CostBudget => "cost-budget",
+        LowUsefulness => "low-usefulness",
+    }
+    crate::speculation::StorageTier {
+        ProcessMemory => "process-memory",
+        NodeLocal => "node-local",
+        SharedCache => "shared-cache",
+        DurableOrigin => "durable-origin",
+    }
+    crate::speculation::PromotionRejection {
+        WrongVolume => "wrong-volume",
+        StaleGeneration => "stale-generation",
+        InvalidRequest => "invalid-request",
+        InputCapacity => "input-capacity",
+        MissingSource => "missing-source",
+        DuplicateObject => "duplicate-object",
+        DuplicateOperation => "duplicate-operation",
+        ActiveCapacity => "active-capacity",
+        NoDestination => "no-destination",
+        LowUsefulness => "low-usefulness",
+    }
+}
+
 /// Volume configuration failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum VolumeConfigError {
@@ -338,3 +431,53 @@ pub enum CheckoutModeError {
 #[cfg(test)]
 #[path = "tests/model.rs"]
 mod tests;
+
+#[cfg(test)]
+mod public_name_tests {
+    use super::*;
+    use crate::kernel::NameEncoding;
+    use crate::speculation::{
+        PromotionRejection, ResidencyReason, ResidencyRejection, StorageTier,
+    };
+
+    /// Pins the exact public strings (host bindings and TypeScript depend on
+    /// them byte-for-byte) and checks that parsing inverts `as_str`.
+    macro_rules! assert_names {
+        ($($type:ident: [$($variant:ident),+] => $expected:literal;)+) => {$(
+            let names = [$($type::$variant),+].map(|value| {
+                assert_eq!($type::from_public_str(value.as_str()), Some(value));
+                value.as_str()
+            });
+            assert_eq!(names.join(" "), $expected);
+            assert_eq!($type::from_public_str(""), None);
+        )+};
+    }
+
+    #[test]
+    fn public_names_are_pinned_and_round_trip() {
+        assert_names! {
+            FilesystemProfile: [Portable, Posix, Windows, Browser] => "portable posix windows browser";
+            AccessMode: [ReadOnly, ReadWrite] => "read-only read-write";
+            ConsistencyMode: [Pinned, TrackingSafe, Live, Manual] => "pinned tracking-safe live manual";
+            ConcurrencyMode: [ExclusiveWriter, Optimistic, SerializedAuthority]
+                => "exclusive-writer optimistic serialized-authority";
+            Lifecycle: [Ephemeral, Durable] => "ephemeral durable";
+            MutationMode: [None, PrivateOverlay, DirectLive] => "none private-cow direct-live";
+            CaseSensitivity: [Sensitive, ProfileFolded] => "sensitive profile-folded";
+            UnicodePolicy: [Preserve, RequireNfc] => "preserve require-nfc";
+            NameEncoding: [Utf8, PosixBytes, WindowsUtf16Le] => "utf8 posix-bytes windows-utf16le";
+            ResidencyReason: [DirectorySuccessor, SequentialRange, MetadataSuccessor, ConsumerHint]
+                => "directory-successor sequential-range metadata-successor consumer-hint";
+            ResidencyRejection: [
+                WrongVolume, StaleGeneration, InvalidRequest, DuplicateObject, DuplicateOperation,
+                OperationCapacity, ByteCapacity, CostBudget, LowUsefulness
+            ] => "wrong-volume stale-generation invalid-request duplicate-object duplicate-operation operation-capacity byte-capacity cost-budget low-usefulness";
+            StorageTier: [ProcessMemory, NodeLocal, SharedCache, DurableOrigin]
+                => "process-memory node-local shared-cache durable-origin";
+            PromotionRejection: [
+                WrongVolume, StaleGeneration, InvalidRequest, InputCapacity, MissingSource,
+                DuplicateObject, DuplicateOperation, ActiveCapacity, NoDestination, LowUsefulness
+            ] => "wrong-volume stale-generation invalid-request input-capacity missing-source duplicate-object duplicate-operation active-capacity no-destination low-usefulness";
+        }
+    }
+}
