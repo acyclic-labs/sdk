@@ -25,7 +25,8 @@ use std::{
 };
 
 use prost::Message;
-use prost_types::{DescriptorProto, FileDescriptorSet, field_descriptor_proto::Type as FieldType};
+pub use prost_types::field_descriptor_proto::Type as FieldType;
+use prost_types::{DescriptorProto, FileDescriptorSet};
 
 use crate::family_registry::{FAMILY_VIEWS, FamilyModel};
 
@@ -119,14 +120,14 @@ pub struct ResolvedPresenceField {
 // projections; caching the resolved Rust values avoids reparsing the same
 // descriptor closure for every field without introducing a second contract
 // or changing the clone-returning public API.
-static DESCRIPTOR_FILES_CACHE: OnceLock<
-    Result<Vec<prost_types::FileDescriptorProto>, String>,
-> = OnceLock::new();
+static DESCRIPTOR_FILES_CACHE: OnceLock<Result<Vec<prost_types::FileDescriptorProto>, String>> =
+    OnceLock::new();
 static REQUEST_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedRequestField>, String>> = OnceLock::new();
 static RESPONSE_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedRequestField>, String>> = OnceLock::new();
 static ENUM_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedEnumField>, String>> = OnceLock::new();
 static ONEOF_MEMBERS_CACHE: OnceLock<Result<Vec<ResolvedOneofMember>, String>> = OnceLock::new();
-static PRESENCE_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedPresenceField>, String>> = OnceLock::new();
+static PRESENCE_FIELDS_CACHE: OnceLock<Result<Vec<ResolvedPresenceField>, String>> =
+    OnceLock::new();
 static RPC_METHODS_CACHE: OnceLock<Result<Vec<ResolvedRpcMethod>, String>> = OnceLock::new();
 
 /// Rust-owned operation identity retained alongside the field inventory.
@@ -251,9 +252,7 @@ pub fn resolved_response_fields() -> Result<Vec<ResolvedRequestField>, String> {
 /// generator can project the same enum with the correct request/response
 /// surface while preserving numeric unknown values.
 pub fn resolved_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
-    ENUM_FIELDS_CACHE
-        .get_or_init(resolve_enum_fields)
-        .clone()
+    ENUM_FIELDS_CACHE.get_or_init(resolve_enum_fields).clone()
 }
 
 fn resolve_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
@@ -303,12 +302,13 @@ fn resolve_enum_fields() -> Result<Vec<ResolvedEnumField>, String> {
         let mut values = Vec::new();
         for value in &descriptor.value {
             values.push(ResolvedEnumValue {
-                name: value.name.clone().ok_or_else(|| {
-                    format!("enum {enum_type} contains an unnamed value")
-                })?,
-                number: value.number.ok_or_else(|| {
-                    format!("enum {enum_type} contains a value without a number")
-                })?,
+                name: value
+                    .name
+                    .clone()
+                    .ok_or_else(|| format!("enum {enum_type} contains an unnamed value"))?,
+                number: value
+                    .number
+                    .ok_or_else(|| format!("enum {enum_type} contains a value without a number"))?,
             });
         }
         output.push(ResolvedEnumField {
@@ -371,8 +371,10 @@ fn resolve_oneof_members() -> Result<Vec<ResolvedOneofMember>, String> {
                 .map(|name| name.trim_start_matches('.').to_owned()),
             _ => None,
         };
-        if matches!(wire_type, FieldType::Message | FieldType::Group | FieldType::Enum)
-            && payload_type.is_none()
+        if matches!(
+            wire_type,
+            FieldType::Message | FieldType::Group | FieldType::Enum
+        ) && payload_type.is_none()
         {
             return Err(format!(
                 "{} {} oneof member {}.{} has no payload type identity",
@@ -420,7 +422,9 @@ fn resolve_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> {
         .into_iter()
         .chain(resolved_response_fields()?)
     {
-        let wire_type = field.wire_type.and_then(|value| FieldType::try_from(value).ok());
+        let wire_type = field
+            .wire_type
+            .and_then(|value| FieldType::try_from(value).ok());
         let kind = if field.proto3_optional {
             Some(ResolvedPresenceKind::ExplicitOptional)
         } else if field.oneof_name.is_some() {
@@ -455,9 +459,7 @@ fn resolve_presence_fields() -> Result<Vec<ResolvedPresenceField>, String> {
 
 /// Resolve every RPC identity, including methods with empty request messages.
 pub fn resolved_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
-    RPC_METHODS_CACHE
-        .get_or_init(resolve_rpc_methods)
-        .clone()
+    RPC_METHODS_CACHE.get_or_init(resolve_rpc_methods).clone()
 }
 
 fn resolve_rpc_methods() -> Result<Vec<ResolvedRpcMethod>, String> {
@@ -756,14 +758,14 @@ fn collect_reachable_fields(
         {
             let reference = reference.trim_start_matches('.');
             let Some(nested) = messages.get(reference) else {
-                    if is_known_external_message(reference) {
-                        continue;
-                    }
-                    return Err(format!(
-                        "{family} {rpc} field {}.{} references missing message {reference}",
-                        message_path, field_name
-                    ));
-                };
+                if is_known_external_message(reference) {
+                    continue;
+                }
+                return Err(format!(
+                    "{family} {rpc} field {}.{} references missing message {reference}",
+                    message_path, field_name
+                ));
+            };
             if active.insert(reference.to_owned()) {
                 collect_reachable_fields(
                     family,
@@ -1157,24 +1159,24 @@ pub fn operation_target(validation: &'static str) -> OperationTarget {
         "mutations.max_command_bytes" => ("mutations", OperationEnforcement::ClientLocal),
         _ if is_current_policy_validation(validation)
             && (validation.ends_with(".valid")
-            || validation.ends_with(".bounded")
-            || validation.ends_with(".supported")
-            || validation.ends_with(".proven")
-            || validation.ends_with(".declared")
-            || validation.ends_with(".required")
-            || validation.ends_with(".nonempty")
-            || validation.ends_with(".non_empty")
-            || validation.ends_with(".non_empty_utf8")
-            || validation.ends_with(".non_empty_bytes")
-            || validation.ends_with(".nonzero")
-            || validation.ends_with(".16_bytes")
-            || validation.ends_with(".32_bytes")
-            || validation.ends_with(".length_16")
-            || validation.ends_with(".length_32")
-            || validation.ends_with(".exact")
-            || validation.ends_with(".preserving")
-            || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic")) =>
+                || validation.ends_with(".bounded")
+                || validation.ends_with(".supported")
+                || validation.ends_with(".proven")
+                || validation.ends_with(".declared")
+                || validation.ends_with(".required")
+                || validation.ends_with(".nonempty")
+                || validation.ends_with(".non_empty")
+                || validation.ends_with(".non_empty_utf8")
+                || validation.ends_with(".non_empty_bytes")
+                || validation.ends_with(".nonzero")
+                || validation.ends_with(".16_bytes")
+                || validation.ends_with(".32_bytes")
+                || validation.ends_with(".length_16")
+                || validation.ends_with(".length_32")
+                || validation.ends_with(".exact")
+                || validation.ends_with(".preserving")
+                || validation.ends_with(".contiguous")
+                || validation.ends_with(".monotonic")) =>
         {
             (validation, OperationEnforcement::ClientLocal)
         }
@@ -1234,24 +1236,24 @@ pub fn operation_enforcement(validation: &str) -> OperationEnforcement {
         | "mutations.max_command_bytes" => OperationEnforcement::ClientLocal,
         _ if is_current_policy_validation(validation)
             && (validation.ends_with(".valid")
-            || validation.ends_with(".bounded")
-            || validation.ends_with(".supported")
-            || validation.ends_with(".proven")
-            || validation.ends_with(".declared")
-            || validation.ends_with(".required")
-            || validation.ends_with(".nonempty")
-            || validation.ends_with(".non_empty")
-            || validation.ends_with(".non_empty_utf8")
-            || validation.ends_with(".non_empty_bytes")
-            || validation.ends_with(".nonzero")
-            || validation.ends_with(".16_bytes")
-            || validation.ends_with(".32_bytes")
-            || validation.ends_with(".length_16")
-            || validation.ends_with(".length_32")
-            || validation.ends_with(".exact")
-            || validation.ends_with(".preserving")
-            || validation.ends_with(".contiguous")
-            || validation.ends_with(".monotonic")) =>
+                || validation.ends_with(".bounded")
+                || validation.ends_with(".supported")
+                || validation.ends_with(".proven")
+                || validation.ends_with(".declared")
+                || validation.ends_with(".required")
+                || validation.ends_with(".nonempty")
+                || validation.ends_with(".non_empty")
+                || validation.ends_with(".non_empty_utf8")
+                || validation.ends_with(".non_empty_bytes")
+                || validation.ends_with(".nonzero")
+                || validation.ends_with(".16_bytes")
+                || validation.ends_with(".32_bytes")
+                || validation.ends_with(".length_16")
+                || validation.ends_with(".length_32")
+                || validation.ends_with(".exact")
+                || validation.ends_with(".preserving")
+                || validation.ends_with(".contiguous")
+                || validation.ends_with(".monotonic")) =>
         {
             OperationEnforcement::ClientLocal
         }
@@ -2349,56 +2351,456 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     // bindings intentionally cover only values with stable identity,
     // digest, cursor, count, timestamp, or presence meaning; payload bytes
     // remain ordinary bytes and are never falsely branded.
-    PublicFieldBinding { family: "filesystem", field: "identity", semantic_type: "opaque_text", module: "filesystem", message: "RetainGenerationResponse", wire_field: "identity", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "cursor", semantic_type: "opaque_bytes", module: "filesystem", message: "ExportChunk", wire_field: "cursor", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "object_id", semantic_type: "opaque_bytes", module: "filesystem", message: "ExportChunk", wire_field: "object_id", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "endpoint", semantic_type: "opaque_text", module: "filesystem", message: "CredentialResponse", wire_field: "endpoint", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "expires_at_unix_seconds", semantic_type: "timestamp_millis", module: "filesystem", message: "CredentialResponse", wire_field: "expires_at_unix_seconds", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "bearer_token", semantic_type: "opaque_text", module: "filesystem", message: "CredentialResponse", wire_field: "bearer_token", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "state", semantic_type: "opaque_text", module: "filesystem", message: "ObserveResponse", wire_field: "state", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "plan_id", semantic_type: "opaque_bytes", module: "filesystem", message: "JoinPlan", wire_field: "plan_id", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "maximum_generations", semantic_type: "non_negative_count", module: "filesystem", message: "JoinPlan", wire_field: "maximum_generations", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "maximum_changes", semantic_type: "non_negative_count", module: "filesystem", message: "JoinPlan", wire_field: "maximum_changes", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "filesystem", field: "maximum_conflicts", semantic_type: "non_negative_count", module: "filesystem", message: "JoinPlan", wire_field: "maximum_conflicts", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "harness", field: "revision", semantic_type: "revision", module: "harness", message: "OperationStatus", wire_field: "revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "harness", field: "generation", semantic_type: "opaque_text", module: "harness", message: "Delivery", wire_field: "generation", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "harness", field: "from_revision", semantic_type: "revision", module: "harness", message: "Delivery", wire_field: "from_revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "harness", field: "through_revision", semantic_type: "revision", module: "harness", message: "Delivery", wire_field: "through_revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "next_sequence", semantic_type: "sequence", module: "machines", message: "EventPage", wire_field: "next_sequence", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "created_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "CheckpointState", wire_field: "created_at_unix_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "created_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "MachineState", wire_field: "created_at_unix_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "changed_at_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "MachineState", wire_field: "changed_at_unix_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "compatibility_revision", semantic_type: "revision_digest", module: "machines", message: "ImageQualification", wire_field: "compatibility_revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "start_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "UsageReceipt", wire_field: "start_unix_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "end_unix_ms", semantic_type: "timestamp_millis", module: "machines", message: "UsageReceipt", wire_field: "end_unix_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "receipt", semantic_type: "opaque_bytes", module: "machines", message: "UsageReceipt", wire_field: "receipt", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "machines", field: "lineage_receipt_sha256", semantic_type: "sha256_digest", module: "machines", message: "UsageReceipt", wire_field: "lineage_receipt_sha256", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "objects", field: "next_part_number", semantic_type: "positive_count", module: "objects", message: "ListPartsResponse", wire_field: "next_part_number", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "objects", field: "continuation_token", semantic_type: "opaque_text", module: "objects", message: "ListObjectsResponse", wire_field: "continuation_token", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "stream", field: "hierarchy_version", semantic_type: "revision_digest", module: "stream", message: "ChildrenPageResponse", wire_field: "hierarchy_version", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "stream", field: "next_after", semantic_type: "opaque_text", module: "stream", message: "ChildrenPageResponse", wire_field: "next_after", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "stream", field: "forked_at", semantic_type: "sequence", module: "stream", message: "CommittedFork", wire_field: "forked_at", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "stream", field: "tail", semantic_type: "sequence", module: "stream", message: "TailResponse", wire_field: "tail", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "workers", field: "resolved_sha256", semantic_type: "sha256_digest", module: "workers", message: "InvokeResponse", wire_field: "resolved_sha256", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "workers", field: "resolved_revision", semantic_type: "revision", module: "workers", message: "InvokeResponse", wire_field: "resolved_revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "command_digest", semantic_type: "sha256_digest", module: "inference", message: "MutationReceipt", wire_field: "command_digest", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "sequence", semantic_type: "sequence", module: "inference", message: "MutationReceipt", wire_field: "sequence", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "parent", semantic_type: "opaque_bytes", module: "inference", message: "ContextView", wire_field: "parent", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "lineage", semantic_type: "opaque_bytes", module: "inference", message: "ContextView", wire_field: "lineage", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "execution_profile", semantic_type: "opaque_bytes", module: "inference", message: "ContextView", wire_field: "execution_profile", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "content_digest", semantic_type: "sha256_digest", module: "inference", message: "ContextView", wire_field: "content_digest", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "model", semantic_type: "opaque_text", module: "inference", message: "ContextView", wire_field: "model", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "last_sequence", semantic_type: "sequence", module: "inference", message: "RunView", wire_field: "last_sequence", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "expires_at_ms", semantic_type: "timestamp_millis", module: "inference", message: "WarmView", wire_field: "expires_at_ms", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "context", semantic_type: "sha256_digest", module: "inference", message: "WarmView", wire_field: "context", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "model_profile", semantic_type: "sha256_digest", module: "inference", message: "WarmView", wire_field: "model_profile", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "evidence_digest", semantic_type: "sha256_digest", module: "inference", message: "WarmView", wire_field: "evidence_digest", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "admission_receipt_id", semantic_type: "opaque_bytes", module: "inference", message: "WarmView", wire_field: "admission_receipt_id", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "sequence", semantic_type: "sequence", module: "inference", message: "WarmView", wire_field: "sequence", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "receipt_id", semantic_type: "sha256_digest", module: "inference", message: "UsageReceipt", wire_field: "receipt_id", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "model_profile", semantic_type: "sha256_digest", module: "inference", message: "UsageReceipt", wire_field: "model_profile", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "meter_revision", semantic_type: "sha256_digest", module: "inference", message: "UsageReceipt", wire_field: "meter_revision", direction: PublicFieldDirection::Response },
-    PublicFieldBinding { family: "inference", field: "rate_card_revision", semantic_type: "sha256_digest", module: "inference", message: "UsageReceipt", wire_field: "rate_card_revision", direction: PublicFieldDirection::Response },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "identity",
+        semantic_type: "opaque_text",
+        module: "filesystem",
+        message: "RetainGenerationResponse",
+        wire_field: "identity",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "cursor",
+        semantic_type: "opaque_bytes",
+        module: "filesystem",
+        message: "ExportChunk",
+        wire_field: "cursor",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "object_id",
+        semantic_type: "opaque_bytes",
+        module: "filesystem",
+        message: "ExportChunk",
+        wire_field: "object_id",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "endpoint",
+        semantic_type: "opaque_text",
+        module: "filesystem",
+        message: "CredentialResponse",
+        wire_field: "endpoint",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "expires_at_unix_seconds",
+        semantic_type: "timestamp_millis",
+        module: "filesystem",
+        message: "CredentialResponse",
+        wire_field: "expires_at_unix_seconds",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "bearer_token",
+        semantic_type: "opaque_text",
+        module: "filesystem",
+        message: "CredentialResponse",
+        wire_field: "bearer_token",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "state",
+        semantic_type: "opaque_text",
+        module: "filesystem",
+        message: "ObserveResponse",
+        wire_field: "state",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "plan_id",
+        semantic_type: "opaque_bytes",
+        module: "filesystem",
+        message: "JoinPlan",
+        wire_field: "plan_id",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "maximum_generations",
+        semantic_type: "non_negative_count",
+        module: "filesystem",
+        message: "JoinPlan",
+        wire_field: "maximum_generations",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "maximum_changes",
+        semantic_type: "non_negative_count",
+        module: "filesystem",
+        message: "JoinPlan",
+        wire_field: "maximum_changes",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "filesystem",
+        field: "maximum_conflicts",
+        semantic_type: "non_negative_count",
+        module: "filesystem",
+        message: "JoinPlan",
+        wire_field: "maximum_conflicts",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "harness",
+        field: "revision",
+        semantic_type: "revision",
+        module: "harness",
+        message: "OperationStatus",
+        wire_field: "revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "harness",
+        field: "generation",
+        semantic_type: "opaque_text",
+        module: "harness",
+        message: "Delivery",
+        wire_field: "generation",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "harness",
+        field: "from_revision",
+        semantic_type: "revision",
+        module: "harness",
+        message: "Delivery",
+        wire_field: "from_revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "harness",
+        field: "through_revision",
+        semantic_type: "revision",
+        module: "harness",
+        message: "Delivery",
+        wire_field: "through_revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "next_sequence",
+        semantic_type: "sequence",
+        module: "machines",
+        message: "EventPage",
+        wire_field: "next_sequence",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "created_at_unix_ms",
+        semantic_type: "timestamp_millis",
+        module: "machines",
+        message: "CheckpointState",
+        wire_field: "created_at_unix_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "created_at_unix_ms",
+        semantic_type: "timestamp_millis",
+        module: "machines",
+        message: "MachineState",
+        wire_field: "created_at_unix_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "changed_at_unix_ms",
+        semantic_type: "timestamp_millis",
+        module: "machines",
+        message: "MachineState",
+        wire_field: "changed_at_unix_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "compatibility_revision",
+        semantic_type: "revision_digest",
+        module: "machines",
+        message: "ImageQualification",
+        wire_field: "compatibility_revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "start_unix_ms",
+        semantic_type: "timestamp_millis",
+        module: "machines",
+        message: "UsageReceipt",
+        wire_field: "start_unix_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "end_unix_ms",
+        semantic_type: "timestamp_millis",
+        module: "machines",
+        message: "UsageReceipt",
+        wire_field: "end_unix_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "receipt",
+        semantic_type: "opaque_bytes",
+        module: "machines",
+        message: "UsageReceipt",
+        wire_field: "receipt",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "machines",
+        field: "lineage_receipt_sha256",
+        semantic_type: "sha256_digest",
+        module: "machines",
+        message: "UsageReceipt",
+        wire_field: "lineage_receipt_sha256",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "objects",
+        field: "next_part_number",
+        semantic_type: "positive_count",
+        module: "objects",
+        message: "ListPartsResponse",
+        wire_field: "next_part_number",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "objects",
+        field: "continuation_token",
+        semantic_type: "opaque_text",
+        module: "objects",
+        message: "ListObjectsResponse",
+        wire_field: "continuation_token",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "stream",
+        field: "hierarchy_version",
+        semantic_type: "revision_digest",
+        module: "stream",
+        message: "ChildrenPageResponse",
+        wire_field: "hierarchy_version",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "stream",
+        field: "next_after",
+        semantic_type: "opaque_text",
+        module: "stream",
+        message: "ChildrenPageResponse",
+        wire_field: "next_after",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "stream",
+        field: "forked_at",
+        semantic_type: "sequence",
+        module: "stream",
+        message: "CommittedFork",
+        wire_field: "forked_at",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "stream",
+        field: "tail",
+        semantic_type: "sequence",
+        module: "stream",
+        message: "TailResponse",
+        wire_field: "tail",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "workers",
+        field: "resolved_sha256",
+        semantic_type: "sha256_digest",
+        module: "workers",
+        message: "InvokeResponse",
+        wire_field: "resolved_sha256",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "workers",
+        field: "resolved_revision",
+        semantic_type: "revision",
+        module: "workers",
+        message: "InvokeResponse",
+        wire_field: "resolved_revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "command_digest",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "MutationReceipt",
+        wire_field: "command_digest",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "sequence",
+        semantic_type: "sequence",
+        module: "inference",
+        message: "MutationReceipt",
+        wire_field: "sequence",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "parent",
+        semantic_type: "opaque_bytes",
+        module: "inference",
+        message: "ContextView",
+        wire_field: "parent",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "lineage",
+        semantic_type: "opaque_bytes",
+        module: "inference",
+        message: "ContextView",
+        wire_field: "lineage",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "execution_profile",
+        semantic_type: "opaque_bytes",
+        module: "inference",
+        message: "ContextView",
+        wire_field: "execution_profile",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "content_digest",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "ContextView",
+        wire_field: "content_digest",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "model",
+        semantic_type: "opaque_text",
+        module: "inference",
+        message: "ContextView",
+        wire_field: "model",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "last_sequence",
+        semantic_type: "sequence",
+        module: "inference",
+        message: "RunView",
+        wire_field: "last_sequence",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "expires_at_ms",
+        semantic_type: "timestamp_millis",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "expires_at_ms",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "context",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "context",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "model_profile",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "model_profile",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "evidence_digest",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "evidence_digest",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "admission_receipt_id",
+        semantic_type: "opaque_bytes",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "admission_receipt_id",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "sequence",
+        semantic_type: "sequence",
+        module: "inference",
+        message: "WarmView",
+        wire_field: "sequence",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "receipt_id",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "UsageReceipt",
+        wire_field: "receipt_id",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "model_profile",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "UsageReceipt",
+        wire_field: "model_profile",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "meter_revision",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "UsageReceipt",
+        wire_field: "meter_revision",
+        direction: PublicFieldDirection::Response,
+    },
+    PublicFieldBinding {
+        family: "inference",
+        field: "rate_card_revision",
+        semantic_type: "sha256_digest",
+        module: "inference",
+        message: "UsageReceipt",
+        wire_field: "rate_card_revision",
+        direction: PublicFieldDirection::Response,
+    },
 ];
 
 const CREATE_BUCKET_FIELDS: &[(&str, PublicNestedFieldKind)] =
@@ -2841,8 +3243,7 @@ pub struct GeneratedSurfaceViolation {
 /// Generated facade families emitted by the Rust product generator.  The
 /// TypeScript package has a separate package generator and supplies its own
 /// required list when it invokes the same audit.
-pub const REQUIRED_PRODUCT_SURFACES: &[&str] =
-    &["python", "go", "jvm", "csharp", "swift", "cpp"];
+pub const REQUIRED_PRODUCT_SURFACES: &[&str] = &["python", "go", "jvm", "csharp", "swift", "cpp"];
 
 /// Check generated public facades for known type-erasing shapes.
 ///
@@ -2855,7 +3256,10 @@ pub fn audit_generated_public_surfaces(
     artifact_root: &Path,
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
-        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+        return Err(format!(
+            "generated artifact root does not exist: {}",
+            artifact_root.display()
+        ));
     }
 
     let mut files = Vec::new();
@@ -2883,11 +3287,7 @@ pub fn audit_generated_public_surfaces(
             let line_number = line_number + 1;
             let reason = match language {
                 "typescript"
-                    if typescript_raw_signature(
-                        &source,
-                        line_number,
-                        &imported_proto_names,
-                    ) =>
+                    if typescript_raw_signature(&source, line_number, &imported_proto_names) =>
                 {
                     Some("public TypeScript client method exposes a raw protobuf request/response")
                 }
@@ -2909,51 +3309,42 @@ pub fn audit_generated_public_surfaces(
                 "python" if python_raw_public_return(&source, line_number, line) => {
                     Some("public Python route returns the raw transport response")
                 }
-                "go" if go_raw_protobuf_response(line) =>
-                {
+                "go" if go_raw_protobuf_response(line) => {
                     Some("public Go client method returns a raw protobuf response pointer")
                 }
-                "go"
-                    if line.contains("type IdempotencyKey any")
-                        || line.contains("type Image any")
-                        || line.contains("NewIdempotencyKey(value any)")
-                        || line.contains("NewImage(value any)") =>
+                "go" if line.contains("type IdempotencyKey any")
+                    || line.contains("type Image any")
+                    || line.contains("NewIdempotencyKey(value any)")
+                    || line.contains("NewImage(value any)") =>
                 {
                     Some("Go semantic identity is erased to any")
                 }
-                "go" if go_erased_oneof_payload(line) => {
-                    Some("Go oneof payload is erased to any")
-                }
+                "go" if go_erased_oneof_payload(line) => Some("Go oneof payload is erased to any"),
                 "go" if go_opaque_oneof_payload(line) => {
                     Some("Go oneof payload is erased to an opaque wire payload")
                 }
-                "jvm"
-                    if jvm_opaque_message_projection(line) => {
+                "jvm" if jvm_opaque_message_projection(line) => {
                     Some("public JVM response getter exposes an opaque message wrapper")
                 }
-                "jvm"
-                    if jvm_erased_semantic_identity(line) => {
+                "jvm" if jvm_erased_semantic_identity(line) => {
                     Some("JVM semantic identity is erased to protobuf Message")
                 }
-                "jvm"
-                    if jvm_erased_known_oneof(line) => {
+                "jvm" if jvm_erased_known_oneof(line) => {
                     Some("JVM known oneof payload is erased to ByteString")
                 }
-                "jvm"
-                    if jvm_raw_open_enum(line) => {
+                "jvm" if jvm_raw_open_enum(line) => {
                     Some("JVM enum projection exposes only an untyped raw integer")
                 }
-                "jvm" if jvm_raw_public_accessor(line) || jvm_raw_public_wire_record(line) =>
-                    Some("public JVM response getter exposes a raw protobuf message"),
+                "jvm" if jvm_raw_public_accessor(line) || jvm_raw_public_wire_record(line) => {
+                    Some("public JVM response getter exposes a raw protobuf message")
+                }
                 "swift" if line.contains("public let wire: RustWireMessage") => {
                     Some("public Swift wrapper exposes an opaque RustWireMessage")
                 }
                 "swift" if swift_erased_known_oneof(line) => {
                     Some("Swift known oneof payload is erased to raw bytes")
                 }
-                "cpp"
-                    if line.contains("RustWireMessage wire;") && !line.contains("private:") =>
-                {
+                "cpp" if line.contains("RustWireMessage wire;") && !line.contains("private:") => {
                     Some("public C++ wrapper exposes an opaque RustWireMessage")
                 }
                 "cpp" if cpp_erased_known_oneof(line) => {
@@ -3051,8 +3442,8 @@ pub fn audit_generated_descriptor_shape_coverage(
         }
         for enum_type in enum_types {
             let covered = descriptor_projection_aliases(language, &enum_type)
-                    .iter()
-                    .any(|alias| source_contains_identifier(&source, alias));
+                .iter()
+                .any(|alias| source_contains_identifier(&source, alias));
             if !covered {
                 violations.push(GeneratedSurfaceViolation {
                     language,
@@ -3159,9 +3550,7 @@ fn descriptor_projection_prefix(name: &str) -> String {
         .filter(|part| !part.is_empty() && *part != "acyclic")
         .filter(|part| {
             let bytes = part.as_bytes();
-            !(bytes.len() >= 2
-                && bytes[0] == b'v'
-                && bytes[1..].iter().all(u8::is_ascii_digit))
+            !(bytes.len() >= 2 && bytes[0] == b'v' && bytes[1..].iter().all(u8::is_ascii_digit))
         })
         .map(pascal_identifier)
         .collect()
@@ -3170,7 +3559,10 @@ fn descriptor_projection_prefix(name: &str) -> String {
 fn descriptor_package_prefix(name: &str) -> String {
     let mut parts = name.rsplitn(2, '.');
     let _type_name = parts.next();
-    parts.next().map(descriptor_projection_prefix).unwrap_or_default()
+    parts
+        .next()
+        .map(descriptor_projection_prefix)
+        .unwrap_or_default()
 }
 
 fn descriptor_compact_identity(name: &str) -> String {
@@ -3199,6 +3591,12 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
     let prefix = descriptor_projection_prefix(name);
     let simple = descriptor_simple_name(name);
     match language {
+        // Python and Go facades expose the collision-safe Rust descriptor
+        // prefix directly (for example `ActorsActorState` and
+        // `InferenceCustomerEvaluationState`).  Keep this projection here so
+        // the acceptance gate recognizes the same names the emitters derive,
+        // rather than forcing either target to maintain an alias table.
+        "python" | "go" => vec![prefix],
         "swift" | "cpp" => vec![format!("{prefix}Wire")],
         "csharp" => vec![format!("Rust{prefix}Enum")],
         _ => Vec::new(),
@@ -3352,10 +3750,13 @@ fn source_contains_identifier(source: &str, identifier: &str) -> bool {
     if identifier.is_empty() {
         return false;
     }
-    source.lines().filter(|line| !is_source_comment(line)).any(|line| {
-        line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
-            .any(|token| token == identifier)
-    })
+    source
+        .lines()
+        .filter(|line| !is_source_comment(line))
+        .any(|line| {
+            line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+                .any(|token| token == identifier)
+        })
 }
 
 fn is_source_comment(line: &str) -> bool {
@@ -3370,7 +3771,9 @@ fn is_source_comment(line: &str) -> bool {
 fn typescript_imported_proto_names(source: &str) -> std::collections::BTreeSet<String> {
     source
         .lines()
-        .filter(|line| line.contains("import") && (line.contains("_pb") || line.contains("/proto/")))
+        .filter(|line| {
+            line.contains("import") && (line.contains("_pb") || line.contains("/proto/"))
+        })
         .flat_map(|line| {
             line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
                 .filter(|token| token.ends_with("Request") || token.ends_with("Response"))
@@ -3542,8 +3945,7 @@ fn haskell_erased_known_oneof(line: &str) -> bool {
 
 fn haskell_raw_open_enum(line: &str) -> bool {
     let trimmed = line.trim_start();
-    trimmed.starts_with("type WireEnum")
-        && (trimmed.contains("Int") || trimmed.contains("Word"))
+    trimmed.starts_with("type WireEnum") && (trimmed.contains("Int") || trimmed.contains("Word"))
 }
 
 fn jvm_raw_public_wire_record(line: &str) -> bool {
@@ -3650,7 +4052,10 @@ pub fn audit_generated_type_features(
     artifact_root: &Path,
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     if !artifact_root.is_dir() {
-        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+        return Err(format!(
+            "generated artifact root does not exist: {}",
+            artifact_root.display()
+        ));
     }
     let mut files = Vec::new();
     collect_surface_files(artifact_root, &mut files);
@@ -3694,59 +4099,149 @@ fn contains_non_comment_marker(source: &str, marker: &str) -> bool {
 fn required_type_feature_markers(language: &str) -> &'static [(&'static str, &'static str)] {
     match language {
         "typescript" => &[
-            ("Unknown", "TypeScript facade lacks an open unknown-value projection"),
-            ("oneof", "TypeScript facade lacks a discriminated oneof projection"),
-            ("undefined", "TypeScript facade lacks explicit presence representation"),
-            ("IdempotencyKey", "TypeScript facade lacks a nominal semantic identity"),
+            (
+                "Unknown",
+                "TypeScript facade lacks an open unknown-value projection",
+            ),
+            (
+                "oneof",
+                "TypeScript facade lacks a discriminated oneof projection",
+            ),
+            (
+                "undefined",
+                "TypeScript facade lacks explicit presence representation",
+            ),
+            (
+                "IdempotencyKey",
+                "TypeScript facade lacks a nominal semantic identity",
+            ),
         ],
         "python" => &[
-            ("UnknownOneof", "Python facade lacks an unknown-oneof projection"),
-            ("| None", "Python facade lacks explicit optional presence representation"),
+            (
+                "UnknownOneof",
+                "Python facade lacks an unknown-oneof projection",
+            ),
+            (
+                "| None",
+                "Python facade lacks explicit optional presence representation",
+            ),
             ("NewType", "Python facade lacks nominal semantic identities"),
         ],
         "go" => &[
-            ("UnknownOneof", "Go facade lacks an unknown-oneof projection"),
-            ("IdempotencyKey", "Go facade lacks a nominal semantic identity"),
+            (
+                "UnknownOneof",
+                "Go facade lacks an unknown-oneof projection",
+            ),
+            (
+                "IdempotencyKey",
+                "Go facade lacks a nominal semantic identity",
+            ),
         ],
         "jvm" => &[
-            ("Unknown", "JVM facade lacks an open unknown-value projection"),
-            ("Optional", "JVM facade lacks explicit presence representation"),
+            (
+                "Unknown",
+                "JVM facade lacks an open unknown-value projection",
+            ),
+            (
+                "Optional",
+                "JVM facade lacks explicit presence representation",
+            ),
             ("Oneof", "JVM facade lacks a discriminated oneof projection"),
         ],
         "csharp" => &[
-            ("Unknown", "C# facade lacks an open unknown-value projection"),
-            ("Optional", "C# facade lacks explicit presence representation"),
+            (
+                "Unknown",
+                "C# facade lacks an open unknown-value projection",
+            ),
+            (
+                "Optional",
+                "C# facade lacks explicit presence representation",
+            ),
             ("oneof", "C# facade lacks a discriminated oneof projection"),
-            ("IdempotencyKey", "C# facade lacks a nominal semantic identity"),
+            (
+                "IdempotencyKey",
+                "C# facade lacks a nominal semantic identity",
+            ),
         ],
         "swift" => &[
-            ("unknown", "Swift facade lacks an open unknown-value projection"),
-            ("Optional", "Swift facade lacks explicit presence representation"),
-            ("IdempotencyKey", "Swift facade lacks a nominal semantic identity"),
+            (
+                "unknown",
+                "Swift facade lacks an open unknown-value projection",
+            ),
+            (
+                "Optional",
+                "Swift facade lacks explicit presence representation",
+            ),
+            (
+                "IdempotencyKey",
+                "Swift facade lacks a nominal semantic identity",
+            ),
         ],
         "cpp" => &[
-            ("UnknownOneof", "C++ facade lacks an unknown-oneof projection"),
-            ("std::optional", "C++ facade lacks explicit presence representation"),
-            ("std::variant", "C++ facade lacks a discriminated union projection"),
-            ("IdempotencyKey", "C++ facade lacks a nominal semantic identity"),
+            (
+                "UnknownOneof",
+                "C++ facade lacks an unknown-oneof projection",
+            ),
+            (
+                "std::optional",
+                "C++ facade lacks explicit presence representation",
+            ),
+            (
+                "std::variant",
+                "C++ facade lacks a discriminated union projection",
+            ),
+            (
+                "IdempotencyKey",
+                "C++ facade lacks a nominal semantic identity",
+            ),
         ],
         "ruby" => &[
-            ("Unknown", "Ruby facade lacks an open unknown-value projection"),
-            ("IdempotencyKey", "Ruby facade lacks a nominal semantic identity"),
+            (
+                "Unknown",
+                "Ruby facade lacks an open unknown-value projection",
+            ),
+            (
+                "IdempotencyKey",
+                "Ruby facade lacks a nominal semantic identity",
+            ),
         ],
         "php" => &[
-            ("Unknown", "PHP facade lacks an open unknown-value projection"),
-            ("IdempotencyKey", "PHP facade lacks a nominal semantic identity"),
+            (
+                "Unknown",
+                "PHP facade lacks an open unknown-value projection",
+            ),
+            (
+                "IdempotencyKey",
+                "PHP facade lacks a nominal semantic identity",
+            ),
         ],
         "dart" => &[
-            ("Unknown", "Dart facade lacks an open unknown-value projection"),
-            ("IdempotencyKey", "Dart facade lacks a nominal semantic identity"),
+            (
+                "Unknown",
+                "Dart facade lacks an open unknown-value projection",
+            ),
+            (
+                "IdempotencyKey",
+                "Dart facade lacks a nominal semantic identity",
+            ),
         ],
         "haskell" => &[
-            ("Unknown", "Haskell facade lacks an open unknown-value projection"),
-            ("Maybe", "Haskell facade lacks explicit optional presence representation"),
-            ("IdempotencyKey", "Haskell facade lacks a nominal semantic identity"),
-            ("KnownOneof", "Haskell facade lacks a discriminated oneof projection"),
+            (
+                "Unknown",
+                "Haskell facade lacks an open unknown-value projection",
+            ),
+            (
+                "Maybe",
+                "Haskell facade lacks explicit optional presence representation",
+            ),
+            (
+                "IdempotencyKey",
+                "Haskell facade lacks a nominal semantic identity",
+            ),
+            (
+                "KnownOneof",
+                "Haskell facade lacks a discriminated oneof projection",
+            ),
         ],
         _ => &[],
     }
@@ -3761,7 +4256,10 @@ pub fn audit_required_generated_public_surfaces(
 ) -> Result<Vec<GeneratedSurfaceViolation>, String> {
     let mut files = Vec::new();
     if !artifact_root.is_dir() {
-        return Err(format!("generated artifact root does not exist: {}", artifact_root.display()));
+        return Err(format!(
+            "generated artifact root does not exist: {}",
+            artifact_root.display()
+        ));
     }
     collect_surface_files(artifact_root, &mut files);
     let mut present = std::collections::BTreeSet::new();
@@ -3922,7 +4420,11 @@ mod tests {
         .expect("csharp fixture");
 
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
-        assert!(findings.iter().any(|finding| finding.language == "typescript"));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.language == "typescript")
+        );
         assert!(findings.iter().any(|finding| finding.language == "python"));
         assert!(findings.iter().any(|finding| finding.language == "go"));
         assert!(findings.iter().any(|finding| finding.language == "jvm"));
@@ -4012,7 +4514,9 @@ mod tests {
         )
         .expect("swift fixture");
         fs::write(
-            root.join("cpp").join("include").join("rust_typed_clients.hpp"),
+            root.join("cpp")
+                .join("include")
+                .join("rust_typed_clients.hpp"),
             "struct KnownOneof { std::string tag; std::vector<std::uint8_t> payload; };\n",
         )
         .expect("cpp fixture");
@@ -4052,10 +4556,13 @@ mod tests {
                 && finding.line == 3
                 && finding.reason == "JVM known oneof payload is erased to ByteString"
         }));
-        assert!(!findings.iter().any(|finding| {
-            finding.path.ends_with("RustSemanticTypes.kt")
-                && (finding.line == 1 || finding.line == 2)
-        }), "descriptor-bound bytes and compatibility arms must remain accepted");
+        assert!(
+            !findings.iter().any(|finding| {
+                finding.path.ends_with("RustSemanticTypes.kt")
+                    && (finding.line == 1 || finding.line == 2)
+            }),
+            "descriptor-bound bytes and compatibility arms must remain accepted"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4107,7 +4614,9 @@ mod tests {
         .expect("swift fixture");
         fs::create_dir_all(root.join("cpp").join("include")).expect("cpp fixture directory");
         fs::write(
-            root.join("cpp").join("include").join("rust_typed_clients.hpp"),
+            root.join("cpp")
+                .join("include")
+                .join("rust_typed_clients.hpp"),
             "struct ObjectResponse { RustWireMessage wire; };\n",
         )
         .expect("cpp fixture");
@@ -4115,7 +4624,8 @@ mod tests {
         let findings = audit_generated_public_surfaces(&root).expect("audit fixture");
         assert!(findings.iter().any(|finding| {
             finding.language == "csharp"
-                && finding.reason == "C# timestamp projection can lose protobuf nanosecond precision"
+                && finding.reason
+                    == "C# timestamp projection can lose protobuf nanosecond precision"
         }));
         assert!(findings.iter().any(|finding| {
             finding.language == "jvm"
@@ -4157,11 +4667,14 @@ mod tests {
             finding.language == "haskell"
                 && finding.reason == "Haskell semantic wrapper exposes a bypassable raw constructor"
         }));
-        assert!(findings
-            .iter()
-            .filter(|finding| finding.path.contains("haskell-positive"))
-            .next()
-            .is_none(), "opaque validated Haskell newtypes should pass");
+        assert!(
+            findings
+                .iter()
+                .filter(|finding| finding.path.contains("haskell-positive"))
+                .next()
+                .is_none(),
+            "opaque validated Haskell newtypes should pass"
+        );
         assert!(findings.iter().any(|finding| {
             finding.language == "swift"
                 && finding.reason == "public Swift wrapper exposes an opaque RustWireMessage"
@@ -4202,8 +4715,7 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("audit fixture directory");
-        fs::write(root.join("RustTypedClients.cs"), "// generated\n")
-            .expect("csharp fixture");
+        fs::write(root.join("RustTypedClients.cs"), "// generated\n").expect("csharp fixture");
         let error = audit_required_generated_public_surfaces(&root, REQUIRED_PRODUCT_SURFACES)
             .expect_err("missing generated surfaces must fail closed");
         assert!(error.contains("python"));
@@ -4222,12 +4734,23 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).expect("audit fixture directory");
-        fs::write(root.join("RustTypedClients.swift"), "public struct Wire {}\n")
-            .expect("swift fixture");
+        fs::write(
+            root.join("RustTypedClients.swift"),
+            "public struct Wire {}\n",
+        )
+        .expect("swift fixture");
         let findings = audit_generated_type_features(&root).expect("feature audit fixture");
         assert!(findings.iter().any(|finding| finding.language == "swift"));
-        assert!(findings.iter().any(|finding| finding.reason.contains("unknown")));
-        assert!(findings.iter().any(|finding| finding.reason.contains("identity")));
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.reason.contains("unknown"))
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.reason.contains("identity"))
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4244,9 +4767,11 @@ mod tests {
             "public struct IdempotencyKey { let value: String }\npublic enum WireChoice { case known(payload: KnownPayload); case unknown(rawTag: Int32, payload: Data) }\npublic struct Presence { var value: Optional<String> }\n",
         )
         .expect("swift fixture");
-        assert!(audit_generated_type_features(&root)
-            .expect("feature audit fixture")
-            .is_empty());
+        assert!(
+            audit_generated_type_features(&root)
+                .expect("feature audit fixture")
+                .is_empty()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -4481,7 +5006,10 @@ mod tests {
     #[test]
     fn descriptor_shape_inventory_carries_enum_union_and_presence_metadata() {
         let enums = resolved_enum_fields().expect("all reachable enum fields resolve");
-        assert!(!enums.is_empty(), "RPC descriptor closure must contain enums");
+        assert!(
+            !enums.is_empty(),
+            "RPC descriptor closure must contain enums"
+        );
         for entry in &enums {
             assert_eq!(entry.field.wire_type, Some(FieldType::Enum as i32));
             assert!(!entry.enum_type.is_empty());
@@ -4493,27 +5021,33 @@ mod tests {
         }
 
         let oneofs = resolved_oneof_members().expect("all reachable oneof members resolve");
-        assert!(!oneofs.is_empty(), "RPC descriptor closure must contain oneofs");
+        assert!(
+            !oneofs.is_empty(),
+            "RPC descriptor closure must contain oneofs"
+        );
         assert!(
             oneofs.iter().any(|entry| {
-                matches!(
-                    entry.payload_kind,
-                    FieldType::Message | FieldType::Group
-                ) && entry.payload_type.is_some()
+                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
+                    && entry.payload_type.is_some()
             }),
             "message-valued oneof arms must retain their Rust descriptor identity"
         );
         for entry in &oneofs {
             assert!(entry.field.oneof_name.is_some());
             assert!(entry.preserves_unknown_members);
-            if matches!(entry.payload_kind, FieldType::Message | FieldType::Group | FieldType::Enum)
-            {
+            if matches!(
+                entry.payload_kind,
+                FieldType::Message | FieldType::Group | FieldType::Enum
+            ) {
                 assert!(entry.payload_type.is_some());
             }
         }
 
         let presence = resolved_presence_fields().expect("all reachable presence fields resolve");
-        assert!(!presence.is_empty(), "RPC descriptor closure must contain presence");
+        assert!(
+            !presence.is_empty(),
+            "RPC descriptor closure must contain presence"
+        );
         assert!(
             presence
                 .iter()
@@ -4526,10 +5060,9 @@ mod tests {
                     assert!(entry.field.proto3_optional)
                 }
                 ResolvedPresenceKind::Oneof => assert!(entry.field.oneof_name.is_some()),
-                ResolvedPresenceKind::Message => assert_eq!(
-                    entry.field.wire_type,
-                    Some(FieldType::Message as i32)
-                ),
+                ResolvedPresenceKind::Message => {
+                    assert_eq!(entry.field.wire_type, Some(FieldType::Message as i32))
+                }
             }
         }
     }
@@ -4544,8 +5077,7 @@ mod tests {
         fs::create_dir_all(root.join("jvm")).expect("audit fixture directory");
         fs::write(
             root.join("jvm").join("RustSemanticTypes.java"),
-            "// ActorsState, Known, Optional and every descriptor identity\n"
-                .to_owned()
+            "// ActorsState, Known, Optional and every descriptor identity\n".to_owned()
                 + "public sealed interface KnownOneof permits Known, Unknown {}\n"
                 + "record Known(WireBytes payload) implements KnownOneof {}\n"
                 + "record Unknown(int tag, WireBytes payload) implements KnownOneof {}\n",
@@ -4573,7 +5105,9 @@ mod tests {
             "generic Optional markers must not satisfy descriptor-bound presence coverage"
         );
         assert!(
-            findings.iter().all(|finding| !finding.path.contains("every descriptor identity")),
+            findings
+                .iter()
+                .all(|finding| !finding.path.contains("every descriptor identity")),
             "comments must not satisfy descriptor shape coverage"
         );
         let _ = fs::remove_dir_all(root);
@@ -4585,9 +5119,7 @@ mod tests {
         let message_arm = resolved_oneof_members()
             .expect("Rust oneof inventory")
             .into_iter()
-            .find(|entry| {
-                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            })
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
             .expect("at least one message-valued oneof arm");
         let presence = resolved_presence_fields()
             .expect("Rust presence inventory")
@@ -4598,8 +5130,8 @@ mod tests {
             .into_iter()
             .next()
             .expect("C++ enum alias");
-        let choice_alias = descriptor_oneof_choice_alias(&message_arm)
-            .expect("C++ oneof choice alias");
+        let choice_alias =
+            descriptor_oneof_choice_alias(&message_arm).expect("C++ oneof choice alias");
         let arm_alias = format!(
             "{choice_alias}{}",
             pascal_identifier(&message_arm.field.field)
@@ -4635,7 +5167,9 @@ mod tests {
         let findings = audit_generated_descriptor_shape_coverage(&root)
             .expect("descriptor shape audit fixture");
         assert!(!findings.iter().any(|finding| {
-            finding.path.contains(&format!("missing Rust enum {}", enums[0].enum_type))
+            finding
+                .path
+                .contains(&format!("missing Rust enum {}", enums[0].enum_type))
         }));
         assert!(!findings.iter().any(|finding| {
             finding.path.contains(&format!(
@@ -4644,7 +5178,9 @@ mod tests {
             ))
         }));
         assert!(!findings.iter().any(|finding| {
-            finding.path.contains(&format!("missing Rust presence field {field_name}"))
+            finding
+                .path
+                .contains(&format!("missing Rust presence field {field_name}"))
         }));
         let _ = fs::remove_dir_all(root);
     }
@@ -4659,14 +5195,11 @@ mod tests {
         let member = resolved_oneof_members()
             .expect("Rust oneof inventory")
             .into_iter()
-            .find(|entry| {
-                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            })
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
             .expect("message-valued oneof");
         let enum_name = descriptor_simple_name(&enum_entry.enum_type);
-        let payload_name = descriptor_simple_name(
-            member.payload_type.as_deref().expect("message payload"),
-        );
+        let payload_name =
+            descriptor_simple_name(member.payload_type.as_deref().expect("message payload"));
         let choice = descriptor_oneof_choice_alias(&member).expect("choice identity");
         let root = std::env::temp_dir().join(format!(
             "acyclic-generated-descriptor-shape-audit-raw-alias-{}",
@@ -4687,7 +5220,9 @@ mod tests {
         let findings = audit_generated_descriptor_shape_coverage(&root)
             .expect("descriptor shape audit fixture");
         assert!(findings.iter().any(|finding| {
-            finding.path.contains(&format!("missing Rust enum {}", enum_entry.enum_type))
+            finding
+                .path
+                .contains(&format!("missing Rust enum {}", enum_entry.enum_type))
         }));
         assert!(findings.iter().any(|finding| {
             finding.path.contains(&format!(
@@ -4703,9 +5238,7 @@ mod tests {
         let member = resolved_oneof_members()
             .expect("Rust oneof inventory")
             .into_iter()
-            .find(|entry| {
-                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            })
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
             .expect("message-valued oneof");
         let compact_message = descriptor_compact_identity(&member.field.message_path);
         let arm = pascal_identifier(&member.field.field);
@@ -4713,29 +5246,49 @@ mod tests {
         let valid_python = format!(
             "class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n    value: actors_pb2.{payload}\n"
         );
-        assert!(source_contains_descriptor_oneof_arm("python", &valid_python, &member));
+        assert!(source_contains_descriptor_oneof_arm(
+            "python",
+            &valid_python,
+            &member
+        ));
         let erased_python = format!(
             "class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n    value: Any\n"
         );
-        assert!(!source_contains_descriptor_oneof_arm("python", &erased_python, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "python",
+            &erased_python,
+            &member
+        ));
         let comment_only = format!(
             "# class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n\
              #     value: actors_pb2.{payload}\n"
         );
-        assert!(!source_contains_descriptor_oneof_arm("python", &comment_only, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "python",
+            &comment_only,
+            &member
+        ));
         let type_alias_only = format!(
             "OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}: TypeAlias = tuple[str, {payload}]\n"
         );
-        assert!(!source_contains_descriptor_oneof_arm("python", &type_alias_only, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "python",
+            &type_alias_only,
+            &member
+        ));
 
         let valid_go = format!(
             "type OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm} struct {{ Arm string; Value {payload} }}\n"
         );
-        assert!(source_contains_descriptor_oneof_arm("go", &valid_go, &member));
+        assert!(source_contains_descriptor_oneof_arm(
+            "go", &valid_go, &member
+        ));
         let raw_go = format!(
             "// type OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm} struct {{ Arm string; Value []byte }}\n"
         );
-        assert!(!source_contains_descriptor_oneof_arm("go", &raw_go, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "go", &raw_go, &member
+        ));
     }
 
     #[test]
@@ -4752,13 +5305,19 @@ mod tests {
             descriptor_projection_aliases("swift", "acyclic.actors.v1.ActorState"),
             vec!["ActorsActorStateWire"]
         );
+        assert_eq!(
+            descriptor_projection_aliases("python", "acyclic.actors.v1.ActorState"),
+            vec!["ActorsActorState"]
+        );
+        assert_eq!(
+            descriptor_projection_aliases("go", "inference.customer.v1.EvaluationState"),
+            vec!["InferenceCustomerEvaluationState"]
+        );
 
         let member = resolved_oneof_members()
             .expect("Rust oneof inventory")
             .into_iter()
-            .find(|entry| {
-                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            })
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
             .expect("message-valued oneof");
         let choice = descriptor_oneof_choice_alias(&member).expect("oneof choice identity");
         assert!(
@@ -4777,9 +5336,7 @@ mod tests {
         let member = resolved_oneof_members()
             .expect("Rust oneof inventory")
             .into_iter()
-            .find(|entry| {
-                matches!(entry.payload_kind, FieldType::Message | FieldType::Group)
-            })
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
             .expect("message-valued oneof");
         let presence = resolved_presence_fields()
             .expect("Rust presence inventory")
@@ -4824,7 +5381,9 @@ mod tests {
         let findings = audit_generated_descriptor_shape_coverage(&root)
             .expect("descriptor shape audit fixture");
         assert!(!findings.iter().any(|finding| {
-            finding.path.contains(&format!("missing Rust enum {}", enum_entry.enum_type))
+            finding
+                .path
+                .contains(&format!("missing Rust enum {}", enum_entry.enum_type))
         }));
         assert!(!findings.iter().any(|finding| {
             finding.path.contains(&format!(
@@ -5142,7 +5701,8 @@ mod tests {
                     binding.wire_field,
                     fields
                         .iter()
-                        .filter(|field| field.family == binding.family && field.field == binding.wire_field)
+                        .filter(|field| field.family == binding.family
+                            && field.field == binding.wire_field)
                         .map(|field| field.message_path.as_str())
                         .collect::<Vec<_>>()
                 ));
@@ -5157,7 +5717,10 @@ mod tests {
                 binding.wire_field
             );
         }
-        assert!(missing.is_empty(), "unresolved response bindings: {missing:#?}");
+        assert!(
+            missing.is_empty(),
+            "unresolved response bindings: {missing:#?}"
+        );
     }
 
     #[test]
