@@ -65,6 +65,7 @@ if (manifest.execution_plan_count !== manifest.execution_plan.length) {
   usage("manifest execution_plan_count does not match execution_plan length");
 }
 if (!existsSync(fixturePath)) usage(`fixture binary does not exist: ${fixturePath}`);
+const fixtureBinarySha256 = `sha256:${createHash("sha256").update(readFileSync(fixturePath)).digest("hex")}`;
 
 function hostPort(address) {
   return String(address).replace(/^https?:\/\//, "");
@@ -126,6 +127,7 @@ const finish = (exitCode) => {
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     fixture_binary: fixturePath,
+    fixture_binary_sha256: fixtureBinarySha256,
     fixture_pid: fixture?.pid ?? null,
     consumer_command: commandArgs,
     consumer_exit_code: exitCode,
@@ -217,6 +219,7 @@ try {
     status: "failed_to_start",
     language,
     fixture_binary: fixturePath,
+    fixture_binary_sha256: fixtureBinarySha256,
     manifest: manifestPath,
     error: String(error?.stack ?? error),
   });
