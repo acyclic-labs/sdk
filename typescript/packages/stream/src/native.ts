@@ -1,4 +1,4 @@
-import { arch, platform } from "node:process";
+import { arch, platform, report } from "node:process";
 import { Buffer } from "node:buffer";
 import { commitId, StreamError } from "./types.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -68,11 +68,32 @@ interface NativeStreamModule {
   readonly NativeStreamCancellation: new () => NativeCancellation;
 }
 
-const TARGETS = new Set(["win32-x64", "win32-arm64", "linux-x64", "linux-arm64", "darwin-x64", "darwin-arm64"]);
+const TARGETS = new Set([
+  "win32-x64", "win32-arm64", "linux-x64-gnu", "linux-arm64-gnu", "linux-x64-musl", "linux-arm64-musl",
+  "darwin-x64", "darwin-arm64",
+]);
 let bindingPromise: Promise<NativeStreamModule> | undefined;
 
+/** Resolve the published native companion from the host ABI and libc. */
+export function nativeCompanionTarget(
+  currentPlatform: string = platform,
+  currentArch: string = arch,
+  currentReport: { getReport?: () => { header?: { glibcVersionRuntime?: unknown } } } | undefined = report,
+): string {
+  const base = `${currentPlatform}-${currentArch}`;
+  if (currentPlatform !== "linux") return base;
+  let libc = "gnu";
+  try {
+    const header = currentReport?.getReport?.().header;
+    if (currentReport !== undefined && typeof header?.glibcVersionRuntime !== "string") libc = "musl";
+  } catch {
+    // Keep the common glibc default when a runtime report is unavailable.
+  }
+  return `${base}-${libc}`;
+}
+
 async function binding(): Promise<NativeStreamModule> {
-  const target = `${platform}-${arch}`;
+  const target = nativeCompanionTarget();
   if (!TARGETS.has(target)) throw new Error(`@acyclic-labs/stream has no native companion for ${target}`);
   bindingPromise ??= import(`@acyclic-labs/stream-${target}`).then((module) => {
     const namespace = module as NativeStreamModule & { readonly default?: NativeStreamModule };

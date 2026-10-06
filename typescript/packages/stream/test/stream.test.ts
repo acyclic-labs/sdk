@@ -9,7 +9,7 @@ import { STREAM_HANDSHAKE } from "../src/generated-client.js";
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
 
-const handshakeResponse = (): Response => Response.json({ protocol: { version: STREAM_HANDSHAKE.version, descriptorDigest: STREAM_HANDSHAKE.descriptorDigest }, supported: {} });
+const handshakeResponse = (): Response => Response.json({ protocol: { version: STREAM_HANDSHAKE.version, descriptorDigest: STREAM_HANDSHAKE.descriptorDigest }, supported: { capabilities: [{ name: STREAM_HANDSHAKE.family, version: STREAM_HANDSHAKE.version }] } });
 const handshakeFetcher = (application: typeof fetch): typeof fetch => async (input, init) =>
   new URL(String(input)).pathname === STREAM_HANDSHAKE.route ? handshakeResponse() : application(input, init);
 

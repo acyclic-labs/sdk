@@ -40,7 +40,7 @@ test("Stream HTTP negotiates the Rust identity before application requests and c
       expect(init?.headers).toBeDefined();
       if (route === STREAM_HANDSHAKE.route) {
         expect(init?.method).toBe("POST");
-        return Response.json({ protocol: { version: STREAM_HANDSHAKE.version, descriptorDigest: STREAM_HANDSHAKE.descriptorDigest }, supported: {} });
+        return Response.json({ protocol: { version: STREAM_HANDSHAKE.version, descriptorDigest: STREAM_HANDSHAKE.descriptorDigest }, supported: { capabilities: [{ name: STREAM_HANDSHAKE.family, version: STREAM_HANDSHAKE.version }] } });
       }
       return new Response('"0"');
     },

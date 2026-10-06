@@ -37,7 +37,12 @@ export class HttpStreamProvider implements StreamProvider {
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const { from, signal } = options;
     await ensureStreamWasm();
-    const cursor = new HttpFollowCursor(wireRequest({ kind: "follow", path, from }));
+    let cursor: HttpFollowCursor;
+    try {
+      cursor = new HttpFollowCursor(wireRequest({ kind: "follow", path, from }));
+    } catch (error) {
+      throw new StreamError("invalid_argument", `invalid follow request: ${error instanceof Error ? error.message : String(error)}`);
+    }
     if (signal?.aborted) return;
     try {
       const tailText = await this.#requestText("tail", await encodeHttpRequest("tail", cursor.tailRequest()), signal);
@@ -112,7 +117,10 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
     if (this.#handshake !== undefined) return this.#handshake;
-    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, this.#maximum, signal)
+    // The control response has the Rust-generated handshake bound. A caller's
+    // application response limit may be smaller than that fixed control
+    // envelope and must not make negotiation impossible.
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, undefined, signal)
       .catch(error => { this.#handshake = undefined; throw error; });
     this.#handshake = pending;
     return pending;
