@@ -14,6 +14,7 @@ use crate::kernel::{
 };
 use crate::model::VolumeConfig;
 use crate::path::PortablePath;
+use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, stored_revision};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
@@ -36,7 +37,6 @@ type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 type LazyFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 const LAZY_STATE_SCHEMA: u32 = 7;
-const MAXIMUM_STATE_RETRIES: usize = 32;
 
 const LAZY_SNAPSHOT_DOMAIN: &[u8] = b"acyclic-fs-lazy-snapshot-v1\0";
 
@@ -444,11 +444,7 @@ impl LazyWorkspaceStore for MemoryLazyWorkspaceStore {
             .inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let actual = state
-            .workspaces
-            .get(&workspace_id)
-            .map_or(0, |current| current.revision);
-        if actual != expected_revision {
+        if stored_revision(&state.workspaces, &workspace_id) != expected_revision {
             return Ok(false);
         }
         state.workspaces.insert(workspace_id, replacement);
@@ -1421,7 +1417,7 @@ where
     /// state and tombstones remain shared.
     pub async fn rebind_source(&self) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
         let source = self.source.reference();
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id())
@@ -4135,7 +4131,7 @@ where
         if paths.is_empty() && identity_records.is_empty() {
             return Ok(());
         }
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let mut overlay = state.overlay;
             let mut shadows = state.shadows;
@@ -4378,7 +4374,7 @@ where
             PendingLazyRemoveKind::SourceOnly
         };
         let mut prepared = None;
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let shadows = if let LazyLookup::Authored { stat, .. } = &resolved {
                 let record = self
@@ -4544,7 +4540,7 @@ where
     }
 
     async fn recover_pending_remove(&self) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id())
@@ -4652,7 +4648,7 @@ where
         path: String,
         change: LazyOverlayChange,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_STATE_RETRIES {
+        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let state = self.state().await?;
             let overlay_id = self
                 .insert_overlay(state.overlay, path.clone(), change.clone())
