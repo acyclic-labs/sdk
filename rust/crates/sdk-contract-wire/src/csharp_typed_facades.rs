@@ -1009,6 +1009,7 @@ fn render_descriptor_shape_metadata(out: &mut String) {
     let fields = all_descriptor_fields();
     let presence = resolved_presence_fields().expect("Rust presence descriptors must resolve");
     let enums = resolved_enum_fields().expect("Rust enum descriptors must resolve");
+    let mut synthetic_models = String::new();
 
     out.push_str(
         "internal sealed record RustDescriptorPresenceShape(string Family, string Message, string Field, string JsonName, string Kind);\n\
@@ -1017,7 +1018,7 @@ internal sealed record RustDescriptorOneofShape(string Family, string Message, s
 internal static class RustDescriptorShapes\n{\n",
     );
 
-    out.push_str("    internal static IReadOnlyList<RustDescriptorPresenceShape> Presence { get; } = new[] {\n");
+    out.push_str("    internal static IReadOnlyList<RustDescriptorPresenceShape> Presence { get; } = new RustDescriptorPresenceShape[] {\n");
     let mut seen_presence = BTreeSet::new();
     for entry in presence {
         let key = (
@@ -1044,7 +1045,7 @@ internal static class RustDescriptorShapes\n{\n",
     }
     out.push_str("    };\n\n");
 
-    out.push_str("    internal static IReadOnlyList<RustDescriptorEnumShape> Enums { get; } = new[] {\n");
+    out.push_str("    internal static IReadOnlyList<RustDescriptorEnumShape> Enums { get; } = new RustDescriptorEnumShape[] {\n");
     let mut seen_enums = BTreeSet::new();
     for entry in enums {
         if !seen_enums.insert(entry.enum_type.clone()) {
@@ -1058,7 +1059,7 @@ internal static class RustDescriptorShapes\n{\n",
     }
     out.push_str("    };\n\n");
 
-    out.push_str("    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new[] {\n");
+    out.push_str("    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new RustDescriptorOneofShape[] {\n");
     let mut seen_oneofs = BTreeSet::new();
     for field in fields.iter().filter(|field| field.oneof_name.is_some()) {
         let Some(oneof) = field.oneof_name.as_deref() else { continue };
@@ -1077,7 +1078,7 @@ internal static class RustDescriptorShapes\n{\n",
         if field.proto3_optional {
             let payload_model = response_local_message_type(field, &field.family)
                 .unwrap_or_else(|| response_nested_model_name(payload_type, &field.family));
-            out.push_str(&format!(
+            synthetic_models.push_str(&format!(
                 "internal abstract record {alias}\n{{\n    internal sealed record {arm}({payload_model} Value) : {alias};\n}}\n\n",
                 arm = upper(&field.field),
             ));
@@ -1093,6 +1094,7 @@ internal static class RustDescriptorShapes\n{\n",
         ));
     }
     out.push_str("    };\n}\n\n");
+    out.push_str(&synthetic_models);
 }
 
 fn render_oneof_properties(
@@ -1125,7 +1127,10 @@ fn render_oneof_properties(
 /// paths as the root response models, so nested responses never force a
 /// consumer to depend on a generated protobuf class or lose message identity.
 fn render_nested_response_models(out: &mut String) {
-    let fields = resolved_response_fields().expect("Rust response descriptors must resolve");
+    // Oneof arms can carry Rust-owned messages from either request or response
+    // graphs. Emit the same nominal wrappers for both graphs so every public
+    // choice has a concrete payload type.
+    let fields = all_descriptor_fields();
     let mut nested_messages = BTreeSet::<String>::new();
     for field in &fields {
         if let Some(type_name) = field.type_name.as_deref()

@@ -107,6 +107,7 @@ fn dotnet_stream_method(method: &crate::MethodSpec) -> String {
         StreamV2.{input} request,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        await System.Threading.Tasks.Task.CompletedTask.ConfigureAwait(false);
         var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
         if (request.HasParent) page.Parent = request.Parent;
         while (true)
