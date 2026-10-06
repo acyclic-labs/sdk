@@ -18,9 +18,13 @@ from acyclic_sdk.remote import (
     HANDSHAKE,
     HTTP_ROUTES,
     MessageUnknown,
+    RustActorsActorsCreateActorRequest,
     RustHttpError,
     RustObjectsObjectsPutObjectRequest,
     RustObjectsObjectsGetObjectResponse,
+    RustStreamStreamFollowRequest,
+    RustWorkersWorkersInvokeDeploymentRequest,
+    RustWorkersWorkersInvokeVersionRequest,
 )
 
 
@@ -305,6 +309,40 @@ def test_http_request_fixture_preserves_route_method_body_and_typed_error() -> N
 
 
 def test_worker_http_route_templates_encode_binary_and_alias_segments() -> None:
+    client = _fixture_client()
+    calls: list[object] = []
+
+    def open_http(request: object, *_args: object, **_kwargs: object) -> _HttpFixtureResponse:
+        calls.append(request)
+        return _HttpFixtureResponse(
+            json_format.MessageToJson(
+                workers_pb2.InvokeResponse(status=200, body=b"ok", resolved_sha256=b"\xcd" * 32)
+            ).encode("utf-8"),
+            url=request.full_url,
+        )
+
+    async def run() -> None:
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        version_request = RustWorkersWorkersInvokeVersionRequest.from_wire(
+            workers_pb2.InvokeVersionRequest(version_sha256=b"\xab" * 32)
+        )
+        version = await client.workers_Workers_InvokeVersion(version_request)
+        assert version.status == 200
+        assert version.body == b"ok"
+        alias_request = RustWorkersWorkersInvokeDeploymentRequest.from_wire(
+            workers_pb2.InvokeDeploymentRequest(alias="canary/blue ?")
+        )
+        deployment = await client.workers_Workers_InvokeDeployment(alias_request)
+        assert deployment.status == 200
+
+    asyncio.run(run())
+    assert [request.get_method() for request in calls] == ["POST", "POST"]
+    assert calls[0].full_url.endswith("/v1/workers/versions/" + ("ab" * 32) + "/invoke")
+    assert calls[1].full_url.endswith("/v1/workers/deployments/canary%2Fblue%20%3F/invoke")
+
     version_route = HTTP_ROUTES["workers"][
         "acyclic.workers.v1.WorkersService/InvokeVersion"
     ]
@@ -313,6 +351,11 @@ def test_worker_http_route_templates_encode_binary_and_alias_segments() -> None:
     assert Client._route_path(version_route, version_request) == (
         "/v1/workers/versions/" + ("ab" * 32) + "/invoke"
     )
+    with pytest.raises(ValueError, match="exactly 32 bytes"):
+        Client._route_path(
+            version_route,
+            workers_pb2.InvokeVersionRequest(version_sha256=b"short"),
+        )
 
     alias_route = HTTP_ROUTES["workers"][
         "acyclic.workers.v1.WorkersService/InvokeDeployment"
@@ -411,17 +454,17 @@ def test_http_stream_fixture_closes_once_and_client_close_cancels_active_stream(
     client._channel = Channel()
 
     async def run() -> None:
-        stream = await client._http_stream(
-            next(family for family, routes in HTTP_ROUTES.items() if route_name in routes),
-            route_name,
-            stream_pb2.FollowRequest(path="fixture"),
-            stream_pb2.ReadResponse,
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        stream = await client.stream_Stream_Follow(
+            RustStreamStreamFollowRequest.from_wire(stream_pb2.FollowRequest(path="fixture"))
         )
-        assert stream.cancel()
-        assert not stream.cancel()
-        assert stream.done()
         await client.close()
         assert response.closed
+        assert stream.done()
+        assert stream.cancel() is False
 
     asyncio.run(run())
 
@@ -436,10 +479,18 @@ def test_http_body_read_failure_closes_response_and_http_error_body() -> None:
 
     response = ReadFailureResponse()
     client._open_http = lambda _request, **_kwargs: response
-    with pytest.raises(OSError, match="fixture read failure"):
-        client._http_request(
-            "actors", route["method"], route["path"], actors_pb2.CreateActorRequest()
-        )
+
+    async def run_read_failure() -> None:
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        with pytest.raises(OSError, match="fixture read failure"):
+            await client.actors_Actors_CreateActor(
+                RustActorsActorsCreateActorRequest.from_wire(actors_pb2.CreateActorRequest())
+            )
+
+    asyncio.run(run_read_failure())
     assert response.closed
 
     class ReadFailureFile(io.BytesIO):
@@ -455,12 +506,46 @@ def test_http_body_read_failure_closes_response_and_http_error_body() -> None:
         error_file,
     )
     client._open_http = lambda _request, **_kwargs: (_ for _ in ()).throw(error)
-    with pytest.raises(RustHttpError) as raised:
-        client._http_request(
-            "actors", route["method"], route["path"], actors_pb2.CreateActorRequest()
-        )
-    assert raised.value.status == 503
+    async def run_unary_failure() -> None:
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        with pytest.raises(RustHttpError) as raised:
+            await client.actors_Actors_CreateActor(
+                RustActorsActorsCreateActorRequest.from_wire(actors_pb2.CreateActorRequest())
+            )
+        assert raised.value.status == 503
+
+    asyncio.run(run_unary_failure())
     assert error_file.closed
+
+    stream_name, stream_route = next(
+        (rpc, item)
+        for family_routes in HTTP_ROUTES.values()
+        for rpc, item in family_routes.items()
+        if item["streaming"]
+    )
+    stream_response = ReadFailureResponse(
+        status=503,
+        url=client._http_base + stream_route["path"],
+    )
+    client._open_http = lambda _request, **_kwargs: stream_response
+
+    async def run_stream_failure() -> None:
+        async def ensure_transport(*_args: object, **_kwargs: object) -> str:
+            return "http_json"
+
+        client._ensure_transport = ensure_transport
+        with pytest.raises(OSError, match="fixture read failure"):
+            await client.stream_Stream_Follow(
+                RustStreamStreamFollowRequest.from_wire(
+                    stream_pb2.FollowRequest(path="fixture")
+                )
+            )
+
+    asyncio.run(run_stream_failure())
+    assert stream_response.closed
 
 
 def test_http_client_stream_fixture_sends_bounded_ndjson_and_typed_response() -> None:

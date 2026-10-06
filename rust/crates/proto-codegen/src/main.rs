@@ -65,7 +65,7 @@ mod tests {
         };
         let response = normalize_tonic_response(response);
         assert_eq!(
-            response.file[0].content.as_deref(),
+            response.file.first().and_then(|file| file.content.as_deref()),
             Some("#[cfg(feature = \"grpc\")]\ninclude!(\"acyclic.objects.v2.tonic.rs\");\n")
         );
     }

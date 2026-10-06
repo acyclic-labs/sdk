@@ -6208,8 +6208,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .filter(|finding| finding.path.contains("haskell-positive"))
-                .next()
+                .find(|finding| finding.path.contains("haskell-positive"))
                 .is_none(),
             "opaque validated Haskell newtypes should pass"
         );

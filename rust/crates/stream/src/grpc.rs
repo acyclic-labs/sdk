@@ -1517,7 +1517,8 @@ mod tests {
             transport
                 .children(ChildrenRequest {
                     parent: None,
-                    limit: (crate::MAX_ITEMS as u32).saturating_add(1),
+                    limit: u32::try_from(crate::MAX_ITEMS)
+                        .map_or(u32::MAX, |limit| limit.saturating_add(1)),
                 })
                 .await,
             Err(StreamError::LimitExceeded)
@@ -1748,7 +1749,7 @@ mod tests {
                 .await
         });
 
-        ready_receiver.await.unwrap();
+        ready_receiver.await?;
         let endpoint = format!("https://127.0.0.1:{}", address.port());
         let path = StreamPath::new("accounts/events")?;
         let ambient = Client::connect(&endpoint, "exact-token").await?;

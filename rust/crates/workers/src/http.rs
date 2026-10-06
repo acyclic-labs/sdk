@@ -474,15 +474,16 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn native_client_accepts_a_valid_caller_ca() {
-        let certificate = rcgen::generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+    fn native_client_accepts_a_valid_caller_ca() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_result = rcgen::generate_simple_self_signed(["localhost".to_owned()]);
+        let certificate = fixture_result?;
         let pem = certificate.cert.pem();
-        assert!(Client::new_with_ca(
+        let _client = Client::new_with_ca(
             "https://localhost",
             "fixture-token",
             1024,
             Some(pem.as_bytes()),
-        )
-        .is_ok());
+        )?;
+        Ok(())
     }
 }

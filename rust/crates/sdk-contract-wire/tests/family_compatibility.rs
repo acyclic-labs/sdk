@@ -380,9 +380,9 @@ fn emitted_descriptors_preserve_presence_json_names_and_enum_alias_policy() {
         let set = FileDescriptorSet::decode(bytes.as_slice()).expect("emitted descriptor");
         for file in &set.file {
             for enum_ in &file.enum_type {
-                let mut numbers = enum_.value.iter().map(|value| value.number);
+                let numbers = enum_.value.iter().map(|value| value.number);
                 let mut seen = Vec::new();
-                while let Some(number) = numbers.next() {
+                for number in numbers {
                     if seen.contains(&number) {
                         assert_eq!(
                             enum_

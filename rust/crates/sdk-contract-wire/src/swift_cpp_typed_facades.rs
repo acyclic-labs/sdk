@@ -1252,17 +1252,38 @@ public protocol RustWireResponse: Sendable { associatedtype Wire; static func fr
 
 private final class RustTypedSerialExecutor: @unchecked Sendable {
  private let lock = NSLock()
- private var tail: Task<Void, Never>?
+ private var nextTicket = 0
+ private var servingTicket = 0
+ private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
  func submit<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) -> Task<T, Error> {
+   lock.lock()
+   let ticket = nextTicket
+   nextTicket += 1
+   lock.unlock()
+   return Task<T, Error> {
+    await self.waitForTurn(ticket)
+    defer { self.complete(ticket) }
+    return try await operation()
+   }
+ }
+ private func waitForTurn(_ ticket: Int) async {
   lock.lock()
-  defer { lock.unlock() }
-  let previous = tail
-  let task = Task<T, Error> {
-   if let previous { await previous.value }
-   return try await operation()
+  if ticket == servingTicket {
+   lock.unlock()
+   return
   }
-  tail = Task { _ = await task.result }
-  return task
+  await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+   waiters[ticket] = continuation
+   lock.unlock()
+  }
+ }
+ private func complete(_ ticket: Int) {
+  lock.lock()
+  guard ticket == servingTicket else { lock.unlock(); return }
+  servingTicket += 1
+  let continuation = waiters.removeValue(forKey: servingTicket)
+  lock.unlock()
+  continuation?.resume()
  }
 }
 
@@ -1296,9 +1317,10 @@ public final class RustTypedStream<Element: RustWireResponse>: @unchecked Sendab
  deinit { cancellation.cancelIfNeeded() }
  public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
  public func next() async throws -> Element? {
+  let operation = nextOperation
   lock.lock()
   guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("stream is not open") }
-  let task = executor.submit { try await self.nextOperation() }
+  let task = executor.submit { try await operation() }
   lock.unlock()
   let result = try await task.value
   if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
@@ -1316,9 +1338,10 @@ public final class RustTypedRequestSequence<Request: RustWireRequest>: @unchecke
  deinit { cancellation.cancelIfNeeded() }
  public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
  public func next() async throws -> Request? {
+  let operation = nextOperation
   lock.lock()
   guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("request sequence is not open") }
-  let task = executor.submit { try await self.nextOperation() }
+  let task = executor.submit { try await operation() }
   lock.unlock()
   let result = try await task.value
   if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
@@ -1338,7 +1361,8 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
  deinit { cancellation.cancelIfNeeded() }
  public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
  public func send(_ request: Request) async throws {
-  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; let task = executor.submit { try await self.sendOperation(request) }; lock.unlock()
+  let operation = sendOperation
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; let task = executor.submit { try await operation(request) }; lock.unlock()
   try await task.value
  }
  public func next() async throws -> Response? {
@@ -1349,7 +1373,8 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
   return result
  }
  public func finish() async throws -> Response {
-  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lifecycle = .finished; let task = executor.submit { try await self.finishOperation() }; lock.unlock()
+  let operation = finishOperation
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lifecycle = .finished; let task = executor.submit { try await operation() }; lock.unlock()
   let result = try await task.value
   cancellation.completeWithoutCancel()
   return result
@@ -1358,7 +1383,8 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
 }
 
 "#,
-    );    let mut seen = BTreeSet::new();
+    );
+    let mut seen = BTreeSet::new();
     for item in SEMANTIC_TYPES {
         if !seen.insert(item.rust_name) {
             continue;
@@ -1868,7 +1894,120 @@ public final class RustTypedClientStream<Request: RustWireRequest, Response: Rus
 
 fn render_cpp() -> String {
     let mut out = String::from(
-        "// Generated by acyclic-sdk-contract-wire; do not edit.\n#pragma once\n#include <atomic>\n#include <chrono>\n#include <cstdint>\n#include <memory>\n#include <optional>\n#include <stdexcept>\n#include <string>\n#include <system_error>\n#include <utility>\n#include <variant>\n#include <vector>\nnamespace acyclic::rust_typed {\n\nstruct RustWireMessage { std::vector<std::uint8_t> wire; };\nstruct RustWireEnum { std::int32_t raw; };\n\nclass RustCancellationToken {\n  std::shared_ptr<const std::atomic_bool> flag_;\n  explicit RustCancellationToken(std::shared_ptr<const std::atomic_bool> flag) : flag_(std::move(flag)) {}\n  friend class RustCancellationSource;\npublic:\n  RustCancellationToken() : flag_(std::make_shared<const std::atomic_bool>(false)) {}\n  bool stop_requested() const noexcept { return flag_->load(std::memory_order_acquire); }\n};\n\nclass RustCancellationSource {\n  std::shared_ptr<std::atomic_bool> flag_ = std::make_shared<std::atomic_bool>(false);\npublic:\n  RustCancellationToken get_token() const noexcept { return RustCancellationToken(flag_); }\n  bool request_stop() noexcept {\n    bool expected = false;\n    return flag_->compare_exchange_strong(expected, true, std::memory_order_acq_rel);\n  }\n};\n\ntemplate<class Element>\nclass RustTypedStream {\npublic:\n  virtual ~RustTypedStream() = default;\n  virtual std::optional<Element> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\ntemplate<class Request>\nclass RustTypedRequestSequence {\npublic:\n  virtual ~RustTypedRequestSequence() = default;\n  virtual std::optional<Request> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\ntemplate<class Request, class Response>\nclass RustTypedClientStream {\npublic:\n  virtual ~RustTypedClientStream() = default;\n  virtual void send(const Request& request) = 0;\n  virtual Response finish() = 0;\n  virtual std::optional<Response> next() = 0;\n  virtual void cancel() noexcept = 0;\n};\n\n",
+        r#"// Generated by acyclic-sdk-contract-wire; do not edit.
+#pragma once
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <system_error>
+#include <utility>
+#include <variant>
+#include <vector>
+namespace acyclic::rust_typed {
+
+struct RustWireMessage { std::vector<std::uint8_t> wire; };
+struct RustWireEnum { std::int32_t raw; };
+
+class RustCancellationToken {
+  std::shared_ptr<const std::atomic_bool> flag_;
+  explicit RustCancellationToken(std::shared_ptr<const std::atomic_bool> flag) : flag_(std::move(flag)) {}
+  friend class RustCancellationSource;
+public:
+  RustCancellationToken() : flag_(std::make_shared<const std::atomic_bool>(false)) {}
+  bool stop_requested() const noexcept { return flag_->load(std::memory_order_acquire); }
+};
+
+class RustCancellationSource {
+  std::shared_ptr<std::atomic_bool> flag_ = std::make_shared<std::atomic_bool>(false);
+public:
+  RustCancellationSource() = default;
+  RustCancellationSource(const RustCancellationSource&) = delete;
+  RustCancellationSource& operator=(const RustCancellationSource&) = delete;
+  RustCancellationSource(RustCancellationSource&& other) noexcept : flag_(std::move(other.flag_)) {
+    if (!flag_) flag_ = std::make_shared<std::atomic_bool>(false);
+    other.flag_ = std::make_shared<std::atomic_bool>(false);
+  }
+  RustCancellationSource& operator=(RustCancellationSource&& other) noexcept {
+    if (this != &other) {
+      flag_ = std::move(other.flag_);
+      if (!flag_) flag_ = std::make_shared<std::atomic_bool>(false);
+      other.flag_ = std::make_shared<std::atomic_bool>(false);
+    }
+    return *this;
+  }
+  RustCancellationToken get_token() const noexcept { return RustCancellationToken(flag_); }
+  bool request_stop() noexcept {
+    bool expected = false;
+    return flag_->compare_exchange_strong(expected, true, std::memory_order_acq_rel);
+  }
+};
+
+// Stream handles own cancellation.  A dropped handle requests stop through the
+// shared token, while an explicit cancel calls the transport hook once.
+template<class Element>
+class RustTypedStream {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
+public:
+  RustTypedStream() = default;
+  RustTypedStream(const RustTypedStream&) = delete;
+  RustTypedStream& operator=(const RustTypedStream&) = delete;
+  RustTypedStream(RustTypedStream&&) noexcept = default;
+  RustTypedStream& operator=(RustTypedStream&&) noexcept = default;
+  virtual ~RustTypedStream() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
+  virtual std::optional<Element> next() = 0;
+};
+
+template<class Request>
+class RustTypedRequestSequence {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
+public:
+  RustTypedRequestSequence() = default;
+  RustTypedRequestSequence(const RustTypedRequestSequence&) = delete;
+  RustTypedRequestSequence& operator=(const RustTypedRequestSequence&) = delete;
+  RustTypedRequestSequence(RustTypedRequestSequence&&) noexcept = default;
+  RustTypedRequestSequence& operator=(RustTypedRequestSequence&&) noexcept = default;
+  virtual ~RustTypedRequestSequence() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
+  virtual std::optional<Request> next() = 0;
+};
+
+template<class Request, class Response>
+class RustTypedClientStream {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
+public:
+  RustTypedClientStream() = default;
+  RustTypedClientStream(const RustTypedClientStream&) = delete;
+  RustTypedClientStream& operator=(const RustTypedClientStream&) = delete;
+  RustTypedClientStream(RustTypedClientStream&&) noexcept = default;
+  RustTypedClientStream& operator=(RustTypedClientStream&&) noexcept = default;
+  virtual ~RustTypedClientStream() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
+  virtual void send(const Request& request) = 0;
+  virtual Response finish() = 0;
+  virtual std::optional<Response> next() = 0;
+};
+
+"#,
     );
     // C++ requires nominal field types to be declared before any semantic
     // message that embeds them.  Emit descriptor-derived ordinary messages
@@ -2233,6 +2372,13 @@ mod tests {
         assert!(swift.contains("func sendClientStream<Request: RustWireRequest, Response: RustWireResponse>"));
         assert!(swift.contains("func stream<Request: RustWireRequest, Response: RustWireResponse>"));
         assert!(!swift.contains("func run<Response: RustWireResponse>"));
+        assert!(swift.contains("private var nextTicket = 0"));
+        assert!(swift.contains("await self.waitForTurn(ticket)"));
+        assert!(swift.contains("defer { self.complete(ticket) }"));
+        assert!(swift.contains("deinit { cancellation.cancelIfNeeded() }"));
+        assert!(swift.contains("cancellation.completeWithoutCancel()"));
+        assert!(swift.contains("guard lifecycle == .open"));
+        assert!(!swift.contains("executor.submit { try await self."));
         assert!(swift.contains("Choice: "));
         assert!(swift.contains("__unknown_"));
         assert!(!swift.contains("case known(tag: String"));
@@ -2257,6 +2403,14 @@ mod tests {
         assert!(cpp.contains("RustCancellationToken cancellation_token"));
         assert!(cpp.contains("call_cancellable"));
         assert!(cpp.contains("std::errc::operation_canceled"));
+        assert!(cpp.contains("RustTypedStream(const RustTypedStream&) = delete"));
+        assert!(cpp.contains("RustTypedStream(RustTypedStream&&) noexcept = default"));
+        assert!(cpp.contains("RustCancellationSource(RustCancellationSource&& other) noexcept"));
+        assert!(cpp.contains("virtual ~RustTypedStream() { cancellation_.request_stop(); }"));
+        assert!(cpp.contains("void on_cancel() noexcept"));
+        assert!(cpp.contains("if (cancellation_.request_stop()) on_cancel();"));
+        assert!(cpp.contains("virtual ~RustTypedClientStream() { cancellation_.request_stop(); }"));
+        assert!(!cpp.contains("virtual void cancel() noexcept = 0"));
         assert!(!cpp.contains("struct KnownOneof"));
         assert!(!cpp.contains("std::variant<std::string, std::vector<std::uint8_t>>"));
         assert!(!cpp.contains("using WireChoice"));

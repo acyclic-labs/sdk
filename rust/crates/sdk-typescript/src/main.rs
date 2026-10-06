@@ -808,6 +808,22 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/filesystem.rs"
             )),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../proto/filesystem/v2/filesystem.proto"
+            )),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../filesystem/src/facade.rs"
+            )),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../filesystem/src/hosted_contract.rs"
+            )),
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../filesystem/src/foundation.rs"
+            )),
         ]),
         "harness" => model_source_content(&[
             lib,

@@ -1,4 +1,14 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -11,6 +21,62 @@ function configuredBuildRoot(root, options = {}, outputDirectory) {
   if (configured) return resolve(root, configured);
   if (outputDirectory) return resolve(outputDirectory, "..");
   return undefined;
+}
+
+const sourceOwnerReceipt = ".acyclic-sdk-source-owner.json";
+
+function canonicalSourceRoot(sourceRoot) {
+  try {
+    return realpathSync.native(sourceRoot);
+  } catch {
+    return sourceRoot;
+  }
+}
+
+function sourceCacheKey(sourceRoot) {
+  return createHash("sha256")
+    .update(canonicalSourceRoot(sourceRoot), "utf8")
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function readSourceOwner(receiptPath) {
+  try {
+    return JSON.parse(readFileSync(receiptPath, "utf8"));
+  } catch (error) {
+    throw new Error(`Cargo target source ownership receipt is unreadable: ${receiptPath}`, { cause: error });
+  }
+}
+
+function ensureTargetOwnership(targetDirectory, sourceRoot, sourceKey, explicitTarget) {
+  mkdirSync(targetDirectory, { recursive: true });
+  const receiptPath = join(targetDirectory, sourceOwnerReceipt);
+  const canonicalRoot = canonicalSourceRoot(sourceRoot);
+  const matches = (owner) => owner?.schema_version === 1
+    && owner.source_key === sourceKey
+    && owner.canonical_source_root === canonicalRoot;
+  if (existsSync(receiptPath)) {
+    if (!matches(readSourceOwner(receiptPath))) {
+      throw new Error(`Cargo target directory is owned by a different Rust source: ${targetDirectory}`);
+    }
+    return;
+  }
+  if (explicitTarget && readdirSync(targetDirectory).length > 0) {
+    throw new Error(`Explicit Cargo target directory has no source ownership receipt; refusing reuse: ${targetDirectory}`);
+  }
+  const owner = JSON.stringify({
+    schema_version: 1,
+    source_key: sourceKey,
+    canonical_source_root: canonicalRoot,
+  }) + "\n";
+  try {
+    writeFileSync(receiptPath, owner, { encoding: "utf8", flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    if (!matches(readSourceOwner(receiptPath))) {
+      throw new Error(`Cargo target directory is owned by a different Rust source: ${targetDirectory}`);
+    }
+  }
 }
 
 export function runRustContractGenerator(root, mode, outputDirectory, options = {}) {
@@ -34,15 +100,23 @@ export function runRustContractGenerator(root, mode, outputDirectory, options = 
   }
   const configuredTarget = options.cargoTargetDirectory
     ?? process.env.CARGO_TARGET_DIR;
-  const sharedTarget = configuredTarget
-    ?? (disposableRoot ? join(disposableRoot, "cargo-target") : join(dirname(outputRoot), "cargo-target"));
-  const targetDirectory = resolve(root, sharedTarget);
-  // An explicit/shared target is intentionally retained for reuse. Only the
-  // legacy fallback temporary target is disposable.
+  const sourceKey = sourceCacheKey(sourceRoot);
+  const defaultTargetRoot = disposableRoot
+    ? join(disposableRoot, sourceKey)
+    : join(dirname(outputRoot), "cargo-target", sourceKey);
+  const targetDirectory = resolve(root, configuredTarget ?? join(defaultTargetRoot, "cargo-target"));
+  // Explicit targets are retained only when their ownership receipt matches
+  // this source. Default targets are source-keyed to isolate Cargo binaries.
   const ownsTargetDirectory = !configuredTarget && !disposableRoot && !outputDirectory;
   if (isWithin(sourceRoot, targetDirectory) || isWithin(targetDirectory, sourceRoot)) {
     if (ownsTargetDirectory) rmSync(targetDirectory, { recursive: true, force: true });
     throw new Error(`Cargo target directory must be outside the Rust source root: ${targetDirectory}`);
+  }
+  try {
+    ensureTargetOwnership(targetDirectory, sourceRoot, sourceKey, Boolean(configuredTarget));
+  } catch (error) {
+    if (ownsOutputDirectory) rmSync(outputRoot, { recursive: true, force: true });
+    throw error;
   }
   try {
     const result = spawnSync(

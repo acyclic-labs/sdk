@@ -122,6 +122,20 @@ pub struct ReexportTarget {
     pub source: String,
 }
 
+/// The exact compiler profile in which a public declaration was observed.
+/// This is source-derived graph provenance, not an inferred capability.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicItemAvailability {
+    /// Profile name from the Rustdoc generation manifest.
+    pub profile: String,
+    /// Resolved compiler target triple.
+    pub target: String,
+    /// Cargo features enabled for this graph.
+    pub features: Vec<String>,
+    /// Digest binding the target/features/profile identity.
+    pub profile_blake3: String,
+}
+
 /// A public declaration discovered by rustdoc JSON or conservative source
 /// scanning.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -157,6 +171,10 @@ pub struct PublicItem {
     /// crate graph.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reexport: Option<ReexportTarget>,
+    /// Exact target/features profiles whose compiler graphs contained this
+    /// declaration. Empty for source-scanned fallback items.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub availability: Vec<PublicItemAvailability>,
 }
 
 /// Optional rustdoc JSON provenance.
@@ -1639,6 +1657,7 @@ pub fn to_website_json(
                         "sourceLine": item.source_line,
                         "conditional": item.conditional,
                         "generated": item.generated,
+                        "availability": item.availability,
                     });
                     if let Some(reexport) = item.reexport.as_ref() {
                         projection["reexportTarget"] = reexport_target_projection(reexport, &bundle.crates);
@@ -3121,6 +3140,12 @@ fn scan_crate(
     });
     guides.sort_by(|left, right| left.path.cmp(&right.path));
     examples.sort_by(|left, right| left.path.cmp(&right.path));
+    validate_guide_links(
+        &package_name,
+        &guides,
+        &public_items,
+        !graphs.is_empty(),
+    )?;
     let crate_relative_path = relative_path(repository_root, crate_dir);
     guides.push(reference_guide(
         &package_name,
@@ -3211,6 +3236,75 @@ fn scan_crate(
     })
 }
 
+/// Check authored guide links before they enter the generated bundle.
+///
+/// Numeric source fragments are tied to moving line numbers and are rejected.
+/// API links use the generated reference route and a compiler-resolved item
+/// anchor; when a rustdoc graph is present, the item must also retain its exact
+/// source span so the reference page can resolve back to the source bytes.
+fn validate_guide_links(
+    package_name: &str,
+    guides: &[GuideSource],
+    items: &[PublicItem],
+    resolve_symbols: bool,
+) -> Result<(), Error> {
+    let route = documentation_route_identity(package_name, None);
+    let reference_path = format!("/rust/crates/{}/REFERENCE.md", route.public_slug);
+    let mut anchors = HashMap::new();
+    for item in items {
+        let Some(module_path) = item.module_path.as_deref() else {
+            continue;
+        };
+        anchors.insert(reference_anchor(module_path), item);
+    }
+
+    for guide in guides {
+        for (line_index, line) in guide.contents.lines().enumerate() {
+            let mut remaining = line;
+            while let Some(link_start) = remaining.find("](") {
+                let link = &remaining[link_start + 2..];
+                let Some(link_end) = link.find(')') else {
+                    break;
+                };
+                let href = link[..link_end]
+                    .split_ascii_whitespace()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_matches('<');
+                if let Some((_, fragment)) = href.split_once('#') {
+                    if fragment.strip_prefix('L').is_some_and(|line| {
+                        !line.is_empty() && line.chars().all(|character| character.is_ascii_digit())
+                    }) {
+                        return Err(Error::Strict(format!(
+                            "authored guide {}:{} uses a brittle numeric source fragment #{fragment}; use a generated REFERENCE.md item anchor",
+                            guide.path,
+                            line_index + 1,
+                        )));
+                    }
+                    if href.starts_with(&format!("{reference_path}#")) && resolve_symbols {
+                        let item = anchors.get(fragment).ok_or_else(|| {
+                            Error::Strict(format!(
+                                "authored guide {}:{} references missing API item anchor #{fragment}",
+                                guide.path,
+                                line_index + 1,
+                            ))
+                        })?;
+                        if item.source_path.is_none() || item.source_line.is_none() {
+                            return Err(Error::Strict(format!(
+                                "authored guide {}:{} references API item #{fragment} without a retained source span",
+                                guide.path,
+                                line_index + 1,
+                            )));
+                        }
+                    }
+                }
+                remaining = &link[link_end + 1..];
+            }
+        }
+    }
+    Ok(())
+}
+
 fn reference_guide(package_name: &str, crate_path: &str, items: &[PublicItem]) -> GuideSource {
     let mut contents = format!("# {package_name} API reference\n\n");
     contents.push_str("This reference is generated from the source-bound rustdoc public graph. Each symbol links to its Rust source location.\n\n");
@@ -3246,6 +3340,30 @@ fn reference_guide(package_name: &str, crate_path: &str, items: &[PublicItem]) -
             "### `{}` {{#{anchor}}}\n{}{}",
             item.name, module, signature
         );
+        if !item.availability.is_empty() {
+            contents.push_str("\nAvailable in compiler profiles:\n");
+            let mut availability = item.availability.clone();
+            availability.sort_by(|left, right| {
+                left.profile
+                    .cmp(&right.profile)
+                    .then(left.target.cmp(&right.target))
+                    .then(left.features.cmp(&right.features))
+                    .then(left.profile_blake3.cmp(&right.profile_blake3))
+            });
+            for entry in availability {
+                let features = if entry.features.is_empty() {
+                    "none".to_owned()
+                } else {
+                    entry.features.join(", ")
+                };
+                let _ = writeln!(
+                    contents,
+                    "- profile `{}`; target `{}`; features `{}`; profile digest `{}`",
+                    entry.profile, entry.target, features, entry.profile_blake3
+                );
+            }
+            contents.push('\n');
+        }
         if let Some(summary) = summary {
             let _ = writeln!(contents, "\n{}\n", summary.trim());
         } else {
@@ -3409,20 +3527,16 @@ fn is_private_sdk_crate(path: &Path) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    // The unified `acyclic-sdk` facade is an implementation/package
-    // aggregation point, not a separately navigable service family.  Its
-    // constituent family crates are the documentation source for the public
-    // site.  Keep the facade out of the landing catalog so a workspace
-    // checkout cannot silently grow a twentieth, duplicate family route.
-    if directory_name == "sdk" || directory_name.starts_with("sdk-") {
+    // Keep the generated SDK support crates private, while allowing the
+    // unified `acyclic-sdk` facade to qualify its public namespace reexports.
+    if directory_name.starts_with("sdk-") {
         return true;
     }
     let Ok(manifest) = fs::read_to_string(path.join("Cargo.toml")) else {
         return false;
     };
     let package_name = manifest_value(&manifest, "name").unwrap_or_default();
-    package_name == "acyclic-sdk"
-        || package_name.starts_with("sdk-")
+    package_name.starts_with("sdk-")
         || package_name.starts_with("acyclic-sdk-")
 }
 
@@ -4335,6 +4449,7 @@ fn rustdoc_public_items_with_sources(
             conditional,
             generated,
             reexport,
+            availability: Vec::new(),
         });
     }
     items
@@ -5056,7 +5171,18 @@ fn enqueue_rustdoc_ids(
 fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
     let mut items = graphs
         .iter()
-        .flat_map(|graph| graph.public_items.iter().cloned())
+        .flat_map(|graph| {
+            let availability = PublicItemAvailability {
+                profile: graph.profile.clone(),
+                target: graph.target.clone(),
+                features: graph.features.clone(),
+                profile_blake3: graph.profile_blake3.clone(),
+            };
+            graph.public_items.iter().cloned().map(move |mut item| {
+                item.availability.push(availability.clone());
+                item
+            })
+        })
         .collect::<Vec<_>>();
     items.sort_by(|left, right| {
         left.source_path
@@ -5078,6 +5204,7 @@ fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
     items.dedup_by(|left, right| {
         let same_identity = left.name == right.name
             && left.kind == right.kind
+            && left.module_path == right.module_path
             && left.source_path == right.source_path
             && left.source_line == right.source_line;
         if same_identity
@@ -5090,11 +5217,30 @@ fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
                 .as_deref()
                 .is_some_and(|docs| !docs.trim().is_empty())
         {
-            *left = right.clone();
+            let mut replacement = right.clone();
+            merge_item_availability(&mut replacement.availability, &left.availability);
+            *left = replacement;
+        } else if same_identity {
+            merge_item_availability(&mut left.availability, &right.availability);
         }
         same_identity
     });
     items
+}
+
+fn merge_item_availability(
+    left: &mut Vec<PublicItemAvailability>,
+    right: &[PublicItemAvailability],
+) {
+    left.extend(right.iter().cloned());
+    left.sort_by(|left, right| {
+        left.profile
+            .cmp(&right.profile)
+            .then(left.target.cmp(&right.target))
+            .then(left.features.cmp(&right.features))
+            .then(left.profile_blake3.cmp(&right.profile_blake3))
+    });
+    left.dedup();
 }
 
 fn collect_source_files(crate_dir: &Path) -> Result<Vec<PathBuf>, Error> {
@@ -5165,6 +5311,7 @@ fn scan_rust_file(
                     conditional,
                     generated: path.split('/').any(|part| part == "generated"),
                     reexport: None,
+                    availability: Vec::new(),
                 });
             }
             docs.clear();
@@ -6330,6 +6477,12 @@ mod tests {
                 conditional: false,
                 generated: false,
                 reexport: None,
+                availability: vec![PublicItemAvailability {
+                    profile: "host-default".to_owned(),
+                    target: "x86_64-pc-windows-msvc".to_owned(),
+                    features: Vec::new(),
+                    profile_blake3: "host-digest".to_owned(),
+                }],
             }],
             graphs: Vec::new(),
             rustdoc: None,
@@ -6349,7 +6502,7 @@ mod tests {
                 path: Some("Filesystem".to_owned()),
                 source: "acyclic_fs::Filesystem".to_owned(),
             },
-            &[target_crate],
+            std::slice::from_ref(&target_crate),
         );
         assert_eq!(projection["family"], "filesystem");
         assert_eq!(projection["definition"]["name"], "Filesystem");
@@ -6367,6 +6520,36 @@ mod tests {
         assert_eq!(
             projection["definition"]["signature"]["generics"]["params"],
             serde_json::json!([])
+        );
+        let website: serde_json::Value = serde_json::from_str(
+            &to_website_json(
+                &DocsBundle {
+                    schema_version: BUNDLE_SCHEMA_VERSION,
+                    source_revision: "revision".to_owned(),
+                    crates: vec![target_crate],
+                    diagnostics: Vec::new(),
+                    profiles: Vec::new(),
+                    landing: LandingCatalog {
+                        schema_version: 1,
+                        navigation: Vec::new(),
+                        categories: Vec::new(),
+                        package_instructions: Vec::new(),
+                    },
+                    embedded_family_table: serde_json::Value::Null,
+                    scenario_bundle: None,
+                    release: None,
+                    bundle_blake3: "bundle".to_owned(),
+                },
+                "repository",
+                "working-tree",
+                "preview",
+            )
+            .expect("website projection with availability"),
+        )
+        .expect("valid website JSON");
+        assert_eq!(
+            website["families"][0]["items"][0]["availability"][0]["target"],
+            "x86_64-pc-windows-msvc"
         );
     }
 
@@ -6388,9 +6571,113 @@ mod tests {
     }
 
     #[test]
-    fn unified_sdk_facade_is_not_a_documentation_family() {
-        assert!(is_private_sdk_crate(Path::new("rust/crates/sdk")));
-        assert!(is_private_sdk_crate(Path::new("rust/crates/sdk-contract-wire")));
+    fn unified_sdk_facade_is_public_but_generated_sdk_crates_are_private() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-public-facade-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("sdk")).unwrap();
+        fs::create_dir_all(root.join("sdk-contract-wire")).unwrap();
+        fs::write(
+            root.join("sdk/Cargo.toml"),
+            b"[package]\nname = \"acyclic-sdk\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("sdk-contract-wire/Cargo.toml"),
+            b"[package]\nname = \"sdk-contract-wire\"\nversion = \"0.2.0\"\n",
+        )
+        .unwrap();
+
+        assert!(!is_private_sdk_crate(&root.join("sdk")));
+        assert!(is_private_sdk_crate(&root.join("sdk-contract-wire")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn host_profile_directly_qualifies_unified_sdk_facade() {
+        let profiles = load_profile_manifest_bytes(
+            include_str!("../../../../docs/rustdoc-profiles.json").as_bytes(),
+            Path::new("docs/rustdoc-profiles.json"),
+        )
+        .expect("load checked-in profile manifest");
+        let host = profiles
+            .iter()
+            .find(|profile| profile.name == "host-default")
+            .expect("host-default profile");
+        let facade = host
+            .packages
+            .iter()
+            .find(|package| package.package == "acyclic-sdk")
+            .expect("unified facade package");
+        assert_eq!(facade.target, "host");
+        assert!(facade.default_features);
+        assert!(facade.features.is_empty());
+    }
+
+    #[test]
+    fn rustdoc_fixture_preserves_unified_sdk_namespace_reexports() {
+        let aliases = [
+            ("actors", "acyclic_actors"),
+            ("filesystem", "acyclic_fs"),
+            ("harness", "acyclic_harness"),
+            ("inference", "acyclic_inference"),
+            ("machines", "acyclic_machines"),
+            ("objects", "acyclic_objects"),
+            ("stream", "acyclic_stream"),
+            ("workers", "acyclic_workers"),
+        ];
+        let item_ids = (2..=aliases.len() as u64 + 1).collect::<Vec<_>>();
+        let mut index = serde_json::Map::new();
+        index.insert(
+            "1".to_owned(),
+            serde_json::json!({
+                "crate_id": 0,
+                "name": "sdk",
+                "visibility": "public",
+                "inner": {"module": {"items": item_ids}}
+            }),
+        );
+        for (offset, (name, source)) in aliases.iter().enumerate() {
+            index.insert(
+                (offset + 2).to_string(),
+                serde_json::json!({
+                    "crate_id": 0,
+                    "name": null,
+                    "visibility": "public",
+                    "span": {"filename": "rust/crates/sdk/src/lib.rs", "begin": [offset + 1, 1]},
+                    "inner": {"use": {"id": 999, "name": name, "source": source}}
+                }),
+            );
+        }
+        let value = serde_json::json!({
+            "format_version": 60,
+            "root": 1,
+            "index": index,
+        });
+        let mut diagnostics = Vec::new();
+        let mut items = rustdoc_public_items(
+            &value,
+            Path::new("Q:/sdk"),
+            Path::new("Q:/sdk/rust/crates/sdk"),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        items.sort_by(|left, right| left.name.cmp(&right.name));
+        assert_eq!(items.len(), aliases.len());
+        for ((name, source), item) in aliases.iter().zip(items) {
+            assert_eq!(item.name, *name);
+            let target = item
+                .reexport
+                .as_ref()
+                .expect("facade alias should retain its external target");
+            assert_eq!(target.package, source.replace('_', "-"));
+            assert_eq!(target.source, *source);
+        }
     }
 
     #[test]
@@ -6717,6 +7004,7 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         let mut second = item.clone();
         second.source_line = Some(527);
@@ -6765,6 +7053,7 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         let mut documented = undocumented.clone();
         documented.docs = Some("Target documentation.".to_owned());
@@ -6794,6 +7083,113 @@ mod tests {
     }
 
     #[test]
+    fn compiler_graph_merge_preserves_host_and_wasm_availability() {
+        let item = PublicItem {
+            name: "Shared".to_owned(),
+            module_path: Some("demo::Shared".to_owned()),
+            kind: "struct".to_owned(),
+            signature: Some(serde_json::json!({"kind": "plain"})),
+            signature_text: Some("pub struct Shared".to_owned()),
+            source_path: Some("rust/crates/demo/src/lib.rs".to_owned()),
+            source_line: Some(10),
+            docs: Some("Available on selected compiler profiles.".to_owned()),
+            conditional: false,
+            generated: false,
+            reexport: None,
+            availability: Vec::new(),
+        };
+        let graphs = vec![
+            RustdocGraph {
+                profile: "host-default".to_owned(),
+                target: "x86_64-pc-windows-msvc".to_owned(),
+                features: Vec::new(),
+                profile_blake3: "host-digest".to_owned(),
+                public_items: vec![item.clone()],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+            RustdocGraph {
+                profile: "wasm-bindings".to_owned(),
+                target: "wasm32-unknown-unknown".to_owned(),
+                features: vec!["wasm".to_owned()],
+                profile_blake3: "wasm-digest".to_owned(),
+                public_items: vec![item],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+        ];
+        let merged = merge_compiler_public_items(&graphs);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].availability.len(), 2);
+        assert_eq!(merged[0].availability[0].profile, "host-default");
+        assert_eq!(merged[0].availability[0].target, "x86_64-pc-windows-msvc");
+        assert!(merged[0].availability[0].features.is_empty());
+        assert_eq!(merged[0].availability[0].profile_blake3, "host-digest");
+        assert_eq!(merged[0].availability[1].profile, "wasm-bindings");
+        assert_eq!(merged[0].availability[1].target, "wasm32-unknown-unknown");
+        assert_eq!(merged[0].availability[1].features, vec!["wasm".to_owned()]);
+        assert_eq!(merged[0].availability[1].profile_blake3, "wasm-digest");
+        let guide = reference_guide("demo", "rust/crates/demo", &merged);
+        assert!(guide.contents.contains("profile `host-default`"));
+        assert!(guide.contents.contains("target `wasm32-unknown-unknown`"));
+        assert!(guide.contents.contains("features `wasm`"));
+        assert!(guide.contents.contains("profile digest `wasm-digest`"));
+    }
+
+    #[test]
+    fn compiler_graph_merge_keeps_target_specific_module_symbols_separate() {
+        let item = PublicItem {
+            name: "Symbol".to_owned(),
+            module_path: Some("demo::host::Symbol".to_owned()),
+            kind: "struct".to_owned(),
+            signature: Some(serde_json::json!({"kind": "plain"})),
+            signature_text: Some("pub struct Symbol".to_owned()),
+            source_path: Some("rust/crates/demo/src/lib.rs".to_owned()),
+            source_line: Some(10),
+            docs: Some("Host symbol.".to_owned()),
+            conditional: true,
+            generated: false,
+            reexport: None,
+            availability: Vec::new(),
+        };
+        let mut wasm_item = item.clone();
+        wasm_item.module_path = Some("demo::wasm::Symbol".to_owned());
+        wasm_item.docs = Some("WASM symbol.".to_owned());
+        let graphs = vec![
+            RustdocGraph {
+                profile: "host-default".to_owned(),
+                target: "x86_64-pc-windows-msvc".to_owned(),
+                features: Vec::new(),
+                profile_blake3: "host-digest".to_owned(),
+                public_items: vec![item],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+            RustdocGraph {
+                profile: "wasm-bindings".to_owned(),
+                target: "wasm32-unknown-unknown".to_owned(),
+                features: vec!["wasm".to_owned()],
+                profile_blake3: "wasm-digest".to_owned(),
+                public_items: vec![wasm_item],
+                diagnostics: Vec::new(),
+                rustdoc: test_rustdoc_provenance(),
+            },
+        ];
+        let merged = merge_compiler_public_items(&graphs);
+        assert_eq!(merged.len(), 2);
+        assert!(merged.iter().any(|item| {
+            item.module_path.as_deref() == Some("demo::host::Symbol")
+                && item.availability.len() == 1
+                && item.availability[0].profile == "host-default"
+        }));
+        assert!(merged.iter().any(|item| {
+            item.module_path.as_deref() == Some("demo::wasm::Symbol")
+                && item.availability.len() == 1
+                && item.availability[0].profile == "wasm-bindings"
+        }));
+    }
+
+    #[test]
     fn host_profile_target_resolves_from_rustc() {
         let host = resolve_profile_target("host", None).expect("rustc host target");
         assert!(!host.is_empty());
@@ -6818,6 +7214,7 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         assert!(!rustdoc_public_item_identity_complete(&item));
 
@@ -6842,6 +7239,7 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         let mut generated = base.clone();
         generated.name = "Generated".to_owned();
@@ -6884,12 +7282,53 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         let mut sibling = item.clone();
         sibling.module_path = Some("demo::b::X".to_owned());
         let guide = reference_guide("demo", "rust/crates/demo", &[item, sibling]);
         assert!(guide.contents.contains("{#demo-a-x}"));
         assert!(guide.contents.contains("{#demo-b-x}"));
+    }
+
+    #[test]
+    fn authored_guides_reject_numeric_source_fragments() {
+        let guide = GuideSource {
+            path: "rust/crates/demo/docs/guide.md".to_owned(),
+            title: "Demo".to_owned(),
+            contents: "[`item`](../src/lib.rs#L12)\n".to_owned(),
+            kind: "guide".to_owned(),
+        };
+        let error = validate_guide_links("demo", &[guide], &[], false)
+            .expect_err("numeric source fragments must fail closed");
+        assert!(error.to_string().contains("brittle numeric source fragment #L12"));
+    }
+
+    #[test]
+    fn authored_guides_resolve_reference_items_to_source_spans() {
+        let guide = GuideSource {
+            path: "rust/crates/actors/docs/guide.md".to_owned(),
+            title: "Actors".to_owned(),
+            contents: "[`validate_create`](/rust/crates/actors/REFERENCE.md#acyclic_actors-validate_create)\n"
+                .to_owned(),
+            kind: "guide".to_owned(),
+        };
+        let item = PublicItem {
+            name: "validate_create".to_owned(),
+            module_path: Some("acyclic_actors::validate_create".to_owned()),
+            kind: "fn".to_owned(),
+            signature: None,
+            signature_text: Some("pub fn validate_create".to_owned()),
+            source_path: Some("rust/crates/actors/src/lib.rs".to_owned()),
+            source_line: Some(108),
+            docs: Some("Validate a create request.".to_owned()),
+            conditional: false,
+            generated: false,
+            reexport: None,
+            availability: Vec::new(),
+        };
+        validate_guide_links("acyclic-actors", &[guide], &[item], true)
+            .expect("reference item links must resolve to retained source spans");
     }
 
     #[test]
@@ -7012,6 +7451,7 @@ mod tests {
                     conditional: false,
                     generated: false,
                     reexport: None,
+                    availability: Vec::new(),
                 }],
                 graphs: Vec::new(),
                 rustdoc: None,
@@ -7090,6 +7530,7 @@ mod tests {
             conditional: false,
             generated: false,
             reexport: None,
+            availability: Vec::new(),
         };
         let crate_bundle = CrateBundle {
             package_name: "demo-wasm".to_owned(),

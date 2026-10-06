@@ -7,6 +7,7 @@
 
 use acyclic_inference::{WatchRunState, validate_customer_wire, watch_run_start_state_wire, wire};
 use prost::Message;
+use std::fmt::Display;
 
 const RUN_ID: [u8; 16] = [2; 16];
 const INPUT: [u8; 32] = [3; 32];
@@ -28,18 +29,27 @@ fn event(sequence: u64, terminal: Option<wire::RunTerminal>) -> wire::RunEvent {
     }
 }
 
+fn fixture<T, E: Display>(result: Result<T, E>, context: &str) -> Result<T, String> {
+    result.map_err(|error| format!("{context}: {error}"))
+}
+
 #[test]
-fn cross_language_fixture_preserves_presence_and_signed_values() {
+fn cross_language_fixture_preserves_presence_and_signed_values() -> Result<(), String> {
     // ExactRational(-42, 7): sint64 zig-zag encodes -42 as 83 (0x53).
-    let rational = wire::ExactRational::decode([0x08, 0x53, 0x10, 0x07].as_slice())
-        .expect("signed ExactRational fixture");
+    let rational = fixture(
+        wire::ExactRational::decode([0x08, 0x53, 0x10, 0x07].as_slice()),
+        "signed ExactRational fixture",
+    )?;
     assert_eq!(rational.numerator, -42);
     assert_eq!(rational.denominator, 7);
     assert_eq!(rational.encode_to_vec(), [0x08, 0x53, 0x10, 0x07]);
 
     let view = cancelled_view();
     let bytes = view.encode_to_vec();
-    let decoded = wire::RunView::decode(bytes.as_slice()).expect("cancelled RunView fixture");
+    let decoded = fixture(
+        wire::RunView::decode(bytes.as_slice()),
+        "cancelled RunView fixture",
+    )?;
     assert!(decoded.cancellation_requested);
     assert!(
         decoded.result.is_none(),
@@ -47,16 +57,21 @@ fn cross_language_fixture_preserves_presence_and_signed_values() {
     );
     assert_eq!(decoded.run_id, RUN_ID.to_vec());
     assert_eq!(decoded.input, INPUT.to_vec());
-    validate_customer_wire("run_view", &bytes, &RUN_ID, &[])
-        .expect("cancelled RunView satisfies the wire contract");
+    fixture(
+        validate_customer_wire("run_view", &bytes, &RUN_ID, &[]),
+        "cancelled RunView satisfies the wire contract",
+    )?;
+    Ok(())
 }
 
 #[test]
-fn event_ordering_cancellation_and_terminal_recovery_are_bounded() {
+fn event_ordering_cancellation_and_terminal_recovery_are_bounded() -> Result<(), String> {
     let view = cancelled_view();
     let view_bytes = view.encode_to_vec();
-    let mut state = watch_run_start_state_wire(&view_bytes, &RUN_ID, "0")
-        .expect("watch starts from a cancelled nonterminal view");
+    let mut state = fixture(
+        watch_run_start_state_wire(&view_bytes, &RUN_ID, "0"),
+        "watch starts from a cancelled nonterminal view",
+    )?;
 
     let progress = wire::RunEvent {
         sequence: 0,
@@ -64,15 +79,17 @@ fn event_ordering_cancellation_and_terminal_recovery_are_bounded() {
             kind: "cancellation-requested".to_owned(),
         })),
     };
-    state
-        .advance_wire(&progress.encode_to_vec())
-        .expect("progress sequence is accepted");
+    fixture(
+        state.advance_wire(&progress.encode_to_vec()),
+        "progress sequence is accepted",
+    )?;
     let terminal = event(1, Some(wire::RunTerminal::Cancelled));
-    state
-        .advance_wire(&terminal.encode_to_vec())
-        .expect("cancellation terminal is accepted");
+    fixture(
+        state.advance_wire(&terminal.encode_to_vec()),
+        "cancellation terminal is accepted",
+    )?;
     assert!(state.is_terminal());
-    assert_eq!(state.finish(), Ok(()));
+    fixture(state.finish(), "cancelled watch reaches terminal state")?;
 
     // A terminal stream rejects all later data, including a duplicate terminal.
     assert_eq!(
@@ -87,16 +104,21 @@ fn event_ordering_cancellation_and_terminal_recovery_are_bounded() {
     let mut recovered_view = view;
     recovered_view.last_sequence = 1;
     recovered_view.result = Some(recovered_result);
-    let recovered = watch_run_start_state_wire(&recovered_view.encode_to_vec(), &RUN_ID, "2")
-        .expect("terminal recovery starts at the exclusive next cursor");
+    let recovered = fixture(
+        watch_run_start_state_wire(&recovered_view.encode_to_vec(), &RUN_ID, "2"),
+        "terminal recovery starts at the exclusive next cursor",
+    )?;
     assert!(recovered.is_terminal());
-    assert_eq!(recovered.finish(), Ok(()));
+    fixture(recovered.finish(), "recovered watch reaches terminal state")?;
 
-    let mut reordered: WatchRunState = watch_run_start_state_wire(&view_bytes, &RUN_ID, "0")
-        .expect("watch starts for ordering check");
+    let mut reordered: WatchRunState = fixture(
+        watch_run_start_state_wire(&view_bytes, &RUN_ID, "0"),
+        "watch starts for ordering check",
+    )?;
     assert_eq!(
         reordered.advance_wire(&event(1, None).encode_to_vec()),
         Err("run event order or shape differs")
     );
     assert_eq!(reordered.finish(), Err("run stream ended before terminal"));
+    Ok(())
 }

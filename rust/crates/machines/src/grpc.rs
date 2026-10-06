@@ -2149,7 +2149,10 @@ mod tests {
             let version = control::control_protocol_version(family);
             if matches!(self.0, ControlMode::BearerValid) {
                 assert_eq!(
-                    request.metadata().get("authorization").unwrap(),
+                    request
+                        .metadata()
+                        .get("authorization")
+                        .ok_or_else(|| Status::unauthenticated("missing bearer"))?,
                     "Bearer machine-token"
                 );
             }
@@ -2157,19 +2160,31 @@ mod tests {
                 request
                     .metadata()
                     .get(control::FAMILY_METADATA_KEY)
-                    .unwrap(),
+                    .ok_or_else(|| Status::invalid_argument("missing family metadata"))?,
                 family.name()
             );
-            let presented = request.get_ref().protocol.as_ref().unwrap();
+            let presented = request
+                .get_ref()
+                .protocol
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("missing protocol identity"))?;
             assert_eq!(presented.version, version);
             assert_eq!(
                 presented.descriptor_digest,
                 control::archived_descriptor_digest(family)
             );
-            let required = &request.get_ref().required.as_ref().unwrap().capabilities;
+            let required = &request
+                .get_ref()
+                .required
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("missing required capabilities"))?
+                .capabilities;
             assert_eq!(required.len(), 1);
-            assert_eq!(required[0].name, family.name());
-            assert_eq!(required[0].version, version);
+            let capability = required
+                .first()
+                .ok_or_else(|| Status::invalid_argument("missing Machines capability"))?;
+            assert_eq!(capability.name, family.name());
+            assert_eq!(capability.version, version);
             if matches!(self.0, ControlMode::Unauthorized) {
                 return Err(tonic::Status::unauthenticated("identity rejected"));
             }

@@ -399,21 +399,34 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::Client;
+    use std::fmt::Display;
+
+    fn fixture<T, E: Display>(result: Result<T, E>, context: &str) -> Result<T, String> {
+        result.map_err(|error| format!("{context}: {error}"))
+    }
 
     #[test]
-    fn descriptor_routes_disambiguate_repeated_method_names() {
-        let client = Client::new("http://127.0.0.1:7878", "fixture-token", 4096).unwrap();
-        let (contexts, _) = client
-            .route("Inspect", "inference.customer.v1.InspectContextRequest")
-            .unwrap();
-        let (runs, _) = client
-            .route("Inspect", "inference.customer.v1.InspectRunRequest")
-            .unwrap();
-        let (evaluations, _) = client
-            .route("Inspect", "inference.customer.v1.InspectEvaluationRequest")
-            .unwrap();
+    fn descriptor_routes_disambiguate_repeated_method_names() -> Result<(), String> {
+        let client = fixture(
+            Client::new("http://127.0.0.1:7878", "fixture-token", 4096),
+            "construct fixture client",
+        )?;
+        let (contexts, _) = fixture(
+            client.route("Inspect", "inference.customer.v1.InspectContextRequest"),
+            "route context inspection",
+        )?;
+        let (runs, _) = fixture(
+            client.route("Inspect", "inference.customer.v1.InspectRunRequest"),
+            "route run inspection",
+        )?;
+        let (evaluations, _) = fixture(
+            client.route("Inspect", "inference.customer.v1.InspectEvaluationRequest"),
+            "route evaluation inspection",
+        )?;
         assert_ne!(contexts, runs);
         assert_ne!(runs, evaluations);
-        assert_eq!(super::http_codec::routes().unwrap().len(), 14);
+        let routes = fixture(super::http_codec::routes(), "load descriptor routes")?;
+        assert_eq!(routes.len(), 14);
+        Ok(())
     }
 }

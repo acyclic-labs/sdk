@@ -1,6 +1,6 @@
 # Actors v1 Rust guide
 
-[`acyclic-actors`](../src/lib.rs#L1) owns the Actors v1 request validation and generated wire
+`acyclic-actors` owns the Actors v1 request validation and generated wire
 descriptor. An Actor has an identity separate from its Streams, an immutable
 code version, named bindings, and independently recoverable subscriptions.
 Execution, fencing, checkpoints, hibernation, and subscription delivery remain
@@ -17,7 +17,7 @@ matched to the guide.
 
 ## Validate a creation request
 
-[`validate_create`](../src/lib.rs#L63) is transport-independent. It checks the non-zero code digest,
+[`validate_create`](/rust/crates/actors/REFERENCE.md#acyclic_actors-validate_create) is transport-independent. It checks the non-zero code digest,
 region, idempotency key, limits, subscription start choice, placement-anchor
 count, collection bounds, and duplicate names before admission.
 
@@ -53,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-[`validate_update`](../src/lib.rs#L106) applies the full compare-and-replace configuration rule.
+[`validate_update`](/rust/crates/actors/REFERENCE.md#acyclic_actors-validate_update) applies the full compare-and-replace configuration rule.
 Checkpoint compatibility or migration is checked before activation; a failed
 update leaves the previous version active. `validate_add_subscription` enforces
 that a new subscription chooses its starting cursor once. A later service
@@ -62,9 +62,11 @@ side effects.
 
 ## Service transports and routes
 
-`acyclic_actors::grpc::connect(endpoint, token)` exposes the generated Actors
-service. `connect_with_ca_certificate` accepts a caller-supplied private CA.
-The HTTP client exposes the same eight operations as canonical Protobuf JSON:
+`acyclic_actors::connect(endpoint, token)` selects the verified native gRPC
+transport when available and the verified HTTP contract otherwise. The native
+connection accepts a caller-supplied private CA; browser builds use browser
+trust and reject caller-provided CA bytes. The HTTP client exposes the same
+eight operations as canonical Protobuf JSON:
 
 * `v1/actors/create`
 * `v1/actors/update`
@@ -75,6 +77,6 @@ The HTTP client exposes the same eight operations as canonical Protobuf JSON:
 * `v1/actors/checkpoint`
 * `v1/actors/invoke`
 
-The authoritative route table is [`acyclic_actors::HTTP_ROUTES`](../src/lib.rs#L23). HTTP mutations
+The authoritative route table is [`acyclic_actors::HTTP_ROUTES`](/rust/crates/actors/REFERENCE.md#acyclic_actors-http_routes). HTTP mutations
 are not automatically retried. A route table or generated client in another
 language is a projection of this Rust-owned list and descriptor.

@@ -18,10 +18,10 @@ const CREATE_MACHINE_FIXTURE_HEX: &str = concat!(
 );
 
 #[test]
-fn create_fixture_preserves_presence_enums_and_wire_tags() {
-    let bytes = hex::decode(CREATE_MACHINE_FIXTURE_HEX).expect("fixture hex");
-    let request = wire::CreateMachineRequest::decode(bytes.as_slice())
-        .expect("cross-language CreateMachineRequest fixture");
+fn create_fixture_preserves_presence_enums_and_wire_tags(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let bytes = hex::decode(CREATE_MACHINE_FIXTURE_HEX)?;
+    let request = wire::CreateMachineRequest::decode(bytes.as_slice())?;
 
     assert_eq!(
         request.protocol,
@@ -34,7 +34,10 @@ fn create_fixture_preserves_presence_enums_and_wire_tags() {
             .map(|key| key.value.as_slice()),
         Some([1; 16].as_slice())
     );
-    let image = request.image.as_ref().expect("image presence");
+    let image = request
+        .image
+        .as_ref()
+        .ok_or_else(|| std::io::Error::other("image presence"))?;
     assert_eq!(image.kind, wire::ImageKind::Custom as i32);
     assert_eq!(
         image.immutable_reference,
@@ -49,4 +52,5 @@ fn create_fixture_preserves_presence_enums_and_wire_tags() {
     assert!(request.budgets.is_some());
     assert_eq!(request.network_policy_digest, vec![8; 32]);
     assert_eq!(request.encode_to_vec(), bytes);
+    Ok(())
 }

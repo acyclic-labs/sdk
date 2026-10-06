@@ -411,7 +411,10 @@ class Client:
         for placeholder, field in route.get("path_fields", {}).items():
             value = getattr(request, str(field), None)
             if isinstance(value, (bytes, bytearray, memoryview)):
-                value = bytes(value).hex()
+                value = bytes(value)
+                if placeholder == "sha256hex" and len(value) != 32:
+                    raise ValueError("Rust-owned sha256hex route fields must contain exactly 32 bytes")
+                value = value.hex()
             elif value is None:
                 raise ValueError(f"Rust-owned route field {field} is required")
             else:
@@ -633,8 +636,10 @@ class Client:
             raise RuntimeError("Rust-owned HTTP stream redirected")
         status = response.getcode()
         if status < 200 or status >= 300:
-            detail = self._read_bounded(response)
-            response.close()
+            try:
+                detail = self._read_bounded(response)
+            finally:
+                response.close()
             raise RustHttpError(status, detail)
         streams = getattr(self, "_http_streams", None)
         if streams is None:

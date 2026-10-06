@@ -1044,7 +1044,7 @@ mod bootstrap_tests {
                 ..Default::default()
             })
             .await?;
-        assert_eq!(bucket.created_at, Some(expected.clone()));
+        assert_eq!(bucket.created_at, Some(expected));
         let object = provider
             .put(
                 wire::PutObjectHeader {
