@@ -32,6 +32,9 @@ mod memory;
 mod wasm;
 mod wire_codec;
 
+/// Maximum caller-supplied private CA bundle bytes accepted by the HTTP and gRPC clients.
+pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+
 /// Generated canonical Stream v2 protocol.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod wire {

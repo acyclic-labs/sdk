@@ -41,8 +41,7 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
 pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
-/// Maximum caller-supplied private CA bundle bytes.
-pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+pub use crate::MAX_CA_CERTIFICATE_BYTES;
 
 /// Connection configuration failure.
 #[derive(Debug, Error)]

@@ -70,7 +70,7 @@ impl HttpStream {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > 64 * 1024 {
+            if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
                 return Err(ConnectError);
             }
             client = client.add_root_certificate(

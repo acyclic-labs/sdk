@@ -21,7 +21,7 @@ use crate::DaytonaConfig;
 /// Header carrying the organization to act in when a credential spans several.
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
-const LIST_PAGE_LIMIT: &str = "200";
+const LIST_PAGE_LIMIT: u32 = 200;
 /// Upper bound on list pages followed, so a cursor loop cannot run forever.
 const MAX_LIST_PAGES: usize = 256;
 
@@ -349,7 +349,7 @@ impl DaytonaApi {
         let mut sandboxes = Vec::new();
         let mut cursor: Option<String> = None;
         for _ in 0..MAX_LIST_PAGES {
-            let mut query = vec![("limit", LIST_PAGE_LIMIT.to_owned())];
+            let mut query = vec![("limit", LIST_PAGE_LIMIT.to_string())];
             if let Some(encoded) = &encoded {
                 query.push(("labels", encoded.clone()));
             }
