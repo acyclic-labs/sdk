@@ -5,7 +5,7 @@
 //! [`FilesystemHost`] for every provider operation; no host filesystem API is
 //! exposed to model code.
 
-use super::{FilesystemHost, WorkspaceMutation, is_host_owned_internal_path, workspace_ref};
+use super::{is_host_owned_internal_path, workspace_ref, FilesystemHost, WorkspaceMutation};
 use crate::conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
 use crate::runtime::{RuntimeScope, ToolContext};
 use crate::tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult};
@@ -13,7 +13,7 @@ use crate::{Error, IdempotencyKey, Result, TaskId};
 use acyclic_fs::kernel::FileKind;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 const WORKSPACE_EDIT: &str = "acyclic.edit";
@@ -35,9 +35,9 @@ impl WorkspaceToolsBinding {
         let project = self.project_for(task)?;
         let host = self.host.clone();
         Ok(vec![
-            edit_tool(host.clone(), project.clone(), self.limits),
-            read_tool(host.clone(), project.clone(), self.limits),
-            search_tool(host, project, self.limits),
+            edit_tool(host.clone(), project.clone(), task, self.limits),
+            read_tool(host.clone(), project.clone(), task, self.limits),
+            search_tool(host, project, task, self.limits),
         ])
     }
 
@@ -157,9 +157,40 @@ fn require_project(
     Ok(())
 }
 
+fn require_runtime_task(context: &ToolContext, expected: TaskId, operation: &str) -> Result<()> {
+    match context.task().durable_task_id() {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(Error::Unauthorized(format!(
+            "project {operation} task context does not match the bound task"
+        ))),
+        None => Err(Error::Unauthorized(format!(
+            "project {operation} requires an authenticated task context"
+        ))),
+    }
+}
+
+fn require_model_task(
+    context: &crate::tool::ModelToolContext,
+    invocation: &ToolInvocation,
+    expected: TaskId,
+    operation: &str,
+) -> Result<()> {
+    context.validate_invocation(invocation)?;
+    match context.task_id {
+        Some(actual) if actual == expected => Ok(()),
+        Some(_) => Err(Error::Unauthorized(format!(
+            "project {operation} model task does not match the bound task"
+        ))),
+        None => Err(Error::Unauthorized(format!(
+            "project {operation} requires authenticated task context"
+        ))),
+    }
+}
+
 struct EditExecutor {
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     maximum_bytes: u64,
 }
 
@@ -201,9 +232,10 @@ impl EditExecutor {
 
 impl ToolExecutor for EditExecutor {
     fn authorize(&self, scope: Option<&RuntimeScope>, _invocation: &ToolInvocation) -> Result<()> {
-        if let Some(scope) = scope {
-            require_project(scope, &self.project, VolumeOperation::Write)?;
-        }
+        let scope = scope.ok_or_else(|| {
+            Error::Unauthorized("project edit requires an authenticated runtime scope".into())
+        })?;
+        require_project(scope, &self.project, VolumeOperation::Write)?;
         Ok(())
     }
 
@@ -224,6 +256,7 @@ impl ToolExecutor for EditExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
+            require_runtime_task(&context, self.task, "edit")?;
             require_project(context.scope(), &self.project, VolumeOperation::Write)?;
             self.execute_workspace(invocation).await
         })
@@ -235,11 +268,19 @@ impl ToolExecutor for EditExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            context.validate_invocation(&invocation)?;
-            context.task_id.ok_or_else(|| {
-                Error::Unauthorized("project edit requires authenticated task context".into())
-            })?;
+            require_model_task(&context, &invocation, self.task, "edit")?;
             self.execute_workspace(invocation).await
+        })
+    }
+
+    fn reconcile_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            require_model_task(&context, &invocation, self.task, "edit")?;
+            self.reconcile_workspace(invocation).await
         })
     }
 
@@ -255,53 +296,57 @@ impl ToolExecutor for EditExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
+            require_runtime_task(&context, self.task, "edit")?;
             require_project(context.scope(), &self.project, VolumeOperation::Write)?;
-            let input: EditInput = parse(&invocation)?;
-            validate_path(&input.path, false)?;
-            let expected = input.expected_generation.ok_or_else(|| {
-                Error::Invalid("workspace edit requires an expected generation".into())
-            })?;
-            let workspace = project_workspace(&self.project)?;
-            let Some(generation) = self
-                .host
-                .operation_generation_with_parent(
-                    &workspace,
-                    &operation_key(&invocation)?,
-                    &expected,
-                )
-                .await?
-            else {
-                return Ok(None);
-            };
-            let bytes = self
-                .host
-                .read(
-                    &workspace,
-                    Some(&generation),
-                    &input.path,
-                    self.maximum_bytes,
-                )
-                .await?;
-            if bytes.as_ref() != input.content.as_bytes() {
-                return Err(Error::Conflict(
-                    "filesystem receipt content differs from the admitted edit".into(),
-                ));
-            }
-            Ok(Some(ToolResult {
-                value: json!({
-                    "path": input.path,
-                    "generation": serde_json::to_value(generation)
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                    "operation_id": invocation.operation_id.to_string(),
-                }),
-            }))
+            self.reconcile_workspace(invocation).await
         })
+    }
+}
+
+impl EditExecutor {
+    async fn reconcile_workspace(&self, invocation: ToolInvocation) -> Result<Option<ToolResult>> {
+        let input: EditInput = parse(&invocation)?;
+        validate_path(&input.path, false)?;
+        let expected = input.expected_generation.ok_or_else(|| {
+            Error::Invalid("workspace edit requires an expected generation".into())
+        })?;
+        let workspace = project_workspace(&self.project)?;
+        let Some(generation) = self
+            .host
+            .operation_generation_with_parent(&workspace, &operation_key(&invocation)?, &expected)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let bytes = self
+            .host
+            .read(
+                &workspace,
+                Some(&generation),
+                &input.path,
+                self.maximum_bytes,
+            )
+            .await?;
+        if bytes.as_ref() != input.content.as_bytes() {
+            return Err(Error::Conflict(
+                "filesystem receipt content differs from the admitted edit".into(),
+            ));
+        }
+        Ok(Some(ToolResult {
+            value: json!({
+                "path": input.path,
+                "generation": serde_json::to_value(generation)
+                    .map_err(|error| Error::Storage(error.to_string()))?,
+                "operation_id": invocation.operation_id.to_string(),
+            }),
+        }))
     }
 }
 
 struct ReadExecutor {
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     maximum_bytes: u64,
 }
 
@@ -338,9 +383,10 @@ impl ReadExecutor {
 
 impl ToolExecutor for ReadExecutor {
     fn authorize(&self, scope: Option<&RuntimeScope>, _invocation: &ToolInvocation) -> Result<()> {
-        if let Some(scope) = scope {
-            require_project(scope, &self.project, VolumeOperation::Read)?;
-        }
+        let scope = scope.ok_or_else(|| {
+            Error::Unauthorized("project read requires an authenticated runtime scope".into())
+        })?;
+        require_project(scope, &self.project, VolumeOperation::Read)?;
         Ok(())
     }
 
@@ -361,6 +407,7 @@ impl ToolExecutor for ReadExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
+            require_runtime_task(&context, self.task, "read")?;
             require_project(context.scope(), &self.project, VolumeOperation::Read)?;
             self.execute_workspace(invocation).await
         })
@@ -372,10 +419,7 @@ impl ToolExecutor for ReadExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            context.validate_invocation(&invocation)?;
-            context.task_id.ok_or_else(|| {
-                Error::Unauthorized("project read requires authenticated task context".into())
-            })?;
+            require_model_task(&context, &invocation, self.task, "read")?;
             self.execute_workspace(invocation).await
         })
     }
@@ -391,6 +435,7 @@ impl ToolExecutor for ReadExecutor {
 struct SearchExecutor {
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     maximum_bytes: u64,
     maximum_files: usize,
     maximum_search_bytes: u64,
@@ -482,9 +527,10 @@ impl SearchExecutor {
 
 impl ToolExecutor for SearchExecutor {
     fn authorize(&self, scope: Option<&RuntimeScope>, _invocation: &ToolInvocation) -> Result<()> {
-        if let Some(scope) = scope {
-            require_project(scope, &self.project, VolumeOperation::Read)?;
-        }
+        let scope = scope.ok_or_else(|| {
+            Error::Unauthorized("project search requires an authenticated runtime scope".into())
+        })?;
+        require_project(scope, &self.project, VolumeOperation::Read)?;
         Ok(())
     }
 
@@ -505,6 +551,7 @@ impl ToolExecutor for SearchExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
+            require_runtime_task(&context, self.task, "search")?;
             require_project(context.scope(), &self.project, VolumeOperation::Read)?;
             self.execute_workspace(invocation).await
         })
@@ -516,10 +563,7 @@ impl ToolExecutor for SearchExecutor {
         invocation: ToolInvocation,
     ) -> futures::future::BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
-            context.validate_invocation(&invocation)?;
-            context.task_id.ok_or_else(|| {
-                Error::Unauthorized("project search requires authenticated task context".into())
-            })?;
+            require_model_task(&context, &invocation, self.task, "search")?;
             self.execute_workspace(invocation).await
         })
     }
@@ -542,11 +586,13 @@ impl ToolProjection for IdentityProjection {
 fn edit_tool(
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     limits: Limits,
 ) -> Tool {
     let implementation = Arc::new(EditExecutor {
         host,
         project,
+        task,
         maximum_bytes: limits.file_bytes,
     });
     Tool {
@@ -564,11 +610,13 @@ fn edit_tool(
 fn read_tool(
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     limits: Limits,
 ) -> Tool {
     let implementation = Arc::new(ReadExecutor {
         host,
         project,
+        task,
         maximum_bytes: limits.file_bytes,
     });
     Tool {
@@ -586,11 +634,13 @@ fn read_tool(
 fn search_tool(
     host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
     project: VolumeRef,
+    task: TaskId,
     limits: Limits,
 ) -> Tool {
     let implementation = Arc::new(SearchExecutor {
         host,
         project,
+        task,
         maximum_bytes: limits.file_bytes,
         maximum_files: 256,
         maximum_search_bytes: limits.file_bytes.saturating_mul(256),
