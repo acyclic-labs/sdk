@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::type_policy::{
     PUBLIC_FIELD_BINDINGS, PublicFieldBinding, PublicFieldDirection, ResolvedRequestField,
-    SEMANTIC_TYPES, SemanticRule, SemanticType, WireValueKind, resolved_request_fields,
+    SEMANTIC_TYPES, SemanticRule, SemanticType, WireValueKind, resolved_enum_fields,
+    resolved_oneof_members, resolved_request_fields,
     resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
@@ -271,6 +272,211 @@ fn descriptor_nested_model_type(field: &ResolvedRequestField, language: &str) ->
         "scala" => format!("RustTypedResponsesScala.{name}"),
         _ => unreachable!(),
     })
+}
+
+/// Stable nominal JVM name for a descriptor enum.  The package and version
+/// segments are projected from the Rust descriptor identity, so two protobuf
+/// enums with the same leaf name cannot silently share a target wrapper.
+fn jvm_descriptor_projection_prefix(name: &str) -> String {
+    name.split('.')
+        .filter(|part| !part.is_empty() && *part != "acyclic")
+        .filter(|part| {
+            let bytes = part.as_bytes();
+            !(bytes.len() >= 2
+                && bytes[0] == b'v'
+                && bytes[1..].iter().all(u8::is_ascii_digit))
+        })
+        .map(upper_camel)
+        .collect()
+}
+
+fn jvm_enum_projection_name(enum_type: &str, language: &str) -> String {
+    let name = format!("Rust{}Enum", jvm_descriptor_projection_prefix(enum_type));
+    match language {
+        "java" | "kotlin" | "scala" => name,
+        _ => unreachable!(),
+    }
+}
+
+fn descriptor_enum_projection_type(
+    field: &ResolvedRequestField,
+    language: &str,
+) -> Option<String> {
+    if field.wire_type != Some(FieldType::Enum as i32) {
+        return None;
+    }
+    let enum_type = field.type_name.as_deref()?;
+    Some(match language {
+        "java" => format!("RustSemanticTypes.{}", jvm_enum_projection_name(enum_type, language)),
+        "kotlin" => format!(
+            "RustSemanticTypesKotlin.{}",
+            jvm_enum_projection_name(enum_type, language)
+        ),
+        "scala" => format!(
+            "RustSemanticTypesScala.{}",
+            jvm_enum_projection_name(enum_type, language)
+        ),
+        _ => unreachable!(),
+    })
+}
+
+fn descriptor_enum_constructor(
+    field: &ResolvedRequestField,
+    expression: &str,
+    language: &str,
+) -> String {
+    let Some(ty) = descriptor_enum_projection_type(field, language) else {
+        return match language {
+            "java" => format!("RustSemanticTypes.WireEnum.of({expression})"),
+            "kotlin" => format!("RustSemanticTypesKotlin.WireEnum.of({expression})"),
+            "scala" => format!(
+                "RustSemanticTypesScala.WireEnum.from({expression}).toOption.get"
+            ),
+            _ => unreachable!(),
+        };
+    };
+    match language {
+        "java" | "kotlin" => format!("{ty}.of({expression})"),
+        "scala" => format!("{ty}.from({expression}).toOption.get"),
+        _ => unreachable!(),
+    }
+}
+
+fn descriptor_oneof_groups() -> Vec<((String, String, String), Vec<crate::type_policy::ResolvedOneofMember>)> {
+    let mut groups = BTreeMap::<
+        (String, String, String),
+        Vec<crate::type_policy::ResolvedOneofMember>,
+    >::new();
+    for member in resolved_oneof_members().expect("Rust oneof descriptors must resolve") {
+        let Some(oneof) = member.field.oneof_name.clone() else { continue };
+        groups
+            .entry((
+                member.field.family.clone(),
+                member.field.message_path.clone(),
+                oneof,
+            ))
+            .or_default()
+            .push(member);
+    }
+    groups
+        .into_iter()
+        .map(|(key, members)| {
+            let mut unique = BTreeMap::new();
+            for member in members {
+                unique
+                    .entry((member.field.field.clone(), member.field.number))
+                    .or_insert(member);
+            }
+            (key, unique.into_values().collect())
+        })
+        .collect()
+}
+
+fn jvm_oneof_choice_name(message: &str, oneof: &str) -> String {
+    format!(
+        "{}{}Choice",
+        jvm_descriptor_projection_prefix(message),
+        upper_camel(oneof)
+    )
+}
+
+fn jvm_oneof_arm_name(choice: &str, field: &ResolvedRequestField) -> String {
+    format!("{}{}", choice, upper_camel(&field.field))
+}
+
+fn jvm_oneof_payload_type(
+    field: &ResolvedRequestField,
+    language: &str,
+) -> String {
+    match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
+        Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, language)
+            .unwrap_or_else(|| match language {
+                "java" => "RustSemanticTypes.WireMessage".to_owned(),
+                "kotlin" => "RustSemanticTypesKotlin.WireMessage".to_owned(),
+                "scala" => "RustSemanticTypesScala.WireMessage".to_owned(),
+                _ => unreachable!(),
+            }),
+        _ => descriptor_field_type(&field.family, field, language),
+    }
+}
+
+fn render_java_descriptor_oneofs(out: &mut String) {
+    for ((_family, message, oneof), members) in descriptor_oneof_groups() {
+        let choice = jvm_oneof_choice_name(&message, &oneof);
+        out.push_str("  public sealed interface ");
+        out.push_str(&choice);
+        out.push_str(" permits ");
+        for (index, member) in members.iter().enumerate() {
+            if index > 0 { out.push_str(", "); }
+            out.push_str(&jvm_oneof_arm_name(&choice, &member.field));
+        }
+        out.push_str(", ");
+        out.push_str(&choice);
+        out.push_str("Unknown {}\n");
+        for member in &members {
+            let arm = jvm_oneof_arm_name(&choice, &member.field);
+            out.push_str("  public record ");
+            out.push_str(&arm);
+            out.push('(');
+            out.push_str(&jvm_oneof_payload_type(&member.field, "java"));
+            out.push_str(" payload) implements ");
+            out.push_str(&choice);
+            out.push_str(" {}\n");
+        }
+        out.push_str("  public record ");
+        out.push_str(&choice);
+        out.push_str("Unknown(int tag, WireBytes payload) implements ");
+        out.push_str(&choice);
+        out.push_str(" {}\n\n");
+    }
+}
+
+fn render_kotlin_descriptor_oneofs(out: &mut String) {
+    for ((_family, message, oneof), members) in descriptor_oneof_groups() {
+        let choice = jvm_oneof_choice_name(&message, &oneof);
+        out.push_str("  sealed interface ");
+        out.push_str(&choice);
+        out.push_str("\n");
+        for member in &members {
+            let arm = jvm_oneof_arm_name(&choice, &member.field);
+            out.push_str("  data class ");
+            out.push_str(&arm);
+            out.push_str("(val payload: ");
+            out.push_str(&jvm_oneof_payload_type(&member.field, "kotlin"));
+            out.push_str(") : ");
+            out.push_str(&choice);
+            out.push_str("\n");
+        }
+        out.push_str("  data class ");
+        out.push_str(&choice);
+        out.push_str("Unknown(val tag: Int, val payload: WireBytes) : ");
+        out.push_str(&choice);
+        out.push_str("\n\n");
+    }
+}
+
+fn render_scala_descriptor_oneofs(out: &mut String) {
+    for ((_family, message, oneof), members) in descriptor_oneof_groups() {
+        let choice = jvm_oneof_choice_name(&message, &oneof);
+        out.push_str("  sealed trait ");
+        out.push_str(&choice);
+        out.push_str("\n");
+        for member in &members {
+            let arm = jvm_oneof_arm_name(&choice, &member.field);
+            out.push_str("  final case class ");
+            out.push_str(&arm);
+            out.push_str("(payload: ");
+            out.push_str(&jvm_oneof_payload_type(&member.field, "scala"));
+            out.push_str(") extends ");
+            out.push_str(&choice);
+            out.push_str("\n");
+        }
+        out.push_str("  final case class ");
+        out.push_str(&choice);
+        out.push_str("Unknown(tag: Int, payload: WireBytes) extends ");
+        out.push_str(&choice);
+        out.push_str("\n\n");
+    }
 }
 
 fn descriptor_map_value_model_type(field: &ResolvedRequestField, language: &str) -> Option<String> {
@@ -867,12 +1073,13 @@ fn descriptor_scalar_type(field: &ResolvedRequestField, language: &str) -> Strin
             _ => "int",
         }
         .to_owned(),
-        Some(FieldType::Enum) => match language {
-            "java" => "RustSemanticTypes.WireEnum".to_owned(),
-            "kotlin" => "RustSemanticTypesKotlin.WireEnum".to_owned(),
-            "scala" => "RustSemanticTypesScala.WireEnum".to_owned(),
-            _ => unreachable!(),
-        },
+        Some(FieldType::Enum) => descriptor_enum_projection_type(field, language)
+            .unwrap_or_else(|| match language {
+                "java" => "RustSemanticTypes.WireEnum".to_owned(),
+                "kotlin" => "RustSemanticTypesKotlin.WireEnum".to_owned(),
+                "scala" => "RustSemanticTypesScala.WireEnum".to_owned(),
+                _ => unreachable!(),
+            }),
         Some(
             FieldType::Int64
             | FieldType::Sint64
@@ -960,12 +1167,13 @@ fn descriptor_field_type(_family: &str, field: &ResolvedRequestField, language: 
                 _ => "int",
             }
             .to_owned(),
-            Some(FieldType::Enum) => match language {
-                "java" => "RustSemanticTypes.WireEnum".to_owned(),
-                "kotlin" => "RustSemanticTypesKotlin.WireEnum".to_owned(),
-                "scala" => "RustSemanticTypesScala.WireEnum".to_owned(),
-                _ => unreachable!(),
-            },
+            Some(FieldType::Enum) => descriptor_enum_projection_type(field, language)
+                .unwrap_or_else(|| match language {
+                    "java" => "RustSemanticTypes.WireEnum".to_owned(),
+                    "kotlin" => "RustSemanticTypesKotlin.WireEnum".to_owned(),
+                    "scala" => "RustSemanticTypesScala.WireEnum".to_owned(),
+                    _ => unreachable!(),
+                }),
             Some(
                 FieldType::Int64
                 | FieldType::Sint64
@@ -1098,7 +1306,12 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
             .and_then(|value| value.wire_type.and_then(|kind| FieldType::try_from(kind).ok()))
         {
             Some(FieldType::Bytes) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireBytes.of(e.getValue())))"),
-            Some(FieldType::Enum) => format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> RustSemanticTypes.WireEnum.of(e.getValue())))"),
+            Some(FieldType::Enum) => descriptor_map_entry_field(field, "value")
+                .map(|entry| {
+                    let value = descriptor_enum_constructor(&entry, "e.getValue()", "java");
+                    format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> {value}))")
+                })
+                .unwrap_or(expression),
             Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "java")
                 .map(|ty| format!("{expression}.entrySet().stream().collect(java.util.stream.Collectors.toMap(java.util.Map.Entry::getKey, e -> {ty}.fromWire(e.getValue())))"))
                 .unwrap_or(expression),
@@ -1108,7 +1321,7 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
         if field.wire_type == Some(FieldType::Bytes as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.stream().map(RustSemanticTypes.WireBytes::of).collect(java.util.stream.Collectors.toList())")
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.stream().map(RustSemanticTypes.WireEnum::of).collect(java.util.stream.Collectors.toList())")
+            format!("{expression}.stream().map(v -> {}).collect(java.util.stream.Collectors.toList())", descriptor_enum_constructor(field, "v", "java"))
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
             descriptor_nested_model_type(field, "java")
                 .map(|ty| format!("{expression}.stream().map({ty}::fromWire).collect(java.util.stream.Collectors.toList())"))
@@ -1126,7 +1339,7 @@ fn descriptor_java_value(field: &ResolvedRequestField, chain: &[ResolvedRequestF
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypes.WireBytes.of({expression})"),
-            Some(FieldType::Enum) => format!("RustSemanticTypes.WireEnum.of({expression})"),
+            Some(FieldType::Enum) => descriptor_enum_constructor(field, &expression, "java"),
             Some(FieldType::Message | FieldType::Group) if field.type_name.as_deref().map(|name| name.trim_start_matches('.')) == Some("google.protobuf.Timestamp") => format!("java.time.Instant.ofEpochSecond({expression}.getSeconds(), {expression}.getNanos())"),
             Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "java")
                 .map(|ty| format!("{ty}.fromWire({expression})"))
@@ -1157,7 +1370,12 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
             .and_then(|value| value.wire_type.and_then(|kind| FieldType::try_from(kind).ok()))
         {
             Some(FieldType::Bytes) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireBytes.of(value) }}"),
-            Some(FieldType::Enum) => format!("{expression}.mapValues {{ (_, value) -> RustSemanticTypesKotlin.WireEnum.of(value) }}"),
+            Some(FieldType::Enum) => descriptor_map_entry_field(field, "value")
+                .map(|entry| {
+                    let value = descriptor_enum_constructor(&entry, "value", "kotlin");
+                    format!("{expression}.mapValues {{ (_, value) -> {value} }}")
+                })
+                .unwrap_or(expression),
             Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "kotlin")
                 .map(|ty| format!("{expression}.mapValues {{ (_, value) -> {ty}.fromWire(value) }}"))
                 .unwrap_or(expression),
@@ -1167,7 +1385,7 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
         if field.wire_type == Some(FieldType::Bytes as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.map {{ RustSemanticTypesKotlin.WireBytes.of(it) }}")
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.map {{ RustSemanticTypesKotlin.WireEnum.of(it) }}")
+            format!("{expression}.map {{ {} }}", descriptor_enum_constructor(field, "it", "kotlin"))
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
             descriptor_nested_model_type(field, "kotlin")
                 .map(|ty| format!("{expression}.map {{ {ty}.fromWire(it) }}"))
@@ -1185,7 +1403,7 @@ fn descriptor_kotlin_value(field: &ResolvedRequestField, chain: &[ResolvedReques
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesKotlin.WireBytes.of({expression})"),
-            Some(FieldType::Enum) => format!("RustSemanticTypesKotlin.WireEnum.of({expression})"),
+            Some(FieldType::Enum) => descriptor_enum_constructor(field, &expression, "kotlin"),
             Some(FieldType::Message | FieldType::Group) if field.type_name.as_deref().map(|name| name.trim_start_matches('.')) == Some("google.protobuf.Timestamp") => format!("java.time.Instant.ofEpochSecond({expression}.seconds, {expression}.nanos.toLong())"),
             Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "kotlin")
                 .map(|ty| format!("{ty}.fromWire({expression})"))
@@ -1202,7 +1420,12 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
             .and_then(|value| value.wire_type.and_then(|kind| FieldType::try_from(kind).ok()))
         {
             Some(FieldType::Bytes) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireBytes.from(value).toOption.get) }}.asJava"),
-            Some(FieldType::Enum) => format!("{expression}.asScala.map {{ case (key, value) => (key, RustSemanticTypesScala.WireEnum.from(value).toOption.get) }}.asJava"),
+            Some(FieldType::Enum) => descriptor_map_entry_field(field, "value")
+                .map(|entry| {
+                    let value = descriptor_enum_constructor(&entry, "value", "scala");
+                    format!("{expression}.asScala.map {{ case (key, value) => (key, {value}) }}.asJava")
+                })
+                .unwrap_or(expression),
             Some(FieldType::Message | FieldType::Group) => descriptor_map_value_model_type(field, "scala")
                 .map(|ty| format!("{expression}.asScala.map {{ case (key, value) => (key, {ty}.fromWire(value)) }}.asJava"))
                 .unwrap_or(expression),
@@ -1212,7 +1435,7 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
         if field.wire_type == Some(FieldType::Bytes as i32) && descriptor_semantic_type(field).is_none() {
             format!("{expression}.asScala.map(RustSemanticTypesScala.WireBytes.from(_).toOption.get).asJava")
         } else if field.wire_type == Some(FieldType::Enum as i32) && descriptor_semantic_type(field).is_none() {
-            format!("{expression}.asScala.map(RustSemanticTypesScala.WireEnum.from(_).toOption.get).asJava")
+            format!("{expression}.asScala.map(v => {}).asJava", descriptor_enum_constructor(field, "v", "scala"))
         } else if matches!(field.wire_type, Some(x) if x == FieldType::Message as i32 || x == FieldType::Group as i32) && descriptor_semantic_type(field).is_none() {
             descriptor_nested_model_type(field, "scala")
                 .map(|ty| format!("{expression}.asScala.map({ty}.fromWire).asJava"))
@@ -1230,7 +1453,7 @@ fn descriptor_scala_value(field: &ResolvedRequestField, chain: &[ResolvedRequest
     } else {
         match field.wire_type.and_then(|kind| FieldType::try_from(kind).ok()) {
             Some(FieldType::Bytes) => format!("RustSemanticTypesScala.WireBytes.from({expression}).toOption.get"),
-            Some(FieldType::Enum) => format!("RustSemanticTypesScala.WireEnum.from({expression}).toOption.get"),
+            Some(FieldType::Enum) => descriptor_enum_constructor(field, &expression, "scala"),
             Some(FieldType::Message | FieldType::Group) if field.type_name.as_deref().map(|name| name.trim_start_matches('.')) == Some("google.protobuf.Timestamp") => format!("java.time.Instant.ofEpochSecond({expression}.getSeconds, {expression}.getNanos.toLong)"),
             Some(FieldType::Message | FieldType::Group) => descriptor_nested_model_type(field, "scala")
                 .map(|ty| format!("{ty}.fromWire({expression})"))
@@ -2492,10 +2715,141 @@ fn render_scala_requests() -> String {
     out
 }
 
+fn descriptor_enum_entries() -> Vec<(String, Vec<(String, i32)>)> {
+    let mut entries = BTreeMap::<String, BTreeMap<String, i32>>::new();
+    for field in resolved_enum_fields().expect("Rust enum descriptors must resolve") {
+        let values = entries.entry(field.enum_type).or_default();
+        for value in field.values {
+            values.entry(value.name).or_insert(value.number);
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(enum_type, values)| (enum_type, values.into_iter().collect()))
+        .collect()
+}
+
+fn enum_constant_name(value: &str) -> String {
+    let mut name = String::new();
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            if index == 0 && character.is_ascii_digit() {
+                name.push('_');
+            }
+            name.push(character.to_ascii_uppercase());
+        } else {
+            name.push('_');
+        }
+    }
+    if name.is_empty() { "UNSPECIFIED".to_owned() } else { name }
+}
+
+fn render_java_descriptor_enums(out: &mut String) {
+    for (enum_type, values) in descriptor_enum_entries() {
+        let name = jvm_enum_projection_name(&enum_type, "java");
+        out.push_str("  public record ");
+        out.push_str(&name);
+        out.push_str("(int value, String name) { public ");
+        out.push_str(&name);
+        out.push_str(" { java.util.Objects.requireNonNull(name); } ");
+        for (value, number) in &values {
+            out.push_str("public static final ");
+            out.push_str(&name);
+            out.push(' ');
+            out.push_str(&enum_constant_name(value));
+            out.push_str(" = new ");
+            out.push_str(&name);
+            out.push('(');
+            out.push_str(&number.to_string());
+            out.push_str(", \"");
+            out.push_str(value);
+            out.push_str("\"); ");
+        }
+        out.push_str("public static ");
+        out.push_str(&name);
+        out.push_str(" of(int value) { switch (value) { ");
+        for (value, number) in &values {
+            out.push_str("case ");
+            out.push_str(&number.to_string());
+            out.push_str(": return ");
+            out.push_str(&enum_constant_name(value));
+            out.push_str("; ");
+        }
+        out.push_str("default: return new ");
+        out.push_str(&name);
+        out.push_str("(value, \"UNRECOGNIZED\"); } } public int toWire() { return value; } }\n\n");
+    }
+}
+
+fn render_kotlin_descriptor_enums(out: &mut String) {
+    for (enum_type, values) in descriptor_enum_entries() {
+        let name = jvm_enum_projection_name(&enum_type, "kotlin");
+        out.push_str("  @JvmInline value class ");
+        out.push_str(&name);
+        out.push_str(" private constructor(val value: Int) { fun symbolicName(): String = when (value) { ");
+        for (value, number) in &values {
+            out.push_str(&number.to_string());
+            out.push_str(" -> \"");
+            out.push_str(value);
+            out.push_str("\"; ");
+        }
+        out.push_str("else -> \"UNRECOGNIZED\" }; fun toWire(): Int = value; companion object { ");
+        for (value, number) in &values {
+            out.push_str("val ");
+            out.push_str(&enum_constant_name(value));
+            out.push_str(" = ");
+            out.push_str(&name);
+            out.push('(');
+            out.push_str(&number.to_string());
+            out.push_str(")\n        ");
+        }
+        out.push_str("fun of(value: Int): ");
+        out.push_str(&name);
+        out.push_str(" = ");
+        out.push_str(&name);
+        out.push_str("(value) } }\n\n");
+    }
+}
+
+fn render_scala_descriptor_enums(out: &mut String) {
+    for (enum_type, values) in descriptor_enum_entries() {
+        let name = jvm_enum_projection_name(&enum_type, "scala");
+        out.push_str("  final case class ");
+        out.push_str(&name);
+        out.push_str(" private (value: Int) { def symbolicName: String = value match { ");
+        for (value, number) in &values {
+            out.push_str("case ");
+            out.push_str(&number.to_string());
+            out.push_str(" => \"");
+            out.push_str(value);
+            out.push_str("\"; ");
+        }
+        out.push_str("case _ => \"UNRECOGNIZED\" }; def toWire: Int = value }\n  object ");
+        out.push_str(&name);
+        out.push_str(" { ");
+        for (value, number) in &values {
+            out.push_str("val ");
+            out.push_str(&enum_constant_name(value));
+            out.push_str(" = new ");
+            out.push_str(&name);
+            out.push('(');
+            out.push_str(&number.to_string());
+            out.push_str(")\n        ");
+        }
+        out.push_str("def from(value: Int): Either[String, ");
+        out.push_str(&name);
+        out.push_str("] = Right(new ");
+        out.push_str(&name);
+        out.push_str("(value)) }\n\n");
+    }
+}
+
 fn render_java() -> String {
     let mut out = String::from(
         "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in rust/crates/sdk-contract-wire/src/type_policy.rs.\npackage dev.acyclic.transport;\n\nimport java.util.Optional;\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\npublic final class RustSemanticTypes {\n  private RustSemanticTypes() {}\n\n  /** Open oneof projection: known arms carry nominal DTOs; unknown arms retain raw wire bytes. */\n  public sealed interface WireChoice permits KnownHeader, KnownBody, KnownError, KnownRaw, Unknown {}\n  public record OneofMarker(int tag) {}\n  public record KnownHeader(RustTypedResponses.ObjectsGetObjectHeaderView payload) implements WireChoice {}\n  public record KnownBody(WireBytes payload) implements WireChoice {}\n  public record KnownError(RustTypedResponses.ObjectsErrorDetailView payload) implements WireChoice {}\n  public record KnownRaw(String tag, WireBytes payload) implements WireChoice {}\n  public record Unknown(int tag, WireBytes payload) implements WireChoice {}\n  public record WireBytes(com.google.protobuf.ByteString value) { public WireBytes { java.util.Objects.requireNonNull(value); } public static WireBytes of(com.google.protobuf.ByteString value) { return new WireBytes(value); } public com.google.protobuf.ByteString toWire() { return value; } }\n  public record WireEnum(int value, String identity) { public WireEnum { java.util.Objects.requireNonNull(identity); } public static WireEnum of(int value) { return new WireEnum(value, \"open-enum\"); } public int toWire() { return value; } }\n  public record WireMessage(com.google.protobuf.Message value) { public WireMessage { java.util.Objects.requireNonNull(value); } public static WireMessage of(com.google.protobuf.Message value) { return new WireMessage(value); } public com.google.protobuf.Message toWire() { return value; } }\n    public static <T> Optional<T> present(T value, boolean isPresent) { return isPresent ? Optional.ofNullable(value) : Optional.empty(); }\n\n",
     );
+    render_java_descriptor_enums(&mut out);
+    render_java_descriptor_oneofs(&mut out);
     for ty in unique_types() {
         let wire = java_wire_type(ty);
         let validation = java_validation(ty, "value");
@@ -2554,6 +2908,8 @@ fn render_kotlin() -> String {
     let mut out = String::from(
         "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\nimport com.google.protobuf.ByteString\nimport java.util.Optional\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesKotlin {\n  sealed interface WireChoice\n  data class OneofMarker(val tag: Int)\n  data class KnownHeader(val payload: RustTypedResponsesKotlin.ObjectsGetObjectHeaderView) : WireChoice\n  data class KnownBody(val payload: WireBytes) : WireChoice\n  data class KnownError(val payload: RustTypedResponsesKotlin.ObjectsErrorDetailView) : WireChoice\n  data class KnownRaw(val tag: String, val payload: WireBytes) : WireChoice\n  data class Unknown(val tag: Int, val payload: WireBytes) : WireChoice\n  @JvmInline value class WireBytes private constructor(val value: ByteString) { fun toWire(): ByteString = value; companion object { fun of(value: ByteString) = WireBytes(value) } }\n  @JvmInline value class WireEnum private constructor(val value: Int) { fun toWire(): Int = value; companion object { fun of(value: Int) = WireEnum(value) } }\n  @JvmInline value class WireMessage private constructor(val value: com.google.protobuf.Message) { fun toWire(): com.google.protobuf.Message = value; companion object { fun of(value: com.google.protobuf.Message) = WireMessage(value) } }\n    fun <T: Any> present(value: T?, isPresent: Boolean): Optional<T> = if (isPresent && value != null) Optional.of(value) else Optional.empty()\n\n",
     );
+    render_kotlin_descriptor_enums(&mut out);
+    render_kotlin_descriptor_oneofs(&mut out);
     for ty in unique_types() {
         let wire = kotlin_wire_type(ty);
         let validation = kotlin_validation(ty, "value");
@@ -2600,6 +2956,8 @@ fn render_scala() -> String {
     let mut out = String::from(
         "// Generated by acyclic-sdk-contract-wire; do not edit.\n// Semantic intent and validation rules originate in Rust type_policy.rs.\npackage dev.acyclic.transport\n\nimport scala.collection.JavaConverters._\n\n/** Rust-owned nominal values. Protobuf classes remain the wire boundary. */\nobject RustSemanticTypesScala {\n  sealed trait WireChoice\n  final case class OneofMarker(tag: Int)\n  final case class KnownHeader(payload: RustTypedResponsesScala.ObjectsGetObjectHeaderView) extends WireChoice\n  final case class KnownBody(payload: WireBytes) extends WireChoice\n  final case class KnownError(payload: RustTypedResponsesScala.ObjectsErrorDetailView) extends WireChoice\n  final case class KnownRaw(tag: String, payload: WireBytes) extends WireChoice\n  final case class Unknown(tag: Int, payload: WireBytes) extends WireChoice\n  final case class WireBytes private (value: com.google.protobuf.ByteString) { def toWire: com.google.protobuf.ByteString = value }\n  object WireBytes { def from(value: com.google.protobuf.ByteString): Either[String, WireBytes] = Right(new WireBytes(value)) }\n  final case class WireEnum private (value: Int, identity: String) { def toWire: Int = value }\n  object WireEnum { def from(value: Int): Either[String, WireEnum] = Right(new WireEnum(value, \"open-enum\")) }\n  final case class WireMessage private (value: com.google.protobuf.Message) { def toWire: com.google.protobuf.Message = value }\n  object WireMessage { def from(value: com.google.protobuf.Message): Either[String, WireMessage] = Right(new WireMessage(value)) }\n    type OptionalValue[T] = Option[T]\n    def present[T](value: T, isPresent: Boolean): Option[T] = if (isPresent) Option(value) else None\n\n",
     );
+    render_scala_descriptor_enums(&mut out);
+    render_scala_descriptor_oneofs(&mut out);
     for ty in unique_types() {
         let wire = scala_wire_type(ty);
         let validation = scala_validation(ty, "value");
