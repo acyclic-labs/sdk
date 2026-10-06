@@ -421,7 +421,10 @@ fn swift_kind(kind: WireValueKind, name: &str) -> String {
         WireValueKind::SignedInteger => "Int64".into(),
         WireValueKind::Boolean => "Bool".into(),
         WireValueKind::Timestamp => "Date".into(),
-        WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into(),
+        // Closed Rust-owned descriptor enums and oneofs are emitted as
+        // concrete per-identity types below.  Never erase a semantic value
+        // into a public catch-all WireChoice.
+        WireValueKind::Enum | WireValueKind::Oneof => name.to_owned(),
     }
 }
 
@@ -434,7 +437,10 @@ fn cpp_kind(kind: WireValueKind, name: &str) -> String {
         WireValueKind::SignedInteger => "std::int64_t".into(),
         WireValueKind::Boolean => "bool".into(),
         WireValueKind::Timestamp => "std::chrono::system_clock::time_point".into(),
-        WireValueKind::Enum | WireValueKind::Oneof => "WireChoice".into(),
+        // Closed Rust-owned descriptor enums and oneofs are emitted as
+        // concrete per-identity types below.  Never erase a semantic value
+        // into a public catch-all WireChoice.
+        WireValueKind::Enum | WireValueKind::Oneof => name.to_owned(),
     }
 }
 
@@ -1141,10 +1147,6 @@ fn render_swift() -> String {
         out.push_str(&format!("public struct {name}: Sendable {{ public let raw: Int32; public init(raw: Int32) {{ self.raw = raw }}; public init(_ value: RustWireEnum) {{ self.raw = value.raw }} }}\n"));
     }
     render_swift_oneof_models(&mut out);
-    // A known arm is a decoded Rust-owned message view.  Only the open
-    // unknown arm is allowed to remain raw bytes; keeping a known payload as
-    // `RustWireMessage` prevents the public API from erasing it to `Data`.
-    out.push_str("\npublic enum WireChoice: Sendable {\n case known(tag: String, payload: RustWireMessage)\n case unknown(rawTag: Int32, payload: Data)\n}\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!(
             "{}{}Request",
@@ -1484,9 +1486,9 @@ fn render_cpp() -> String {
         }
     }
     let _ = WIRE_UNION_VARIANTS;
-    // Known arms carry a decoded Rust-owned message view.  Preserve raw bytes
-    // only for the open unknown arm so future wire values remain lossless.
-    out.push_str("struct KnownOneof { std::string tag; RustWireMessage payload; };\nstruct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; };\nusing WireChoice = std::variant<KnownOneof, UnknownOneof>;\n\n");
+    // Keep the raw unknown representation available to generated internals,
+    // while closed descriptor-bound choices remain the only public union API.
+    out.push_str("namespace detail { struct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; }; }\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!(
             "{}{}Request",
@@ -1620,7 +1622,7 @@ fn render_cpp() -> String {
 mod tests {
     use super::{generate_swift_cpp_typed_facades, CPP_TYPED_PATH, SWIFT_TYPED_PATH};
     #[test]
-    fn emits_nominal_clients_and_open_unions() {
+    fn emits_nominal_clients_and_closed_unions_with_unknown_fallback() {
         let files = generate_swift_cpp_typed_facades();
         assert!(
             files
@@ -1635,20 +1637,29 @@ mod tests {
         assert!(
             files
                 .iter()
-                .any(|(_, source)| source.contains("WireChoice"))
+                .any(|(_, source)| source.contains("InferenceCustomerRunResultContextChoice"))
         );
         let swift = files
             .iter()
             .find(|(path, _)| *path == SWIFT_TYPED_PATH)
             .map(|(_, source)| source)
             .expect("Swift facade must be generated");
-        assert!(swift.contains("case known(tag: String, payload: RustWireMessage)"));
+        assert!(swift.contains("public enum InferenceCustomerRunResultContextChoice: Sendable"));
+        assert!(swift.contains("case Context(InferenceContextViewWire)"));
+        assert!(swift.contains("case unknown(rawTag: Int32, payload: Data)"));
+        assert!(!swift.contains("case known(tag: String"));
+        assert!(!swift.contains("public enum WireChoice"));
         assert!(!swift.contains("std::shared_ptr"));
         let cpp = files
             .iter()
             .find(|(path, _)| *path == CPP_TYPED_PATH)
             .map(|(_, source)| source)
             .expect("C++ facade must be generated");
-        assert!(cpp.contains("struct KnownOneof { std::string tag; RustWireMessage payload; }"));
+        assert!(cpp.contains("using InferenceCustomerRunResultContextChoiceValue = std::variant"));
+        assert!(cpp.contains("struct InferenceCustomerRunResultContextChoiceContext { std::shared_ptr<InferenceContextViewWire> value; }"));
+        assert!(cpp.contains("struct InferenceCustomerRunResultContextChoiceUnknown { std::int32_t raw_tag; std::vector<std::uint8_t> payload; }"));
+        assert!(!cpp.contains("struct KnownOneof"));
+        assert!(!cpp.contains("std::variant<std::string, std::vector<std::uint8_t>>"));
+        assert!(!cpp.contains("using WireChoice"));
     }
 }
