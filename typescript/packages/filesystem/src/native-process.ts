@@ -4,7 +4,11 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 export const NATIVE_PROCESS_OWNER_CAPABILITY = "acyclic.native-process-owner.v1";
 export const NATIVE_PROCESS_OWNER_VERSION = "0.2.0";
 
-/** The only cleanup outcomes a host may expose to a caller. */
+/**
+ * The only cleanup outcomes a host may expose to a caller. `terminated` is
+ * reserved for an owner with stable process-tree evidence; PID or process
+ * group disappearance alone must remain `unknown` or `timeout`.
+ */
 export type NativeProcessTermination =
   | { readonly kind: "terminated"; readonly pid: number }
   | { readonly kind: "timeout"; readonly pid: number; readonly phase: "command" | "pipes" }

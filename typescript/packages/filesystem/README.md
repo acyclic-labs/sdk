@@ -34,8 +34,8 @@ returns typed termination outcomes and keeps uncertain cleanup visible to the
 caller.
 
 Standalone Node hosts that do not have a native companion can import the
-bounded fallback owner from `/native-process-node`. It owns process-group
-lifecycle and reports uncertain cleanup explicitly; it provides lifecycle
-ownership only and is not a sandbox.
+bounded fallback owner from `/native-process-node`. It starts an owned process
+group and performs bounded direct-child cleanup, but reports descendant cleanup
+as uncertain until a native owner can prove ownership; it is not a sandbox.
 
 See the [browser example](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/filesystem/examples/browser.mjs), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/filesystem/src), and [Filesystem protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem).

@@ -155,7 +155,7 @@ async function waitForChildClose(child: ReturnType<typeof spawnOwnedProcess>, ti
 }
 
 describe("JSON-lines process bridge", () => {
-  test("terminates descendants that retain the owned bridge pipes", async () => {
+  test("does not claim descendant cleanup without native ownership proof", async () => {
     const directory = await mkdtemp(join(tmpdir(), "graphcoder-owned-process-"));
     const marker = join(directory, "descendant-alive");
     const pidFile = join(directory, "descendant.pid");
@@ -179,17 +179,14 @@ describe("JSON-lines process bridge", () => {
       const termination = await terminationObserved;
       expect(outcomes).toHaveLength(1);
       expect(termination.pid).toBeGreaterThan(0);
-      if (process.platform === "win32") {
-        expect(termination.kind).toBe("unknown");
-        await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
-        descendantPid = Number(await readFile(pidFile, "utf8"));
-        expect(Number.isSafeInteger(descendantPid)).toBe(true);
-        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
-        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
-      } else {
-        expect(termination.kind).toBe("terminated");
-        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+      expect(["unknown", "timeout"]).toContain(termination.kind);
+      for (let attempt = 0; attempt < 50 && descendantPid === undefined; attempt += 1) {
+        try { descendantPid = Number(await readFile(pidFile, "utf8")); }
+        catch { await new Promise<void>(resolve => setTimeout(resolve, 20)); }
       }
+      expect(Number.isSafeInteger(descendantPid)).toBe(true);
+      try { process.kill(descendantPid!); } catch { /* the fixture may have exited between observation and cleanup */ }
+      await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
       await expect(waitForStableSize(marker)).resolves.toBeGreaterThan(0);
     } finally {
       bridge.close("descendant cleanup fallback");
@@ -202,17 +199,15 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("shares one bounded cleanup operation across repeated termination requests", async () => {
-    // Bun's Windows child wrapper does not expose the native process handle
-    // needed to classify taskkill's result. The installed Node lane covers
-    // the Windows terminated outcome; this unit test covers the Unix owner.
-    if (process.platform === "win32") return;
+    // The fallback direct-child cleanup is intentionally uncertain about
+    // descendants. A native owner is the only source of a terminated result.
     const command = longRunningCommand();
     const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     try {
       const first = terminateOwnedProcess(child, 50);
       expect(terminateOwnedProcess(child, 50)).toBe(first);
       const outcome = await first;
-      expect(outcome.kind).toBe("terminated");
+      expect(["unknown", "timeout"]).toContain(outcome.kind);
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         try { child.kill(); } catch { /* cleanup remains bounded */ }
@@ -221,32 +216,15 @@ describe("JSON-lines process bridge", () => {
     }
   });
 
-  test("reports a failed Windows tree command without claiming cleanup", async () => {
-    if (process.platform !== "win32") return;
-    const command = longRunningCommand();
-    const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
-    const previousSystemRoot = process.env.SystemRoot;
-    process.env.SystemRoot = join(tmpdir(), "graphcoder-missing-system-root");
-    try {
-      await expect(terminateOwnedProcess(child, 50)).resolves.toMatchObject({ kind: "unknown", reason: expect.stringContaining("taskkill could not start") });
-    } finally {
-      if (previousSystemRoot === undefined) delete process.env.SystemRoot;
-      else process.env.SystemRoot = previousSystemRoot;
-      try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* fixture cleanup is best effort after the typed outcome */ }
-      await waitForChildClose(child, 1_000);
-    }
-  });
-
   test("does not cache invalid cleanup input and keeps terminal outcomes reusable", async () => {
-    if (process.platform === "win32") return;
     const command = longRunningCommand();
     const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     try {
       await expect(terminateOwnedProcess(child, -1)).rejects.toThrow("nonnegative safe integer");
       const first = await terminateOwnedProcess(child, 50);
-      expect(first.kind).toBe("terminated");
+      expect(["unknown", "timeout"]).toContain(first.kind);
       const second = await retryOwnedProcessTermination(child, 50);
-      expect(second.kind).toBe("terminated");
+      expect(["unknown", "timeout"]).toContain(second.kind);
     } finally {
       try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* cleanup remains bounded */ }
       await waitForChildClose(child, 1_000);
