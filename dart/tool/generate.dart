@@ -510,21 +510,12 @@ Future<void> main(List<String> arguments) async {
   final lock = File(
     '${package.path}${Platform.pathSeparator}generator.lock.yaml',
   ).readAsStringSync();
-  final buildHostTriple = RegExp(r'on "([^"]+)"')
-          .firstMatch(Platform.version)
-          ?.group(1) ??
-      Platform.operatingSystem;
   final provenance = {
     'generator_lock_sha256': sha256.convert(utf8.encode(lock)).toString(),
     'source_revision': Platform.environment['GIT_COMMIT'] ?? 'unknown',
     'source_git_sha': Platform.environment['GIT_COMMIT'] ?? 'unknown',
     'rust_model_digest':
         Platform.environment['ACYCLIC_RUST_MODEL_DIGEST'] ?? 'unknown',
-    'platform': {
-      'execution_scope': 'portable',
-      'target_triple': 'portable',
-      'build_host_triple': buildHostTriple,
-    },
     'schema_root': explicitSchemaRoot ?? 'diagnostic repository proto roots',
     'schema_inputs_sha256': schemaInputs,
     'rust_family_goldens': fixtureDestination.path

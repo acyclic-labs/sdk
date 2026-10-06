@@ -20,7 +20,7 @@ use crate::{
         ToolResult,
     },
 };
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -72,7 +72,7 @@ const CODING_TOOLS: &[(&str, &str)] = &[
 ];
 
 /// Single host boundary implementing the complete public coding tool vocabulary.
-pub trait CodingToolHost: crate::PlatformServiceBounds {
+pub trait CodingToolHost: Send + Sync {
     /// Returns the pinned contract implemented by this host for a stock tool.
     /// The factory checks its name and registers its exact revision and schemas;
     /// a generic catch-all schema must not be silently invented by the runtime.
@@ -310,7 +310,7 @@ impl HarnessBuilder {
     /// Registers one pinned typed task without replacing the rest of the registry.
     pub fn task<I: 'static, O: 'static>(mut self, value: TaskDefinition<I, O>) -> Result<Self>
     where
-        TaskDefinition<I, O>: crate::PlatformServiceBounds,
+        TaskDefinition<I, O>: Send + Sync,
     {
         self.bindings.tasks.register(value)?;
         Ok(self)

@@ -5,6 +5,7 @@ export function createChangeSetAdapter<RawDiff>(
   adaptGeneration: (raw: RawGenerationChangeSet<RawDiff>["from"]) => FsGeneration,
   decodeDiff: (raw: RawDiff) => GenerationDiff,
   ownerLabel = "filesystem runtime",
+  validateMaximumChanges: (value: number, label: string) => void = requirePositiveInteger,
 ) {
   const handles = new WeakMap<FsChangeSet, RawGenerationChangeSet<RawDiff>>();
   function adaptChangeSet(raw: RawGenerationChangeSet<RawDiff>): FsChangeSet {
@@ -13,9 +14,7 @@ export function createChangeSetAdapter<RawDiff>(
       get to() { return adaptGeneration(raw.to); },
       changes() { return decodeDiff(raw.changes()); },
       async compose(next, maximumChanges) {
-        if (!Number.isSafeInteger(maximumChanges) || maximumChanges <= 0) {
-          throw new RangeError("maximum changes must be a positive safe integer");
-        }
+        validateMaximumChanges(maximumChanges, "maximum changes");
         return adaptChangeSet(await raw.compose(rawChangeSet(next), maximumChanges));
       },
     };
@@ -28,4 +27,10 @@ export function createChangeSetAdapter<RawDiff>(
     return raw;
   }
   return { adaptChangeSet, rawChangeSet };
+}
+
+function requirePositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive safe integer`);
+  }
 }

@@ -15,7 +15,7 @@ use crate::{
     resources::{ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{collections::BTreeSet, sync::Arc};
 use uuid::Uuid;

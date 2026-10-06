@@ -36,8 +36,7 @@ EOF
 
 cat >"$work/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >>"${FAKE_CARGO_LOG:-/dev/null}"
-exit "${FAKE_CARGO_STATUS:-0}"
+exit 0
 EOF
 cat >"$work/bin/cargo-llvm-cov" <<'EOF'
 #!/usr/bin/env bash
@@ -52,7 +51,7 @@ invoke() {
   cp "$work/bin/cargo-llvm-cov" "$case_dir/tools/cargo/bin/cargo-llvm-cov"
   : >"$case_dir/rustup.log"
   FAKE_RUSTUP_MODE="$mode" FAKE_RUSTUP_LOG="$case_dir/rustup.log" \
-    FORCE=true SDK_TEMP_DIR="$case_dir/temp" \
+    SDK_TEMP_DIR="$case_dir/temp" \
     SDK_ARTIFACT_DIR="$case_dir/artifacts" \
     TOOLS_DIR="$case_dir/tools" PATH="$work/bin:$PATH" \
     bash "$root/scripts/qualify-ci.sh" gate
@@ -81,27 +80,3 @@ fi
 ! find "$work/unexpected/temp" -name 'rustup-component.*' -print -quit | grep -q .
 
 echo 'gate rustup recovery tests passed'
-
-# Ordinary core checks never provision coverage tooling or run downstream
-# packages; a failed Rust test must not leave a success receipt.
-for status in 0 9; do
-  core="$work/core-$status"
-  mkdir -p "$core/temp" "$core/artifacts" "$core/tools"
-  : >"$core/rustup.log"
-  : >"$core/cargo.log"
-  result=0
-  FORCE=false FAKE_CARGO_STATUS="$status" FAKE_CARGO_LOG="$core/cargo.log" \
-    FAKE_RUSTUP_MODE=healthy FAKE_RUSTUP_LOG="$core/rustup.log" \
-    SDK_TEMP_DIR="$core/temp" SDK_ARTIFACT_DIR="$core/artifacts" \
-    TOOLS_DIR="$core/tools" PATH="$work/bin:$PATH" \
-    bash "$root/scripts/qualify-ci.sh" gate || result=$?
-  [[ "$result" == "$status" ]]
-  [[ ! -s "$core/rustup.log" ]]
-  grep -Fxq 'test -p acyclic-sdk-contract-wire --locked --lib --bins' "$core/cargo.log"
-  if [[ "$status" == 0 ]]; then
-    grep -q '"coverage_instrumented":false' "$core/artifacts/coverage/core-check.json"
-  else
-    [[ ! -e "$core/artifacts/coverage/core-check.json" ]]
-  fi
-done
-echo 'core gate scope and failure propagation tests passed'

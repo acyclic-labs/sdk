@@ -261,7 +261,7 @@ fn render_java_semantic_type_test() -> String {
 "
         + "    assertEquals(Optional.empty(), RustSemanticTypes.present(\"x\", false));
 "
-        + "    RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, RustSemanticTypes.WireBytes.of(ByteString.EMPTY));
+        + "    RustSemanticTypes.WireChoice unknown = new RustSemanticTypes.Unknown(99, ByteString.EMPTY);
 "
         + "    assertEquals(99, ((RustSemanticTypes.Unknown) unknown).tag());
 "
@@ -2185,7 +2185,7 @@ const generatedRemoteOperations = <String, Map<String, Map<String, Object?>>>{{
 mod tests {
     use super::{
         CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, all_facade_operations,
-        facade_operations, generate_jvm_typed_clients,
+        facade_operations, generate_jvm_semantic_types, generate_jvm_typed_clients,
         generate_jvm_typed_requests, generate_jvm_typed_responses, generate_remote_facade,
         generate_remote_facades, resolved_shape_models,
     };

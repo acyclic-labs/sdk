@@ -27,7 +27,7 @@ use acyclic_fs::{
     kernel::{FileKind, LogicalName, NameEncoding},
 };
 use acyclic_stream::{MemoryStream, StreamClient};
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{

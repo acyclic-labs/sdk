@@ -6,7 +6,7 @@ use crate::{
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -328,7 +328,7 @@ impl ContextSource for DurableContextProvider {
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
-pub trait ContextSource: crate::PlatformServiceBounds {
+pub trait ContextSource: Send + Sync {
     /// Resolves model-visible messages for the current step.
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
@@ -477,12 +477,14 @@ pub struct ContextInput {
 }
 
 /// Replaceable ordered context transformation.
-pub trait ContextStage: crate::PlatformServiceBounds {
-    /// Stable stage name used in the canonical pipeline contract.
+pub trait ContextStage: Send + Sync {
+    /// Stable stage name used for diagnostics and composition.
     fn name(&self) -> &str;
-    /// Canonical stage configuration.
+
+    /// Immutable serializable identity included in durable execution binding.
     fn contract(&self) -> Value;
-    /// Applies the stage to the current context.
+
+    /// Transforms context; stage order is the order supplied by application code.
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,

@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::type_policy::{
     PUBLIC_FIELD_BINDINGS, PUBLIC_NESTED_ROUTES, PublicFieldDirection, ResolvedRequestField,
     SEMANTIC_TYPES, SemanticRule, WIRE_UNION_VARIANTS, WireValueKind, field_semantic_type,
-    resolved_enum_fields,
     resolved_request_fields, resolved_response_fields, resolved_rpc_methods, semantic_type,
 };
 use prost_types::field_descriptor_proto::{Label as FieldLabel, Type as FieldType};
@@ -461,25 +460,6 @@ fn message_leaf(path: &str) -> &str {
     path.rsplit('.').next().unwrap_or(path)
 }
 
-fn descriptor_projection_prefix(path: &str) -> String {
-    path.split('.')
-        .filter(|part| !part.is_empty() && *part != "acyclic")
-        .filter(|part| {
-            let bytes = part.as_bytes();
-            !(bytes.len() >= 2
-                && bytes[0] == b'v'
-                && bytes[1..].iter().all(u8::is_ascii_digit))
-        })
-        .map(camel)
-        .collect()
-}
-
-fn descriptor_package_prefix(path: &str) -> String {
-    path.rsplit_once('.')
-        .map(|(package, _)| descriptor_projection_prefix(package))
-        .unwrap_or_default()
-}
-
 /// The descriptor's fully-qualified type name is part of the Rust-owned wire
 /// contract.  Keep that identity in generated public fields instead of
 /// collapsing every ordinary message or enum to the catch-all wire holder.
@@ -488,19 +468,6 @@ fn descriptor_type_name(field: &crate::type_policy::ResolvedRequestField) -> Opt
         .type_name
         .as_deref()
         .map(|name| format!("{}{}Wire", camel(&field.family), message_leaf(name)))
-}
-
-/// Return the generated nominal name for the message that owns a descriptor
-/// field.  `type_name` identifies a field's payload; `message_path` identifies
-/// the declaration that owns the field.  Keeping these separate is essential
-/// for recursive nested messages and for projecting presence and oneof arms
-/// on the declaration rather than on an unrelated payload type.
-fn descriptor_owner_name(field: &crate::type_policy::ResolvedRequestField) -> String {
-    format!(
-        "{}{}Wire",
-        camel(&field.family),
-        message_leaf(&field.message_path)
-    )
 }
 
 fn descriptor_groups(
@@ -565,12 +532,7 @@ fn ordinary_descriptor_names(kind: FieldType) -> BTreeSet<String> {
         .into_iter()
         .chain(resolved_response_fields().expect("Rust response descriptors must resolve"))
     {
-        if kind == FieldType::Message
-            && message_leaf(&field.message_path) != message_leaf(&field.root_message)
-        {
-            names.insert(descriptor_owner_name(&field));
-        } else if kind != FieldType::Message
-            && field.wire_type == Some(kind as i32)
+        if field.wire_type == Some(kind as i32)
             && let Some(name) = descriptor_type_name(&field)
         {
             names.insert(name);
@@ -607,7 +569,7 @@ fn ordinary_descriptor_fields(name: &str) -> Vec<crate::type_policy::ResolvedReq
             resolved_response_fields().expect("Rust response descriptors must resolve"),
         )
     {
-        if descriptor_owner_name(&field) == name
+        if descriptor_type_name(&field).as_deref() == Some(name)
             && !fields.iter().any(|existing: &crate::type_policy::ResolvedRequestField| {
                 existing.field == field.field
             })
@@ -651,24 +613,6 @@ fn semantic_nested_descriptor_names(kind: FieldType) -> BTreeSet<String> {
         }
     }
     names
-}
-
-/// All enum identities reachable from the Rust descriptor closure.  The
-/// ordinary field scan is intentionally supplemented by the Rust inventory so
-/// an enum that is carried through a nested or oneof declaration still gets a
-/// nominal target type even when no root request field directly mentions it.
-fn resolved_descriptor_enum_names() -> BTreeSet<String> {
-    resolved_enum_fields()
-        .expect("Rust enum descriptors must resolve")
-        .into_iter()
-        .map(|entry| {
-            format!(
-                "{}{}Wire",
-                descriptor_package_prefix(&entry.enum_type),
-                message_leaf(&entry.enum_type)
-            )
-        })
-        .collect()
 }
 
 fn semantic_binding(
@@ -794,17 +738,6 @@ fn cpp_wire_type(field: &crate::type_policy::ResolvedRequestField) -> String {
     }
 }
 
-fn field_has_presence(field: &crate::type_policy::ResolvedRequestField) -> bool {
-    field.label != Some(FieldLabel::Repeated as i32)
-        && (field.proto3_optional
-            || field.oneof_index.is_some()
-            || matches!(
-                field.wire_type,
-                Some(kind)
-                    if kind == FieldType::Message as i32 || kind == FieldType::Group as i32
-            ))
-}
-
 fn swift_field_type(
     field: &crate::type_policy::ResolvedRequestField,
     direction: PublicFieldDirection,
@@ -813,7 +746,7 @@ fn swift_field_type(
         .map(|semantic| swift_kind(semantic.wire_kind, semantic.rust_name))
         .unwrap_or_else(|| swift_wire_type(field));
     let repeated = field.label == Some(FieldLabel::Repeated as i32);
-    let optional = field_has_presence(field);
+    let optional = !repeated && (field.proto3_optional || field.oneof_index.is_some());
     let value = if repeated { format!("[{base}]") } else { base };
     if optional { format!("{value}?") } else { value }
 }
@@ -826,7 +759,7 @@ fn cpp_field_type(
         .map(|semantic| cpp_kind(semantic.wire_kind, semantic.rust_name))
         .unwrap_or_else(|| cpp_wire_type(field));
     let repeated = field.label == Some(FieldLabel::Repeated as i32);
-    let optional = field_has_presence(field);
+    let optional = !repeated && (field.proto3_optional || field.oneof_index.is_some());
     let value = if repeated {
         format!("std::vector<{base}>")
     } else {
@@ -841,16 +774,10 @@ fn cpp_field_type(
 
 fn response_oneof_groups() -> BTreeMap<(String, String), Vec<ResolvedRequestField>> {
     let mut groups = BTreeMap::<(String, String), Vec<ResolvedRequestField>>::new();
-    for field in resolved_request_fields()
+    for field in resolved_response_fields()
         .expect("Rust response descriptors must resolve")
         .into_iter()
-        .filter(|field| field.oneof_name.is_some())
-        .chain(
-            resolved_response_fields()
-                .expect("Rust response descriptors must resolve")
-                .into_iter()
-                .filter(|field| field.oneof_name.is_some()),
-        )
+        .filter(|field| field.oneof_name.is_some() && !field.proto3_optional)
     {
         groups
             .entry((field.message_path.clone(), field.oneof_name.clone().unwrap()))
@@ -866,12 +793,7 @@ fn response_oneof_groups() -> BTreeMap<(String, String), Vec<ResolvedRequestFiel
 
 fn response_oneof_name(field: &ResolvedRequestField, oneof: &str) -> String {
     let message = field.message_path.rsplit('.').next().unwrap_or("Message");
-    format!(
-        "{}{}{}Choice",
-        descriptor_package_prefix(&field.message_path),
-        camel(message),
-        camel(oneof)
-    )
+    format!("{}{}{}Choice", camel(&field.family), camel(message), camel(oneof))
 }
 
 fn cpp_oneof_arm_type(field: &ResolvedRequestField) -> String {
@@ -1019,7 +941,6 @@ fn render_swift() -> String {
         ));
     }
     let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
-    ordinary_enums.extend(resolved_descriptor_enum_names());
     ordinary_enums.extend(semantic_nested_descriptor_names(FieldType::Enum));
     for name in ordinary_enums {
         out.push_str(&format!("public struct {name}: Sendable {{ public let raw: Int32; public init(raw: Int32) {{ self.raw = raw }}; public init(_ value: RustWireEnum) {{ self.raw = value.raw }} }}\n"));
@@ -1028,7 +949,7 @@ fn render_swift() -> String {
     // A known arm is a decoded Rust-owned message view.  Only the open
     // unknown arm is allowed to remain raw bytes; keeping a known payload as
     // `RustWireMessage` prevents the public API from erasing it to `Data`.
-    out.push_str("\npublic enum WireChoice: Sendable {\n case known(tag: String, payload: RustWireMessage)\n case unknown(rawTag: Int32, payload: Data)\n}\n\n");
+    out.push_str("\npublic enum WireChoice: Sendable { case known(tag: String, payload: RustWireMessage); case unknown(rawTag: Int32, payload: Data) }\n\n");
     for ((module, message), fields) in request_groups() {
         let name = format!(
             "{}{}Request",
@@ -1116,19 +1037,17 @@ fn render_swift() -> String {
                 let target = swift_wire_type(field);
                 if field.label == Some(FieldLabel::Repeated as i32) {
                     format!("guard let raw_{local} = wire[\"{key}\"] as? [{cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.map {{ {target}($0) }};", local=local, field_name=field_name, key=key, cast=cast, target=target)
-                } else if field_has_presence(field) {
+                } else if field.proto3_optional || field.oneof_index.is_some() {
                     format!("let {field_name} = (wire[\"{key}\"] as? {cast}).map {{ {target}($0) }};", field_name=field_name, key=key, cast=cast, target=target)
                 } else {
                     format!("guard let raw_{local} = wire[\"{key}\"] as? {cast} else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = {target}(raw_{local});", local=local, field_name=field_name, key=key, cast=cast, target=target)
                 }
-            } else if field_has_presence(field) && semantic_field(field, PublicFieldDirection::Response).is_none() {
+            } else if (field.proto3_optional || field.oneof_index.is_some()) && semantic_field(field, PublicFieldDirection::Response).is_none() {
                 format!("let {field} = wire[\"{key}\"] as? {cast};", field=swift_field_name(&field.field), key=key, cast=cast)
             } else if let Some(semantic) = semantic_field(field, PublicFieldDirection::Response) {
                 let wire_cast = swift_wire_cast(semantic.wire_kind);
                 if field.label == Some(FieldLabel::Repeated as i32) {
                     format!("guard let raw_{local} = wire[\"{key}\"] as? [{wire_cast}] else {{ throw RustWireDecodeError.invalidField(\"{key}\") }}; let {field_name} = raw_{local}.compactMap {{ {ty}($0) }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
-                } else if field_has_presence(field) {
-                    format!("let {field_name} = (wire[\"{key}\"] as? {wire_cast}).flatMap {{ {ty}($0) }};", field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
                 } else {
                     format!("guard let raw_{local} = wire[\"{key}\"] as? {wire_cast}, let {field_name} = {ty}(raw_{local}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};", local=local, field_name=field_name, key=key, wire_cast=wire_cast, ty=semantic.rust_name)
                 }
@@ -1329,7 +1248,6 @@ fn render_cpp() -> String {
         out.push_str(&format!("struct {name} {{ private: RustWireMessage wire; public: {declarations} explicit {name}(RustWireMessage value) : wire(std::move(value)) {{}} }};\n"));
     }
     let mut ordinary_enums = ordinary_descriptor_names(FieldType::Enum);
-    ordinary_enums.extend(resolved_descriptor_enum_names());
     ordinary_enums.extend(semantic_nested_descriptor_names(FieldType::Enum));
     for name in ordinary_enums {
         out.push_str(&format!("struct {name} {{ std::int32_t raw; explicit {name}(std::int32_t value) : raw(value) {{}} explicit {name}(RustWireEnum value) : raw(value.raw) {{}} }};\n"));

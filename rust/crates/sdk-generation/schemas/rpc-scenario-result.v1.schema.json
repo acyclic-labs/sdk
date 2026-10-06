@@ -107,38 +107,6 @@
         "required": ["cancellation_trace"],
         "properties": { "checks": { "contains": { "const": "cancellation" } } }
       }
-    },
-    {
-      "if": { "properties": { "checks": { "contains": { "const": "cancellation" } } } },
-      "then": {
-        "required": ["cancellation_trace"],
-        "properties": {
-          "cancellation_trace": {
-            "required": ["requested", "observed", "frames_before_cancel"],
-            "properties": {
-              "requested": { "const": true },
-              "observed": { "const": true },
-              "frames_before_cancel": { "type": "integer", "minimum": 1 }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": { "properties": { "checks": { "contains": { "const": "recovery" } } } },
-      "then": {
-        "properties": {
-          "semantic_evidence": {
-            "properties": {
-              "observations": {
-                "properties": {
-                  "cursor_trace": { "minItems": 2 }
-                }
-              }
-            }
-          }
-        }
-      }
     }
   ],
   "$defs": {

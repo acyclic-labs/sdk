@@ -62,12 +62,6 @@ fork_join_conformance() {
 
 case "$lane" in
   gate)
-    if [[ "${FORCE:-false}" != true ]]; then
-      cargo test -p acyclic-sdk-contract-wire --locked --lib --bins
-      mkdir -p "$SDK_ARTIFACT_DIR/coverage"
-      printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
-      exit 0
-    fi
     if ! rustup component list --installed | grep -Eq '^llvm-tools-'; then
       component_log="$(mktemp "${SDK_TEMP_DIR}/rustup-component.XXXXXXXX")"
       trap 'rm -f -- "${component_log:-}"' EXIT
@@ -297,10 +291,6 @@ case "$lane" in
     node --test scripts/test-plan-qualification.mjs
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
-    if [[ "${FORCE:-false}" != true ]]; then
-      cargo clippy -p acyclic-sdk-contract-wire --all-targets --locked -- -D warnings
-      exit 0
-    fi
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     node scripts/clippy-feature-sets.mjs
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked

@@ -1,6 +1,11 @@
 name: Embedded ABI release qualification
 
 on:
+  push:
+    tags:
+      - "acyclic-v*"
+  release:
+    types: [published]
   workflow_dispatch:
   workflow_call:
 

@@ -18,7 +18,7 @@ use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
 

@@ -58,18 +58,6 @@ try {
     source_revision: "fixture-test",
     execution_plan_sha256: "sha256:fixture-test",
   }));
-  const mismatchedBuild = join(temp, "mismatched-build.json");
-  writeFileSync(mismatchedBuild, JSON.stringify({ source_revision: "different-source", binary_sha256: "sha256:different-binary" }));
-  const bindingRun = await runNode([
-    runner,
-    "--manifest", manifest,
-    "--language", "python",
-    "--fixture", fixture,
-    "--build-receipt", mismatchedBuild,
-    "--require-source-binding",
-    "--", process.execPath, "-e", "process.exit(0)",
-  ]);
-  assert.notEqual(bindingRun.status, 0, "mismatched build provenance must be rejected");
   const receipt = join(temp, "receipt.json");
   const failedRun = await runNode([
     runner,

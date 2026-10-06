@@ -39,7 +39,7 @@ where
         &'a self,
         scope: Scope,
         id: InteractionId,
-    ) -> crate::BoxFuture<
+    ) -> futures::future::BoxFuture<
         'a,
         Result<Option<(InteractionTicket, Option<InteractionResolution>)>>,
     > {
@@ -65,7 +65,7 @@ where
         id: InteractionId,
         expected_version: u64,
         response: InteractionResponse,
-    ) -> crate::BoxFuture<'a, Result<ResolutionReceipt>> {
+    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
         Box::pin(FilesystemInteractionHost::resolve_answer(
             self,
             operation_id,
@@ -84,7 +84,7 @@ where
         expected_version: u64,
         approved: bool,
         reason: Option<String>,
-    ) -> crate::BoxFuture<'a, Result<ResolutionReceipt>> {
+    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
         Box::pin(FilesystemInteractionHost::resolve_approval(
             self,
             operation_id,

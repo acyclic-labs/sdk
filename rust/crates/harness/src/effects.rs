@@ -6,7 +6,7 @@ use crate::{
     core::{AuthorityIssuer, EffectAttestation},
     core::{EffectGuarantee, EffectState, EffectStatus},
 };
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -74,7 +74,7 @@ pub struct EffectObservation {
 }
 
 /// Provider-owned effect capability boundary.
-pub trait EffectProvider: crate::PlatformServiceBounds {
+pub trait EffectProvider: Send + Sync {
     /// Stable provider identity.
     fn id(&self) -> &str;
 

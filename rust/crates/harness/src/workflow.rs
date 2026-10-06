@@ -2,7 +2,7 @@
 
 use crate::IdempotencyKey;
 use crate::{Error, OperationId, Result, conversation::FileRef};
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Mutex;

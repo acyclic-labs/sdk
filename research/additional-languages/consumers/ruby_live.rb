@@ -9,13 +9,11 @@ require "json"
 require "optparse"
 require "digest"
 require "grpc"
-require "rbconfig"
 
-options = { package_root: nil, manifest: nil, artifact_path: nil, endpoint: "127.0.0.1:50051", output: "ruby-live-receipt.json", timeout_ms: 5_000 }
+options = { package_root: nil, manifest: nil, endpoint: "127.0.0.1:50051", output: "ruby-live-receipt.json", timeout_ms: 5_000 }
 OptionParser.new do |p|
   p.on("--package-root PATH") { |v| options[:package_root] = v }
   p.on("--manifest PATH") { |v| options[:manifest] = v }
-  p.on("--artifact-path PATH") { |v| options[:artifact_path] = v }
   p.on("--endpoint HOST:PORT") { |v| options[:endpoint] = v }
   p.on("--output PATH") { |v| options[:output] = v }
   p.on("--timeout-ms N", Integer) { |v| options[:timeout_ms] = v }
@@ -27,22 +25,6 @@ Dir[File.join(root, "generated", "**", "*_pb.rb")].sort.each { |f| require f }
 Dir[File.join(root, "generated", "**", "*_services_pb.rb")].sort.each { |f| require f }
 manifest = JSON.parse(File.read(options[:manifest]))
 authority = manifest.fetch("authority")
-package_provenance_path = File.join(root, "generated", "provenance.json")
-package_provenance = File.file?(package_provenance_path) ? JSON.parse(File.read(package_provenance_path)) : {}
-artifact_sha256 = options[:artifact_path] && Digest::SHA256.file(options[:artifact_path]).hexdigest
-runtime_triple = RbConfig::CONFIG.fetch("host", RUBY_PLATFORM)
-runtime_platform = (package_provenance["platform"] || {}).merge(
-  "runtime_triple" => runtime_triple,
-  "runtime_os" => RbConfig::CONFIG.fetch("host_os", RUBY_PLATFORM),
-  "runtime_arch" => RbConfig::CONFIG.fetch("host_cpu", RUBY_PLATFORM),
-  "observed" => true
-)
-executed_package = package_provenance.merge(
-  "artifact_path" => options[:artifact_path] && File.expand_path(options[:artifact_path]),
-  "artifact_sha256" => artifact_sha256,
-  "platform" => runtime_platform,
-  "provenance" => package_provenance.merge("platform" => runtime_platform)
-)
 
 def ruby_const(full_name)
   full_name.delete_prefix(".").split(".").map { |part| part.split("_").map { |piece| piece.empty? ? piece : piece[0].upcase + piece[1..] }.join }.join("::")
@@ -190,7 +172,6 @@ receipt = {
   "authority" => authority,
   "endpoint" => options[:endpoint],
   "package_root" => root,
-  "executed_package" => executed_package,
   "method_count" => methods.length,
   "passed" => methods.count { |m| m["status"] == "semantic_passed" },
   "transport_succeeded" => methods.count { |m| m["status"] == "transport_success_pending_semantics" },

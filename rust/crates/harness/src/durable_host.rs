@@ -30,7 +30,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

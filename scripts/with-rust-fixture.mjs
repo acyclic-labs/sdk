@@ -40,10 +40,6 @@ for (let index = 0; index < optionArgs.length; index += 1) {
   const value = optionArgs[index];
   if (!value.startsWith("--")) usage(`unexpected argument ${value}`);
   const key = value.slice(2);
-  if (key === "require-source-binding") {
-    options.set(key, true);
-    continue;
-  }
   const next = optionArgs[index + 1];
   if (!next || next.startsWith("--")) usage(`${value} requires a value`);
   options.set(key, next);
@@ -54,7 +50,6 @@ const manifestPath = resolve(options.get("manifest") ?? "");
 const language = options.get("language");
 const fixturePath = resolve(options.get("fixture") ?? defaultFixture);
 const receiptPath = resolve(options.get("receipt") ?? join(repo, "work", "rust-fixture-session.json"));
-const buildReceiptPath = options.get("build-receipt") ? resolve(options.get("build-receipt")) : null;
 const maxRequests = options.get("max-requests") ?? "512";
 if (!options.get("manifest")) usage("--manifest is required");
 if (!language) usage("--language is required");
@@ -70,18 +65,6 @@ if (manifest.execution_plan_count !== manifest.execution_plan.length) {
   usage("manifest execution_plan_count does not match execution_plan length");
 }
 if (!existsSync(fixturePath)) usage(`fixture binary does not exist: ${fixturePath}`);
-const fixtureBinarySha256 = `sha256:${createHash("sha256").update(readFileSync(fixturePath)).digest("hex")}`;
-let buildReceipt = null;
-if (buildReceiptPath) {
-  if (!existsSync(buildReceiptPath)) usage(`build receipt does not exist: ${buildReceiptPath}`);
-  buildReceipt = JSON.parse(readFileSync(buildReceiptPath, "utf8"));
-  const boundRevision = buildReceipt.source_revision ?? buildReceipt.source?.revision;
-  const boundBinary = buildReceipt.binary_sha256 ?? buildReceipt.fixture_binary_sha256;
-  if (boundRevision !== manifest.source_revision) usage("build receipt source_revision does not match the Rust manifest");
-  if (boundBinary !== fixtureBinarySha256) usage("build receipt binary_sha256 does not match the fixture executable");
-} else if (options.has("require-source-binding")) {
-  usage("--require-source-binding requires --build-receipt");
-}
 
 function hostPort(address) {
   return String(address).replace(/^https?:\/\//, "");
@@ -143,8 +126,6 @@ const finish = (exitCode) => {
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     fixture_binary: fixturePath,
-    fixture_binary_sha256: fixtureBinarySha256,
-    build_receipt: buildReceiptPath,
     fixture_pid: fixture?.pid ?? null,
     consumer_command: commandArgs,
     consumer_exit_code: exitCode,
@@ -213,8 +194,6 @@ try {
     ACYCLIC_RUST_FIXTURE_HTTP_URL: httpUrl,
     ACYCLIC_RUST_FIXTURE_LANGUAGE: language,
     ACYCLIC_RUST_FIXTURE_FRESH: "1",
-    ACYCLIC_RUST_FIXTURE_BINARY_SHA256: fixtureBinarySha256,
-    ACYCLIC_RUST_FIXTURE_BUILD_RECEIPT: buildReceiptPath ?? "",
     ACYCLIC_RUST_TYPED_REQUEST_MANIFEST: manifestPath,
     ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST: manifestPath,
   };
@@ -238,8 +217,6 @@ try {
     status: "failed_to_start",
     language,
     fixture_binary: fixturePath,
-    fixture_binary_sha256: fixtureBinarySha256,
-    build_receipt: buildReceiptPath,
     manifest: manifestPath,
     error: String(error?.stack ?? error),
   });

@@ -16,6 +16,7 @@ import type {
   WasmRawMergeConflict,
   WasmRawWorkspace,
   WasmRawGenerationDiff,
+  WasmRawChangeSet,
   WorkspaceRebaseResult,
   JoinResult,
   GenerationExportManifest,
@@ -42,26 +43,34 @@ const { adaptGeneration, rawGeneration } = createGenerationAdapter(
 );
 const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
 const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
-const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, generationDiff);
 const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "WASM join");
 
-export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
+export function adaptWasmFs(
+  raw: WasmRawFs,
+  validatePositiveBound: (value: number, label: string) => void = requirePositiveInteger,
+): FsVolumeEngine {
+  const { adaptChangeSet } = createChangeSetAdapter(
+    adaptGeneration,
+    generationDiff,
+    "WASM filesystem",
+    validatePositiveBound,
+  );
   const engine: FsVolumeEngine = {
     capabilities: raw.capabilities,
     async createWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.createWorkspace(name));
+      return adaptWorkspace(await raw.createWorkspace(name), validatePositiveBound, adaptChangeSet);
     },
     async openWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.openWorkspace(name));
+      return adaptWorkspace(await raw.openWorkspace(name), validatePositiveBound, adaptChangeSet);
     },
     objectCacheStats(): ObjectCacheStats { return objectCacheStats(raw.objectCacheStats()); },
     clearObjectCache(): void { raw.clearObjectCache(); },
     createSpeculation(volumeId, generationId, options): Speculation { return adaptSpeculation(raw.createSpeculation(volumeId, generationId, options)); },
-    async createVolume(options): Promise<FsVolume> { return adaptVolume(await raw.createVolume(options)); },
-    async createVolumeWithId(volumeId, options): Promise<FsVolume> { return adaptVolume(await raw.createVolumeWithId(volumeId, options)); },
-    async openVolume(volumeId): Promise<FsVolume> { return adaptVolume(await raw.openVolume(volumeId)); },
+    async createVolume(options): Promise<FsVolume> { return adaptVolume(await raw.createVolume(options), validatePositiveBound); },
+    async createVolumeWithId(volumeId, options): Promise<FsVolume> { return adaptVolume(await raw.createVolumeWithId(volumeId, options), validatePositiveBound); },
+    async openVolume(volumeId): Promise<FsVolume> { return adaptVolume(await raw.openVolume(volumeId), validatePositiveBound); },
     async exportObject(objectId, maximumBytes) { return copyFileRead(await raw.exportObject(objectId, maximumBytes)); },
     async importObject(objectId, bytes) { return copyMutation(await raw.importObject(objectId, bytes)); },
     async exportGenerationBatch(manifest, cursor, maximumObjects, maximumObjectBytes): Promise<GenerationTransferBatch> {
@@ -72,7 +81,7 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
       const value = await raw.importGenerationBatch(manifest, cursor, objects, maximumObjects);
       return { nextObject: BigInt(value.nextObject), work: copyWork(value.work) };
     },
-    async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId)); },
+    async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId), validatePositiveBound); },
     close(): void {
       raw.close();
     },
@@ -80,13 +89,35 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
   return engine;
 }
 
+/** Use the generated Rust page-bound policy for JavaScript-facing u32 args. */
+export function rustPositiveBoundValidator(
+  validatePageBound: (value: number, maximum: number) => void,
+): (value: number, label: string) => void {
+  return (value, label) => {
+    try {
+      // The policy export performs finite/integral/u32 conversion before the
+      // canonical positive/page-limit check. u32::MAX is the unconstrained
+      // adapter ceiling; negotiated hosted limits use their own bound.
+      validatePageBound(value, 4_294_967_295);
+    } catch {
+      throw new RangeError(`${label} must be a positive Rust-owned u32 bound`);
+    }
+  };
+}
+
 export { adaptWorkspaceContextRegistry as adaptWasmWorkspaceContextRegistry } from "./workspace-context.js";
 
-function adaptVolume(raw: WasmRawVolume): FsVolume {
+function adaptVolume(
+  raw: WasmRawVolume,
+  validatePositiveBound: (value: number, label: string) => void,
+): FsVolume {
   return {
     get id() { return copyBytes(raw.id); },
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
-    async diffGenerations(before, after, maximumChanges) { return generationDiff(await raw.diffGenerations(before, after, maximumChanges)); },
+    async diffGenerations(before, after, maximumChanges) {
+      validatePositiveBound(maximumChanges, "maximum changes");
+      return generationDiff(await raw.diffGenerations(before, after, maximumChanges));
+    },
     async checkout(options) { return adaptCheckout(await raw.checkout(options)); },
   };
 }
@@ -221,32 +252,36 @@ function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { r
 function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
 function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
 
-function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
+function adaptWorkspace(
+  raw: WasmRawWorkspace,
+  validatePositiveBound: (value: number, label: string) => void,
+  adaptChangeSet: (raw: WasmRawChangeSet) => FsChangeSet,
+): FsWorkspace {
   const workspace: FsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
-    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult),
+    ...workspaceOperations(raw, adaptGeneration, parseWorkspaceRebaseResult, validatePositiveBound),
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-      return adaptWorkspace(await raw.fork(destination, idempotencyKey));
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey), validatePositiveBound, adaptChangeSet);
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)));
+      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)), validatePositiveBound, adaptChangeSet);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptTransaction(await raw.beginTransaction(idempotencyKey), copyTransactionRebase);
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-      requirePositiveInteger(maximumChanges, "maximum changes");
+      validatePositiveBound(maximumChanges, "maximum changes");
       return adaptChangeSet(
         await raw.diff(rawGeneration(from), rawGeneration(to), maximumChanges),
       );
     },
     async joinInto(target, options): Promise<FsJoinPlan> {
-      validateJoinOptions(options);
+      validateJoinOptions(options, validatePositiveBound);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target), options));
     },
   };

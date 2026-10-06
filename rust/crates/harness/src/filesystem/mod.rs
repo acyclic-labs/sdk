@@ -27,7 +27,7 @@ use acyclic_fs::{
     WorkspaceStat,
 };
 use bytes::Bytes;
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},

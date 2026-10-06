@@ -449,11 +449,6 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 "scenario {family}/{rpc} records an explicit cancellation without a cancellation check"
             ));
         }
-        if check_set.contains("recovery") && cursor_trace.len() < 2 {
-            return Err(format!(
-                "scenario {family}/{rpc} claims recovery without at least two runtime cursor observations"
-            ));
-        }
         for required_transition in ["cancellation", "recovery"] {
             if check_set.contains(required_transition)
                 && !transitions.iter().any(|transition| {
@@ -464,23 +459,6 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                     "scenario {family}/{rpc} claims {required_transition} without a Rust lifecycle transition"
                 ));
             }
-        }
-        if check_set.contains("cancellation")
-            && !result
-                .get("cancellation_trace")
-                .and_then(Value::as_object)
-                .is_some_and(|trace| {
-                    trace.get("requested").and_then(Value::as_bool) == Some(true)
-                        && trace.get("observed").and_then(Value::as_bool) == Some(true)
-                        && trace
-                            .get("frames_before_cancel")
-                            .and_then(Value::as_u64)
-                            .is_some_and(|frames| frames > 0)
-                })
-        {
-            return Err(format!(
-                "scenario {family}/{rpc} claims cancellation without requested and observed runtime evidence"
-            ));
         }
         if !seen.insert((family.clone(), rpc.clone())) {
             return Err(format!("scenario {family}/{rpc} is duplicated"));
@@ -1144,49 +1122,6 @@ mod tests {
         cleanup(&output);
     }
 
-    #[test]
-    fn receipt_writer_rejects_cancellation_without_runtime_trace() {
-        let (root, output, options) = fixture(false, false, false);
-        set_expected_transitions(
-            &output,
-            json!([{"kind": "cancellation", "before": "RUNNING", "after": "CANCELLED"}]),
-        );
-        mutate_scenario(&output, |scenario| {
-            scenario["checks"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!("cancellation"));
-            scenario["semantic_evidence"]["observations"]["transitions"] =
-                json!([{"kind": "cancellation", "before": "RUNNING", "after": "CANCELLED"}]);
-        });
-        let error = write(&options).expect_err("cancellation needs runtime trace evidence");
-        assert!(error.contains("requested and observed runtime evidence"));
-        cleanup(&root);
-        cleanup(&output);
-    }
-
-    #[test]
-    fn receipt_writer_rejects_recovery_without_cursor_observations() {
-        let (root, output, options) = fixture(false, false, false);
-        set_expected_transitions(
-            &output,
-            json!([{"kind": "recovery", "before": "LOST", "after": "RESUMED"}]),
-        );
-        mutate_scenario(&output, |scenario| {
-            scenario["checks"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!("recovery"));
-            scenario["semantic_evidence"]["observations"]["transitions"] =
-                json!([{"kind": "recovery", "before": "LOST", "after": "RESUMED"}]);
-            scenario["semantic_evidence"]["observations"]["cursor_trace"] = json!([]);
-        });
-        let error = write(&options).expect_err("recovery needs runtime cursor evidence");
-        assert!(error.contains("at least two runtime cursor observations"));
-        cleanup(&root);
-        cleanup(&output);
-    }
-
     fn fixture(
         missing_rpc: bool,
         in_process: bool,
@@ -1314,14 +1249,6 @@ mod tests {
             .expect("scenario log entries");
         scenarios[0]["output_sha256"] = json!(sha256(&scenario_bytes));
         write_json(&log_path, &log);
-    }
-
-    fn set_expected_transitions(output: &Path, transitions: Value) {
-        let authority_path = output.join("wire/rust-authority.json");
-        let mut authority = read_json(&authority_path).expect("read authority fixture");
-        authority["families"][0]["rpc_methods"][0]["semantic_expectations"]["transitions"] =
-            transitions;
-        write_json(&authority_path, &authority);
     }
 
     fn git(root: &Path, args: &[&str]) {

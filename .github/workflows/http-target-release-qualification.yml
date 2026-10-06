@@ -1,6 +1,8 @@
 name: HTTP target release qualification
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:

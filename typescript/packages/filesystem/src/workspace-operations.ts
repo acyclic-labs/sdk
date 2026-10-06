@@ -25,6 +25,7 @@ export function workspaceOperations(
   raw: RawOperations,
   adaptGeneration: (raw: WasmRawGeneration) => FsGeneration,
   parseRebase: (raw: WasmRawJoinResult) => WorkspaceRebaseResult,
+  validatePositiveBound: (value: number, label: string) => void,
 ): WorkspaceOperations {
   return {
     async head() { return Uint8Array.from(await raw.head()); },
@@ -45,11 +46,15 @@ export function workspaceOperations(
     async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
     async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
     async planExtents(path, offset, length, maximumSpans) {
+      validatePositiveBound(maximumSpans, "maximum extent spans");
       return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
     },
     async write(path, bytes) { return parseWorkspaceCommit(await raw.write(path, bytes)); },
     async remove(path) { return parseWorkspaceCommit(await raw.remove(path)); },
     async liveRebase(options, idempotencyKey) {
+      validatePositiveBound(options.maximumGenerations, "maximum rebase generations");
+      validatePositiveBound(options.maximumChanges, "maximum rebase changes");
+      validatePositiveBound(options.maximumConflicts, "maximum rebase conflicts");
       return parseRebase(await raw.liveRebase(
         idempotencyKey, options.maximumGenerations, options.maximumChanges, options.maximumConflicts,
       ));

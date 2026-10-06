@@ -146,26 +146,10 @@ function Invoke-EmbeddedRustBuild {
       if (-not $compiler) {
         throw "No pinned/native musl linker is available for $TargetName. Use the pinned Alpine producer lane."
       }
-      # The Debian musl wrappers do not always propagate the GCC support
-      # directory to the final Rust link. Resolve it from the selected
-      # compiler and pass it explicitly; otherwise ld reports that it cannot
-      # find libgcc_s.so.1 even though the compiler package is installed.
-      $gccSupport = (& $compiler -print-file-name=libgcc_s.so.1 2>$null | Select-Object -First 1).Trim()
-      if (-not [string]::IsNullOrWhiteSpace($gccSupport) -and (Test-Path -LiteralPath $gccSupport -PathType Leaf)) {
-        $gccDirectory = Split-Path -Parent $gccSupport
-      } else {
-        $searchDirectories = (& $compiler -print-search-dirs 2>$null |
-          Select-String '^libraries: =' | ForEach-Object { $_.Line.Substring(11).Split([IO.Path]::PathSeparator) })
-        $gccDirectory = $searchDirectories |
-          Where-Object { Test-Path -LiteralPath (Join-Path $_ 'libgcc_s.so.1') -PathType Leaf } |
-          Select-Object -First 1
-      }
-      if ([string]::IsNullOrWhiteSpace($gccDirectory)) {
-        throw "The musl linker '$compiler' has no discoverable libgcc_s.so.1 directory for $TargetName."
-      }
-      # Keep musl libc dynamic while making compiler support resolution
-      # deterministic on both x64 and arm64 runners.
-      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static -C link-arg=-L$gccDirectory -C link-arg=-static-libgcc").Trim())
+      # Keep musl libc dynamic while linking compiler support statically. The
+      # Ubuntu musl wrapper can expose libgcc_s only through its private specs,
+      # while -static-libgcc is stable across x64 and arm64 runners.
+      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static -C link-arg=-static-libgcc").Trim())
       [Environment]::SetEnvironmentVariable($linkerVariable, $compiler, "Process")
       $changedMuslEnvironment = $true
     }

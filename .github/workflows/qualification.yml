@@ -4,6 +4,10 @@ on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    # Weekly full qualification catches drift outside the repository (runner
+    # images, registries, browsers) that lane fingerprints cannot observe.
+    - cron: '17 6 * * 1'
   release:
     types: [published]
   workflow_dispatch:
@@ -11,7 +15,7 @@ on:
       force:
         description: Execute every lane even when its inputs already qualified
         type: boolean
-        default: false
+        default: true
 
 permissions:
   actions: read
@@ -27,7 +31,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  FORCE: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
+  FORCE: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
 
 jobs:
   plan:
@@ -375,7 +379,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification, windows, rust_source, rust_stream_native, embedded_native_packages, additional_languages, dotnet_native, python_go, http_targets]
+    needs: [plan, qualification, windows, rust_source, rust_embedded, rust_stream_native, embedded_native_packages, additional_languages, dotnet_native, dotnet_embedded, python_go, http_targets]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -386,13 +390,15 @@ jobs:
           RESULT: ${{ needs.qualification.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
           RUST_SOURCE_RESULT: ${{ needs.rust_source.result }}
+          RUST_EMBEDDED_RESULT: ${{ needs.rust_embedded.result }}
           RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
           EMBEDDED_NATIVE_RESULT: ${{ needs.embedded_native_packages.result }}
           ADDITIONAL_LANGUAGES_RESULT: ${{ needs.additional_languages.result }}
           PYTHON_GO_RESULT: ${{ needs.python_go.result }}
           HTTP_TARGETS_RESULT: ${{ needs.http_targets.result }}
           DOTNET_NATIVE_RESULT: ${{ needs.dotnet_native.result }}
-          REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
+          DOTNET_EMBEDDED_RESULT: ${{ needs.dotnet_embedded.result }}
+          REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           test "$PLAN_RESULT" = success
           test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
@@ -403,61 +409,75 @@ jobs:
           fi
           if test "$REQUIRE_RUST_RESULTS" = true; then
             test "$RUST_SOURCE_RESULT" = success
+            test "$RUST_EMBEDDED_RESULT" = success
             test "$RUST_STREAM_RESULT" = success
             test "$EMBEDDED_NATIVE_RESULT" = success
             test "$ADDITIONAL_LANGUAGES_RESULT" = success
             test "$PYTHON_GO_RESULT" = success
             test "$HTTP_TARGETS_RESULT" = success
             test "$DOTNET_NATIVE_RESULT" = success
+            test "$DOTNET_EMBEDDED_RESULT" = success
           fi
 
   rust_source:
     name: Rust source generation and documentation
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/rust-source-qualification.yml
     with:
       ref: ${{ github.sha }}
 
+  rust_embedded:
+    name: Installed Rust embedded packages
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/embedded-abi-release.yml
+
   rust_stream_native:
     name: Installed native Stream packages
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/stream-native-packages.yml
     with:
       source_revision: ${{ github.sha }}
 
   embedded_native_packages:
-    name: Installed embedded C, C++, Python, .NET and JVM packages on every platform
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    name: Installed embedded .NET and JVM packages on every platform
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/embedded-native-packaging.yml
     with:
       source_revision: ${{ github.sha }}
 
   additional_languages:
     name: Additional language package qualification
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/additional-language-qualification.yml
     with:
       ref: ${{ github.sha }}
 
   dotnet_native:
     name: .NET native transport RID qualification
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/dotnet-native-rid-manual.yml
     with:
       ref: ${{ github.sha }}
       target: all
       publish_artifact: true
 
+  dotnet_embedded:
+    name: Installed embedded .NET packages on every platform
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/dotnet-embedded-rid-manual.yml
+    with:
+      target: all
+
   python_go:
     name: Installed Python and Go Rust-authority packages
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/python-go-release-qualification.yml
     with:
       ref: ${{ github.sha }}
 
   http_targets:
     name: Installed additional HTTP target packages
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/http-target-release-qualification.yml
     with:
       ref: ${{ github.sha }}

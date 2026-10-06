@@ -16,7 +16,7 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, ConflictSide, FileId, JoinOutcome, MergeConflict,
     kernel::{LogicalName, NameEncoding},
 };
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// One signed parent binding. Its child plans retain the same authenticated

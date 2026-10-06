@@ -9,7 +9,7 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_stream::{StreamClient, StreamProvider};
-use crate::BoxFuture;
+use futures::future::BoxFuture;
 use std::sync::Arc;
 
 /// Resolves a pinned provider attempt into its owning conversation history.

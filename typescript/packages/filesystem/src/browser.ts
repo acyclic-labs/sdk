@@ -8,6 +8,7 @@ import { adaptCompatibilityWire } from "./compat.js";
 import {
   adaptWasmFs,
   adaptWasmWorkspaceContextRegistry,
+  rustPositiveBoundValidator,
 } from "./wasm-adapter.js";
 
 export type * from "./public-types.js";
@@ -35,7 +36,11 @@ export async function openBrowserFs(options: BrowserFsOptions): Promise<FsVolume
   if (options.databaseName.length === 0 || options.maximumObjectBytes <= 0) {
     throw new RangeError("browser filesystem options must be bounded and non-empty");
   }
-  return adaptWasmFs(await (await bindings()).openBrowserFs(options));
+  const binding = await bindings();
+  return adaptWasmFs(
+    await binding.openBrowserFs(options),
+    rustPositiveBoundValidator(binding.validateHostedPageBound),
+  );
 }
 
 /** Opens the canonical Rust merge/publication wire codec. */

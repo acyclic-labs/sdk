@@ -71,14 +71,24 @@ function positive(value: number, label: string): void {
   }
 }
 
-function validateOptions(options: JoinOptions | WorkspaceRebaseOptions, operation: string): void {
-  positive(options.maximumGenerations, `maximum ${operation} generations`);
-  positive(options.maximumChanges, `maximum ${operation} changes`);
-  positive(options.maximumConflicts, `maximum ${operation} conflicts`);
+function validateOptions(
+  options: JoinOptions | WorkspaceRebaseOptions,
+  operation: string,
+  validatePositive: (value: number, label: string) => void = positive,
+): void {
+  validatePositive(options.maximumGenerations, `maximum ${operation} generations`);
+  validatePositive(options.maximumChanges, `maximum ${operation} changes`);
+  validatePositive(options.maximumConflicts, `maximum ${operation} conflicts`);
 }
 
-export function validateJoinOptions(options: JoinOptions): void { validateOptions(options, "join"); }
-export function validateWorkspaceRebaseOptions(options: WorkspaceRebaseOptions): void { validateOptions(options, "rebase"); }
+export function validateJoinOptions(
+  options: JoinOptions,
+  validatePositive?: (value: number, label: string) => void,
+): void { validateOptions(options, "join", validatePositive); }
+export function validateWorkspaceRebaseOptions(
+  options: WorkspaceRebaseOptions,
+  validatePositive?: (value: number, label: string) => void,
+): void { validateOptions(options, "rebase", validatePositive); }
 
 const joinStatuses: ReadonlySet<JoinStatus> = new Set<JoinStatus>([
   "applied", "already-applied", "no-changes", "stale-target", "conflicted", "fenced", "idempotency-conflict",

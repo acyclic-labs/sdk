@@ -1,6 +1,8 @@
 name: Python and Go Rust-authority qualification
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       ref:

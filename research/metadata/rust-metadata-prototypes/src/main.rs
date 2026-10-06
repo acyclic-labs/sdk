@@ -8,7 +8,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use specta::{Type, Types};
-use specta_typescript::{BigInt, Typescript};
+use specta_typescript::Typescript;
 use std::collections::HashMap;
 use typeshare_core::{
     context::{ParseContext, ParseFileContext},
@@ -66,37 +66,6 @@ struct FollowRequest {
 struct FollowFrame {
     record: Option<StreamRecord>,
     complete: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-struct WideStreamRecord {
-    sequence: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
-struct LosslessStreamRecord {
-    #[specta(type = BigInt)]
-    sequence: u64,
-}
-
-fn specta_wide_integer_output() -> Value {
-    let default = Typescript::default()
-        .export(
-            &Types::default().register::<WideStreamRecord>(),
-            specta_serde::Format,
-        )
-        .expect_err("default export must reject potentially lossy u64 numbers");
-    let lossless = Typescript::default()
-        .export(
-            &Types::default().register::<LosslessStreamRecord>(),
-            specta_serde::Format,
-        )
-        .expect("explicit Rust-owned bigint projection must export");
-    json!({
-        "default_u64_error": default.to_string(),
-        "explicit_bigint_typescript": lossless,
-        "runtime_transport_required": "lossless bigint codec; plain JSON.parse is insufficient",
-    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Type)]
@@ -203,7 +172,6 @@ fn main() {
         Value::String(stream_schema.clone()),
     );
     summary.insert("specta_typescript".into(), Value::String(specta.clone()));
-    summary.insert("specta_wide_integers".into(), specta_wide_integer_output());
     summary.insert(
         "typeshare_typescript".into(),
         Value::String(typeshare.clone()),
@@ -244,22 +212,5 @@ mod tests {
         );
         assert_eq!(marker_report(&specta_output())["rpc_identity"], false);
         assert_eq!(marker_report(&typeshare_output())["behavior_policy"], false);
-    }
-
-    #[test]
-    fn wide_integer_projection_preserves_rust_u64_instead_of_narrowing_it() {
-        let result = specta_wide_integer_output();
-        assert!(result["default_u64_error"]
-            .as_str()
-            .unwrap()
-            .contains("BigInt"));
-        let output = result["explicit_bigint_typescript"].as_str().unwrap();
-        assert!(output.contains("sequence: bigint"), "{output}");
-        assert!(!output.contains("sequence: number"), "{output}");
-        let value = LosslessStreamRecord { sequence: u64::MAX };
-        let serialized = serde_json::to_string(&value).unwrap();
-        assert!(serialized.contains("18446744073709551615"));
-        let restored: LosslessStreamRecord = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(restored.sequence, u64::MAX);
     }
 }

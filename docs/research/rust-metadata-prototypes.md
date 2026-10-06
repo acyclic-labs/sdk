@@ -82,32 +82,17 @@ streaming direction, or filesystem behavior policy. The generated output is
 therefore suitable as a projection after the Rust protocol model is complete;
 it is not a source of truth for the wire contract.
 
-## Wide integer fidelity
-
-The comparison also executes an unmodified `u64` field and a second Rust type
-with `#[specta(type = BigInt)]` on its `u64` field. The default exporter rejects
-the first type rather than silently mapping it to a JavaScript number. The
-explicit Rust-owned projection emits `sequence: bigint` for the second type.
-The regression checks that it does not emit `sequence: number` and round-trips
-`u64::MAX` through Rust serialization without changing its value. The executable
-records both exporter outcomes in `specta_wide_integers`.
-
-The bigint type declaration requires a lossless runtime codec. Rust JSON
-round-trip evidence does not prove a JavaScript JSON round trip: ordinary
-`JSON.parse` would lose large integer precision. This is a separate qualification
-requirement for a generated consumer and transport, rather than a reason to
-reduce the Rust field to `u32`.
-
 ## Verification
 
 From the repository root:
 
 ```text
-cargo test --manifest-path research/metadata/rust-metadata-prototypes/Cargo.toml --locked --target-dir Q:/sdk/work/root-metadata-research-target
-cargo run --manifest-path research/metadata/rust-metadata-prototypes/Cargo.toml --locked --target-dir Q:/sdk/work/root-metadata-research-target
+cargo test --manifest-path research/metadata/rust-metadata-prototypes/Cargo.toml --locked --target-dir .tmp-metadata-target
+cargo run --manifest-path research/metadata/rust-metadata-prototypes/Cargo.toml --locked --target-dir .tmp-metadata-target
 ```
 
-The current test run passed **3 tests**. The executable run completed and
-produced the JSON artifact above. The ordinary small-field fixture and the
-explicit wide-field comparison are both retained. The research crates use exact
-version constraints and the committed lockfile.
+The test run passed **2 tests**. The executable run completed and produced the
+JSON artifact above. During development, Specta rejected `u64` because its
+TypeScript exporter forbids bigint-style types by default; the fixture now uses
+`u32`, and that concrete compatibility constraint is captured by the pinned
+working run rather than hidden behind an untested example.
