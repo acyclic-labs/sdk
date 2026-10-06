@@ -1390,7 +1390,10 @@ mod tests {
     use super::*;
     use crate::{
         Capabilities,
-        conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
+        conversation::{
+            ContentResidencyVerifier, FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef,
+        },
+        durable_mail::MailboxStore,
         resources::ProviderRef,
         runtime::{
             DurableTaskHost, TaskAdmissionRecord, TaskCommunicationScope, TaskRunLimits,
@@ -1400,6 +1403,8 @@ mod tests {
     use serde_json::json;
     use std::{
         collections::BTreeMap,
+        future::Future,
+        pin::Pin,
         sync::Mutex,
         sync::atomic::{AtomicBool, Ordering},
     };
@@ -1565,6 +1570,17 @@ mod tests {
             FileDescriptor::from_bytes(b"{}", "application/json")?,
             "message.json",
         )
+    }
+
+    struct AllowContent;
+
+    impl ContentResidencyVerifier for AllowContent {
+        fn verify<'a>(
+            &'a self,
+            _reference: &'a FileRef,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+            Box::pin(async { Ok(()) })
+        }
     }
 
     fn changed_payload() -> Result<FileRef> {
@@ -1835,6 +1851,62 @@ mod tests {
         let mut invalid_timestamp = item(1, 13)?;
         invalid_timestamp.delivered_at_epoch_ms = 0;
         assert!(validate_inbox_page(task(2), 0, 1, &[invalid_timestamp]).is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn local_stream_mailbox_preserves_order_replay_and_target_scope() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let mailbox = MailboxStore::new(
+            acyclic_stream::StreamClient::new(provider),
+            Arc::new(AllowContent),
+        );
+        let host = host(BTreeMap::new())?;
+        let sender = task(1);
+        let recipient = task(2);
+        let first_id = operation(0x31);
+        let second_id = operation(0x32);
+        let file = payload()?;
+
+        mailbox
+            .send(host.as_ref(), sender, recipient, first_id, file.clone())
+            .await?;
+        mailbox
+            .send(host.as_ref(), sender, recipient, second_id, file.clone())
+            .await?;
+        // An exact retry reconciles the committed endpoint and does not add a
+        // second delivery to the recipient's durable mailbox.
+        mailbox
+            .send(host.as_ref(), sender, recipient, first_id, file.clone())
+            .await?;
+
+        let page = mailbox.inbox(host.as_ref(), recipient, 0, 2).await?;
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].sequence, 1);
+        assert_eq!(page[0].message_id, first_id.to_string());
+        assert_eq!(page[1].sequence, 2);
+        assert_eq!(page[1].message_id, second_id.to_string());
+        assert!(
+            mailbox
+                .inbox(host.as_ref(), recipient, 2, 2)
+                .await?
+                .is_empty()
+        );
+        assert_eq!(
+            mailbox
+                .find_message(host.as_ref(), sender, recipient, first_id)
+                .await?,
+            Some(file.clone())
+        );
+
+        // task(2) and task(3) are siblings in the host fixture, so this
+        // endpoint is outside the sender's direct parent/child scope.
+        assert!(matches!(
+            mailbox
+                .send(host.as_ref(), task(2), task(3), operation(0x33), file,)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         Ok(())
     }
 
