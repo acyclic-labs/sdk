@@ -163,15 +163,21 @@ impl<T: ?Sized> PlatformServiceBounds for T {}
 
 /// Bounds for live task callbacks, which are thread-safe only on native
 /// targets. Browser callbacks stay on the local executor.
-pub(crate) trait PlatformTaskCallback {}
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) trait PlatformTaskCallback: Send + Sync {}
 #[cfg(not(target_arch = "wasm32"))]
 impl<T: Send + Sync> PlatformTaskCallback for T {}
 #[cfg(target_arch = "wasm32")]
+pub(crate) trait PlatformTaskCallback {}
+#[cfg(target_arch = "wasm32")]
 impl<T> PlatformTaskCallback for T {}
 
-pub(crate) trait PlatformTaskFuture {}
 #[cfg(not(target_arch = "wasm32"))]
-impl<T> PlatformTaskFuture for T {}
+pub(crate) trait PlatformTaskFuture: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send> PlatformTaskFuture for T {}
+#[cfg(target_arch = "wasm32")]
+pub(crate) trait PlatformTaskFuture {}
 #[cfg(target_arch = "wasm32")]
 impl<T> PlatformTaskFuture for T {}
 
