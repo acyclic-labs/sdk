@@ -1,0 +1,24 @@
+{
+  "Failed": 0,
+  "Format": "graphcoder.scoped-checkpoint.v1",
+  "Evidence": "target/graphcoder-qualification/qualification-tools-dependencies-restored",
+  "Limits": [
+    "Qualification receipt tooling only; no model/runtime/installed-artifact acceptance claim."
+  ],
+  "Files": [
+    {
+      "Name": "exit-code.txt",
+      "Sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+    },
+    {
+      "Name": "node.log",
+      "Sha256": "53764ead890b46e7de4f839db1279b3b0a3ff8d0d4af3dceb7d43d71be6fe6d1"
+    }
+  ],
+  "Skipped": 0,
+  "Outcome": "passed",
+  "Prerequisite": "Frozen-lockfile Bun installation with install scripts disabled and cache inside worktree.",
+  "Source": "e8d329944ce925ca1b4b588e2434249b588f54b7",
+  "Suite": "node --test scripts/graphcoder-qualification.test.mjs scripts/graphcoder-qualification-suite.test.mjs",
+  "Passed": 23
+}
