@@ -259,6 +259,14 @@ pub(crate) async fn check_version(binary: &Path) -> Result<()> {
             binary.display(),
         ))
     })?;
+    if !output.status.success() {
+        return Err(Error::Unsupported(format!(
+            "{} --version exited with {}: {}",
+            binary.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )));
+    }
     let version = String::from_utf8_lossy(&output.stdout);
     if version
         .split_whitespace()
@@ -300,6 +308,19 @@ impl Dirs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_version_probe_cannot_qualify_expected_version_text() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let binary = directory.path().join("failed-version");
+        std::fs::write(&binary, "#!/bin/sh\nprintf 'codex 0.155.1\\n'\nexit 7\n")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(check_version(&binary).await.is_err());
+        Ok(())
+    }
 
     #[tokio::test]
     async fn streaming_rejects_oversized_and_invalid_records() -> Result<()> {

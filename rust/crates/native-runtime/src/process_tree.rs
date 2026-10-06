@@ -551,7 +551,7 @@ mod tests {
             let mut buffer = [0; 128];
             match tree.read_stdout(&mut buffer).expect("read owned stdout") {
                 Some(0) => break,
-                Some(read) => bytes.extend_from_slice(&buffer[..read]),
+                Some(read) => bytes.extend_from_slice(buffer.get(..read).expect("valid pipe read")),
                 None => thread::sleep(Duration::from_millis(1)),
             }
             assert!(Instant::now() < deadline, "streaming output deadline");
@@ -980,6 +980,55 @@ mod platform {
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
         std::thread::sleep(std::time::Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[test]
+    #[allow(clippy::expect_used)]
+    fn denied_admission_still_observes_unassigned_child_exit() {
+        use windows_sys::Win32::Foundation::DuplicateHandle;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let guard = Guard::new().expect("create Job");
+        let mut restricted = std::ptr::null_mut();
+        // SAFETY: duplicate the live Job into this process without assign or
+        // terminate authority; the original guard remains independently owned.
+        assert_ne!(
+            unsafe {
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    guard.job,
+                    GetCurrentProcess(),
+                    &raw mut restricted,
+                    0,
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+        let mut restricted = Guard {
+            job: restricted,
+            active: true,
+        };
+        let mut command = super::tests::command("child", temporary.path());
+        command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP);
+        let mut child = command.spawn().expect("spawn suspended child");
+        // SAFETY: live handles; this real assignment must fail for lack of rights.
+        assert_eq!(
+            unsafe { AssignProcessToJobObject(restricted.job, child.as_raw_handle().cast()) },
+            0
+        );
+        let admission = io::Error::last_os_error();
+        let error = failed_admission(&mut child, &mut restricted, admission);
+        assert!(
+            child
+                .try_wait()
+                .expect("observe unassigned child")
+                .is_some()
+        );
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("cleanup unresolved"));
+        assert!(!temporary.path().join("tree-ready").exists());
     }
 
     fn resume_process(process_id: u32) -> io::Result<()> {
