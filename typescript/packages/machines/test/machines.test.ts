@@ -102,6 +102,12 @@ describe("Machines simulation", () => {
       { kind: "state", state: "running" }, { kind: "state", state: "suspended" }, { kind: "state", state: "running" },
     ]);
     expect((await provider.events(id, 1, 16)).events.map(event => event.sequence)).toEqual([2, 3]);
+    for (const unsafe of [-1, 1.5, 2 ** 53]) {
+      await expect(provider.events(id, unsafe, 16)).rejects.toBeInstanceOf(RangeError);
+      await expect(provider.usage(id, unsafe, 2 ** 53 - 1)).rejects.toBeInstanceOf(RangeError);
+      await expect(new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { throw new Error("unexpected fetch"); } })
+        .usage(id, 1, unsafe)).rejects.toBeInstanceOf(RangeError);
+    }
     const captured = await provider.checkpoint(id, idempotencyKey("checkpoint-full"));
     if (captured.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");
     expect(await provider.inspectCheckpoint(captured.checkpoint.id)).toEqual(captured.checkpoint);

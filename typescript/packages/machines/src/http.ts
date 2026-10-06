@@ -5,7 +5,7 @@ import type {
   MachinesHttpRoutes, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { operationId } from "./index.js";
-import { asPublic, usageOut } from "./simulator.js";
+import { asPublic, u64Number, usageOut } from "./simulator.js";
 
 export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -27,8 +27,8 @@ export class HttpMachinesProvider implements MachinesProvider {
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_SUSPENSION_POLICY", { machineId, policy, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_DESTROY", { machineId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("CHECKPOINTS_DESTROY", { checkpointId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#call("MACHINES_EVENTS", { machineId, afterSequence, limit }).then(asPublic<EventsOut, MachineEventPage>); }
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#call("MACHINES_USAGE", { machineId, startUnixMs, endUnixMs }).then(usageOut); }
+  async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#call("MACHINES_EVENTS", { machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit }).then(asPublic<EventsOut, MachineEventPage>); }
+  async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#call("MACHINES_USAGE", { machineId, startUnixMs: u64Number(startUnixMs, "startUnixMs"), endUnixMs: u64Number(endUnixMs, "endUnixMs") }).then(usageOut); }
   recover(idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("OPERATIONS_RECOVER", { idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   recoverOperation(idempotencyKey: IdempotencyKey): Promise<OperationId> { return this.#call("OPERATIONS_RECOVER_ID", { idempotencyKey }).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_INSPECT", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
