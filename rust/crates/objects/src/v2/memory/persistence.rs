@@ -1,8 +1,9 @@
 //! Private v2 state deltas. Bodies remain authenticated physical references.
 use super::super::response;
 use super::*;
+use crate::LocalObjectsLimits;
 use crate::body::{LocalBodyLocation, LocalBodyReference};
-use crate::{LocalDurability, LocalObjectsLimits};
+use crate::physical::native_durability;
 use fs2::FileExt;
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -184,14 +185,8 @@ pub(super) fn response_kind<R>() -> Result<u32, Error> {
     }
 }
 
-fn durability(value: LocalDurability) -> acyclic_native_runtime::Durability {
-    match value {
-        LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
-        LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,
-    }
-}
 fn sync(file: &File, limits: LocalObjectsLimits) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, durability(limits.durability))
+    acyclic_native_runtime::sync_file(file, native_durability(limits.durability))
 }
 fn corrupt<T>(_: T) -> LocalOpenError {
     LocalOpenError::Corrupt
@@ -360,7 +355,7 @@ fn load_header(
         file.write_all(blake3::hash(&encoded).as_bytes())?;
         file.write_all(&encoded)?;
         sync(file, limits)?;
-        acyclic_native_runtime::sync_parent(root, durability(limits.durability))?;
+        acyclic_native_runtime::sync_parent(root, native_durability(limits.durability))?;
         return Ok(header);
     }
     let mut magic = vec![0; MAGIC.len()];
