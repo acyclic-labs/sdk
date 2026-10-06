@@ -76,7 +76,7 @@ export function validateMatrix(matrix) {
   return matrix;
 }
 
-function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final = false, gitRoot } = {}) {
+function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final = false, gitRoot, matrixIds } = {}) {
   let descriptor;
   try {
     descriptor = JSON.parse(readFileSync(resolve(suite.descriptor_path), "utf8"));
@@ -97,6 +97,7 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
     const coverageIds = new Set();
     for (const [index, item] of descriptor.coverage.entries()) {
       if (!item || typeof item !== "object" || typeof item.requirement_id !== "string" || !REQUIREMENT_ID.test(item.requirement_id) || typeof item.assertion !== "string" || !ASSERTION_NAME.test(item.assertion)) failure(`suite ${suite.id} final descriptor coverage ${index} is invalid`);
+      if (matrixIds !== undefined && !matrixIds.has(item.requirement_id)) failure(`suite ${suite.id} final descriptor coverage ${item.requirement_id} is not a locked requirement`);
       if (coverageIds.has(item.requirement_id)) failure(`suite ${suite.id} final descriptor repeats requirement ${item.requirement_id}`);
       coverageIds.add(item.requirement_id);
     }
@@ -134,7 +135,7 @@ function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifi
   return descriptor;
 }
 
-function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree, gitOps) {
+function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree, gitOps, matrixIds) {
   if (!suite || typeof suite !== "object") failure(`suite ${index} is not an object`);
   for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "execution_kind", "status", "started_at", "completed_at", "transcript_path", "transcript_sha256"]) {
     if (typeof suite[field] !== "string" || suite[field].trim() === "") failure(`suite ${index} lacks ${field}`);
@@ -153,7 +154,7 @@ function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qua
     const actual = fileDigest(path);
     if (actual !== expected) failure(`suite ${suite.id} ${kind} digest mismatch: ${path}`);
   }
-  const descriptor = validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final, gitRoot: final ? gitOps.gitRoot() : undefined });
+  const descriptor = validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree, { final, gitRoot: final ? gitOps.gitRoot() : undefined, matrixIds });
   if (final) {
     const evidence = suite.execution_evidence;
     if (!evidence || evidence.marker !== "graphcoder-executed-count" || !Number.isInteger(evidence.executed_count) || !Number.isInteger(evidence.minimum_executed) || !Number.isInteger(evidence.raw_exit_code) || evidence.signal !== null || !Array.isArray(evidence.cases)) {
@@ -267,9 +268,10 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   const suiteIds = new Set();
   const suiteDescriptors = new Map();
   const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact?.path, artifact]));
+  const matrixIds = new Set(matrix.entries.map(entry => entry.id));
   const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, suite] of receipt.suites.entries()) {
-    suiteDescriptors.set(suite.id, validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree, gitOps));
+    suiteDescriptors.set(suite.id, validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree, gitOps, matrixIds));
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
@@ -284,7 +286,6 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   }
   const casesById = new Map();
   const suiteUsage = new Set();
-  const matrixIds = new Set(matrix.entries.map(entry => entry.id));
   for (const record of receipt.cases) {
     if (casesById.has(record?.id)) failure(`duplicate case id ${record?.id}`);
     casesById.set(record?.id, record);
