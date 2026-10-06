@@ -542,7 +542,11 @@ function adaptFs(
 ): NativeFsEngine {
   const targetMount = nativeMount(raw.capabilities.platform, raw.capabilities.nativeMount);
   const generationAdapter = createGenerationAdapter(
-    copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, "filesystem engine",
+    copyWorkspaceStat,
+    copyWorkspaceDirectoryPage,
+    copyWorkspaceExtentPlan,
+    "filesystem engine",
+    validateU32Bound,
   );
   const changeSetAdapter = createChangeSetAdapter(
     generationAdapter.adaptGeneration, nativeGenerationDiff, "filesystem engine",

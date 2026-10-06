@@ -38,9 +38,6 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
 import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
 
-const { adaptGeneration, rawGeneration } = createGenerationAdapter(
-  copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
-);
 const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
 const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
 const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "WASM join");
@@ -49,6 +46,14 @@ export function adaptWasmFs(
   raw: WasmRawFs,
   validatePositiveBound: (value: number, label: string) => void = requirePositiveInteger,
 ): FsVolumeEngine {
+  const generationAdapter = createGenerationAdapter(
+    copyWorkspaceStat,
+    copyWorkspaceDirectoryPage,
+    copyWorkspaceExtentPlan,
+    "WASM filesystem",
+    validatePositiveBound,
+  );
+  const { adaptGeneration } = generationAdapter;
   const { adaptChangeSet } = createChangeSetAdapter(
     adaptGeneration,
     generationDiff,
@@ -59,11 +64,11 @@ export function adaptWasmFs(
     capabilities: raw.capabilities,
     async createWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.createWorkspace(name), validatePositiveBound, adaptChangeSet);
+      return adaptWorkspace(await raw.createWorkspace(name), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async openWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.openWorkspace(name), validatePositiveBound, adaptChangeSet);
+      return adaptWorkspace(await raw.openWorkspace(name), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     objectCacheStats(): ObjectCacheStats { return objectCacheStats(raw.objectCacheStats()); },
     clearObjectCache(): void { raw.clearObjectCache(); },
@@ -256,7 +261,9 @@ function adaptWorkspace(
   raw: WasmRawWorkspace,
   validatePositiveBound: (value: number, label: string) => void,
   adaptChangeSet: (raw: WasmRawChangeSet) => FsChangeSet,
+  generationAdapter: ReturnType<typeof createGenerationAdapter>,
 ): FsWorkspace {
+  const { adaptGeneration, rawGeneration } = generationAdapter;
   const workspace: FsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
@@ -264,11 +271,11 @@ function adaptWorkspace(
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-      return adaptWorkspace(await raw.fork(destination, idempotencyKey), validatePositiveBound, adaptChangeSet);
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
-      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)), validatePositiveBound, adaptChangeSet);
+      return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation)), validatePositiveBound, adaptChangeSet, generationAdapter);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");

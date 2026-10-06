@@ -285,6 +285,21 @@ describe("WASM adapter canonical boundaries", () => {
     }
   });
 
+  test("rejects oversized generation page bounds before WASM numeric conversion", async () => {
+    const engine = await openMemoryFs();
+    try {
+      const workspace = await engine.createWorkspace("bounds");
+      await workspace.write("/bounded", Uint8Array.of(1));
+      const generation = await workspace.sync();
+      await expect(generation.listDirectory("/", undefined, 4_294_967_296))
+        .rejects.toThrow("positive Rust-owned u32 bound");
+      await expect(generation.planExtents("/bounded", 0n, 1n, 4_294_967_296))
+        .rejects.toThrow("positive Rust-owned u32 bound");
+    } finally {
+      await engine.close();
+    }
+  });
+
   test("returns generated checkout DTOs with native byte and bigint values", async () => {
     const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
     const rawVolume = await rawFs.createVolume(portableVolumeOptions("ephemeral"));
