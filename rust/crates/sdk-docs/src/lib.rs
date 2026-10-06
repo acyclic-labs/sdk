@@ -3331,14 +3331,21 @@ fn is_private_sdk_crate(path: &Path) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    if directory_name.starts_with("sdk-") {
+    // The unified `acyclic-sdk` facade is an implementation/package
+    // aggregation point, not a separately navigable service family.  Its
+    // constituent family crates are the documentation source for the public
+    // site.  Keep the facade out of the landing catalog so a workspace
+    // checkout cannot silently grow a twentieth, duplicate family route.
+    if directory_name == "sdk" || directory_name.starts_with("sdk-") {
         return true;
     }
     let Ok(manifest) = fs::read_to_string(path.join("Cargo.toml")) else {
         return false;
     };
     let package_name = manifest_value(&manifest, "name").unwrap_or_default();
-    package_name.starts_with("sdk-") || package_name.starts_with("acyclic-sdk-")
+    package_name == "acyclic-sdk"
+        || package_name.starts_with("sdk-")
+        || package_name.starts_with("acyclic-sdk-")
 }
 
 fn receipt_path(json_path: &Path) -> PathBuf {
@@ -5982,6 +5989,12 @@ mod tests {
         let current = documentation_route_identity("acyclic-inference", Some("inference_sdk"));
         assert_eq!(current.public_slug, "inference");
         assert!(current.historical_slugs.is_empty());
+    }
+
+    #[test]
+    fn unified_sdk_facade_is_not_a_documentation_family() {
+        assert!(is_private_sdk_crate(Path::new("rust/crates/sdk")));
+        assert!(is_private_sdk_crate(Path::new("rust/crates/sdk-contract-wire")));
     }
 
     #[test]
