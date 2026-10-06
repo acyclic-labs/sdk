@@ -16,7 +16,8 @@ New-Item -ItemType Directory -Force -Path $evidence | Out-Null
 $runId = [guid]::NewGuid().ToString('N')
 $cases = if ($Model -eq 'ActivationRecovery') { @(
     @{ Name = 'safe'; Config = 'ActivationRecovery.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
-    @{ Name = 'unsafe'; Config = 'ActivationRecoveryUnsafe.cfg'; Exit = 12; Expected = 'Invariant AdmittedClaimRetained is violated.' }
+    @{ Name = 'unsafe'; Config = 'ActivationRecoveryUnsafe.cfg'; Exit = 12; Expected = 'Invariant AdmittedClaimRetained is violated.' },
+    @{ Name = 'unsafe-unknown-before-dispatch'; Config = 'ActivationRecoveryUnsafeUnknown.cfg'; Exit = 12; Expected = 'Invariant UnknownRequiresObservedEffect is violated.' }
 ) } elseif ($Model -eq 'ForkBoundary') { @(
     @{ Name = 'safe'; Config = 'ForkBoundary.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'safe-single-selected'; Config = 'ForkBoundarySingleSelected.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
@@ -37,7 +38,10 @@ $cases = if ($Model -eq 'ActivationRecovery') { @(
     @{ Name = 'unsafe-depth'; Config = 'SwarmBudgetUnsafeDepth.cfg'; Exit = 12; Expected = 'Invariant DepthBounded is violated.' }
 ) } elseif ($Model -eq 'SwarmPublication') { @(
     @{ Name = 'safe'; Config = 'SwarmPublication.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
-    @{ Name = 'unsafe-stale'; Config = 'SwarmPublicationUnsafeStale.cfg'; Exit = 12; Expected = 'Invariant PublicationAtCapturedGeneration is violated.' }
+    @{ Name = 'unsafe-stale'; Config = 'SwarmPublicationUnsafeStale.cfg'; Exit = 12; Expected = 'Invariant PublicationAtCapturedGeneration is violated.' },
+    @{ Name = 'unsafe-reservation'; Config = 'SwarmPublicationUnsafeReservation.cfg'; Exit = 12; Expected = 'Invariant PublicationRequiresReservation is violated.' },
+    @{ Name = 'unsafe-alias'; Config = 'SwarmPublicationUnsafeAlias.cfg'; Exit = 12; Expected = 'Invariant ActivationRequiresAlias is violated.' },
+    @{ Name = 'unsafe-cancellation'; Config = 'SwarmPublicationUnsafeCancellation.cfg'; Exit = 12; Expected = 'Invariant CancelledNeverPublishes is violated.' }
 ) } elseif ($Model -eq 'SwarmIntegration') { @(
     @{ Name = 'safe'; Config = 'SwarmIntegration.cfg'; Exit = 0; Expected = 'Model checking completed. No error has been found.' },
     @{ Name = 'unsafe-sibling'; Config = 'SwarmIntegrationUnsafeSibling.cfg'; Exit = 12; Expected = 'Invariant DirectIntegrationAuthority is violated.' },

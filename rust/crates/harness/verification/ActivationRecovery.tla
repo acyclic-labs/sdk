@@ -1,7 +1,7 @@
 ------------------------ MODULE ActivationRecovery ------------------------
 EXTENDS Naturals
 
-CONSTANTS Owners, UnsafeFailureRelease
+CONSTANTS Owners, UnsafeFailureRelease, UnsafeUnknownBeforeDispatch
 VARIABLES claim, owner, mode, started, dispatched, outcome, reported, cancelled
 
 vars == <<claim, owner, mode, started, dispatched, outcome, reported, cancelled>>
@@ -44,7 +44,9 @@ UnavailableJournalFailure == /\ claim /\ owner # 0
                              /\ UNCHANGED <<started, dispatched, outcome, reported, cancelled>>
 
 Crash == /\ owner # 0 /\ owner' = 0 /\ mode' = "none"
-         /\ outcome' = IF ~reported /\ dispatched = 1 THEN "indeterminate" ELSE outcome
+         /\ outcome' = IF ~reported /\
+                              (dispatched = 1 \/ UnsafeUnknownBeforeDispatch)
+                         THEN "indeterminate" ELSE outcome
          /\ UNCHANGED <<claim, started, dispatched, reported, cancelled>>
 
 \* A cold owner can reconcile an admitted operation, but cannot redispatch it.
@@ -102,4 +104,5 @@ CancellationNeverReportsSuccess == cancelled => ~reported
 CancellationBeforeAdmissionHasNoDispatch == (cancelled /\ ~started) => dispatched = 0
 CancellationAfterAdmissionRetainsClaim == (cancelled /\ started) => claim
 RecoveryDoesNotRedispatch == dispatched <= 1
+UnknownRequiresObservedEffect == outcome = "indeterminate" => dispatched = 1
 =============================================================================

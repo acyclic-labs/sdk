@@ -158,9 +158,16 @@ files do not depend on symbolic function expressions:
   The three unsafe configurations enable exactly one over-allocation, over-step,
   or over-depth transition and must violate the corresponding invariant.
 * `SwarmPublication.tla` has one child and parent generations `0..1`. It
-  captures the parent's generation at fork and checks that publication uses
-  that captured generation. `SwarmPublicationUnsafeStale.cfg` enables a stale
-  publication and must violate `PublicationAtCapturedGeneration`.
+  requires a durable child-budget reservation before seed commit, keeps the
+  committed seed visible while its Git compatibility alias is still missing,
+  and gates activation reservation on that alias. `RetryAlias` is an
+  idempotent lost-ack retry. It also models resolver cancellation before seed
+  commit and checks that cancellation cannot publish a seed. The model retains
+  the captured-generation publication check. `SwarmPublicationUnsafeStale.cfg`,
+  `SwarmPublicationUnsafeReservation.cfg`,
+  `SwarmPublicationUnsafeAlias.cfg`, and
+  `SwarmPublicationUnsafeCancellation.cfg` each enable one corresponding
+  counterexample.
 * `SwarmMessage.tla` has one durable message identity, delivery count `0..2`,
   and a publication count `0..2`. It checks admission before delivery,
   cancellation before delivery, at-most-once delivery, and at-most-once
@@ -200,9 +207,9 @@ for this bounded run, not a proof of the production implementation.
 | --- | --- | --- | --- |
 | Authority | four agents; directed parent map; four message and three wait identities; transcript inheritance flags | `SwarmAuthority` | sibling/unauthorized, root self-target, and inherited-prefix authority violations cover `DirectMessageAuthority` / `SelfMessageAuthority` / `TranscriptInheritanceDoesNotGrantAuthority` |
 | Budget | five agents; depth two; total allocation three; two steps per agent | `SwarmBudget` | over-allocation, over-step, and over-depth violate their conservation/bound invariants |
-| Publication | one child; generations `0..1` | `SwarmPublication` | stale publication violates `PublicationAtCapturedGeneration` |
+| Publication and alias activation | one child; generations `0..1`; reservation, seed, alias, and activation gates | `SwarmPublication` | stale generation, missing reservation, activation without alias, and publish-after-resolver-cancellation violate their scoped invariants |
 | Message delivery | one durable message; delivery count `0..2` | `SwarmMessage` | duplicate and orphan delivery violate `AtMostOnce` / `DeliveredRequiresAdmission`; pre-admission cancellation delivery violates `PreAdmissionCancellationNeverDelivered` while admitted delivery may finish |
-| Activation recovery | one operation; two owner identities | `ActivationRecovery` | dropping an admitted claim violates `AdmittedClaimRetained` |
+| Activation recovery | one operation; two owner identities; dispatch count `0..1` | `ActivationRecovery` | dropping an admitted claim and reporting an unknown outcome before a provider effect violate their scoped invariants |
 | Fork boundary | two possible children; selected subset; sequential prepare/publish; retry dedup; three parent revisions | `ForkBoundary` | early dispatch, early child request, mutable capture, duplicate publication, and stale owner violate their boundary invariants |
 | Integration and approval | four agents; root `1`; children `2,4`; grandchild `3`; generations `0..1`; explicit integrate/discard | `SwarmIntegration` | sibling integration, grandchild writeback, stale approval, and mismatched approval each reach an effect and violate the scoped invariant |
 

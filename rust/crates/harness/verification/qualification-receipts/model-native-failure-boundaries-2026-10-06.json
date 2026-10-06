@@ -1,0 +1,110 @@
+{
+  "schema": "bounded-tlc-qualification/v1",
+  "generated_utc": "2026-10-06T01:41:45.2468807Z",
+  "tool": {
+    "path": "target/formal-tools/tla2tools-1.7.4.jar",
+    "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "expected_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+    "runner": "rust/crates/harness/verification/check-models.ps1",
+    "workers": 1,
+    "java_heap_mb": 512,
+    "fingerprint_index": 0,
+    "seed": 1
+  },
+  "scope": {
+    "models": [
+      "SwarmPublication",
+      "ActivationRecovery"
+    ],
+    "cases": 8,
+    "safe_cases": 2,
+    "expected_counterexamples": 6,
+    "bounds": "SwarmPublication: one child, parent generations 0..1, Boolean seed/alias/reservation gates; ActivationRecovery: one operation, two owners, dispatch count 0..1.",
+    "claims": "finite bounded safety only; no Rust refinement, liveness, unbounded recursion, OS confinement, provider guarantee, or runtime-trace qualification",
+    "covered": "seed committed before alias acknowledgement, idempotent alias retry, budget reservation before seed commit, alias-gated activation reservation, resolver cancellation before seed commit, post-effect indeterminate outcome, retained activation claim, and no redispatch",
+    "runtime_gap": "Native overflow and alias recovery are exercised by separate runtime tests; this receipt qualifies only the bounded transition models."
+  },
+  "sources": {
+    "rust/crates/harness/verification/SwarmPublication.tla": "ae8d70c3fd3f71b7f3e9c0b89eae06a031b2fd3f62bfadc0ac4a5a9255027b50",
+    "rust/crates/harness/verification/SwarmPublication.cfg": "42fc900c77c8eae7f5ceec290196fc050cd18733a3cfb0b0765e8adb5a0d25b1",
+    "rust/crates/harness/verification/SwarmPublicationUnsafeStale.cfg": "dcc8779c5dc0668d321b85fe5986ec4759a5078716e0952a298062586faa25ae",
+    "rust/crates/harness/verification/SwarmPublicationUnsafeReservation.cfg": "d58a34b39be7ae3ae74bf4d34207ed778b6125926f265624f03841d7257c6856",
+    "rust/crates/harness/verification/SwarmPublicationUnsafeAlias.cfg": "71e781503e7b480a1b5f2ff06358551fd6b2e3983b2ad426ec64c1fd2f5bd6a4",
+    "rust/crates/harness/verification/SwarmPublicationUnsafeCancellation.cfg": "c92c2804c7b4410238bcc5bf539fcffe51d2d4bd93b96483fe6e9dac31e4f6d1",
+    "rust/crates/harness/verification/ActivationRecovery.tla": "9821d956b0003d9f2dcf45642215bb6265ea2d5439edceb1b3342a3faf48e8c5",
+    "rust/crates/harness/verification/ActivationRecovery.cfg": "ddcb1ccf619bfdb43365aa4c89b431c656db017879016635a1da6d4df90581ef",
+    "rust/crates/harness/verification/ActivationRecoveryUnsafe.cfg": "8f062bba4694b017849ca384d95a88c730b8a06ac2adf345dd6d6b55c8a30c5b",
+    "rust/crates/harness/verification/ActivationRecoveryUnsafeUnknown.cfg": "433e1c754397154a9067efc967b8098bb7c3d450cf673341c7e86a98f835f2b8",
+    "rust/crates/harness/verification/check-models.ps1": "6bf3f090197222dc4aaacae615b230178dbf0efcf7e2db882848c2fc452c38c8",
+    "rust/crates/harness/verification/README.md": "9520217c2d94f0aa25820910ff6a8fc6c1323397c10e277d140d85b207e3774d",
+    "rust/crates/harness/verification/refinement-audit-2026-10-06.md": "533e92fc38143f03f7033c2df5b6ec23b432a5e4d6b8280ae5e59c1ec47c8894"
+  },
+  "results": [
+    {
+      "path": "target\\formal-evidence\\swarm-publication-recovery-20261006-qualified\\142fb204faa3430e854a7ec52fdb1388-safe.log",
+      "sha256": "621bf06e49ec8cc90e9d30b4deca3b831f4c334c9b93ab0ca8859c102a1f4553",
+      "status": "safe",
+      "states_generated": 36,
+      "distinct_states": 24,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\swarm-publication-recovery-20261006-qualified\\142fb204faa3430e854a7ec52fdb1388-unsafe-stale.log",
+      "sha256": "8a5cb4a7fa0567f14be53789b85b430049e22cf1351299783bf7c5c79f71a3c2",
+      "status": "expected-counterexample",
+      "states_generated": 36,
+      "distinct_states": 23,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\swarm-publication-recovery-20261006-qualified\\142fb204faa3430e854a7ec52fdb1388-unsafe-reservation.log",
+      "sha256": "1b7d1f11e7334639ebbfd70f9c5cd8c82c81277d20c7bf9af8f76f6189d5f5f3",
+      "status": "expected-counterexample",
+      "states_generated": 3,
+      "distinct_states": 3,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\swarm-publication-recovery-20261006-qualified\\142fb204faa3430e854a7ec52fdb1388-unsafe-alias.log",
+      "sha256": "0523f7f31ecd2ff4abc7f504317e2aefdf9261830c94825a0fc5d9366e9d253d",
+      "status": "expected-counterexample",
+      "states_generated": 9,
+      "distinct_states": 8,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\swarm-publication-recovery-20261006-qualified\\142fb204faa3430e854a7ec52fdb1388-unsafe-cancellation.log",
+      "sha256": "4e5f99cfa5d71bf873b4fd7a6a4e4b9d66a6fff9a5d02b8ee893df0d18f37c69",
+      "status": "expected-counterexample",
+      "states_generated": 14,
+      "distinct_states": 11,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\activation-effect-recovery-20261006-qualified\\16de47224bd54267b684256b5941e893-safe.log",
+      "sha256": "bb6eab2801a88f21435db4b15366dcc89fd11cba55f3482d92a175235310b90e",
+      "status": "safe",
+      "states_generated": 88,
+      "distinct_states": 37,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\activation-effect-recovery-20261006-qualified\\16de47224bd54267b684256b5941e893-unsafe.log",
+      "sha256": "a520496c9fdb9bf0d13f1281f056fb402d931ee5f7dcf14f59e2ed2b54aee01f",
+      "status": "expected-counterexample",
+      "states_generated": 16,
+      "distinct_states": 11,
+      "completed": true
+    },
+    {
+      "path": "target\\formal-evidence\\activation-effect-recovery-20261006-qualified\\16de47224bd54267b684256b5941e893-unsafe-unknown-before-dispatch.log",
+      "sha256": "2231efed1b2dfd99d1d7f24bf9994c6638f65c7aa59048e1cec73ce3fdaf310e",
+      "status": "expected-counterexample",
+      "states_generated": 8,
+      "distinct_states": 8,
+      "completed": true
+    }
+  ],
+  "source_tree_commit": "d20adfbfa",
+  "qualification_source_head_before_commit": "d20adfbfa"
+}

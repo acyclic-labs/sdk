@@ -19,6 +19,27 @@ need to establish those correspondences; the corrections are bounded model
 changes, not a Rust refinement proof. The model does not claim journal replay,
 rollback of a partially prepared batch, or activation-claim recovery.
 
+## Native seed and activation failure boundaries
+
+The native recursive failure at `1f5baa1c8` occurred after physical
+preparations returned and during seed boundary verification. The later alias
+recovery path establishes a separate durable edge: the parent seed can already
+be committed while the Git compatibility alias is absent, and retrying the
+same registration must repair that alias without redispatching the child.
+`SwarmPublication.tla` now represents that state explicitly. It also requires
+the child-budget reservation before seed commit and the alias before activation
+reservation. `CancelResolver` models the pre-seed cancellation path that
+releases the reservation; the unsafe case publishes after that cancellation
+linearization.
+
+`ActivationRecovery.tla` already represented the post-effect, pre-result
+journal boundary: `Dispatch` records one provider attempt, `Crash` changes the
+outcome to `indeterminate`, and `Recover` may reconcile without redispatching.
+The added `UnknownRequiresObservedEffect` invariant and negative control make
+that assumption executable. These are bounded transition checks only. They do
+not prove the native overflow path, provider guarantees, alias storage
+implementation, resolver cancellation timing, or Rust refinement.
+
 ## Findings
 
 ### Message cancellation has two linearization cases
