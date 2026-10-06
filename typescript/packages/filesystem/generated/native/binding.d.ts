@@ -744,10 +744,15 @@ export declare class NativeGeneration {
    * Returns path, kind, bound, authentication, or storage failures.
    */
   read(path: string, maximumBytes: bigint): Promise<Buffer>
+  /** Reads an exact bounded byte range from this immutable generation. */
   readRange(path: string, offset: bigint, length: bigint): Promise<Buffer>
+  /** Returns authenticated metadata for one path in this immutable generation. */
   stat(path: string): Promise<NativeWorkspaceStat>
+  /** Lists one bounded directory page using the caller's entry cursor. */
   listDirectory(path: string, after: NativeWorkspaceName | undefined | null, maximumEntries: number): Promise<NativeWorkspaceDirectoryPage>
+  /** Reads the raw target bytes of a symbolic link without following it. */
   readSymbolicLink(path: string): Promise<Buffer>
+  /** Plans bounded sparse extents for a file range in this immutable generation. */
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeWorkspaceExtentPlan>
   /**
    * Retains this exact generation under one opaque identity.
@@ -1102,9 +1107,23 @@ export declare class NativeWorkspace {
    * Returns path, kind, bound, authentication, or storage failures.
    */
   read(path: string, maximumBytes: bigint): Promise<Buffer>
+  /**
+   * Reads an exact bounded byte range from a regular file.
+   *
+   * `offset` and `length` are unsigned BigInts so large files retain their
+   * full Rust range without JavaScript number conversion.
+   */
   readRange(path: string, offset: bigint, length: bigint): Promise<Buffer>
+  /** Returns authenticated metadata for one workspace path. */
   stat(path: string): Promise<NativeWorkspaceStat>
+  /** Reads the raw target bytes of a symbolic link without following it. */
   readSymbolicLink(path: string): Promise<Buffer>
+  /**
+   * Plans bounded sparse extents for a file range without reading content.
+   *
+   * The result preserves logical offsets and reports at most
+   * `maximum_spans` allocated spans.
+   */
   planExtents(path: string, offset: bigint, length: bigint, maximumSpans: number): Promise<NativeWorkspaceExtentPlan>
   /**
    * Atomically creates or replaces one complete file.
@@ -1932,27 +1951,41 @@ export interface NativeOperationReconcileOptions {
 
 /** Result of closing one operation-window lease. */
 export interface NativeOperationWindowClose {
+  /** Stable close outcome name. */
   kind: string
+  /** Leases that remain open after the close attempt. */
   remaining?: number
+  /** Reconciliation ticket when the close remains pending. */
   ticket?: Buffer
+  /** Generation retained by the closing window. */
   pinnedParent?: Buffer
+  /** Generation selected after reconciliation. */
   pendingParent?: Buffer
 }
 
 /** One overlapping filesystem-tool lease. */
 export interface NativeOperationWindowLease {
+  /** Workspace whose generation is pinned by this lease. */
   workspaceId: Buffer
+  /** Stable lease identity used for close and recovery. */
   leaseId: Buffer
+  /** Parent generation retained while the lease is active. */
   pinnedParent: Buffer
+  /** Absolute expiration time in milliseconds. */
   expiresAtMillis: bigint
 }
 
 /** Stable, compact operation-window phase projection. */
 export interface NativeOperationWindowPhase {
+  /** Stable phase name such as `open`, `closing`, or `closed`. */
   kind: string
+  /** Reconciliation ticket when close is pending. */
   ticket?: Buffer
+  /** Generation pinned by the active window. */
   pinnedParent?: Buffer
+  /** Generation waiting to become the active parent. */
   pendingParent?: Buffer
+  /** Number of leases that still hold the window open. */
   activeLeaseCount?: number
 }
 
@@ -2140,16 +2173,27 @@ export interface NativeStat {
 
 /** One exact transaction dependency conflict. */
 export interface NativeTransactionConflict {
+  /** Stable conflict region category. */
   region: string
+  /** File identity involved in a file conflict. */
   fileId?: Buffer
+  /** Directory identity involved in a directory conflict. */
   directoryId?: Buffer
+  /** Logical byte offset involved in a range conflict. */
   offset?: bigint
+  /** Logical byte length involved in a range conflict. */
   length?: bigint
+  /** Sparse extent target involved in an extent conflict. */
   sparseTarget?: string
+  /** Encoded name involved in a namespace conflict. */
   name?: NativeWorkspaceName
+  /** Entry bound involved in a directory quota conflict. */
   maximumEntries?: number
+  /** Human-readable usage category for the conflict. */
   usage: string
+  /** Expected authenticated value. */
   expected?: Buffer
+  /** Actual authenticated value observed at rebase time. */
   actual?: Buffer
 }
 
@@ -2349,55 +2393,85 @@ export interface NativeWorkspaceCommit {
 
 /** One child in a bounded directory page. */
 export interface NativeWorkspaceDirectoryEntry {
+  /** Exact child name and encoding. */
   name: NativeWorkspaceName
+  /** Stable child file identity. */
   fileId: Buffer
+  /** Authenticated child kind. */
   kind: string
 }
 
 /** One bounded authenticated directory page. */
 export interface NativeWorkspaceDirectoryPage {
+  /** Entries returned for this bounded page. */
   entries: Array<NativeWorkspaceDirectoryEntry>
+  /** Whether another page follows the caller's cursor. */
   hasMore: boolean
 }
 
 /** One bounded topology-free sparse extent plan. */
 export interface NativeWorkspaceExtentPlan {
+  /** Ordered bounded spans covering the requested logical range. */
   spans: Array<NativeWorkspaceExtentSpan>
 }
 
 /** One topology-free sparse extent span. */
 export interface NativeWorkspaceExtentSpan {
+  /** Logical byte offset of this span. */
   offset: bigint
+  /** Logical byte length of this span. */
   length: bigint
+  /** Exclusive logical end of the source range. */
   sourceEnd: bigint
+  /** Authenticated extent kind, such as allocated or sparse. */
   kind: string
 }
 
 /** One durable workspace-lineage record. */
 export interface NativeWorkspaceLineageRecord {
+  /** Schema version for this lineage projection. */
   version: number
+  /** Revision that authenticated the lineage observation. */
   revision: bigint
+  /** Stable workspace identity. */
   workspaceId: Buffer
+  /** Customer-visible workspace name. */
   workspaceName: string
+  /** Parent workspace identity when this workspace was forked. */
   parentWorkspaceId?: Buffer
+  /** Parent workspace name when this workspace was forked. */
   parentWorkspaceName?: string
+  /** Generation at which the fork was created. */
   forkGeneration: Buffer
+  /** Initial generation selected for the workspace. */
   initialGeneration: Buffer
 }
 
 /** Scalar cross-profile metadata and opaque-payload presence. */
 export interface NativeWorkspaceMetadata {
+  /** POSIX permission bits when available. */
   posixMode?: number
+  /** POSIX owner identifier when available. */
   posixUid?: number
+  /** POSIX group identifier when available. */
   posixGid?: number
+  /** POSIX flags when available. */
   posixFlags?: bigint
+  /** Windows attribute mask when available. */
   windowsAttributes?: number
+  /** Creation timestamp in Unix nanoseconds when available. */
   createdNs?: bigint
+  /** Modification timestamp in Unix nanoseconds when available. */
   modifiedNs?: bigint
+  /** Access timestamp in Unix nanoseconds when available. */
   accessedNs?: bigint
+  /** Metadata-change timestamp in Unix nanoseconds when available. */
   changedNs?: bigint
+  /** Whether named attributes are present. */
   hasNamedAttributes: boolean
+  /** Whether an access-control list is present. */
   hasAcl: boolean
+  /** Whether an opaque security descriptor is present. */
   hasSecurityDescriptor: boolean
 }
 
@@ -2413,7 +2487,9 @@ export interface NativeWorkspaceMountOptions {
 
 /** One exact encoded directory name. */
 export interface NativeWorkspaceName {
+  /** Encoding used for the path component bytes. */
   encoding: string
+  /** Exact path component bytes in that encoding. */
   bytes: Buffer
 }
 
@@ -2444,9 +2520,24 @@ export interface NativeWorkspaceRebaseResult {
 
 /** One exact customer-visible path stat without storage topology. */
 export interface NativeWorkspaceStat {
+  /** Stable file identity. */
   fileId: Buffer
+  /** Authenticated file kind. */
   kind: string
+  /** Number of directory links to this file. */
   linkCount: bigint
+  /** Logical content length for regular files. */
   logicalBytes?: bigint
+  /** Cross-platform metadata projection. */
   metadata: NativeWorkspaceMetadata
 }
+
+/**
+ * Validates one positive `u32` request bound before JavaScript numeric
+ * conversion can truncate or wrap it.
+ *
+ * The native and WASM adapters use the same Rust-owned page-bound contract;
+ * native callers have no negotiated page size, so the representable `u32`
+ * range is the admissible maximum at this boundary.
+ */
+export declare function validateHostedPageBound(value: number): void

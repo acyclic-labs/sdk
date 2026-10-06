@@ -105,6 +105,7 @@ type NativeAdapterScope = {
   readonly rawGeneration: typeof rawGeneration;
   readonly adaptChangeSet: typeof adaptChangeSet;
   readonly workspaceHandles: WeakMap<FsWorkspace, NativeRawWorkspace>;
+  readonly validateU32Bound: (value: number, label: string) => void;
 };
 
 const nativeScope: NativeAdapterScope = {
@@ -112,6 +113,7 @@ const nativeScope: NativeAdapterScope = {
   rawGeneration,
   adaptChangeSet,
   workspaceHandles,
+  validateU32Bound: requirePositiveInteger,
 };
 const workspaceScopes = new WeakMap<FsWorkspace, NativeAdapterScope>();
 type NativeFsHandle = { readonly raw: NativeRawFs; readonly scope: NativeAdapterScope };
@@ -202,6 +204,16 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
       maximumInFlight: options.objectCache.maximumInFlight,
       maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
     }),
+    (value, label) => {
+      try {
+        binding.validateHostedPageBound(value);
+      } catch (error) {
+        if (error instanceof Error && error.message.length > 0) {
+          throw new RangeError(`${label} is invalid: ${error.message}`);
+        }
+        throw error;
+      }
+    },
   );
 }
 
@@ -524,7 +536,10 @@ function gitCommitBytes(identity: GitCommitIdentity): Uint8Array {
   );
 }
 
-function adaptFs(raw: NativeRawFs): NativeFsEngine {
+function adaptFs(
+  raw: NativeRawFs,
+  validateU32Bound: (value: number, label: string) => void = requirePositiveInteger,
+): NativeFsEngine {
   const targetMount = nativeMount(raw.capabilities.platform, raw.capabilities.nativeMount);
   const generationAdapter = createGenerationAdapter(
     copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, "filesystem engine",
@@ -536,6 +551,7 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     ...generationAdapter,
     adaptChangeSet: changeSetAdapter.adaptChangeSet,
     workspaceHandles: new WeakMap<FsWorkspace, NativeRawWorkspace>(),
+    validateU32Bound,
   };
   const capabilities: EngineCapabilities = {
     version: raw.capabilities.version,
@@ -939,6 +955,7 @@ function adaptWorkspace(
       nativeBoundary<Parameters<typeof workspaceOperations>[0]>(raw),
       value => scope.adaptGeneration(nativeBoundary<Parameters<typeof scope.adaptGeneration>[0]>(value)),
       value => parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(value)),
+      scope.validateU32Bound,
     ),
     async sourceState(): Promise<SourceResult> {
       return parseSourceResult(await raw.sourceState());
@@ -972,7 +989,7 @@ function adaptWorkspace(
       );
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-      requirePositiveInteger(maximumChanges, "maximum changes");
+      scope.validateU32Bound(maximumChanges, "maximum changes");
       return scope.adaptChangeSet(
         nativeBoundary<Parameters<typeof scope.adaptChangeSet>[0]>(
           await raw.diff(

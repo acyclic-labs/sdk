@@ -121,6 +121,24 @@ pub fn decode_publication_json(value_json: String) -> Result<String> {
     compat_wire::decode_publication_payload(&value_json).map_err(napi_wire_error)
 }
 
+/// Validates one positive `u32` request bound before JavaScript numeric
+/// conversion can truncate or wrap it.
+///
+/// The native and WASM adapters use the same Rust-owned page-bound contract;
+/// native callers have no negotiated page size, so the representable `u32`
+/// range is the admissible maximum at this boundary.
+#[napi]
+pub fn validate_hosted_page_bound(value: f64) -> Result<()> {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=(u32::MAX as f64)).contains(&value) {
+        return Err(napi_wire_error(
+            "value must be a finite integer in the u32 range",
+        ));
+    }
+    let value = value as u32;
+    acyclic_fs::hosted_contract::validate_page_bound(value, u32::MAX)
+        .map_err(napi_wire_error)
+}
+
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
 #[allow(clippy::struct_excessive_bools)]
