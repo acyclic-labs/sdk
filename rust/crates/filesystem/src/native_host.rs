@@ -236,10 +236,31 @@ fn relative_kernel_name(path: &Path) -> Option<(Vec<u16>, u16)> {
     Some((name, length))
 }
 
+/// `FILETIME` ticks (100 ns since 1601-01-01 UTC) at the Unix epoch.
+#[cfg(windows)]
+pub(crate) const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
+
+/// Unix nanoseconds one `FILETIME` names. Every tick is a whole number of
+/// nanoseconds, so this is exact or `None` beyond the `i64` nanosecond range.
+#[cfg(all(windows, any(feature = "native-mount", test)))]
+pub(crate) fn filetime_to_unix_nanoseconds(ticks: i64) -> Option<i64> {
+    ticks.checked_sub(UNIX_EPOCH_FILETIME)?.checked_mul(100)
+}
+
+/// The `FILETIME` tick containing one Unix-nanosecond instant: the instant
+/// rounded toward the past, so ordering is preserved, including before 1970.
+/// It never overflows, because `i64` nanoseconds span far fewer ticks than
+/// `i64`. A writer that must reproduce an instant exactly rejects
+/// `nanoseconds % 100 != 0` first.
+#[cfg(all(windows, any(feature = "native-mount", test)))]
+pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
+    nanoseconds.div_euclid(100) + UNIX_EPOCH_FILETIME
+}
+
 /// The instant one `FILETIME` names, as the standard library reads it.
 #[cfg(windows)]
 fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
-    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    const UNIX_EPOCH_TICKS: u64 = UNIX_EPOCH_FILETIME.unsigned_abs();
     let since = |ticks: u64| std::time::Duration::from_nanos(ticks.saturating_mul(100));
     cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
         std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
@@ -2775,17 +2796,15 @@ fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,
 ) -> Result<i64, WindowsMetadataError> {
-    const WINDOWS_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
     let crate::kernel::MetadataField::Value(nanoseconds) = field else {
         return Ok(current);
     };
+    // Applying metadata must reproduce the captured instant, so an instant
+    // between ticks is refused rather than silently moved.
     if nanoseconds % 100 != 0 {
         return Err(WindowsMetadataError::Unsupported("sub-100ns timestamp"));
     }
-    nanoseconds
-        .checked_div(100)
-        .and_then(|ticks| ticks.checked_add(WINDOWS_EPOCH_TICKS))
-        .ok_or(WindowsMetadataError::Unsupported("timestamp range"))
+    Ok(unix_nanoseconds_to_filetime(nanoseconds))
 }
 
 impl HostDirectory {
@@ -4230,8 +4249,48 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_clone_tests {
-    use super::{HostRoot, WindowsMetadataError, allocated_data_ranges};
+    use super::{
+        HostRoot, UNIX_EPOCH_FILETIME, WindowsMetadataError, allocated_data_ranges,
+        filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,
+    };
     use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn filetime_conversions_round_trip(nanoseconds in any::<i64>(), ticks in any::<i64>()) {
+            let tick = unix_nanoseconds_to_filetime(nanoseconds);
+            prop_assert_eq!(
+                filetime_to_unix_nanoseconds(tick),
+                Some(nanoseconds - nanoseconds.rem_euclid(100))
+            );
+            match filetime_to_unix_nanoseconds(ticks) {
+                Some(exact) => prop_assert_eq!(unix_nanoseconds_to_filetime(exact), ticks),
+                None => prop_assert!(
+                    i128::from(ticks) - i128::from(UNIX_EPOCH_FILETIME) > i128::from(i64::MAX / 100)
+                        || i128::from(ticks) - i128::from(UNIX_EPOCH_FILETIME)
+                            < i128::from(i64::MIN / 100)
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn filetime_conversions_cover_their_extremes() {
+        assert_eq!(unix_nanoseconds_to_filetime(0), UNIX_EPOCH_FILETIME);
+        assert_eq!(unix_nanoseconds_to_filetime(-1), UNIX_EPOCH_FILETIME - 1);
+        assert_eq!(unix_nanoseconds_to_filetime(99), UNIX_EPOCH_FILETIME);
+        assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
+        assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
+        // 1601 itself precedes the earliest `i64` nanosecond (1677).
+        assert_eq!(filetime_to_unix_nanoseconds(0), None);
+        assert!(
+            super::metadata_time(crate::kernel::MetadataField::Value(150), 7).is_err(),
+            "exact writers refuse instants between ticks"
+        );
+    }
     use bytes::Bytes;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::windows::io::AsRawHandle;
@@ -4898,10 +4957,9 @@ mod windows_clone_tests {
             std::fs::metadata(&original)?.file_attributes(),
             replacement_attributes
         );
-        const WINDOWS_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
         assert_eq!(
             std::fs::metadata(&moved)?.last_write_time(),
-            WINDOWS_EPOCH_TICKS + u64::try_from(MODIFIED_NS)? / 100
+            u64::try_from(unix_nanoseconds_to_filetime(MODIFIED_NS))?
         );
         assert_eq!(
             std::fs::metadata(&original)?.last_write_time(),
