@@ -7,11 +7,15 @@
 use protify::*;
 use ts_rs::TS;
 
+// Protify 0.1.x emits the package marker and builder without Rustdoc.
+#[allow(missing_docs)]
 proto_package!(
     ACTORS_PACKAGE,
     name = "acyclic.actors.v1",
     files = [ACTORS_FILE]
 );
+// Protify 0.1.x emits the file marker and schema helpers without Rustdoc.
+#[allow(missing_docs)]
 define_proto_file!(
     ACTORS_FILE,
     name = "actors/v1/actors.proto",
@@ -57,6 +61,7 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
     ACTORS_PACKAGE::get_package().render_files(root)
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// A named capability binding made available to an actor.
 pub struct Binding {
@@ -71,6 +76,7 @@ pub struct Binding {
     pub resource: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Resource and execution limits associated with an actor.
 pub struct ActorLimits {
@@ -89,19 +95,27 @@ pub struct ActorLimits {
 pub mod subscription_start {
     use super::*;
 
+    #[allow(missing_docs)]
     #[proto_oneof]
     #[derive(Copy)]
     /// Position from which a subscription starts.
     pub enum Start {
         #[proto(tag = 1)]
         /// Start at the supplied stream cursor.
-        Cursor(u64),
+        Cursor(
+            /// Stream cursor at which delivery begins.
+            u64,
+        ),
         #[proto(tag = 2)]
         /// Boolean selector for starting at the current stream head.
-        CurrentHead(bool),
+        CurrentHead(
+            /// Selects the current stream head when `true`.
+            bool,
+        ),
     }
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Starting position used when creating a subscription.
 pub struct SubscriptionStart {
@@ -110,6 +124,7 @@ pub struct SubscriptionStart {
     pub start: Option<subscription_start::Start>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Configuration for one actor subscription.
 pub struct SubscriptionSpec {
@@ -127,6 +142,7 @@ pub struct SubscriptionSpec {
     pub placement_anchor: bool,
 }
 
+#[allow(missing_docs)]
 #[proto_enum]
 /// Current state of an actor subscription.
 pub enum SubscriptionState {
@@ -138,6 +154,7 @@ pub enum SubscriptionState {
     Paused = 2,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Observed state and delivery cursors for a subscription.
 pub struct SubscriptionObservation {
@@ -173,6 +190,7 @@ pub struct SubscriptionObservation {
     pub failed_cursor: Option<u64>,
 }
 
+#[allow(missing_docs)]
 #[proto_enum]
 /// Current lifecycle state of an actor.
 pub enum ActorState {
@@ -186,6 +204,7 @@ pub enum ActorState {
     Paused = 3,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Observed actor state and subscription data.
 pub struct ActorObservation {
@@ -215,6 +234,7 @@ pub struct ActorObservation {
     pub configuration_revision: u64,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Request to create an actor.
 pub struct CreateActorRequest {
@@ -238,6 +258,7 @@ pub struct CreateActorRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from actor creation.
 pub struct CreateActorResponse {
@@ -249,6 +270,7 @@ pub struct CreateActorResponse {
 /// Full configuration replacement with CAS. The new code's checkpoint schema
 /// must be compatible or explicitly migrated before activation; failure keeps
 /// the previous version active. Paused subscriptions stay paused until resumed.
+#[allow(missing_docs)]
 #[proto_message]
 pub struct UpdateActorRequest {
     #[proto(tag = 1)]
@@ -271,6 +293,7 @@ pub struct UpdateActorRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from an actor update.
 pub struct UpdateActorResponse {
@@ -279,6 +302,7 @@ pub struct UpdateActorResponse {
     pub actor: Option<ActorObservation>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Request to inspect an actor.
 pub struct InspectActorRequest {
@@ -287,6 +311,7 @@ pub struct InspectActorRequest {
     pub actor_id: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from actor inspection.
 pub struct InspectActorResponse {
@@ -295,6 +320,7 @@ pub struct InspectActorResponse {
     pub actor: Option<ActorObservation>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Request to add a subscription to an actor.
 pub struct AddSubscriptionRequest {
@@ -309,6 +335,7 @@ pub struct AddSubscriptionRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from adding a subscription.
 pub struct AddSubscriptionResponse {
@@ -317,6 +344,7 @@ pub struct AddSubscriptionResponse {
     pub actor: Option<ActorObservation>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Request to remove a subscription from an actor.
 pub struct RemoveSubscriptionRequest {
@@ -331,6 +359,7 @@ pub struct RemoveSubscriptionRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from removing a subscription.
 pub struct RemoveSubscriptionResponse {
@@ -340,6 +369,7 @@ pub struct RemoveSubscriptionResponse {
 }
 
 /// Resumption may replay a previously delivered record and duplicate external effects.
+#[allow(missing_docs)]
 #[proto_message]
 pub struct ResumeSubscriptionRequest {
     #[proto(tag = 1)]
@@ -353,6 +383,7 @@ pub struct ResumeSubscriptionRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from resuming a subscription.
 pub struct ResumeSubscriptionResponse {
@@ -361,6 +392,7 @@ pub struct ResumeSubscriptionResponse {
     pub actor: Option<ActorObservation>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Request to checkpoint an actor.
 pub struct CheckpointActorRequest {
@@ -372,6 +404,7 @@ pub struct CheckpointActorRequest {
     pub idempotency_key: String,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response from checkpointing an actor.
 pub struct CheckpointActorResponse {
@@ -381,6 +414,7 @@ pub struct CheckpointActorResponse {
 }
 
 #[derive(Eq, TS)]
+#[allow(missing_docs)]
 #[proto_message]
 /// Name/value metadata sent with an actor invocation.
 pub struct Header {
@@ -393,6 +427,7 @@ pub struct Header {
 }
 
 /// Invocation is not an implicit Stream append or persistence guarantee.
+#[allow(missing_docs)]
 #[proto_message]
 pub struct InvokeActorRequest {
     #[proto(tag = 1)]
@@ -412,6 +447,7 @@ pub struct InvokeActorRequest {
     pub headers: Vec<Header>,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Response returned from an actor invocation.
 pub struct InvokeActorResponse {

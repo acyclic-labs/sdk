@@ -233,6 +233,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     assert_eq!(index["preview"]["version"], "0.2.0");
     let data = fs::read_to_string(first.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap();
     assert!(data.contains("sdk-docs-data.v1"));
+    let typescript = first.join("generated/typescript/actors/InvokeActorRequest.ts");
+    assert!(typescript.is_file());
+    assert!(fs::read_to_string(&typescript)
+        .unwrap()
+        .contains("InvokeActorRequest"));
+    assert_eq!(
+        fs::read(&typescript).unwrap(),
+        fs::read(second.join("generated/typescript/actors/InvokeActorRequest.ts")).unwrap()
+    );
     let guide_path = root.join("docs/objects-v2-http.md");
     let guide = fs::read(&guide_path).unwrap();
     fs::write(&guide_path, b"tampered guide\n").unwrap();
@@ -457,6 +466,11 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         serde_json::from_slice(&fs::read(output.join("sdk-docs-versions.v1.json")).unwrap())
             .unwrap();
     assert_eq!(index["latest"]["version"], "0.2.0");
+    assert!(
+        output
+            .join("generated/typescript/actors/InvokeActorRequest.ts")
+            .is_file()
+    );
     let drift = run(binary, "drift", &root, None, &output, "release");
     assert!(
         drift.status.success(),

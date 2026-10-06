@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[napi(object)]
-#[derive(Clone, Serialize)]
+#[derive(Clone, Default, Serialize)]
 pub struct NativeActorsErrorMetadata {
     /// Stable cross-platform error code.
     pub code: String,
@@ -24,12 +24,32 @@ pub struct NativeActorsErrorMetadata {
     pub message: String,
     #[napi(js_name = "grpcCode")]
     #[serde(rename = "grpcCode", skip_serializing_if = "Option::is_none")]
-    /// gRPC status name when a transport status exists.
-    pub grpc_code: Option<String>,
+    /// Numeric gRPC status code when a transport status exists.
+    pub grpc_code: Option<i32>,
+    #[napi(js_name = "grpcName")]
+    #[serde(rename = "grpcName", skip_serializing_if = "Option::is_none")]
+    /// Stable gRPC status name when a transport status exists.
+    pub grpc_name: Option<String>,
     #[napi(js_name = "serviceCode")]
     #[serde(rename = "serviceCode", skip_serializing_if = "Option::is_none")]
     /// Numeric service detail code, including zero and unknown values.
     pub service_code: Option<i32>,
+    #[napi(js_name = "serviceMessage")]
+    #[serde(rename = "serviceMessage", skip_serializing_if = "Option::is_none")]
+    /// Rust-owned service detail message when supplied by the server.
+    pub service_message: Option<String>,
+    #[napi(js_name = "semanticCode")]
+    #[serde(rename = "semanticCode", skip_serializing_if = "Option::is_none")]
+    /// Stable semantic conversion category.
+    pub semantic_code: Option<String>,
+    #[napi(js_name = "semanticValue")]
+    #[serde(rename = "semanticValue", skip_serializing_if = "Option::is_none")]
+    /// Raw enum value preserved by semantic conversion failures.
+    pub semantic_value: Option<i32>,
+    #[napi(js_name = "contractCode")]
+    #[serde(rename = "contractCode", skip_serializing_if = "Option::is_none")]
+    /// Contract admission category nested inside semantic failures.
+    pub contract_code: Option<String>,
 }
 
 /// Typed operation result used by the generated platform wrapper.
@@ -73,8 +93,7 @@ fn native_metadata(context: &str, error: impl std::fmt::Display) -> ErrorMetadat
     ErrorMetadata {
         code: String::from("invalid_argument"),
         message: format!("{context}: {error}"),
-        grpc_code: None,
-        service_code: None,
+        ..ErrorMetadata::default()
     }
 }
 
@@ -111,14 +130,13 @@ fn client_error_metadata(error: client::Error) -> ErrorMetadata {
         client::Error::Configuration(message) => ErrorMetadata {
             code: String::from("invalid_argument"),
             message,
-            grpc_code: None,
-            service_code: None,
+            ..ErrorMetadata::default()
         },
         client::Error::Transport(message) => ErrorMetadata {
-            code: String::from("unknown"),
+            code: String::from("unavailable"),
             message,
-            grpc_code: Some(String::from("unknown")),
-            service_code: None,
+            grpc_code: None,
+            ..ErrorMetadata::default()
         },
         client::Error::Contract(error) => ErrorMetadata {
             code: match error {
@@ -127,29 +145,33 @@ fn client_error_metadata(error: client::Error) -> ErrorMetadata {
                 acyclic_actors::ContractError::DuplicateName => String::from("duplicate_name"),
             },
             message: error.to_string(),
-            grpc_code: None,
-            service_code: None,
+            contract_code: Some(match error {
+                acyclic_actors::ContractError::InvalidArgument => String::from("invalid_argument"),
+                acyclic_actors::ContractError::LimitExceeded => String::from("limit_exceeded"),
+                acyclic_actors::ContractError::DuplicateName => String::from("duplicate_name"),
+            }),
+            semantic_code: Some(String::from("contract")),
+            ..ErrorMetadata::default()
         },
-        client::Error::Semantic(message) => ErrorMetadata {
-            code: String::from("semantic_error"),
-            message,
-            grpc_code: None,
-            service_code: None,
-        },
+        client::Error::Semantic(error) => domain_error_metadata(error),
         client::Error::Service { grpc_code, detail } => ErrorMetadata {
             code: grpc_code_name(grpc_code),
             message: detail
                 .as_ref()
                 .map(|value| value.message.clone())
                 .unwrap_or_else(|| String::from("Actors service failure")),
-            grpc_code: Some(grpc_code_name(grpc_code)),
-            service_code: detail.map(|value| value.code),
+            grpc_code: Some(grpc_code),
+            grpc_name: Some(grpc_code_name(grpc_code)),
+            service_code: detail.as_ref().map(|value| value.code),
+            service_message: detail.map(|value| value.message),
+            ..ErrorMetadata::default()
         },
         client::Error::Cancelled => ErrorMetadata {
             code: String::from("cancelled"),
             message: String::from("Actors operation cancelled"),
-            grpc_code: Some(String::from("cancelled")),
-            service_code: None,
+            grpc_code: Some(1),
+            grpc_name: Some(String::from("cancelled")),
+            ..ErrorMetadata::default()
         },
     }
 }
@@ -162,8 +184,24 @@ fn domain_error_metadata(error: acyclic_actors::domain::DomainError) -> ErrorMet
         error => ErrorMetadata {
             code: String::from("semantic_error"),
             message: error.to_string(),
-            grpc_code: None,
-            service_code: None,
+            semantic_code: Some(match error {
+                acyclic_actors::domain::DomainError::EmptyActorId => String::from("empty_actor_id"),
+                acyclic_actors::domain::DomainError::InvalidCodeSha256 => String::from("invalid_code_sha256"),
+                acyclic_actors::domain::DomainError::UnknownActorState(_) => String::from("unknown_actor_state"),
+                acyclic_actors::domain::DomainError::UnknownSubscriptionState(_) => String::from("unknown_subscription_state"),
+                acyclic_actors::domain::DomainError::UnknownErrorCode(_) => String::from("unknown_error_code"),
+                acyclic_actors::domain::DomainError::MissingMessage => String::from("missing_message"),
+                acyclic_actors::domain::DomainError::InvalidSubscription => String::from("invalid_subscription"),
+                acyclic_actors::domain::DomainError::InvalidBinding => String::from("invalid_binding"),
+                acyclic_actors::domain::DomainError::Contract(_) => unreachable!(),
+            }),
+            semantic_value: match error {
+                acyclic_actors::domain::DomainError::UnknownActorState(value)
+                | acyclic_actors::domain::DomainError::UnknownSubscriptionState(value)
+                | acyclic_actors::domain::DomainError::UnknownErrorCode(value) => Some(value),
+                _ => None,
+            },
+            ..ErrorMetadata::default()
         },
     }
 }
@@ -568,8 +606,10 @@ mod tests {
         });
         let json = serde_json::to_value(metadata)
             .map_err(|error| native_error("error metadata test", error))?;
-        assert_eq!(json["grpcCode"], "internal");
+        assert_eq!(json["grpcCode"], 13);
+        assert_eq!(json["grpcName"], "internal");
         assert_eq!(json["serviceCode"], 0);
+        assert_eq!(json["serviceMessage"], "service detail");
 
         let unknown = client_error_metadata(client::Error::Service {
             grpc_code: 2,
@@ -581,6 +621,38 @@ mod tests {
         let unknown = serde_json::to_value(unknown)
             .map_err(|error| native_error("error metadata test", error))?;
         assert_eq!(unknown["serviceCode"], 99);
+        Ok(())
+    }
+
+    #[test]
+    fn semantic_metadata_preserves_category_raw_value_and_contract_code() -> Result<()> {
+        let unknown = domain_error_metadata(
+            acyclic_actors::domain::DomainError::UnknownActorState(99),
+        );
+        let unknown = serde_json::to_value(unknown)
+            .map_err(|error| native_error("semantic metadata test", error))?;
+        assert_eq!(unknown["code"], "semantic_error");
+        assert_eq!(unknown["semanticCode"], "unknown_actor_state");
+        assert_eq!(unknown["semanticValue"], 99);
+
+        let through_client = client_error_metadata(client::Error::Semantic(
+            acyclic_actors::domain::DomainError::UnknownErrorCode(7),
+        ));
+        let through_client = serde_json::to_value(through_client)
+            .map_err(|error| native_error("semantic metadata test", error))?;
+        assert_eq!(through_client["semanticCode"], "unknown_error_code");
+        assert_eq!(through_client["semanticValue"], 7);
+
+        let contract = domain_error_metadata(
+            acyclic_actors::domain::DomainError::Contract(
+                acyclic_actors::ContractError::LimitExceeded,
+            ),
+        );
+        let contract = serde_json::to_value(contract)
+            .map_err(|error| native_error("semantic metadata test", error))?;
+        assert_eq!(contract["code"], "limit_exceeded");
+        assert_eq!(contract["semanticCode"], "contract");
+        assert_eq!(contract["contractCode"], "limit_exceeded");
         Ok(())
     }
 

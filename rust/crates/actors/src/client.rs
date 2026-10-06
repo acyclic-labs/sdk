@@ -354,7 +354,9 @@ impl Client {
         &self,
         request: &crate::domain::RemoveSubscriptionRequest,
     ) -> Result<crate::domain::RemoveSubscriptionResponse, Error> {
-        let response = self.wire_remove_subscription(&request.clone().into()).await?;
+        let response = self
+            .wire_remove_subscription(&request.clone().into())
+            .await?;
         response.try_into().map_err(semantic_error)
     }
 
@@ -363,7 +365,9 @@ impl Client {
         &self,
         request: &crate::domain::ResumeSubscriptionRequest,
     ) -> Result<crate::domain::ResumeSubscriptionResponse, Error> {
-        let response = self.wire_resume_subscription(&request.clone().into()).await?;
+        let response = self
+            .wire_resume_subscription(&request.clone().into())
+            .await?;
         response.try_into().map_err(semantic_error)
     }
 
@@ -420,3 +424,139 @@ operation!(
     wire::InvokeActorResponse,
     validate_none
 );
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        task::{Context, Poll},
+    };
+
+    struct MustNotPoll {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Future for MustNotPoll {
+        type Output = Result<(), Error>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_operation_is_never_polled() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let polls = Arc::new(AtomicUsize::new(0));
+
+        let result = run_with_cancellation(
+            MustNotPoll {
+                polls: Arc::clone(&polls),
+            },
+            Some(cancellation),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
+
+    struct CancelOnPoll {
+        cancellation: CancellationToken,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Future for CancelOnPoll {
+        type Output = Result<(), Error>;
+
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            self.cancellation.cancel();
+            Poll::Pending
+        }
+    }
+
+    impl Drop for CancelOnPoll {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_a_pending_operation() {
+        let cancellation = CancellationToken::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+
+        let result = run_with_cancellation(
+            CancelOnPoll {
+                cancellation: cancellation.clone(),
+                dropped: Arc::clone(&dropped),
+            },
+            Some(cancellation),
+        )
+        .await;
+
+        assert!(matches!(result, Err(Error::Cancelled)));
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn service_error_preserves_raw_status_and_detail_codes() {
+        for (status_code, detail_code) in [
+            (tonic::Code::PermissionDenied, 0),
+            (tonic::Code::Unknown, 99),
+        ] {
+            let detail = wire::Error {
+                code: detail_code,
+                message: format!("detail-{detail_code}"),
+            };
+            let status = tonic::Status::with_details(
+                status_code,
+                "service rejected request",
+                detail.encode_to_vec().into(),
+            );
+
+            match service_error(status) {
+                Error::Service {
+                    grpc_code,
+                    detail: Some(actual),
+                } => {
+                    assert_eq!(grpc_code, status_code as i32);
+                    assert_eq!(actual.code, detail_code);
+                    assert_eq!(actual.message, format!("detail-{detail_code}"));
+                }
+                other => panic!("expected structured service error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn service_error_ignores_empty_or_malformed_details() {
+        let statuses = [
+            tonic::Status::unknown("empty details"),
+            tonic::Status::with_details(
+                tonic::Code::Unavailable,
+                "malformed details",
+                vec![0xff, 0x00].into(),
+            ),
+        ];
+
+        for status in statuses {
+            let expected_code = status.code() as i32;
+            match service_error(status) {
+                Error::Service { grpc_code, detail } => {
+                    assert_eq!(grpc_code, expected_code);
+                    assert!(detail.is_none());
+                }
+                other => panic!("expected service error, got {other:?}"),
+            }
+        }
+    }
+}

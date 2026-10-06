@@ -9,4 +9,6 @@ pending Rust future, and a fresh handle is required for a later operation.
 Requests are decoded from protobuf bytes into the Rust domain types before
 dispatch, and responses are converted back to protobuf bytes only after the
 domain conversion succeeds. Operation failures use the structured result
-metadata (`code`, `grpcCode`, and `serviceCode` where applicable).
+metadata (`code`, numeric `grpcCode` with `grpcName`, `serviceCode` and
+`serviceMessage`, plus semantic `semanticCode`, `semanticValue`, and
+`contractCode` fields where applicable).

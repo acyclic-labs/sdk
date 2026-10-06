@@ -94,6 +94,7 @@ struct RustdocInput {
 }
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
+const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
 
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_GENERATED_ROOT);
@@ -101,6 +102,17 @@ fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     if !stage.join("acyclic-actors-v1.bin").is_file() {
         return Err(io::Error::other(
             "Actors codegen did not produce a descriptor",
+        ));
+    }
+    Ok(())
+}
+
+fn generate_actors_typescript_artifacts(config: &Config) -> io::Result<()> {
+    let stage = config.output.join(ACTORS_TYPESCRIPT_ROOT);
+    acyclic_actors::domain::export_typescript(&stage).map_err(io::Error::other)?;
+    if !stage.join("actors").is_dir() {
+        return Err(io::Error::other(
+            "Actors TypeScript export did not produce its actors directory",
         ));
     }
     Ok(())
@@ -479,6 +491,7 @@ fn rustdoc_markdown_dependencies(
         if path.extension().is_none_or(|extension| extension != "md") {
             continue;
         }
+        reject_unsupported_make_escapes(&path)?;
         if !path.is_file() {
             return Err(io::Error::other(format!(
                 "rustdoc dep-info references missing Markdown: {}",
@@ -503,6 +516,17 @@ fn rustdoc_markdown_dependencies(
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+fn reject_unsupported_make_escapes(path: &Path) -> io::Result<()> {
+    let display = path.to_string_lossy();
+    if display.contains(r"\#") || display.contains(r"\:") {
+        return Err(io::Error::other(format!(
+            "rustdoc dep-info contains unsupported Make-escaped Markdown path: {}; rename the path or emit an unescaped path",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn read_dep_info(path: &Path) -> io::Result<RustcDepInfo> {
@@ -865,6 +889,7 @@ fn generate(config: &Config) -> io::Result<()> {
     let source_extras_before = baseline_source_extras(&config.root)?;
     let source_before_stage = collect_sources(&config.root, &source_extras_before)?;
     generate_actors_contract_artifacts(config)?;
+    generate_actors_typescript_artifacts(config)?;
     let rustdoc_input = resolve_rustdoc(config)?;
     let source_extras_after = baseline_source_extras(&config.root)?;
     if collect_sources(&config.root, &source_extras_after)? != source_before_stage {
@@ -1099,5 +1124,16 @@ mod tests {
     fn dep_info_without_files_is_rejected() {
         let error = parse_dep_info_contents("target: \n").unwrap_err();
         assert_eq!(error.to_string(), "rustdoc dep-info contains no files");
+    }
+
+    #[test]
+    fn make_escaped_markdown_path_is_rejected_with_actionable_diagnostic() {
+        let error = reject_unsupported_make_escapes(Path::new(r"docs\guide\#name.md"))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported Make-escaped Markdown path"));
+        assert!(error.to_string().contains("#name.md"));
+        assert!(error.to_string().contains("rename the path"));
     }
 }

@@ -16,7 +16,9 @@ before Rustdoc, so checked-in transport and descriptor files are not consumed
 as authority. Proto files are not accepted as a substitute source input. The
 launcher resolves the Git revision itself, hashes that source closure and the
 external rustdoc JSON, calls the existing `sdk-docs` library, and writes a
-versioned manifest. Release
+versioned manifest. The same run calls the Actors crate's `domain::export_typescript`
+stage, so `generated/typescript/actors` is emitted from the Rust-owned semantic
+types and included in the artifact digest. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
 the supplied JSON input. Release Rustdoc also emits its exact dep-info file;

@@ -169,16 +169,19 @@ impl Binding {
         })
     }
 
+    /// Returns the binding name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
     }
 
+    /// Returns the capability name.
     #[must_use]
     pub fn capability(&self) -> &str {
         &self.capability
     }
 
+    /// Returns the bound resource name.
     #[must_use]
     pub fn resource(&self) -> &str {
         &self.resource
@@ -230,6 +233,40 @@ impl TryFrom<wire::ActorLimits> for ActorLimits {
 }
 
 impl ActorLimits {
+    /// Constructs positive limits using the canonical admission predicate.
+    pub fn new(
+        handler_timeout_millis: u64,
+        memory_bytes: u64,
+        checkpoint_bytes: u64,
+    ) -> Result<Self, DomainError> {
+        if handler_timeout_millis == 0 || memory_bytes == 0 || checkpoint_bytes == 0 {
+            return Err(DomainError::Contract(crate::ContractError::InvalidArgument));
+        }
+        Ok(Self {
+            handler_timeout_millis,
+            memory_bytes,
+            checkpoint_bytes,
+        })
+    }
+
+    /// Returns the handler timeout in milliseconds.
+    #[must_use]
+    pub fn handler_timeout_millis(&self) -> u64 {
+        self.handler_timeout_millis
+    }
+
+    /// Returns the memory limit in bytes.
+    #[must_use]
+    pub fn memory_bytes(&self) -> u64 {
+        self.memory_bytes
+    }
+
+    /// Returns the checkpoint limit in bytes.
+    #[must_use]
+    pub fn checkpoint_bytes(&self) -> u64 {
+        self.checkpoint_bytes
+    }
+
     fn from_validated(value: wire::ActorLimits) -> Self {
         Self {
             handler_timeout_millis: value.handler_timeout_millis,
@@ -261,6 +298,26 @@ pub enum SubscriptionStart {
     },
     /// Start at the service's current head, preserving the wire boolean.
     CurrentHead { current_head: bool },
+}
+
+impl SubscriptionStart {
+    /// Returns the cursor payload when this start selects an explicit cursor.
+    #[must_use]
+    pub fn cursor_value(&self) -> Option<u64> {
+        match self {
+            Self::Cursor { cursor } => Some(*cursor),
+            Self::CurrentHead { .. } => None,
+        }
+    }
+
+    /// Returns the current-head payload when this start selects current head.
+    #[must_use]
+    pub fn current_head_value(&self) -> Option<bool> {
+        match self {
+            Self::Cursor { .. } => None,
+            Self::CurrentHead { current_head } => Some(*current_head),
+        }
+    }
 }
 
 impl TryFrom<wire::SubscriptionStart> for SubscriptionStart {
@@ -326,6 +383,58 @@ impl TryFrom<wire::SubscriptionSpec> for SubscriptionSpec {
 }
 
 impl SubscriptionSpec {
+    /// Constructs a subscription using the same start and presence rules as
+    /// the canonical create and add-subscription validators.
+    pub fn new(
+        subscription_id: String,
+        stream_path: String,
+        start: SubscriptionStart,
+        placement_anchor: bool,
+    ) -> Result<Self, DomainError> {
+        if subscription_id.is_empty()
+            || stream_path.is_empty()
+            || !matches!(
+                start,
+                SubscriptionStart::Cursor { .. }
+                    | SubscriptionStart::CurrentHead {
+                        current_head: true
+                    }
+            )
+        {
+            return Err(DomainError::InvalidSubscription);
+        }
+        Ok(Self {
+            subscription_id,
+            stream_path,
+            start,
+            placement_anchor,
+        })
+    }
+
+    /// Returns the subscription identifier.
+    #[must_use]
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
+
+    /// Returns the subscription stream path.
+    #[must_use]
+    pub fn stream_path(&self) -> &str {
+        &self.stream_path
+    }
+
+    /// Returns the validated start selector.
+    #[must_use]
+    pub fn start(&self) -> &SubscriptionStart {
+        &self.start
+    }
+
+    /// Returns whether this subscription is the placement anchor.
+    #[must_use]
+    pub fn placement_anchor(&self) -> bool {
+        self.placement_anchor
+    }
+
     fn from_validated_wire(value: wire::SubscriptionSpec) -> Result<Self, DomainError> {
         let start = match value.start.as_ref().and_then(|start| start.start.as_ref()) {
             Some(wire::subscription_start::Start::Cursor(cursor)) => {
@@ -470,6 +579,26 @@ pub struct ServiceError {
     message: String,
 }
 
+impl ServiceError {
+    /// Creates a service error with its typed code and lossless message.
+    #[must_use]
+    pub fn new(code: ErrorCode, message: String) -> Self {
+        Self { code, message }
+    }
+
+    /// Returns the typed service error code.
+    #[must_use]
+    pub fn code(&self) -> ErrorCode {
+        self.code
+    }
+
+    /// Returns the service error message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
 impl TryFrom<wire::Error> for ServiceError {
     type Error = DomainError;
 
@@ -553,6 +682,39 @@ pub struct SubscriptionObservation {
     failed_cursor: Option<u64>,
 }
 
+impl SubscriptionObservation {
+    /// Returns the subscription identifier.
+    #[must_use]
+    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    /// Returns the stream path.
+    #[must_use]
+    pub fn stream_path(&self) -> &str { &self.stream_path }
+    /// Returns the typed subscription state.
+    #[must_use]
+    pub fn state(&self) -> SubscriptionState { self.state }
+    /// Returns the delivered cursor without narrowing its `u64` range.
+    #[must_use]
+    pub fn delivered_cursor(&self) -> u64 { self.delivered_cursor }
+    /// Returns the completed cursor without narrowing its `u64` range.
+    #[must_use]
+    pub fn completed_cursor(&self) -> u64 { self.completed_cursor }
+    /// Returns the recoverable cursor without narrowing its `u64` range.
+    #[must_use]
+    pub fn recoverable_cursor(&self) -> u64 { self.recoverable_cursor }
+    /// Returns whether this subscription is the placement anchor.
+    #[must_use]
+    pub fn placement_anchor(&self) -> bool { self.placement_anchor }
+    /// Returns the number of recorded retries.
+    #[must_use]
+    pub fn retry_count(&self) -> u32 { self.retry_count }
+    /// Returns the lossless failure code spelling.
+    #[must_use]
+    pub fn failure_code(&self) -> &str { &self.failure_code }
+    /// Returns the optional failed cursor.
+    #[must_use]
+    pub fn failed_cursor(&self) -> Option<u64> { self.failed_cursor }
+}
+
 impl TryFrom<wire::SubscriptionObservation> for SubscriptionObservation {
     type Error = DomainError;
 
@@ -606,6 +768,33 @@ pub struct ActorObservation {
     configuration_revision: u64,
 }
 
+impl ActorObservation {
+    /// Returns the validated Actor identity.
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the validated code digest.
+    #[must_use]
+    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    /// Returns the home region spelling.
+    #[must_use]
+    pub fn home_region(&self) -> &str { &self.home_region }
+    /// Returns the typed Actor state.
+    #[must_use]
+    pub fn state(&self) -> ActorState { self.state }
+    /// Returns the observed subscriptions in wire order.
+    #[must_use]
+    pub fn subscriptions(&self) -> &[SubscriptionObservation] { &self.subscriptions }
+    /// Returns the optional checkpoint timestamp in Unix milliseconds.
+    #[must_use]
+    pub fn checkpoint_unix_millis(&self) -> Option<u64> { self.checkpoint_unix_millis }
+    /// Returns the checkpoint epoch.
+    #[must_use]
+    pub fn checkpoint_epoch(&self) -> u64 { self.checkpoint_epoch }
+    /// Returns the configuration revision.
+    #[must_use]
+    pub fn configuration_revision(&self) -> u64 { self.configuration_revision }
+}
+
 impl TryFrom<wire::ActorObservation> for ActorObservation {
     type Error = DomainError;
 
@@ -657,6 +846,14 @@ macro_rules! actor_response_type {
             actor: Option<ActorObservation>,
         }
 
+        impl $name {
+            /// Returns the optional Actor observation carried by this response.
+            #[must_use]
+            pub fn actor(&self) -> Option<&ActorObservation> {
+                self.actor.as_ref()
+            }
+        }
+
         impl TryFrom<wire::$wire> for $name {
             type Error = DomainError;
 
@@ -695,6 +892,40 @@ pub struct CreateActorRequest {
     limits: ActorLimits,
     subscriptions: Vec<SubscriptionSpec>,
     idempotency_key: String,
+}
+
+impl CreateActorRequest {
+    /// Builds and validates a create request through the canonical admission path.
+    pub fn new(
+        code_sha256: CodeSha256,
+        home_region: String,
+        bindings: Vec<Binding>,
+        limits: ActorLimits,
+        subscriptions: Vec<SubscriptionSpec>,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::CreateActorRequest {
+            code_sha256: code_sha256.as_bytes().to_vec().into(),
+            home_region,
+            bindings: bindings.into_iter().map(Into::into).collect(),
+            limits: Some(limits.into()),
+            subscriptions: subscriptions.into_iter().map(Into::into).collect(),
+            idempotency_key,
+        })
+    }
+
+    #[must_use]
+    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    #[must_use]
+    pub fn home_region(&self) -> &str { &self.home_region }
+    #[must_use]
+    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    #[must_use]
+    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    #[must_use]
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] { &self.subscriptions }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
 impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
@@ -747,6 +978,42 @@ pub struct UpdateActorRequest {
     idempotency_key: String,
 }
 
+impl UpdateActorRequest {
+    /// Builds and validates an update request through the canonical admission path.
+    pub fn new(
+        actor_id: ActorId,
+        code_sha256: CodeSha256,
+        bindings: Vec<Binding>,
+        limits: ActorLimits,
+        expected_configuration_revision: u64,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::UpdateActorRequest {
+            actor_id: actor_id.as_str().to_owned(),
+            code_sha256: code_sha256.as_bytes().to_vec().into(),
+            bindings: bindings.into_iter().map(Into::into).collect(),
+            limits: Some(limits.into()),
+            expected_configuration_revision,
+            idempotency_key,
+        })
+    }
+
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    #[must_use]
+    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    #[must_use]
+    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    #[must_use]
+    pub fn expected_configuration_revision(&self) -> u64 {
+        self.expected_configuration_revision
+    }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+}
+
 impl TryFrom<wire::UpdateActorRequest> for UpdateActorRequest {
     type Error = DomainError;
 
@@ -788,6 +1055,13 @@ pub struct InspectActorRequest {
     actor_id: ActorId,
 }
 
+impl InspectActorRequest {
+    #[must_use]
+    pub fn new(actor_id: ActorId) -> Self { Self { actor_id } }
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+}
+
 impl TryFrom<wire::InspectActorRequest> for InspectActorRequest {
     type Error = DomainError;
 
@@ -813,6 +1087,28 @@ pub struct AddSubscriptionRequest {
     actor_id: ActorId,
     subscription: SubscriptionSpec,
     idempotency_key: String,
+}
+
+impl AddSubscriptionRequest {
+    /// Builds and validates an add-subscription request through the canonical path.
+    pub fn new(
+        actor_id: ActorId,
+        subscription: SubscriptionSpec,
+        idempotency_key: String,
+    ) -> Result<Self, DomainError> {
+        Self::try_from(wire::AddSubscriptionRequest {
+            actor_id: actor_id.as_str().to_owned(),
+            subscription: Some(subscription.into()),
+            idempotency_key,
+        })
+    }
+
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn subscription(&self) -> &SubscriptionSpec { &self.subscription }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
 impl TryFrom<wire::AddSubscriptionRequest> for AddSubscriptionRequest {
@@ -850,6 +1146,23 @@ pub struct RemoveSubscriptionRequest {
     idempotency_key: String,
 }
 
+impl RemoveSubscriptionRequest {
+    #[must_use]
+    pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
+        Self {
+            actor_id,
+            subscription_id,
+            idempotency_key,
+        }
+    }
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+}
+
 impl TryFrom<wire::RemoveSubscriptionRequest> for RemoveSubscriptionRequest {
     type Error = DomainError;
 
@@ -881,6 +1194,23 @@ pub struct ResumeSubscriptionRequest {
     idempotency_key: String,
 }
 
+impl ResumeSubscriptionRequest {
+    #[must_use]
+    pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
+        Self {
+            actor_id,
+            subscription_id,
+            idempotency_key,
+        }
+    }
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+}
+
 impl TryFrom<wire::ResumeSubscriptionRequest> for ResumeSubscriptionRequest {
     type Error = DomainError;
 
@@ -910,6 +1240,20 @@ impl From<ResumeSubscriptionRequest> for wire::ResumeSubscriptionRequest {
 pub struct CheckpointActorRequest {
     actor_id: ActorId,
     idempotency_key: String,
+}
+
+impl CheckpointActorRequest {
+    #[must_use]
+    pub fn new(actor_id: ActorId, idempotency_key: String) -> Self {
+        Self {
+            actor_id,
+            idempotency_key,
+        }
+    }
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
 
 impl TryFrom<wire::CheckpointActorRequest> for CheckpointActorRequest {
@@ -944,6 +1288,35 @@ pub struct InvokeActorRequest {
     body: Vec<u8>,
     #[ts(type = "Array<{ name: string; value: string }>")]
     headers: Vec<Header>,
+}
+
+impl InvokeActorRequest {
+    #[must_use]
+    pub fn new(
+        actor_id: ActorId,
+        method: String,
+        url: String,
+        body: Vec<u8>,
+        headers: Vec<Header>,
+    ) -> Self {
+        Self {
+            actor_id,
+            method,
+            url,
+            body,
+            headers,
+        }
+    }
+    #[must_use]
+    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    #[must_use]
+    pub fn method(&self) -> &str { &self.method }
+    #[must_use]
+    pub fn url(&self) -> &str { &self.url }
+    #[must_use]
+    pub fn body(&self) -> &[u8] { &self.body }
+    #[must_use]
+    pub fn headers(&self) -> &[Header] { &self.headers }
 }
 
 impl TryFrom<wire::InvokeActorRequest> for InvokeActorRequest {
@@ -981,6 +1354,15 @@ pub struct InvokeActorResponse {
     body: Vec<u8>,
     #[ts(type = "Array<{ name: string; value: string }>")]
     headers: Vec<Header>,
+}
+
+impl InvokeActorResponse {
+    #[must_use]
+    pub fn status(&self) -> u32 { self.status }
+    #[must_use]
+    pub fn body(&self) -> &[u8] { &self.body }
+    #[must_use]
+    pub fn headers(&self) -> &[Header] { &self.headers }
 }
 
 impl From<wire::InvokeActorResponse> for InvokeActorResponse {

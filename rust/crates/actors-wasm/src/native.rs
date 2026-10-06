@@ -4,7 +4,7 @@
 //! endpoint, credential, TLS, and error handling stay identical for every
 //! Rust-owned facade.
 
-pub use acyclic_actors::grpc::{Client, ConnectError};
+pub use acyclic_actors::client::{Client, ConnectError};
 
 /// Connect using the canonical authenticated native Actors client.
 ///
@@ -15,5 +15,5 @@ pub async fn connect(
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    acyclic_actors::grpc::connect_with_ca_certificate(endpoint, token, ca).await
+    acyclic_actors::client::connect_with_ca_certificate(endpoint, token, ca).await
 }
