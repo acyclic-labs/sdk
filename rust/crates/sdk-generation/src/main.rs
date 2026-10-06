@@ -9271,7 +9271,13 @@ mod tests {
             "dotnet/GeneratedRemotePolicy.cs",
             "typescript/packages/actors/src/generated-client.ts",
             "python/src/acyclic_sdk/generated/actors/v1/actors_pb2.py",
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS
+                .iter()
+                .copied(),
+        ) {
             let path = root.join(path);
             fs::create_dir_all(path.parent().expect("facade parent"))
                 .expect("create generated facade parent");
@@ -9282,6 +9288,31 @@ mod tests {
         assert_eq!(before.revision, after.revision);
         assert_eq!(before.digest, after.digest);
         assert_ne!(before.digest, complete_after.digest);
+        for path in acyclic_sdk_contract_wire::product_paths::GENERATED_FACADE_PATHS {
+            fs::write(root.join(path), "edited generated facade")
+                .expect("mutate generated facade");
+        }
+        let edited_outputs = authoritative_source_identity(&root)
+            .expect("hash source after generated facade edits");
+        assert_eq!(before.digest, edited_outputs.digest);
+        assert_ne!(
+            complete_after.digest,
+            source_identity(&root).expect("hash edited outputs").digest
+        );
+        let emitter = root.join("rust/crates/sdk-contract-wire/src/portable_typed_facades.rs");
+        fs::create_dir_all(emitter.parent().expect("emitter parent"))
+            .expect("create emitter parent");
+        fs::write(&emitter, "pub fn generate() {}\n").expect("write Rust emitter");
+        let with_emitter = authoritative_source_identity(&root).expect("hash Rust emitter");
+        assert_ne!(before.digest, with_emitter.digest);
+        fs::write(&emitter, "pub fn generate() { changed(); }\n")
+            .expect("change Rust emitter");
+        assert_ne!(
+            with_emitter.digest,
+            authoritative_source_identity(&root)
+                .expect("hash changed Rust emitter")
+                .digest
+        );
         cleanup(&root);
     }
 
