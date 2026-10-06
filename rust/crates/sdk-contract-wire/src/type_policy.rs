@@ -3599,6 +3599,10 @@ fn descriptor_projection_aliases(language: &str, name: &str) -> Vec<String> {
         "python" | "go" => vec![prefix],
         "swift" | "cpp" => vec![format!("{prefix}Wire")],
         "csharp" => vec![format!("Rust{prefix}Enum")],
+        // Haskell's generated semantic module uses nominal per-descriptor
+        // enum wrappers; OpenEnumValue remains the private wire fallback for
+        // values whose number was not present in the Rust descriptor.
+        "haskell" => vec![format!("{prefix}Enum")],
         _ => Vec::new(),
     }
     .into_iter()
@@ -3619,6 +3623,9 @@ fn descriptor_oneof_choice_alias(entry: &ResolvedOneofMember) -> Option<String> 
 
 fn descriptor_payload_aliases(language: &str, name: &str) -> Vec<String> {
     let mut aliases = descriptor_projection_aliases(language, name);
+    if language == "haskell" {
+        aliases.extend(descriptor_haskell_payload_aliases(name));
+    }
     if language == "go" {
         // Go's public semantic wrappers use the conventional initialism ID,
         // while protobuf descriptors retain the wire spelling Id. This is
@@ -3632,6 +3639,30 @@ fn descriptor_payload_aliases(language: &str, name: &str) -> Vec<String> {
     aliases.sort();
     aliases.dedup();
     aliases
+}
+
+fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
+    let parts = name.split('.').filter(|part| !part.is_empty()).collect::<Vec<_>>();
+    let Some(type_name) = parts.last().copied() else {
+        return Vec::new();
+    };
+    let package = &parts[..parts.len().saturating_sub(1)];
+    let package = package
+        .iter()
+        .copied()
+        .filter(|part| *part != "acyclic" && !part.starts_with('v'))
+        .next()
+        .unwrap_or("Acyclic");
+    let version = parts
+        .iter()
+        .rev()
+        .find(|part| part.starts_with('v') && part[1..].chars().all(|ch| ch.is_ascii_digit()))
+        .copied()
+        .unwrap_or("v1");
+    vec![
+        format!("{}{}.{}", pascal_identifier(package), pascal_identifier(version), type_name),
+        type_name.to_owned(),
+    ]
 }
 
 /// Check an actual language-specific union arm, rather than accepting a
@@ -3732,6 +3763,22 @@ fn source_contains_descriptor_oneof_arm(
                             .iter()
                             .any(|alias| source_contains_identifier_in_line(line, alias)))
                     && line.contains("Value")
+                })
+        }
+        "haskell" => {
+            let message = descriptor_compact_identity(&entry.field.message_path);
+            let arm = pascal_identifier(&entry.field.field);
+            let constructor = format!(
+                "Known{message}{arm}N{}",
+                entry.field.number
+            );
+            source.lines().any(|line| {
+                !is_source_comment(line)
+                    && source_contains_identifier_in_line(line, &constructor)
+                    && source_contains_identifier_in_line(line, "KnownOneofPayload")
+                    && payload_aliases.iter().any(|alias| {
+                        source_contains_qualified_identifier_in_line(line, alias)
+                    })
             })
         }
         _ => false,
@@ -3773,6 +3820,17 @@ fn source_contains_identifier_in_line(line: &str, identifier: &str) -> bool {
     }
     line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .any(|token| token == identifier)
+}
+
+fn source_contains_qualified_identifier_in_line(line: &str, identifier: &str) -> bool {
+    if identifier.is_empty() || is_source_comment(line) {
+        return false;
+    }
+    line.split_whitespace().any(|token| {
+        token.trim_matches(|character: char| {
+            !character.is_ascii_alphanumeric() && character != '_' && character != '.'
+        }) == identifier
+    })
 }
 
 fn is_source_comment(line: &str) -> bool {
@@ -5420,6 +5478,83 @@ mod tests {
         // the source-bound check; this prevents language emitters from hiding
         // missing concrete declarations behind documentation text.
         let _ = payload;
+    }
+
+    #[test]
+    fn descriptor_shape_audit_accepts_haskell_gadt_arms_only_with_exact_payloads() {
+        let enum_entry = resolved_enum_fields()
+            .expect("Rust enum inventory")
+            .into_iter()
+            .next()
+            .expect("enum field");
+        let member = resolved_oneof_members()
+            .expect("Rust oneof inventory")
+            .into_iter()
+            .find(|entry| matches!(entry.payload_kind, FieldType::Message | FieldType::Group))
+            .expect("message-valued oneof");
+        let presence = resolved_presence_fields()
+            .expect("Rust presence inventory")
+            .into_iter()
+            .next()
+            .expect("presence field");
+        let enum_alias = descriptor_projection_aliases("haskell", &enum_entry.enum_type)
+            .into_iter()
+            .next()
+            .expect("Haskell enum alias");
+        let message = descriptor_compact_identity(&member.field.message_path);
+        let arm = pascal_identifier(&member.field.field);
+        let constructor = format!("Known{message}{arm}N{}", member.field.number);
+        let payload_alias = descriptor_haskell_payload_aliases(
+            member.payload_type.as_deref().expect("message payload"),
+        )
+        .into_iter()
+        .next()
+        .expect("Haskell payload alias");
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-generated-descriptor-shape-audit-haskell-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("haskell")).expect("audit fixture directory");
+        fs::write(
+            root.join("haskell").join("RustSemanticTypes.hs"),
+            format!(
+                "data {enum_alias} = {enum_alias}Known | {enum_alias}Unknown Int\n\n\
+                 data KnownOneofPayload where\n  {constructor} :: {payload_alias} -> KnownOneofPayload\n\n\
+                 data WireChoice = KnownOneof KnownOneofPayload | UnknownOneof ByteString\n\n\
+                 data Presence = Presence {{ {field} :: Maybe Int }}\n",
+                field = presence.field.field,
+            ),
+        )
+        .expect("Haskell GADT fixture");
+        let findings = audit_generated_descriptor_shape_coverage(&root)
+            .expect("descriptor shape audit fixture");
+        assert!(!findings.iter().any(|finding| {
+            finding
+                .path
+                .contains(&format!("missing Rust enum {}", enum_entry.enum_type))
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding.path.contains(&format!(
+                "missing Rust oneof payload {}",
+                member.payload_type.as_deref().unwrap()
+            ))
+        }));
+        assert!(!findings.iter().any(|finding| {
+            finding
+                .path
+                .contains(&format!("missing Rust presence field {}", presence.field.field))
+        }));
+
+        let wrong_payload = format!(
+            "data KnownOneofPayload where\n  {constructor} :: Not{payload_alias}Payload -> KnownOneofPayload\n",
+        );
+        assert!(!source_contains_descriptor_oneof_arm(
+            "haskell",
+            &wrong_payload,
+            &member
+        ));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
