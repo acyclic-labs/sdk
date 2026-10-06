@@ -568,7 +568,7 @@ fn render_kotlin_responses() -> String {
                 let expression = descriptor_kotlin_value(&field, &chain);
                 out.push_str(" fun ");
                 out.push_str(&getter);
-                out.push_str(": ");
+                out.push_str("(): ");
                 out.push_str(&ty);
                 out.push_str(" = ");
                 out.push_str(&expression);
