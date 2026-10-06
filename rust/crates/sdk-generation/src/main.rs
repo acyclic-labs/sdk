@@ -4061,6 +4061,39 @@ fn require_type_audit_source_revision(output: &Path, expected: &str) -> Result<(
     Ok(())
 }
 
+fn require_language_producer_source_bindings(
+    output: &Path,
+    source_revision: &str,
+) -> Result<String, CliError> {
+    let authority_path = output.join("wire/rust-authority.json");
+    let authority: Value = serde_json::from_slice(&fs::read(&authority_path)?)
+        .map_err(|error| CliError::new(format!("invalid Rust wire authority: {error}")))?;
+    if authority.get("authority").and_then(Value::as_str) != Some("rust")
+        || authority.get("source_git_sha").and_then(Value::as_str) != Some(source_revision)
+    {
+        return Err(CliError::new(
+            "language producer audit requires Rust wire authority for the generation Git revision",
+        ));
+    }
+    let model_digest = authority
+        .get("source_revision")
+        .and_then(Value::as_str)
+        .filter(|digest| digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| CliError::new("Rust wire authority is missing its model digest"))?;
+    let findings = acyclic_sdk_contract_wire::type_policy::audit_language_producer_source_bindings(
+        output,
+        Some(source_revision),
+        Some(model_digest),
+    )
+    .map_err(CliError::new)?;
+    if !findings.is_empty() {
+        return Err(CliError::new(format!(
+            "language producer source binding audit failed: {findings:?}"
+        )));
+    }
+    Ok(model_digest.to_owned())
+}
+
 fn write_generation_source_authority_metadata(
     output: &Path,
     source: &SourceIdentity,
@@ -4080,6 +4113,7 @@ fn generated_type_audit_command(
     manifest: &Path,
     audit_root: &Path,
     source_revision: &str,
+    model_digest: &str,
 ) -> Vec<OsString> {
     vec![
         cargo_program(),
@@ -4094,6 +4128,8 @@ fn generated_type_audit_command(
         audit_root.as_os_str().to_os_string(),
         OsString::from("--source-revision"),
         OsString::from(source_revision),
+        OsString::from("--model-digest"),
+        OsString::from(model_digest),
     ]
 }
 
@@ -4117,21 +4153,31 @@ fn run_generated_type_audit(
             message: Some("generated type audit manifest is not present in this checkout".into()),
         });
     };
-    if let Err(error) = require_type_audit_source_revision(output, &source.revision) {
-        return Ok(ToolResult {
-            id: spec.id.into(),
-            status: "failed".into(),
-            required: spec.required,
-            command: Vec::new(),
-            request,
-            stdout_sha256: None,
-            stderr_sha256: None,
-            exit_code: Some(1),
-            message: Some(error.to_string()),
-        });
-    }
+    let binding = require_type_audit_source_revision(output, &source.revision)
+        .and_then(|()| require_language_producer_source_bindings(output, &source.revision));
+    let model_digest = match binding {
+        Ok(digest) => digest,
+        Err(error) => {
+            return Ok(ToolResult {
+                id: spec.id.into(),
+                status: "failed".into(),
+                required: spec.required,
+                command: Vec::new(),
+                request,
+                stdout_sha256: None,
+                stderr_sha256: None,
+                exit_code: Some(1),
+                message: Some(error.to_string()),
+            });
+        }
+    };
     let audit_root = prepare_type_audit_root(output)?;
-    let command = generated_type_audit_command(manifest, &audit_root, source.revision.as_str());
+    let command = generated_type_audit_command(
+        manifest,
+        &audit_root,
+        source.revision.as_str(),
+        &model_digest,
+    );
     let command_text = command
         .iter()
         .map(|part| part.to_string_lossy().into_owned())
@@ -8820,6 +8866,7 @@ mod tests {
             Path::new("rust/crates/sdk-contract-wire/Cargo.toml"),
             Path::new("audit-root"),
             "1111111111111111111111111111111111111111",
+            &"a".repeat(64),
         );
         let text = command
             .iter()
@@ -8832,6 +8879,10 @@ mod tests {
         assert!(text.windows(2).any(|pair| {
             pair[0] == "--source-revision" && pair[1] == "1111111111111111111111111111111111111111"
         }));
+        assert!(
+            text.windows(2)
+                .any(|pair| { pair[0] == "--model-digest" && pair[1] == "a".repeat(64) })
+        );
     }
 
     #[test]
@@ -8859,6 +8910,42 @@ mod tests {
         require_type_audit_source_revision(&root, revision)
             .expect("matching authority metadata should pass");
         cleanup(&root);
+    }
+
+    #[test]
+    fn final_type_audit_binds_each_producer_to_wire_model_and_git_revision() {
+        let output = test_directory("producer-type-audit-bindings");
+        fs::create_dir_all(output.join("wire")).unwrap();
+        fs::create_dir_all(output.join("language-producers/python")).unwrap();
+        let revision = "1111111111111111111111111111111111111111";
+        let digest = "a".repeat(64);
+        let authority = json!({
+            "schema": "acyclic.sdk.rust-authority.v1",
+            "authority": "rust",
+            "source_git_sha": revision,
+            "source_revision": digest,
+        });
+        write_json_value(&output.join("wire/rust-authority.json"), &authority).unwrap();
+        fs::write(
+            output.join("language-producers/python/remote.py"),
+            "class GeneratedClient:\n    pass\n",
+        )
+        .unwrap();
+        let producer_authority = output.join("language-producers/python/rust-authority.json");
+        write_json_value(&producer_authority, &authority).unwrap();
+        require_language_producer_source_bindings(&output, revision)
+            .expect("current wire model and producer Git revision should pass");
+        let mut stale = authority.clone();
+        stale["source_git_sha"] = json!("2222222222222222222222222222222222222222");
+        write_json_value(&producer_authority, &stale).unwrap();
+        assert!(require_language_producer_source_bindings(&output, revision).is_err());
+        stale["source_git_sha"] = json!(revision);
+        stale["source_revision"] = json!("b".repeat(64));
+        write_json_value(&producer_authority, &stale).unwrap();
+        assert!(require_language_producer_source_bindings(&output, revision).is_err());
+        fs::remove_file(&producer_authority).unwrap();
+        assert!(require_language_producer_source_bindings(&output, revision).is_err());
+        cleanup(&output);
     }
 
     #[test]
