@@ -1,0 +1,31 @@
+{
+  "passed": 0,
+  "failed": 1,
+  "observation": "Workspace edit completed. Overflow occurred before completed-batch-enter; first read batch passed all completed-batch markers.",
+  "qualification": "Diagnostic failure only; recursive acceptance remains unmet.",
+  "source": "6f4e7ef13645748f4f96e0f18434d521ac06eefd",
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\6f4e7ef13-completed-batch-trace\\source.tar",
+      "sha256": "b43b881fbfd52e3445eb46d22e2e7ec964d45396b583b15985d5bbcc0be72d35"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\6f4e7ef13-completed-batch-trace\\native.log",
+      "sha256": "725dbf6be9705f052e83843f56dde378613de47d865cc934afdd7783bf756ae1"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\6f4e7ef13-completed-batch-trace\\exit-code",
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\6f4e7ef13-completed-batch-trace\\unified_runtime_swarm.exe",
+      "sha256": "0298e0a3f2b9a617615bd4398f6f0f7e975aba38f51e1b8f65070e348a6e5b21"
+    }
+  ],
+  "stack_override": false,
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "exit_code": -1073741571,
+  "platform": "Windows native",
+  "result": "failed",
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test unified_runtime_swarm -j1 default_local_runtime_executes_two_children_grandchild_and_communication -- --exact --nocapture"
+}

@@ -1,0 +1,31 @@
+{
+  "passed": 0,
+  "failed": 1,
+  "observation": "Owned physical fork preparations completed. Overflow occurred in publisher seed boundary verification after prefix verification, before message delivery.",
+  "qualification": "Diagnostic failure only; recursive acceptance remains unmet.",
+  "source": "1f5baa1c84c3a0ab69464f587a635d8c7bf9295b",
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\1f5baa1c8-message-diagnostic\\source.tar",
+      "sha256": "f2c2da203e63d8b4b68b19a2017fc6c9ef19f4d6c1b09f8ede4674c027e2f263"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\1f5baa1c8-message-diagnostic\\native.log",
+      "sha256": "abd890494c5900c72ae1de6d0e3a48482929e22dd9dc1944c40e7ab83df880f6"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\1f5baa1c8-message-diagnostic\\exit-code",
+      "sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\1f5baa1c8-message-diagnostic\\local_model_swarm.exe",
+      "sha256": "c9e7cd7274708e354a6e77d9753d70d8d0afaa64442de0e0300639068c591c41"
+    }
+  ],
+  "stack_override": false,
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "exit_code": -1073741571,
+  "platform": "Windows native",
+  "result": "failed",
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test local_model_swarm -j1 default_local_composition_runs_recursive_models_and_reopens_without_dispatch -- --exact --nocapture"
+}

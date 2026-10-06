@@ -52,6 +52,14 @@ It does not qualify later source revisions or the full matrix:
   see [tooling checks](checkpoint-q-tooling-32-pass-2026-10-06.json). These
   checks do not qualify runtime or installed artifacts.
 
+- The completed-batch trace at `6f4e7ef13` locates the unified overflow before
+  completed-batch entry, after the workspace edit succeeded; see
+  [tool return failure](checkpoint-q-6f4e7ef13-completed-batch-trace-2026-10-06.json).
+- The recursive scenario at `1f5baa1c8` overflowed during publisher seed
+  boundary verification after physical preparations returned. It never
+  reached message delivery; see
+  [seed publication failure](checkpoint-q-1f5baa1c8-message-diagnostic-2026-10-06.json).
+
 Packaging-side focused checks also remain distinct from actual artifact builds:
 
 - Native binding producer commit `9da098ca9`: five producer tests pass,
