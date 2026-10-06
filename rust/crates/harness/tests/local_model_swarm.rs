@@ -1844,6 +1844,7 @@ async fn cold_retry_repairs_missing_child_alias_once() -> Result<()> {
         limits,
     )
     .await?;
+    let root_project_provider = filesystem_provider.clone();
     let host = Arc::new(
         FilesystemHost::new(
             filesystem,
@@ -1857,7 +1858,7 @@ async fn cold_retry_repairs_missing_child_alias_once() -> Result<()> {
             .map_err(|error| Error::Storage(error.to_string()))?,
     ));
     let root_project = VolumeRef::new(
-        host.provider.clone(),
+        root_project_provider,
         "local-project",
         VolumeClass::Project,
         VolumeOwner::Project("local-swarm".into()),
