@@ -3662,16 +3662,20 @@ fn source_contains_descriptor_oneof_arm(
         "cpp" => source.lines().any(|line| {
             !is_source_comment(line)
                 && line.contains(&format!("{choice}{arm}"))
-                && (line.contains(&payload)
-                    || payload_aliases.iter().any(|alias| line.contains(alias)))
+                && (source_contains_identifier_in_line(line, &payload)
+                    || payload_aliases
+                        .iter()
+                        .any(|alias| source_contains_identifier_in_line(line, alias)))
         }),
         "csharp" => {
             source_contains_identifier(source, &choice)
                 && source.lines().any(|line| {
                     !is_source_comment(line)
                         && line.contains(&format!("record {arm}"))
-                        && (line.contains(&payload)
-                            || payload_aliases.iter().any(|alias| line.contains(alias)))
+                        && (source_contains_identifier_in_line(line, &payload)
+                            || payload_aliases
+                                .iter()
+                                .any(|alias| source_contains_identifier_in_line(line, alias)))
                 })
         }
         "swift" => {
@@ -3679,8 +3683,10 @@ fn source_contains_descriptor_oneof_arm(
                 && source.lines().any(|line| {
                     !is_source_comment(line)
                         && line.contains(&format!("case {arm}("))
-                        && (line.contains(&payload)
-                            || payload_aliases.iter().any(|alias| line.contains(alias)))
+                        && (source_contains_identifier_in_line(line, &payload)
+                            || payload_aliases
+                                .iter()
+                                .any(|alias| source_contains_identifier_in_line(line, alias)))
                 })
         }
         "python" => {
@@ -3706,10 +3712,10 @@ fn source_contains_descriptor_oneof_arm(
                     .any(|candidate| {
                         !is_source_comment(candidate)
                             && candidate.contains("value:")
-                            && (candidate.contains(&payload)
-                                || payload_aliases
-                                    .iter()
-                                    .any(|alias| candidate.contains(alias)))
+                            && (source_contains_identifier_in_line(candidate, &payload)
+                                || payload_aliases.iter().any(|alias| {
+                                    source_contains_identifier_in_line(candidate, alias)
+                                }))
                     })
             })
         }
@@ -3721,8 +3727,10 @@ fn source_contains_descriptor_oneof_arm(
                     && line.contains("type OneofArm")
                     && line.contains(&message)
                     && line.contains(&arm)
-                    && (line.contains(&payload)
-                        || payload_aliases.iter().any(|alias| line.contains(alias)))
+                    && (source_contains_identifier_in_line(line, &payload)
+                        || payload_aliases
+                            .iter()
+                            .any(|alias| source_contains_identifier_in_line(line, alias)))
                     && line.contains("Value")
             })
         }
@@ -3757,6 +3765,14 @@ fn source_contains_identifier(source: &str, identifier: &str) -> bool {
             line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
                 .any(|token| token == identifier)
         })
+}
+
+fn source_contains_identifier_in_line(line: &str, identifier: &str) -> bool {
+    if identifier.is_empty() || is_source_comment(line) {
+        return false;
+    }
+    line.split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
+        .any(|token| token == identifier)
 }
 
 fn is_source_comment(line: &str) -> bool {
@@ -5259,6 +5275,13 @@ mod tests {
             &erased_python,
             &member
         ));
+        let embedded_payload_name = format!(
+            "class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n    value: actors_pb2.Not{payload}Payload\n"
+        );
+        assert!(
+            !source_contains_descriptor_oneof_arm("python", &embedded_payload_name, &member),
+            "a larger identifier containing the Rust payload name must not satisfy the arm"
+        );
         let comment_only = format!(
             "# class OneofArmActorsApplyAcyclicActorsV1{compact_message}{arm}:\n\
              #     value: actors_pb2.{payload}\n"
