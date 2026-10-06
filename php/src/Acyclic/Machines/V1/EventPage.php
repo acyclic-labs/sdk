@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Returns machine events and the next sequence cursor.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.EventPage</code>
  */
 class EventPage extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The events value carried by EventPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineEvent events = 1;</code>
      */
     private $events;
     /**
-     * A field in the Machines v1 wire contract.
+     * The next sequence value carried by EventPage.
      *
      * Generated from protobuf field <code>uint64 next_sequence = 2;</code>
      */
@@ -36,9 +36,9 @@ class EventPage extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineEvent[] $events
-     *           A field in the Machines v1 wire contract.
+     *           The events value carried by EventPage.
      *     @type int|string $next_sequence
-     *           A field in the Machines v1 wire contract.
+     *           The next sequence value carried by EventPage.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class EventPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The events value carried by EventPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineEvent events = 1;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineEvent>
@@ -59,7 +59,7 @@ class EventPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The events value carried by EventPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineEvent events = 1;</code>
      * @param \Acyclic\Machines\V1\MachineEvent[] $var
@@ -74,7 +74,7 @@ class EventPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The next sequence value carried by EventPage.
      *
      * Generated from protobuf field <code>uint64 next_sequence = 2;</code>
      * @return int|string
@@ -85,7 +85,7 @@ class EventPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The next sequence value carried by EventPage.
      *
      * Generated from protobuf field <code>uint64 next_sequence = 2;</code>
      * @param int|string $var

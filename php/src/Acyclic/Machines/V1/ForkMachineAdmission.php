@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Confirms live fork children and declared fork fidelity.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkMachineAdmission</code>
  */
 class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      */
     protected $source = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      */
     private $children;
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      */
     protected $contract = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 5;</code>
      */
@@ -54,15 +54,15 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $source
-     *           A field in the Machines v1 wire contract.
+     *           The source value carried by ForkMachineAdmission.
      *     @type \Acyclic\Machines\V1\MachineId[] $children
-     *           A field in the Machines v1 wire contract.
+     *           The children value carried by ForkMachineAdmission.
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by ForkMachineAdmission.
      *     @type \Acyclic\Machines\V1\MachineContract $contract
-     *           A field in the Machines v1 wire contract.
+     *           The contract value carried by ForkMachineAdmission.
      *     @type int $fidelity
-     *           A field in the Machines v1 wire contract.
+     *           The fidelity value carried by ForkMachineAdmission.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -93,7 +93,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -107,7 +107,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineId>
@@ -118,7 +118,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId[] $var
@@ -133,7 +133,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -154,7 +154,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -168,7 +168,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @return \Acyclic\Machines\V1\MachineContract|null
@@ -189,7 +189,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @param \Acyclic\Machines\V1\MachineContract $var
@@ -203,7 +203,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 5;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\ForkFidelity}
@@ -214,7 +214,7 @@ class ForkMachineAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkMachineAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 5;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\ForkFidelity}

@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports image capabilities and compatibility revision.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ImageQualification</code>
  */
 class ImageQualification extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by ImageQualification.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      */
     protected $image = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by ImageQualification.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      */
     private $capabilities;
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by ImageQualification.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 3;</code>
      */
@@ -42,11 +42,11 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\Image $image
-     *           A field in the Machines v1 wire contract.
+     *           The image value carried by ImageQualification.
      *     @type int[] $capabilities
-     *           A field in the Machines v1 wire contract.
+     *           The capabilities value carried by ImageQualification.
      *     @type string $compatibility_revision
-     *           A field in the Machines v1 wire contract.
+     *           The compatibility revision value carried by ImageQualification.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by ImageQualification.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      * @return \Acyclic\Machines\V1\Image|null
@@ -77,7 +77,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by ImageQualification.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      * @param \Acyclic\Machines\V1\Image $var
@@ -91,7 +91,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by ImageQualification.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      * @return RepeatedField<int> one of the values in {@see \Acyclic\Machines\V1\Capability}
@@ -102,7 +102,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by ImageQualification.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      * @param int[] $var one of the values in {@see \Acyclic\Machines\V1\Capability}
@@ -117,7 +117,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by ImageQualification.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 3;</code>
      * @return string
@@ -128,7 +128,7 @@ class ImageQualification extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by ImageQualification.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 3;</code>
      * @param string $var

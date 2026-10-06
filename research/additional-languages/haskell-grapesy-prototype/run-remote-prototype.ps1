@@ -34,7 +34,7 @@ if (-not (Test-Path -LiteralPath $fixtureBinary -PathType Leaf)) { throw "Rust f
 $fixtureStdout = Join-Path $work 'rust-fixture.stdout.json'
 $fixtureStderr = Join-Path $work 'rust-fixture.stderr.log'
 Remove-Item -LiteralPath $fixtureStdout,$fixtureStderr -Force -ErrorAction SilentlyContinue
-$fixtureProcess = Start-Process -FilePath $fixtureBinary -ArgumentList @('--port', '0', '--grpc-port', '0', '--max-requests', '8') -RedirectStandardOutput $fixtureStdout -RedirectStandardError $fixtureStderr -PassThru -WindowStyle Hidden
+$fixtureProcess = Start-Process -FilePath $fixtureBinary -ArgumentList @('--bind-address', '0.0.0.0', '--port', '0', '--grpc-port', '0', '--max-requests', '8') -RedirectStandardOutput $fixtureStdout -RedirectStandardError $fixtureStderr -PassThru -WindowStyle Hidden
 try {
   $fixtureMetadata = $null
   for ($attempt = 0; $attempt -lt 100 -and -not $fixtureMetadata; $attempt++) {
@@ -56,6 +56,10 @@ try {
   $cabal = '/home/var/.ghcup/bin/cabal'
   $generator = ''
   $endpoint = [string]$fixtureMetadata.grpc_address
+  $gateway = (& wsl.exe -d Ubuntu -- ip route 2>$null | Select-String '^default via ([0-9.]+)' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 1)
+  if ($gateway -and $endpoint -match '(127\.0\.0\.1|0\.0\.0\.0)') {
+    $endpoint = $endpoint -replace '(127\.0\.0\.1|0\.0\.0\.0)', $gateway
+  }
   $cmd = @'
 set -euo pipefail
 rm -rf '$linuxRepo'
@@ -87,7 +91,11 @@ archive='$linuxRepo/dist-sdist/acyclic-haskell-grapesy-prototype-0.1.0.0.tar.gz'
 test -n "$archive"
 echo "artifact=$archive"
 echo "artifact-sha256=$(sha256sum "$archive" | cut -d ' ' -f 1)"
-$cabal install "$archive" --with-compiler=$ghc --installdir='$linuxRepo/installed' --install-method=copy --overwrite-policy=always --disable-documentation --builddir='$linuxRepo/dist-newstyle-install' >/dev/null
+rm -rf '$linuxRepo/extracted' '$linuxRepo/dist-newstyle-install'
+mkdir -p '$linuxRepo/extracted' '$linuxRepo/installed'
+tar -xzf "$archive" -C '$linuxRepo/extracted'
+cd '$linuxRepo/extracted'
+$cabal install . --with-compiler=$ghc --installdir='$linuxRepo/installed' --install-method=copy --overwrite-policy=always --disable-documentation --builddir='$linuxRepo/dist-newstyle-install' >/dev/null
 echo "installed-binary=$linuxRepo/installed/acyclic-haskell-remote"
 echo "installed-sha256=$(sha256sum '$linuxRepo/installed/acyclic-haskell-remote' | cut -d ' ' -f 1)"
 ACYCLIC_HASKELL_GRPC_ENDPOINT='$endpoint' ACYCLIC_HASKELL_CANCEL_MS=1000 '$linuxRepo/installed/acyclic-haskell-remote'

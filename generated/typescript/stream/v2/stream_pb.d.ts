@@ -1388,4 +1388,3 @@ export declare const StreamService: GenService<{
     output: typeof CommittedEnvelopeSchema;
   },
 }>;
-

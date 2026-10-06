@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Transfers a context to a selected model profile.
  *
  * Generated from protobuf message <code>inference.customer.v1.Transfer</code>
  */
 class Transfer extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by Transfer.
      *
      * Generated from protobuf field <code>string model = 1;</code>
      */
@@ -30,7 +30,7 @@ class Transfer extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $model
-     *           A field in the Inference customer v1 wire contract.
+     *           The model value carried by Transfer.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class Transfer extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by Transfer.
      *
      * Generated from protobuf field <code>string model = 1;</code>
      * @return string
@@ -51,7 +51,7 @@ class Transfer extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by Transfer.
      *
      * Generated from protobuf field <code>string model = 1;</code>
      * @param string $var

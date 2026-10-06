@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Extends a warm retention commitment and its idle policy.
  *
  * Generated from protobuf message <code>inference.customer.v1.RenewWarmRequest</code>
  */
 class RenewWarmRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $commitment = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 3;</code>
      */
     protected $expires_at_ms = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>optional uint64 idle_timeout_ms = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
@@ -48,13 +48,13 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by RenewWarmRequest.
      *     @type string $commitment
-     *           A field in the Inference customer v1 wire contract.
+     *           The commitment value carried by RenewWarmRequest.
      *     @type int|string $expires_at_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The expires at ms value carried by RenewWarmRequest.
      *     @type int|string $idle_timeout_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The idle timeout ms value carried by RenewWarmRequest.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -85,7 +85,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -99,7 +99,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -110,7 +110,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -125,7 +125,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 3;</code>
      * @return int|string
@@ -136,7 +136,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 3;</code>
      * @param int|string $var
@@ -151,7 +151,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>optional uint64 idle_timeout_ms = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -172,7 +172,7 @@ class RenewWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by RenewWarmRequest.
      *
      * Generated from protobuf field <code>optional uint64 idle_timeout_ms = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var

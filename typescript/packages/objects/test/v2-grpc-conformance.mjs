@@ -8,7 +8,7 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import * as wire from "@acyclic-labs/objects/proto";
 import { GrpcObjectsV2 } from "@acyclic-labs/objects/grpc";
 import { MemoryObjectsV2, ObjectsV2Error } from "@acyclic-labs/objects";
-import { ObjectsV2Memory } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ObjectsV2Memory, objects_v2_http_body_frame_bytes } from "../generated/wasm/acyclic_objects_wasm.js";
 import { lifecycle } from "./v2-lifecycle.mjs";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -103,7 +103,7 @@ if (process.argv.includes("--client")) {
               for await (const { frame } of query) {
                 if (header === undefined) { assert.equal(frame.case, "header"); header = frame.value; }
                 else if (frame.case === "complete") { assert.equal(complete, false); assert.equal(frame.value, true); complete = true; }
-                else { assert.equal(complete, false); assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); length += frame.value.length; assert.ok(length <= 64 * 1024 * 1024); parts.push(frame.value); }
+                else { assert.equal(complete, false); assert.equal(frame.case, "body"); assert.ok(frame.value.length <= objects_v2_http_body_frame_bytes()); length += frame.value.length; assert.ok(length <= 64 * 1024 * 1024); parts.push(frame.value); }
               }
               assert.ok(header);
               assert.ok(complete);

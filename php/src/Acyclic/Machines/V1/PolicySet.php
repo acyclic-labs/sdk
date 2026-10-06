@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports the machine and policy after a successful policy mutation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.PolicySet</code>
  */
 class PolicySet extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 2;</code>
      */
@@ -36,9 +36,9 @@ class PolicySet extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by PolicySet.
      *     @type \Acyclic\Machines\V1\SuspensionPolicy $policy
-     *           A field in the Machines v1 wire contract.
+     *           The policy value carried by PolicySet.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class PolicySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -69,7 +69,7 @@ class PolicySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -83,7 +83,7 @@ class PolicySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 2;</code>
      * @return \Acyclic\Machines\V1\SuspensionPolicy|null
@@ -104,7 +104,7 @@ class PolicySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicySet.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 2;</code>
      * @param \Acyclic\Machines\V1\SuspensionPolicy $var

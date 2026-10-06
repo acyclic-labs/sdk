@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Groups ordered edits into one context mutation.
  *
  * Generated from protobuf message <code>inference.customer.v1.Edits</code>
  */
 class Edits extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The edits value carried by Edits.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Edit edits = 1;</code>
      */
@@ -30,7 +30,7 @@ class Edits extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\Edit[] $edits
-     *           A field in the Inference customer v1 wire contract.
+     *           The edits value carried by Edits.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class Edits extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The edits value carried by Edits.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Edit edits = 1;</code>
      * @return RepeatedField<\Inference\Customer\V1\Edit>
@@ -51,7 +51,7 @@ class Edits extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The edits value carried by Edits.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Edit edits = 1;</code>
      * @param \Inference\Customer\V1\Edit[] $var

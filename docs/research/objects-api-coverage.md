@@ -137,6 +137,16 @@ browser package receipt is recorded in
 passed the Rust fixture upload/download, authentication, idempotency conflict,
 and caller cancellation checks.
 
+The installed gRPC facade was exercised against a fresh TLS server whose
+handlers delegate to the Rust `ObjectsV2Memory` implementation. The command
+`node typescript/packages/objects/test/v2-grpc-conformance.mjs` ran both the
+Node and Bun consumers. Each runtime completed all 13 RPC identities and
+checked client-stream header/body/completion ordering, 135,000-byte upload and
+download, failed-stream preservation, multipart list/abort recovery,
+authentication failure, caller cancellation, bounded-read errors, and object
+ordering. The fixture exits zero for both runtimes; the expected server-side
+`ECANCELED` write appears only when the cancellation case closes its response.
+
 ## Installed package qualification and source receipt
 
 On 2026-10-04, a fresh `wasm-release` build was generated with
@@ -147,11 +157,14 @@ and `@acyclic-labs/objects/proto` entrypoints. The consumer uploaded and
 downloaded a 135,000-byte value, observed five upload records, and verified
 the reconstructed bytes and Rust-owned frame boundaries with `bun smoke.mjs`.
 
-The reproducibility receipt is:
+The reproducibility receipt is content-addressed. The archive and every
+source input below are identified by their SHA-256 bytes; the moving checkout
+revision is retained only as non-authoritative provenance. A consumer can
+recheck the receipt without trusting a mutable path or branch label.
 
 | Item | SHA-256 / revision |
 | --- | --- |
-| Rust SDK worktree revision observed at build | `47646eb57b45436109d86728c489a3b6d08a8f53` |
+| Git revision observed at build (non-authoritative provenance) | `47646eb57b45436109d86728c489a3b6d08a8f53` |
 | `acyclic-labs-objects-0.2.0.tgz` | `913129b534c92695addde4ad6a66e7e58d3da546fbaa7f306761e47da71af285` |
 | `rust/crates/objects/src/v2/mod.rs` | `d4f953c58807d7da3edca7f8597a8b662bd4e454cba174fb5130d890be009a7d` |
 | `rust/crates/objects/src/v2/http.rs` | `9af62917ed403d265c5d4b0bb80ab5e2eab454401ee38a2d1ad7ca4102651393` |
@@ -162,6 +175,8 @@ The reproducibility receipt is:
 
 The archive SHA-512 is
 `36908f3eb71977c2f3a845ee9ced47dbcd71505e76e3cdefa6c8a6adeb3bd94d834e3af075742c4e674467410fff6e2969f8484a81f13d7eba96b7392dda489c`.
+The source closure is the exact set of path/content pairs in the table; no
+unlisted moving-worktree files are needed to reproduce the package behavior.
 The generated WASM bindings expose both frame-limit accessors in the archive;
 the TypeScript adapter consumes those accessors and generated operation
 streaming metadata rather than maintaining a second route or limit policy.

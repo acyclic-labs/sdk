@@ -10,7 +10,8 @@ pub mod machines_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
-    ///
+    /** Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
+*/
     #[derive(Debug, Clone)]
     pub struct MachinesServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -91,7 +92,8 @@ pub mod machines_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        ///
+        /** Qualifies an image against the protocol and capability contract.
+*/
         pub async fn qualify_image(
             &mut self,
             request: impl tonic::IntoRequest<super::QualifyImageRequest>,
@@ -121,7 +123,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Admits a machine with lifecycle and budget policy.
+*/
         pub async fn create(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateMachineRequest>,
@@ -148,7 +151,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Creates an immutable checkpoint for a machine.
+*/
         pub async fn checkpoint(
             &mut self,
             request: impl tonic::IntoRequest<super::CheckpointMachineRequest>,
@@ -175,7 +179,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Forks a checkpoint into fresh machines.
+*/
         pub async fn fork(
             &mut self,
             request: impl tonic::IntoRequest<super::ForkCheckpointRequest>,
@@ -197,7 +202,8 @@ pub mod machines_service_client {
                 .insert(GrpcMethod::new("acyclic.machines.v1.MachinesService", "Fork"));
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Forks a running machine into fresh children, preserving the declared fidelity.
+*/
         pub async fn fork_machine(
             &mut self,
             request: impl tonic::IntoRequest<super::ForkMachineRequest>,
@@ -224,7 +230,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Requests suspension of a machine.
+*/
         pub async fn suspend(
             &mut self,
             request: impl tonic::IntoRequest<super::MachineMutationRequest>,
@@ -251,7 +258,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Requests wake of a suspended machine.
+*/
         pub async fn wake(
             &mut self,
             request: impl tonic::IntoRequest<super::MachineMutationRequest>,
@@ -276,7 +284,8 @@ pub mod machines_service_client {
                 .insert(GrpcMethod::new("acyclic.machines.v1.MachinesService", "Wake"));
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Replaces a machine suspension policy.
+*/
         pub async fn set_suspension_policy(
             &mut self,
             request: impl tonic::IntoRequest<super::SetSuspensionPolicyRequest>,
@@ -306,7 +315,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Destroys a machine and records the mutation outcome.
+*/
         pub async fn destroy_machine(
             &mut self,
             request: impl tonic::IntoRequest<super::MachineMutationRequest>,
@@ -336,7 +346,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Destroys a checkpoint and records the mutation outcome.
+*/
         pub async fn destroy_checkpoint(
             &mut self,
             request: impl tonic::IntoRequest<super::CheckpointMutationRequest>,
@@ -366,7 +377,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Recovers the outcome of an indeterminate operation.
+*/
         pub async fn recover(
             &mut self,
             request: impl tonic::IntoRequest<super::RecoverRequest>,
@@ -393,7 +405,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Reads the current machine state.
+*/
         pub async fn inspect_machine(
             &mut self,
             request: impl tonic::IntoRequest<super::InspectMachineRequest>,
@@ -420,7 +433,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Reads the current checkpoint state.
+*/
         pub async fn inspect_checkpoint(
             &mut self,
             request: impl tonic::IntoRequest<super::InspectCheckpointRequest>,
@@ -450,7 +464,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Lists a bounded page of machines.
+*/
         pub async fn list_machines(
             &mut self,
             request: impl tonic::IntoRequest<super::ListMachinesRequest>,
@@ -477,7 +492,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Reads a bounded machine event page.
+*/
         pub async fn events(
             &mut self,
             request: impl tonic::IntoRequest<super::EventsRequest>,
@@ -501,7 +517,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Reads usage for a bounded machine time interval.
+*/
         pub async fn usage(
             &mut self,
             request: impl tonic::IntoRequest<super::UsageRequest>,
@@ -523,7 +540,8 @@ pub mod machines_service_client {
                 .insert(GrpcMethod::new("acyclic.machines.v1.MachinesService", "Usage"));
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Requests cancellation of an admitted operation.
+*/
         pub async fn cancel(
             &mut self,
             request: impl tonic::IntoRequest<super::OperationRequest>,
@@ -547,7 +565,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Reads the current operation state.
+*/
         pub async fn inspect_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::OperationRequest>,
@@ -574,7 +593,8 @@ pub mod machines_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        ///
+        /** Streams ordered operation state from a sequence cursor.
+*/
         pub async fn watch_operation(
             &mut self,
             request: impl tonic::IntoRequest<super::OperationRequest>,
@@ -619,7 +639,8 @@ pub mod machines_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with MachinesServiceServer.
     #[async_trait]
     pub trait MachinesService: std::marker::Send + std::marker::Sync + 'static {
-        ///
+        /** Qualifies an image against the protocol and capability contract.
+*/
         async fn qualify_image(
             &self,
             request: tonic::Request<super::QualifyImageRequest>,
@@ -627,7 +648,8 @@ pub mod machines_service_server {
             tonic::Response<super::ImageQualification>,
             tonic::Status,
         >;
-        ///
+        /** Admits a machine with lifecycle and budget policy.
+*/
         async fn create(
             &self,
             request: tonic::Request<super::CreateMachineRequest>,
@@ -635,7 +657,8 @@ pub mod machines_service_server {
             tonic::Response<super::MachineAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Creates an immutable checkpoint for a machine.
+*/
         async fn checkpoint(
             &self,
             request: tonic::Request<super::CheckpointMachineRequest>,
@@ -643,12 +666,14 @@ pub mod machines_service_server {
             tonic::Response<super::CheckpointAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Forks a checkpoint into fresh machines.
+*/
         async fn fork(
             &self,
             request: tonic::Request<super::ForkCheckpointRequest>,
         ) -> std::result::Result<tonic::Response<super::ForkAdmission>, tonic::Status>;
-        ///
+        /** Forks a running machine into fresh children, preserving the declared fidelity.
+*/
         async fn fork_machine(
             &self,
             request: tonic::Request<super::ForkMachineRequest>,
@@ -656,7 +681,8 @@ pub mod machines_service_server {
             tonic::Response<super::ForkMachineAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Requests suspension of a machine.
+*/
         async fn suspend(
             &self,
             request: tonic::Request<super::MachineMutationRequest>,
@@ -664,7 +690,8 @@ pub mod machines_service_server {
             tonic::Response<super::MutationAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Requests wake of a suspended machine.
+*/
         async fn wake(
             &self,
             request: tonic::Request<super::MachineMutationRequest>,
@@ -672,12 +699,14 @@ pub mod machines_service_server {
             tonic::Response<super::MutationAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Replaces a machine suspension policy.
+*/
         async fn set_suspension_policy(
             &self,
             request: tonic::Request<super::SetSuspensionPolicyRequest>,
         ) -> std::result::Result<tonic::Response<super::PolicyAdmission>, tonic::Status>;
-        ///
+        /** Destroys a machine and records the mutation outcome.
+*/
         async fn destroy_machine(
             &self,
             request: tonic::Request<super::MachineMutationRequest>,
@@ -685,7 +714,8 @@ pub mod machines_service_server {
             tonic::Response<super::MutationAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Destroys a checkpoint and records the mutation outcome.
+*/
         async fn destroy_checkpoint(
             &self,
             request: tonic::Request<super::CheckpointMutationRequest>,
@@ -693,7 +723,8 @@ pub mod machines_service_server {
             tonic::Response<super::MutationAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Recovers the outcome of an indeterminate operation.
+*/
         async fn recover(
             &self,
             request: tonic::Request<super::RecoverRequest>,
@@ -701,37 +732,44 @@ pub mod machines_service_server {
             tonic::Response<super::RecoveredAdmission>,
             tonic::Status,
         >;
-        ///
+        /** Reads the current machine state.
+*/
         async fn inspect_machine(
             &self,
             request: tonic::Request<super::InspectMachineRequest>,
         ) -> std::result::Result<tonic::Response<super::MachineState>, tonic::Status>;
-        ///
+        /** Reads the current checkpoint state.
+*/
         async fn inspect_checkpoint(
             &self,
             request: tonic::Request<super::InspectCheckpointRequest>,
         ) -> std::result::Result<tonic::Response<super::CheckpointState>, tonic::Status>;
-        ///
+        /** Lists a bounded page of machines.
+*/
         async fn list_machines(
             &self,
             request: tonic::Request<super::ListMachinesRequest>,
         ) -> std::result::Result<tonic::Response<super::MachinePage>, tonic::Status>;
-        ///
+        /** Reads a bounded machine event page.
+*/
         async fn events(
             &self,
             request: tonic::Request<super::EventsRequest>,
         ) -> std::result::Result<tonic::Response<super::EventPage>, tonic::Status>;
-        ///
+        /** Reads usage for a bounded machine time interval.
+*/
         async fn usage(
             &self,
             request: tonic::Request<super::UsageRequest>,
         ) -> std::result::Result<tonic::Response<super::UsageReceipt>, tonic::Status>;
-        ///
+        /** Requests cancellation of an admitted operation.
+*/
         async fn cancel(
             &self,
             request: tonic::Request<super::OperationRequest>,
         ) -> std::result::Result<tonic::Response<super::OperationState>, tonic::Status>;
-        ///
+        /** Reads the current operation state.
+*/
         async fn inspect_operation(
             &self,
             request: tonic::Request<super::OperationRequest>,
@@ -742,7 +780,8 @@ pub mod machines_service_server {
             >
             + std::marker::Send
             + 'static;
-        ///
+        /** Streams ordered operation state from a sequence cursor.
+*/
         async fn watch_operation(
             &self,
             request: tonic::Request<super::OperationRequest>,
@@ -751,7 +790,8 @@ pub mod machines_service_server {
             tonic::Status,
         >;
     }
-    ///
+    /** Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
+*/
     #[derive(Debug)]
     pub struct MachinesServiceServer<T> {
         inner: Arc<T>,

@@ -1,12 +1,13 @@
 # OpenAPI and remote SDK generation research
 
-Status: pinned research and Actors projection prototype, 2026-10-03
+Status: pinned research and Rust-model HTTP projection prototype, 2026-10-03
 
 This report records the evidence used for the remote SDK boundary. The
-prototype in `rust/crates/sdk-openapi-prototype` consumes the checked-in Actors
-descriptor (`acyclic_actors::FILE_DESCRIPTOR_SET`) and the Rust-owned
-`acyclic_actors::HTTP_ROUTES` table. It emits a derived OpenAPI 3.0.3 document;
-no OpenAPI contract is authored independently.
+prototype in `rust/crates/sdk-openapi-prototype` consumes the Rust-authored
+`acyclic_sdk_contract_wire` models (`ACTORS`, `WORKERS`, `OBJECTS_V2`, and
+`STREAM`), including each `ContractSpec.routes` table and `MethodSpec.docs`.
+It emits derived OpenAPI 3.0.3 documents; no OpenAPI contract is authored
+independently.
 
 ## Decision
 
@@ -105,19 +106,62 @@ language-specific facade behavior.
 
 ## Prototype contract and fidelity
 
-The Actors prototype derives every path by joining the service methods in the
-descriptor to the Rust-owned `HTTP_ROUTES` operation names. It emits:
+The Actors prototype iterates `ContractSpec.routes` and verifies each route
+against its modeled service method and explicit RPC identity. It emits:
 
 - all eight unary POST routes;
 - operation IDs and fully qualified protobuf RPC identities;
-- request/response `$ref` schemas for descriptor messages;
-- protobuf JSON decimal-string schemas for `int64`/`uint64`;
+- request/response `$ref` schemas for Rust-model messages;
+- protobuf JSON decimal-string schemas and explicit uint64 range metadata;
+- uint32 maximum metadata (`4294967295`);
 - base64 byte schemas;
 - enum names and values from the descriptor;
 - `x-protobuf-presence` for proto3 optional fields;
 - `x-protobuf-oneof` and `x-protobuf-oneofs` metadata;
-- a descriptor SHA-256 and route-source provenance block;
+- known enum names plus an integer branch for unknown numeric enum values;
+- operation and schema descriptions from Rust model comments and method docs;
+- a complete Rust-model SHA-256 and contract-route provenance block;
 - bearer authentication and a canonical error response reference.
+
+The same generic projection now qualifies the exported Workers model: all
+seven unary routes, exact route RPC identities, Rust-owned descriptions, and
+the two explicit path parameters (`sha256hex` and `alias`) are covered by a
+golden test. Stream's ten modeled routes are also emitted when the explicit
+`Polling` projection is selected. Unary calls retain ordinary JSON response
+semantics; server-streaming `Read`, `Follow`, and `Children` operations are
+represented as one `ReadResponse`/`ChildrenResponse` per repeated HTTP request
+with a caller-supplied cursor. The OpenAPI operation carries the modeled
+`x-protobuf-streaming` direction and an `x-acyclic-http-polling` extension
+which states `application/json` framing and explicitly marks SSE and NDJSON
+false. No event-stream schema or SSE equivalence is inferred from a gRPC
+server-streaming flag.
+
+The Objects v2 model exercises the multi-service path as well: all thirteen
+Rust-owned routes from `BucketsService`, `ObjectsService`, and
+`MultipartService` are emitted with their exact RPC identities and docs.
+Imported protobuf `google.protobuf.Timestamp` values retain their RFC3339
+protobuf-JSON representation, map fields retain `x-protobuf-map-entry`, and
+client/server streaming directions remain explicit extensions without an
+invented event framing protocol.
+
+Inference now has a projection entry point and CLI family selector for its
+fourteen Rust-owned routes. Its `INFERENCE_OPTIONS` table is carried as the
+`x-acyclic-validation-options` extension, including HTTP path options and
+uint64 limits. `RunsService.Watch` retains a generic streaming extension with
+SSE and NDJSON explicitly false because its option table does not define an
+HTTP polling policy. Filesystem and Harness remain descriptor-only until their
+Rust models expose actual HTTP route policy. Inference message and field prose
+currently use structural labels because wire-core has not published comment
+tables for that package; the receipt records this fidelity limit.
+
+The pinned OAG Python run installed and imported the derived Inference package
+after validation reported no issues and produced matching normalized wheels
+(`d267a3436826492d61e1e6ba527a70bf71737bba2fad1890cdb20de554551565`). The
+Inference route table now uses stable service-qualified operation IDs such as
+`runsInspect` and `evaluationsInspect`; the original fully qualified protobuf
+service/RPC identity remains in `x-protobuf-rpc`. OAG still reports only the
+known free-form and nullable-model warnings for this structural documentation
+fallback.
 
 The implementation intentionally does not invent `required` properties: proto3
 absence and Rust admission validation are separate concerns. A future
@@ -126,6 +170,11 @@ before marking fields required. It must also add explicit path parameter
 projection, pagination metadata and documented error status mapping when those
 contracts appear.
 
+The document omits `servers`; deployment endpoints are environment
+configuration and must not be invented by generation. It also leaves
+`additionalProperties` unspecified until the canonical protobuf JSON parser's
+unknown-field policy is explicitly part of the Rust model.
+
 ## Reproducibility and generation experiment
 
 From this crate directory, run:
@@ -133,6 +182,9 @@ From this crate directory, run:
 ```text
 cargo test --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml
 cargo run --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml -- target/openapi/actors.json
+cargo run --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml -- --contract workers target/openapi/workers.json
+cargo run --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml -- --contract objects target/openapi/objects.json
+cargo run --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml -- --contract stream target/openapi/stream-polling.json
 ```
 
 The generated file is a local qualification artifact. The prototype crate is
@@ -161,13 +213,74 @@ only a packaging smoke test. The available environment had Pydantic 2.10 while
 the generated package requests >=2.11; this is an environment qualification
 failure to resolve before publishing, not a contract change.
 
-For this checkout, the derived JSON artifact hashed to
-`13e2535b89d281325316cfc1c9f16ffe72cca41056ca6b1586de0fcad6b1cd77`.
-The local wheel built and installed successfully; a second wheel build had a
-different SHA-256 from the first (`4bc178e3…` versus `d0d617f7…`), so package
-artifact reproducibility is currently **unqualified**. The generation loop
-must normalize wheel metadata/timestamps or use a reproducible packaging step
-before it can claim byte-identical SDK artifacts.
+For the Rust-model checkout, the derived JSON artifact hashed to
+`250bb82cc0a34e1edf433a9d9ffc35f6ddf70ea4e5032d86aba28ed9c9223160`.
+Unnormalized wheel builds differed (`4bc178e3…` versus `d0d617f7…`). Setting
+`SOURCE_DATE_EPOCH=0` before both builds produced identical wheels with SHA-256
+`6e5b2890b5e00dcc1fa5c851174d88209e89628cb9bf57d89b7e41ac8481cf4e` for the
+earlier generated package. Repeating the same qualification against the
+Rust-model-generated Python package produced identical wheels with SHA-256
+`8369fcedf724f0624bded9704d2238cf8c8f63a2c37d49ba82960d0e55e24104`.
+The generation loop must require this environment setting (or an equivalent
+reproducible packager) before claiming byte-identical SDK artifacts.
+
+The same pinned OAG run generated and installed isolated Python prototypes for
+Workers, Objects, and Stream. With `SOURCE_DATE_EPOCH=0` and
+`PYTHONHASHSEED=0`, two wheel passes matched byte-for-byte: Workers
+`5ae9cd0d6b6294f9ae5f7c155a644956585ff531c75cdbae6adf79ad72eb02ac`, Objects
+`8565ff707240b5c43618b622fcf2bcea7434cc2743f773fe228b04e1e07410f3`, and
+Stream `1fc214b16eba0b0a407d0146b6d0bf6a6d48a8530cb76ca2d1a87b0bfceb3af1`.
+The installed Workers client completed a request against a Rust loopback
+fixture at `/v1/workers/deployments/prod/invoke`, and the installed Stream
+client completed one JSON polling request at `/v1/stream/read`. These fixtures
+verify the route and body shape; the generated Stream client still exposes a
+plain JSON response method because OAG does not model the Rust streaming or
+continuation semantics.
+
+The same pinned Workers artifact also generated OAG's Rust client template.
+After isolating the generated crate as its own workspace, `cargo check`
+completed with the declared reqwest/serde dependencies. The generated crate
+contains 67 files (manifest SHA-256
+`6d2ec25442d1583adbd4eb74d55546125fb2c2a2c3a333c0d9ff8a4296e9b9c3`) and its
+resolved `Cargo.lock` is recorded in the receipt. This is compile evidence for
+the derived HTTP client template; it does not qualify native gRPC behavior or
+the Rust-owned validation and retry policy.
+
+The additional target receipt at
+`research/additional-languages/openapi-targets/receipt.json` records the same
+Workers artifact qualified through OAG's Rust and PowerShell templates. The
+Rust package uses a metadata-only Apache-2.0 overlay over the Rust-owned
+artifact; its two standalone `cargo package --offline` archives match
+byte-for-byte, and an isolated consumer completed a loopback request with the
+protobuf JSON bytes round trip. The PowerShell module uses fixed package and
+Apache license metadata plus an anchor-checked Workers adaptation: callers
+pass `byte[]` directly, the generated request JSON carries canonical base64,
+and response bytes decode back to `byte[]`. A second generation plus
+adaptation matched all compared files. Both results remain HTTP projections;
+the receipt does not claim native gRPC streaming, SSE, or recovery behavior.
+The unified `sdk-generation` stage emits the five Rust projections and the
+Rust-owned adapter together, then writes `openapi/stage-receipt.json`. Its
+artifact set binds the 7.25.0 OAG pin, Apache-2.0 metadata-overlay scope, and
+adapter anchor report to the generated bytes, so the same `check` operation
+detects drift across the projection and target adaptation.
+The PowerShell receipt now also binds the exact `WORKERS` artifact hash, the
+Rust adaptation authority, a local module package archive, and a live fixture
+executable hash. Its Apache-2.0 evidence is scoped per target: Perl's OAG
+template has no package license field, so the Workers metadata overlay is not
+reported as a global Perl package license.
+
+The prototype's seventeen Rust tests include strict Rust-comment description
+coverage probes for Actors, Workers, Objects, and Stream, an Objects route,
+timestamp, and streaming-direction fidelity probe, a stream polling fidelity
+probe, and real loopback HTTP exchanges for Actors, Workers, and Stream. The
+fixture sends a protobuf-JSON-shaped Actors request containing a maximum uint64
+as a decimal string, base64 bytes, an explicit `currentHead` oneof member, and
+an unknown field; it receives an HTTP 409 canonical error body containing an
+unknown numeric enum value and asserts that the number is preserved. Source
+model mutation tests change a field's JSON name and a route path and verify
+both the generated schema/paths and model digest change; deleting a modeled
+RPC fails generation. Path parameter names are checked in source order so URL
+encoding remains a transport concern of the generated HTTP client.
 
 ## Consequences for migration
 
@@ -177,9 +290,8 @@ Keep OAG/Forge outputs behind a qualification matrix; remove handwritten
 TypeScript contracts only after generated replacements pass the same conformance
 tests. Retain thin TypeScript/Svelte/React adapters at the presentation edge.
 
-The open gaps are deliberate: route metadata for Actors is currently Rust
-table data rather than a protobuf HTTP option, error-to-status mapping is not
-yet a descriptor-owned option, and streaming APIs need an explicit derived
+The remaining open gaps are deliberate: error-to-status mapping is not yet a
+descriptor-owned option, and streaming APIs need an explicit derived
 SSE/NDJSON/WebSocket schema or native gRPC package. Those gaps are inputs to
 the next bounded migration milestone, not reasons to introduce a second
 handwritten contract.

@@ -3,10 +3,12 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { MemoryStreamProvider } from "../dist/memory.js";
+import { STREAM_ROUTES } from "../dist/generated-client.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 const provider = new MemoryStreamProvider();
 const bytes = value => new Uint8Array(Buffer.from(value, "base64"));
+const routePath = operation => STREAM_ROUTES[operation].path.replace(/^\/?v1\/stream\//, "");
 function revive(name, value) {
   if (value === null) return value;
   if (["from", "ifTail", "atTail", "deadlineUnixMillis"].includes(name)) return BigInt(value);
@@ -18,18 +20,18 @@ function revive(name, value) {
 }
 async function dispatch(route, input) {
   switch (route) {
-    case "tail": return provider.tail(input.path);
-    case "append": return provider.append(input.path, input.values, input.options);
-    case "fork": return provider.fork(input.source, input.destination, input.options);
-    case "read": { const records = []; for await (const record of provider.read(input.path, { from: input.from, limit: input.limit })) records.push(record); return records; }
-    case "children": { const children = []; for await (const child of provider.children(input.parent, input.limit)) children.push(child); return children; }
-    case "children/page": return provider.childrenPage(input);
-    case "commit": {
+    case routePath("tail"): return provider.tail(input.path);
+    case routePath("append"): return provider.append(input.path, input.values, input.options);
+    case routePath("fork"): return provider.fork(input.source, input.destination, input.options);
+    case routePath("read"): { const records = []; for await (const record of provider.read(input.path, { from: input.from, limit: input.limit })) records.push(record); return records; }
+    case routePath("children"): { const children = []; for await (const child of provider.children(input.parent, input.limit)) children.push(child); return children; }
+    case routePath("childrenPage"): return provider.childrenPage(input);
+    case routePath("commit"): {
       const result = await provider.commit(input.request, input.options);
       return result.ok ? { ...result, envelope: await provider.readCommit(result.commitId) } : result;
     }
-    case "commits/read": return provider.readCommit(input.commitId);
-    case "idempotency/inspect": return (await provider.inspectIdempotency(input.idempotencyKey)) ?? null;
+    case routePath("readCommit"): return provider.readCommit(input.commitId);
+    case routePath("inspectIdempotency"): return (await provider.inspectIdempotency(input.idempotencyKey)) ?? null;
     default: throw new Error(`unknown route ${route}`);
   }
 }
@@ -37,7 +39,7 @@ const replacer = (_name, value) => typeof value === "bigint" ? value.toString() 
 const server = createServer(async (request, response) => {
   response.setHeader("content-type", "application/json");
   const commitOnly = request.headers.authorization === "Bearer commit-only";
-  if (request.headers.authorization !== "Bearer conformance" && !(commitOnly && request.url === "/v1/stream/commit")) { response.writeHead(403); response.end('{"code":"access_denied"}'); return; }
+  if (request.headers.authorization !== "Bearer conformance" && !(commitOnly && request.url === `/${STREAM_ROUTES.commit.path.replace(/^\//, "")}`)) { response.writeHead(403); response.end('{"code":"access_denied"}'); return; }
   try {
     let text = "";
     for await (const chunk of request) text += chunk;

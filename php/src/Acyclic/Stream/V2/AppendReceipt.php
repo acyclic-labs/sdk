@@ -23,7 +23,7 @@ class AppendReceipt extends \Google\Protobuf\Internal\Message
      */
     protected $start = 0;
     /**
-     * The inclusive ending sequence.
+     * The exclusive ending sequence.
      *
      * Generated from protobuf field <code>uint64 end = 2;</code>
      */
@@ -50,7 +50,7 @@ class AppendReceipt extends \Google\Protobuf\Internal\Message
      *     @type int|string $start
      *           The inclusive starting sequence.
      *     @type int|string $end
-     *           The inclusive ending sequence.
+     *           The exclusive ending sequence.
      *     @type int|string $tail
      *           The observed or resulting stream tail.
      *     @type string $commit_id
@@ -90,7 +90,7 @@ class AppendReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * The inclusive ending sequence.
+     * The exclusive ending sequence.
      *
      * Generated from protobuf field <code>uint64 end = 2;</code>
      * @return int|string
@@ -101,7 +101,7 @@ class AppendReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * The inclusive ending sequence.
+     * The exclusive ending sequence.
      *
      * Generated from protobuf field <code>uint64 end = 2;</code>
      * @param int|string $var

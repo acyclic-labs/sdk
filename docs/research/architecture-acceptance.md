@@ -1,0 +1,476 @@
+# Architecture acceptance review
+
+Status: initial prototype review snapshot, 2026-10-03. Findings below describe that snapshot, not the live implementation. The active goal ledger, per-lane reports, and hash-identified acceptance receipts record later fixes and fresh failures. This document does not certify qualification.
+
+This document is the independent acceptance review for the Rust SDK and
+documentation source migration. It is intentionally stricter than a prototype
+test report. A generated file, package, or website preview is evidence only
+when its complete provenance and behavior can be checked from a clean checkout.
+The review covers the SDK worktree and the current acyclic.dev website sources.
+It does not authorize a merge, registry publication, or production deployment.
+
+## Decision summary
+
+The proposed direction is sound, but the currently arriving prototypes do not
+yet prove Rust is the source of truth:
+
+* `rust/crates/sdk-contract-wire` now emits a descriptor and Proto rendering
+  directly from its Actors model, and compares that model to a descriptor
+  compiled from the existing Actors `.proto`. This is a meaningful authority
+  step, but the model still covers only a narrow subset of the full descriptor
+  surface and the compatibility build can silently create an empty baseline if
+  the Proto fixture is absent.
+* `rust/crates/sdk-openapi-prototype` now consumes the Rust Actors model and
+  the runtime-owned `HTTP_ROUTES` table. This removes its previous direct read
+  of generated descriptors, but its provenance still says
+  `wire_authority: protobuf`, route metadata remains outside the contract model,
+  and the OpenAPI projection does not yet carry validation, errors,
+  capabilities, or streaming/recovery semantics.
+* `rust/crates/sdk-docs` correctly labels source scanning as conservative, but
+  `source-fallback` is still a successful bundle mode and rustdoc JSON is only
+  recorded, not used to resolve the public item graph. This must be research
+  mode only; a release bundle cannot silently use it.
+* `rust/crates/sdk-embedded-prototype` exercises a real `MemoryStream` through a
+  C ABI for append, finite read, follow, cancellation, and invalid input. It is
+  an embedded boundary proof, not qualification of the complete embedded
+  contract, ownership model, ABI stability, or every Stream/Filesystem/Harness
+  behavior.
+* The website still contains independent and stale Objects semantics. The
+  current Rust Objects contract describes bucket/name addressing without public
+  versions, snapshots, or forks, while website pages continue to advertise
+  those concepts. Website claim checks can pass while those pages remain stale.
+
+The migration must therefore proceed as a compatibility-preserving pilot. The
+first hard milestone is a Rust model that *produces* the complete canonical
+descriptor and generation inputs, followed by a rustdoc-resolved docs bundle and
+one package plus website pilot. Comparing Rust metadata to Proto, or compiling
+an output once, is not sufficient to cross that boundary.
+
+## Hard acceptance gates
+
+Every gate below is required for a release family. A family is not qualified by
+passing another family's tests. Gate output must include source revision,
+contract revision, generator/toolchain versions, target feature set, package
+metadata, and hashes of all produced artifacts.
+
+### 1. One-way ownership and provenance
+
+The dependency direction must be mechanically visible:
+
+```text
+Rust contract and behavior metadata
+  -> descriptor / protobuf / OpenAPI / SDK metadata / docs bundle / snippets
+  -> target-language generators and thin adapters
+```
+
+The active generation command must not read a hand-authored `.proto`, generated
+Rust module, generated TypeScript descriptor, OpenAPI document, or website claim
+file to discover active contract facts. Archived Proto and descriptor files may
+remain as immutable compatibility fixtures. They must be explicitly named and
+read only by compatibility tests.
+
+For every generated artifact, record at least:
+
+* Rust source revision and dirty-tree status;
+* contract model/schema revision and canonical descriptor digest;
+* generator binary, plugin, template, compiler, and lockfile revisions;
+* target language, runtime, feature/cfg matrix, and transport/embedded mode;
+* input and output hashes, package metadata, and generation command identity.
+
+A clean checkout must reproduce the same semantic outputs. If byte identity is
+claimed, the toolchain must also make descriptor and package bytes deterministic
+(including archive ordering, timestamps, compression, and metadata). A second
+run with an unchanged checkout must produce no diff. The drift check must fail
+if a generated file is hand-edited or stale.
+
+### 2. Rust contract must emit the wire contract
+
+The Rust model must generate the descriptor or an equivalent complete wire model;
+it may not only compare itself to one generated by Proto. The output must retain:
+
+* fully qualified file, package, message, enum, service, and RPC identities;
+* field numbers, scalar/reference types, labels, map entries, and JSON names;
+* proto2/proto3 presence, optional synthetic oneofs, explicit oneofs, and
+  reserved names/ranges;
+* enum numbers and unknown-value policy;
+* client/server streaming directions and canonical RPC paths;
+* custom options and validation extensions, including
+  `proto/validation/v1/options.proto` extension identities 51001 through 51012;
+* deprecation/source metadata where it affects generated docs or clients; and
+* archived protocol identities and handshake descriptors without regeneration.
+
+The model-to-descriptor path needs negative tests. Removing or renumbering a
+field, enum value, oneof, route, RPC, custom option, or stream direction must
+change the model output or fail the build. A test that changes both model and
+Proto and still passes is not evidence of authority. The old Proto descriptor
+must be compared semantically (and byte-for-byte where the pinned toolchain
+allows) before it is moved into an immutable archive.
+
+### 3. Resolved public Rust API inventory
+
+Documentation and SDK metadata must be built from compiler-resolved rustdoc
+information for every published feature combination. A source regex or line
+scanner cannot establish the public API because it misses or misstates:
+
+* `pub use` re-exports and renamed exports;
+* private modules that expose public items through a re-export;
+* `cfg` and feature branches, target-specific exports, and optional generated
+  modules;
+* trait-associated methods, blanket implementations, macro output, and proc
+  macro expansion;
+* `#[doc(hidden)]`, deprecation, `#[doc = include_str!(...)]`, and inherited
+  documentation behavior; and
+* generated bindings included outside the obvious source path.
+
+`rust/crates/sdk-docs` must hard-fail a release bundle when rustdoc JSON is
+missing, empty, from the wrong revision, or does not resolve the requested
+crate/features. `source-fallback` may be retained for exploratory diagnostics,
+but it must be marked non-publishable and never feed the website's released
+reference. The bundle must prove that all public exports, docs, examples, and
+generated items were resolved for the same feature matrix.
+
+### 4. Behavior and transport conformance
+
+Wire and API shape tests do not prove behavior. Each language and facade that is
+called supported must install from its produced package and run shared vectors
+against the canonical Rust implementation. Vectors must cover, as applicable:
+
+* serialization, protobuf JSON spelling, 64-bit values, bytes, presence,
+  oneofs, unknown fields, validation limits, and canonical errors;
+* auth metadata, unary transport, deadlines, cancellation, retries, and
+  idempotency;
+* server/client/bidirectional streams, backpressure, end-of-stream, resume,
+  recovery, CAS/tail conflicts, and duplicate delivery behavior; and
+* capability negotiation, service availability, and error qualification.
+
+Remote clients and embedded bindings must be qualified separately. An embedded
+binding must call the canonical Rust implementation over an intentionally
+specified ABI/WASM boundary. It must not translate arbitrary Rust behavior into
+an independently maintained implementation in each target language. ABI tests
+must include layout/width/alignment, ownership and release, null/invalid input,
+threading policy, panic containment, cancellation, version negotiation, and
+memory leak/double-release checks.
+
+The current embedded proof only covers a bounded C ABI over `MemoryStream` and
+does not cross this gate by itself. Its `AcyclicStatus` categories and opaque
+handle policy are good candidates for a later ABI contract, but the full target
+surface and compatibility policy must be authored in Rust and tested from a
+foreign-language consumer.
+
+The detailed embedded review found these acceptance blockers:
+
+* The latest revision uses monotonic IDs and registry-held `Arc` ownership, so
+  closing an engine no longer invalidates readers that retain the engine. The
+  ABI still needs an explicit close-order and concurrent-call policy: engine
+  close removes the public ID while in-flight operations retain an `Arc`, and
+  callers need defined results for operations racing with close. The global
+  registries also need bounded-resource and shutdown behavior before they are a
+  long-lived ABI design.
+* `acyclic_open_result_release` closes any non-null reader in the result. A
+  caller that copies the reader handle out and then releases the result can
+  accidentally close the handle it intends to use. Provide an explicit take
+  operation or document and test the transfer convention in generated headers
+  and every facade.
+* append/open/next synchronously block on a Tokio runtime or
+  `recv_timeout`. Calling them from a Tokio worker or another runtime callback
+  can panic or starve the executor. The contract must state the threading and
+  blocking policy, contain runtime-entry failures deterministically, and offer
+  an async/WASM equivalent where required.
+* End, cancellation, queue-capacity, sender-disconnect, and provider-error
+  results need terminal-state rules. The current channel can report `End` once
+  and then report `Cancelled` after the sender drops; a full queue sends an
+  error while already queued records remain. Each result transition needs a
+  conformance vector and a defined repeated-call behavior.
+* Reader cancellation sets an atomic flag and aborts the producer task, but a
+  concurrent `reader_next` already blocked in `recv_timeout` is not directly
+  woken. It can return `Pending` after cancellation and only report
+  `Cancelled` on a later call. Define whether that latency is contractual or
+  add a cancellation message/wakeup path.
+* Handles are exposed as `u64` but IDs are allocated through `AtomicUsize` and
+  cast to `u64`. The exhaustion path is not a complete no-reuse proof across
+  targets; use a checked `AtomicU64` allocator or explicitly specify the
+  supported address/ID width and exhaustion behavior.
+* A buffer release with the wrong ID/pointer/length/capacity is silently
+  ignored and leaks the allocation. That is safer than freeing foreign memory,
+  but the ABI needs a diagnostic status or documented leak-on-invalid-release
+  rule, plus tests for malformed metadata and registry lock failure.
+* C and Python consumer smoke fixtures now exercise IDs, stale/double release,
+  and the generated layout. They still do not establish ABI size/alignment and
+  enum-value assertions across supported compilers, concurrent calls,
+  cancellation under load, or a reviewable header digest. The header is
+  generated in `OUT_DIR`, so its digest and the cbindgen version must be
+  recorded in a reviewable artifact and the foreign consumers must run in CI.
+* `catch_unwind` contains Rust panics but cannot make an arbitrary foreign
+  pointer passed to `acyclic_buffer_release` safe. Release functions must be
+  documented as accepting only buffers returned by this ABI, and negative tests
+  must cover null/zero buffers without attempting forged allocations.
+
+### 5. Snippets and examples are executable artifacts
+
+Rust examples beside the owning crate must pass `cargo test --doc` or an
+equivalent isolated Cargo example build with the exact features and revision
+advertised by the docs. Non-Rust snippets must compile or execute against the
+exact package artifact produced by the same generation run. A syntax parser,
+transpiler, formatter, or `python -m py_compile` check alone cannot qualify a
+snippet: it can miss imports, package API drift, transport behavior, and runtime
+errors.
+
+Each snippet carries language, package/version, source revision, feature set,
+transport or embedded mode, capability/maturity, and expected outcome. The
+website must reject snippets whose package and docs revisions disagree.
+
+### 6. Generated website bundle and editorial boundary
+
+The website must consume a pinned, source-bound docs bundle containing resolved
+Rustdoc items, crate Markdown, API references, navigation, capability tables,
+package instructions, executable examples, and provenance. Svelte presentation
+components may remain hand-authored. Active API/reference semantics and SDK
+snippets may not be duplicated in independent website TypeScript or Markdown
+sources.
+
+The website build must fail for missing/unknown source revisions, stale bundle
+hashes, unresolved item IDs, broken redirects, broken generated links, duplicate
+canonical routes, and examples outside the package/revision matrix. A branch
+preview and a released bundle must be distinguishable. Service availability,
+pricing, roadmap, policy, and other genuinely editorial claims can remain in an
+explicitly owned website source, but they must not be presented as generated
+Rust API facts.
+
+### 7. Language qualification matrix
+
+Track remote and embedded support independently for TypeScript/Node, Python,
+Go, JVM (Java/Kotlin), C#/.NET, Swift, C++, Ruby, PHP, Dart, Rust, and any
+additional candidate. A target is qualified only when its package builds and
+installs from this loop's artifact, its serialization/transport tests pass, and
+its docs snippets execute. OpenAPI Generator or Forge output is an unqualified
+candidate until it passes those tests. The broad generator inventory does not
+prove support for streaming, recovery, CAS, or service-specific errors.
+
+Record generator and template licenses, runtime dependencies, transitive
+licenses, and reproducibility limitations. An excluded target needs concrete
+evidence (missing transport feature, unavailable runtime, licensing block, or
+failed package/conformance gate), not an assertion that it is inconvenient.
+
+## Current false-authority and stale-claim evidence
+
+### Proto bootstrap can pass while Proto remains authoritative
+
+`rust/crates/sdk-contract-wire/build.rs` compiles
+`proto/actors/v1/actors.proto` with vendored `protoc` into a baseline descriptor.
+The tests in `src/lib.rs` decode that descriptor and compare it to `ACTORS`,
+while `ContractSpec::descriptor_set`, `actors_descriptor`, and `actors_proto`
+provide a direct Rust-to-descriptor/source path. That is real progress:
+downstream projections can consume `ACTORS` without reading a generated
+descriptor. It still does not prove complete source ownership. The model
+currently lacks reserved ranges/names, custom options and validation extensions,
+richer scalar kinds, map/nested declarations, source/deprecation metadata, and
+complete route/error/capability metadata. Several descriptor helpers also
+qualify type names through the Actors constant rather than the supplied
+`ContractSpec`, so a second package model can be misqualified. The existing
+Buf/codegen path must be switched only after all active outputs consume the Rust
+emission. The empty-descriptor fallback in the build fixture must become a hard
+error for any active gate; silently skipping a missing baseline is appropriate
+only for an explicitly fixture-free exploratory build. A negative test must
+change the Rust model alone and prove descriptor, generated Proto, OpenAPI, and
+downstream package inputs change.
+
+### OpenAPI output is a projection of generated Proto output
+
+`rust/crates/sdk-openapi-prototype/src/lib.rs` now reads
+`acyclic_sdk_contract_wire::ACTORS` and derives operations from
+`acyclic_actors::HTTP_ROUTES`. It preserves useful protobuf JSON metadata and
+records a Rust-model digest, but its `x-acyclic-source` still identifies
+`wire_authority: protobuf`, while routes are a separate runtime table. It
+therefore qualifies as a stronger Rust-model projection experiment, not as
+evidence that the complete API contract owns wire and HTTP generation. Route
+declarations, validation, HTTP status mapping, streaming, recovery, and
+capability metadata still need to be represented in the Rust model before this
+projection can be promoted. Its tests include a source-model mutation and a
+loopback JSON smoke test; these prove local projection sensitivity and basic
+JSON handling, not package installation or service conformance.
+
+The TypeScript prototype has a similar naming trap. `rust/crates/sdk-typescript`
+imports `acyclic_actors::FILE_DESCRIPTOR_SET` and
+`acyclic_workers::FILE_DESCRIPTOR_SET`, decodes those checked-in generated
+descriptors with `prost`, and separately imports each crate's `HTTP_ROUTES`.
+Its generated manifest and comments call these "Rust descriptors", but those
+bytes remain Proto/Buf-derived artifacts in the current crates. Until this
+generator consumes the Rust contract emission (and records its Rust contract
+digest rather than only the generated descriptor SHA), it is a generated
+descriptor consumer, not proof that the TypeScript contract has been made
+Rust-owned. The generated TypeScript itself is a thin metadata facade, which is
+the right eventual shape; the input provenance still needs correction. Its
+`write_or_check` loop checks expected files but does not reject extra stale files
+in the output directory, so drift checking must compare the complete manifest
+and fail on unexpected generated artifacts. The manifest defaults
+`source_revision` to `working-tree`; release generation must reject that value.
+
+### Docs scanner can produce a plausible but incomplete bundle
+
+`rust/crates/sdk-docs/src/lib.rs` emits `analysis_mode: "source-fallback"` when
+no matching rustdoc JSON is found and reports an `rustdoc_json_unavailable`
+warning. Its scanner records `pub use` as an unresolved warning and cannot
+resolve re-exports, cfg branches, macros, or compiler-expanded generated items.
+This is a good diagnostic mode, but a successful JSON bundle with warnings is
+not a release-quality public API inventory. A release consumer must require
+`analysis_mode: "rustdoc-json"`, nonempty resolved index, exact revision, and a
+feature matrix with no unresolved diagnostics.
+
+### Website Objects pages are stale against the current Rust contract
+
+The current Rust Objects sources say the logical bucket/key contract has no
+public object versions, snapshots, or forks:
+
+* `rust/crates/objects/src/v2/mod.rs` describes the logical bucket/key model.
+* `rust/crates/objects/README.md` says it has no public object versions,
+  snapshots, or forks.
+* `proto/objects/v2/objects.proto` has `ObjectInfo` fields for etag, size,
+  metadata, and last-modified, with no `version_id`.
+
+The website still presents the older model in several pages, including
+`src/routes/docs/objects/+page.svelte` (immutable versions, snapshots, and
+forks), `objects/snapshots-forks/+page.svelte`, `objects/lifecycle/+page.svelte`,
+`objects/conditional-operations/+page.svelte` (`Condition::IfVersion` and
+`versionId`), and the Objects quickstart's old crates.io
+`acyclic-objects = "=1.0.0-rc.3"` claim. This is a concrete stale-source
+failure, not a hypothetical risk. The website's own claims checker can preserve
+the old quickstart artifact and pass its checks while the Rust API has already
+moved on. The migration must classify these pages as generated reference,
+executable guide, or editorial; remove or redirect invalid version/snapshot
+claims; and make the bundle check reject package/version/source evidence that is
+not present in the Rust-owned revision.
+
+## Minimal migration order
+
+1. Freeze public URLs, descriptor/handshake identities, exported Rust APIs,
+   conformance vectors, and release claims. Inventory website pages and mark
+   each generated reference, executable guide, or editorial page. Keep Objects
+   v1 and other archived protocols immutable.
+2. Pilot Actors and Workers unary operations with a Rust contract model that
+   emits a complete descriptor, routes, errors, validation, capabilities, and
+   docs metadata. Compare its output with the existing descriptor before
+   switching any consumer.
+3. Add one deterministic Rust `generate` and `check` entry point. Generate
+   descriptor, Proto, OpenAPI projection, package metadata, docs inputs, and
+   provenance. Make missing source, rustdoc, toolchain, or baseline inputs hard
+   failures in release mode.
+4. Generate one remote TypeScript package and one website docs bundle from the
+   Rust outputs. Run resolved rustdoc, Cargo doctest, package install, runtime
+   conformance, link, redirect, accessibility, and desktop/mobile preview
+   checks. Keep TypeScript/Svelte adapters only at the presentation edge.
+5. Qualify Python and Go, then JVM/.NET/Swift/C++, followed by Ruby/PHP/Dart and
+   any additional viable targets. Maintain an explicit remote/embedded matrix
+   and package artifact hashes.
+6. Qualify streaming, recovery, cancellation, Filesystem, Harness, and the C
+   ABI/WASM boundary against shared Rust vectors. Do not infer these from unary
+   OpenAPI success.
+7. Delete handwritten TypeScript contracts, facades, behavior, and generators
+   family by family only after each family passes all gates. Replace website SDK
+   pages with the pinned generated bundle and preserve old URLs with reviewed
+   redirects.
+8. After every active family consumes the Rust model, retire active Proto/JS
+   generation inputs. Keep archived descriptors, protocol fixtures, and
+   conformance vectors as immutable compatibility evidence. Re-run clean-checkout
+   drift and package/snippet/site preview checks before considering the loop
+   complete.
+
+Until these gates pass, prototypes should be reported as research evidence and
+not as migrated SDKs, generated website truth, or qualified language support.
+
+## Central orchestration bypass review
+
+The new `rust/crates/sdk-generation` CLI improves provenance structure, but the
+current implementation still has fail-open paths that must be closed before it
+can be the release entry point:
+
+* `source_identity` hashes `git ls-files` and asks Git for status with
+  `--untracked-files=no`. All current migration crates, contract models, and
+  review prototypes are untracked in this worktree, so edits to them do not
+  change the recorded digest and do not make `dirty` true. A source identity
+  must include the complete authoritative tree (or fail when it contains
+  untracked files), and release mode must reject dirty or `uncommitted`
+  identities.
+* `run_tools` invokes `sdk-contract-wire` with `cargo test`, which validates a
+  compatibility fixture but does not run a model-to-descriptor/package export.
+  The request envelope also lists `proto` as an input for the wire and OpenAPI
+  tools. The active path must invoke the Rust exporter and treat Proto only as
+  an immutable comparison fixture.
+* `generate` records failed or pending tools in a manifest and can still return
+  success. That is acceptable for an explicitly named research inventory, but
+  release generation needs a fail-closed mode that rejects a missing required
+  tool, missing generated output, or failed tool.
+* `compare_fresh_artifacts` skips a fresh artifact when the regenerated file is
+  absent and does not reject unexpected fresh files. A tool can therefore omit
+  an output and leave the old artifact looking current. Compare complete file
+  sets in both directions and fail on missing, extra, or stale paths.
+* The qualification checker validates only that contract and artifact strings
+  start with `sha256:`. It does not compare them with the current contract,
+  generation manifest, or package bytes, and it only requires nonempty test-name
+  strings. In an isolated run I supplied the current revision, digests
+  `sha256:deadbeef` and `sha256:madeup`, and one test label per capability; the
+  `inventory` command classified TypeScript as fully qualified. Evidence must
+  reference verified files, command receipts, and hashes from the same manifest,
+  not caller-provided prefixes.
+* If `languages/package-names.json` is absent or contains an empty `families`
+  object, `language_inventory` returns no languages and `qualify` can report
+  `qualified` because zero qualified items equals zero inventoried items. The
+  language catalog must be required, schema-validated, nonempty, and checked
+  against the complete target inventory; omitted targets must be errors.
+
+These are concrete bypasses rather than design preferences. They should be
+covered by negative fixtures: untracked source mutation, failed required tool,
+missing fresh artifact, unexpected fresh artifact, fabricated qualification
+digests, missing language catalog, and empty language catalog.
+
+## Contract validator limits
+
+`rust/crates/sdk-contract-validation` is a useful semantic descriptor checker:
+it preserves raw option messages, compares field tags/presence/oneofs/types,
+enum values, streaming flags, reserved ranges, and source-info-insensitive
+semantics. The following additional gates are required before treating it as a
+complete compatibility oracle:
+
+* Empty descriptor sets currently decode to an empty model and can compare as
+  semantically compatible. Reject empty baseline/candidate sets and require an
+  expected file/package/service identity for each family.
+* `ContractModel::add_item` inserts into a map without rejecting duplicate
+  descriptor paths. A malformed descriptor with duplicate names can overwrite
+  one item and hide a change. Reject duplicate files, messages, fields, enums,
+  services, methods, and generated semantic paths.
+* The semantic signatures intentionally omit unknown fields outside the nested
+  `options` messages. Future descriptor fields or extensions attached directly
+  to file/message/field/service/method descriptors can therefore be lost by
+  `prost-types` and compare equal. Preserve and canonicalize the complete raw
+  descriptor message, excluding only the explicitly approved source-info paths.
+* `canonical_wire_message` sorts repeated option fields by value. If a custom
+  option is repeated and order is meaningful, this treats a reordered option
+  list as equal. Canonicalization must preserve protobuf repeated-field order or
+  document and test an order-insensitive option schema per extension.
+* The checker reports semantic compatibility independently of exact bytes. The
+  generation policy must state which identity is used for runtime handshakes,
+  archived protocol compatibility, and reproducible artifacts, and must never
+  substitute a semantic digest for a required byte-level identity.
+
+## Recheck after owner revisions (2026-10-03)
+
+The review-only harness at `research/acceptance/verify-negative-gates.ps1` was run against the current prebuilt binaries. Its receipt is `research/acceptance/negative-regressions.receipt.json` and currently reports `status: failed` for two independent reasons: fabricated TypeScript qualification remains accepted by direct `inventory`, and the authoritative generator source is still untracked in Git.
+
+The descriptor validator has closed three earlier bypasses. Empty descriptor sets now fail with `descriptor set contains no files`; duplicate file identities fail with `duplicate descriptor identity`; raw unknown descriptor fields and unknown set fields have regression tests; and repeated custom option order is preserved and tested as semantic. The old claims that empty sets, duplicate paths, unknown descriptor fields, or repeated option order are currently accepted are stale and should be read as historical findings. Remaining validator gates are to reject malformed or incomplete descriptor identity according to each protocol family, and to keep the exact-byte versus semantic compatibility policy explicit at handshake and archive boundaries.
+
+The central generator now includes tracked plus untracked nonignored files in its source digest, rejects empty language inventories, compares complete fresh artifact sets, and requires full SHA-256 evidence strings matching a generation manifest when one exists. The negative receipt shows that the direct `inventory` path still accepts caller-authored evidence when no `sdk-generation-manifest.json` exists: all five TypeScript capabilities become `qualified` with fabricated contract and artifact digests. Inventory and qualification must require a manifest or an explicitly marked research mode; release qualification must verify every evidence digest against generated files and command receipts. The source tracking assertion also remains red until the migration crates are tracked, or the generator fails closed on untracked authoritative inputs.
+
+The embedded prototype now uses monotonic `u64` IDs, registry-owned `Arc` lifetimes, bounded queues, and an explicit cancellation wake message. The remaining acceptance gates are behavioral: a blocked foreign `reader_next` call must be woken immediately by cancellation; `End`, provider error, capacity error, and cancellation must be stable terminal states on repeated calls; and the queue counter must remain balanced if `try_send` fails. The C and Python consumers need CI execution plus ABI layout/status assertions. A policy is also needed for calling the synchronous `runtime.block_on` boundary from a thread already running a Tokio runtime.
+
+The current negative receipt is evidence of real remaining blockers, not qualification evidence. Do not promote the orchestration or embedded prototypes to release generation until these checks are green against a clean checkout.
+
+The same harness was rerun against a fresh source build in an isolated ignored target directory; the receipt is unchanged (`empty_descriptor_rejected=true`, `duplicate_descriptor_rejected=true`, `fabricated_qualification_rejected=false`, `authoritative_generator_source_tracked=false`). The OpenAPI prototype now validates modeled route/RPC consistency and emits a Rust contract digest, but the generated source manifest still needs a machine checked `wire_authority` identity and the central tool command still selects the wire crate's test path. A passing route projection test is therefore insufficient evidence that the central generation pipeline emitted and recorded the authoritative wire descriptor.
+
+The expanded receipt also exercises unknown direct descriptor fields and repeated custom option reordering. Both are rejected by the current validator (`validator_unknown_exit=1`, `validator_repeated_option_exit=1`), so those validator bypasses are closed in the tested binary. The only red cases are central fabricated qualification and untracked authoritative source tracking.
+
+Embedded runtime retest against the current source-built test binary exposed two real cancellation races. The cross-thread cancellation test returned `Ok` because a queued record was delivered after cancellation; the follow cancellation test returned `End` because the reader consumed a terminal message and overwrote the already published `Cancelled` state. `cancel_reader` needs a terminal-state compare-and-set policy, and `reader_next` must recheck terminal state after a receive before returning a queued record or terminal message. Until those races are fixed, cancellation is not an immediate stable ABI guarantee. The release C consumer and Python ctypes consumer both pass their current smoke paths, but those do not cover these races.
+
+A fresh rebuild after the latest central source edits still produces the same provenance receipt: source digest coverage for a temporary nonignored untracked file passes, while direct inventory accepts fabricated fully qualified evidence without a manifest. This remains an owner integration blocker; the source-hash gate itself is green and should not be reported as an untracked-file failure before the review commit is staged.
+
+The managed worktree was rechecked after the direct-inventory owner fix. Source: `C:\Users\varun\.codex\worktrees\rust-sdk-docs-source\sdk`; generator binary SHA-256: `52779E2CBD26F83278C75EA5E174828D7C1E5E4AB0F173455ED901FBB71757EF`. The exact harness receipt is now `status: passed`: fabricated qualification is rejected, nonignored untracked source changes alter the digest, and all four descriptor negative cases remain rejected. The earlier red receipt came from the stale pre-fix binary.
+
+Correction: the managed SDK worktree does contain `cpp/embedded-consumer` with main, cross-thread cancellation, and negative lifetime smoke executables. Running them directly with `rust/crates/sdk-embedded-prototype/target/release` on `PATH` passed all three (exit 0). The prior CTest/install invocation was blocked by the sandbox's write/loader permissions; the direct ABI executables provide the useful local result.

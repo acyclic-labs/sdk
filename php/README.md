@@ -28,9 +28,7 @@ PHP protobuf scalar accessors preserve uint64 values through `PHP_INT_MAX` and
 reject larger values instead of narrowing them. Values in the remaining unsigned range must use
 `Acyclic\\Runtime\\UInt64`, which preserves the decimal string, JSON string,
 and exact protobuf varint without floating-point conversion or clamping. This
-policy remains necessary on pure-PHP `google/protobuf` 5.36.2; a native
-protobuf extension may be qualified separately when its official PHP ABI
-package is available.
+policy applies to pure-PHP `google/protobuf` 5.36.2.
 The official PECL 5.36.2 Windows asset and its qualification result are
 recorded in `native-runtime.lock.json`.
 With that extension loaded, `tests/uint64_rust_golden.php` decodes and
@@ -43,13 +41,13 @@ fixture: it decodes the unsigned wire value through a signed integer and is
 rejected by the package's no-clamp policy. That limitation is recorded rather
 than hidden by a helper-only assertion.
 
-The package is not published from this worktree. Generated output is a local
-build artifact and should be validated from a clean checkout in CI.
-
 `Acyclic\\Runtime\\RemoteClient` delegates transport selection and bearer
 validation to the Rust-emitted `src/Acyclic/Runtime/GeneratedRemotePolicy.php`
-snapshot. Refresh that snapshot with the `sdk-contract-wire generate-products`
-command whenever the Rust transport policy changes.
+snapshot. Its automatic resolver selects the native policy for the installed
+PHP runtime; an embedded PHP/WASM host can set its browser runtime bridge
+before construction. Refresh that snapshot with the
+`sdk-contract-wire generate-products` command whenever the Rust transport
+policy changes.
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
 
@@ -57,5 +55,5 @@ Native qualification receipt
 
 With the pinned PECL `protobuf` 5.36.2 extension loaded, `tests/uint64_rust_golden.php` runs the clean installed consumer against `tests/fixtures/rust-family-goldens.json`. It covers all nine Rust authority families with exact wire and JSON round trips: eight family messages carry `u64::MAX`, while Protocol v1 has no uint64 field and checks its real `ProtocolIdentity.version` scalar. The fixture set is bound to the authority manifest hash in `src/provenance.json`.
 
-The pinned official PECL `grpc` 1.82.0 and `protobuf` 5.36.2 Windows extensions are loaded together for the native consumer. `tests/native_transport_fixture.php` exercises a generated Actors unary call, Stream append, and server-stream cancellation against the Rust fixture; it passed with exit code 0. The exact runtime, package, fixture, output, and source-authority hashes are recorded in `tests/fixtures/native-qualification.receipt.json`. Pure PHP remains limited to the no-clamp uint64 policy described above; this native lane qualifies PHP transport and generated-message semantics for the pinned Windows target.
+The pinned official PECL `grpc` 1.82.0 and `protobuf` 5.36.2 Windows extensions are loaded together for the native consumer. `tests/native_transport_fixture.php` exercises a generated Actors unary call, Stream append, and server-stream cancellation against the Rust fixture; it passed with exit code 0. The exact runtime, package, fixture, output, and source-authority hashes are recorded in `tests/fixtures/native-qualification.receipt.json`. The native lane covers PHP transport and generated-message semantics for the pinned Windows target.
 

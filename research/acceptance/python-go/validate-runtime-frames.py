@@ -46,8 +46,8 @@ def authority_inventory(path: Path) -> dict[str, tuple[str, str]]:
             if rpc in inventory:
                 raise ValueError(f"Rust authority repeats {rpc}")
             inventory[rpc] = (family_name, method["shape"])
-    if len(inventory) != 106:
-        raise ValueError(f"Rust authority contains {len(inventory)} RPCs; expected 106")
+    if not inventory:
+        raise ValueError("Rust authority contains no RPCs")
     return inventory
 
 

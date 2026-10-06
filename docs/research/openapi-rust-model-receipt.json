@@ -1,0 +1,118 @@
+{
+  "schema": "acyclic.rust_model_openapi_receipt.v1",
+  "source": {
+    "checkout": "codex/rust-sdk-docs-source",
+    "prototype": "rust/crates/sdk-openapi-prototype",
+    "wire_crate": "rust/crates/sdk-contract-wire",
+    "authority": "acyclic_sdk_contract_wire::ContractSpec",
+    "projection": "HTTP JSON; Stream server streaming is one-message-per-request polling"
+  },
+  "qualification": {
+    "cargo": {
+      "command": "cargo test --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml --offline",
+      "tests_passed": 15,
+      "result": "pass",
+      "source_lock_note": "Executed from a writable mirror because the managed checkout denies Cargo.lock writes"
+    },
+    "openapi": [
+      {
+        "family": "workers",
+        "routes": 7,
+        "artifact": "workers.json",
+        "sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+        "contract_digest": "2a392ae99d622cd361dc62b886e6ccf6762283c2a0850c670e85dfa3d904b2b7"
+      },
+      {
+        "family": "objects",
+        "routes": 13,
+        "artifact": "objects.json",
+        "sha256": "eb9887847e27fd1ec9ab0aaa9986c2329c8288c2870d63e617f563e16bf98677",
+        "contract_digest": "ab9ce37593570a31ffe285bec135f9a8f7832b9efe85d1309916b8d28f2595a2"
+      },
+      {
+        "family": "stream",
+        "routes": 10,
+        "artifact": "stream.json",
+        "sha256": "8b9db9df771eb60c9af17fc6792cbda4831b1bcf23135be7cd5733bed8684c81",
+        "contract_digest": "7dcb0607352efe7101a92dc9b84b2f5d3dfae2a75296a9f32d573047837bcb92",
+        "sse": false,
+        "ndjson": false,
+        "framing": "application/json"
+      }
+    ],
+    "inference": {
+      "projection": "implemented in sdk-openapi-prototype and CLI family selector",
+      "modeled_routes": 14,
+      "validation_options": "acyclic_sdk_contract_wire::inference::INFERENCE_OPTIONS",
+      "artifact": "inference.json",
+      "sha256": "6975ee16646afbaec48d7c0eff79ce00349549b274b57bae10b088a4fb6ef905",
+      "contract_digest": "0f99f73d71f903415ae066de1f40b3253d676af735babf16b1d7ac9611b4b6f1",
+      "qualification": "routes and option projection pass; structural documentation fallback remains",
+      "fidelity_limit": "wire-core has not published Inference message/field/enum comment tables"
+    },
+    "oag": {
+      "release": "7.25.0",
+      "commit": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+      "jar_sha256": "41ce4f6b07f196676439d710759fa1ced7a08066d06ff1bf314681470289efae",
+      "java": "17.0.14",
+      "language": "python",
+      "packages": {
+        "workers": {
+          "files": 141,
+          "manifest_sha256": "2f62d14ab790a30fc5d0ec4913abdf325d86c678f5d26fc7969972020993aff5"
+        },
+        "objects": {
+          "files": 189,
+          "manifest_sha256": "e500695a90f2e5b6d09a3d7065d72296e12e6cbc232b0e0b5eb69140f4fcc0ee"
+        },
+        "stream": {
+          "files": 197,
+          "manifest_sha256": "50971bf22bc22795956a1ef218e40bce3ae111cfe6dc6e1e682350b8b1662a0d"
+        },
+        "inference": {
+          "files": 283,
+          "manifest_sha256": "f895d9399d3eb5b15e8bd88bd881cf93b4108ae9b8c0d75bd17f388468be4302"
+        },
+        "rust_workers": {
+          "files": 67,
+          "manifest_sha256": "6d2ec25442d1583adbd4eb74d55546125fb2c2a2c3a333c0d9ff8a4296e9b9c3",
+          "cargo_lock_sha256": "0e8f837f5c5f64e07cb7fc897258f03d6ff30b9b44024a49feb9b591e279ccb1"
+        }
+      },
+      "smoke": {
+        "validate": "workers passed; Objects and Stream passed with unused-model recommendations; Inference passed with free-form/nullable-model warnings",
+        "inference_generation": "generated after pinned OAG validation with unique service-qualified operation IDs",
+        "python_compileall": "pass",
+        "package_imports": "pass",
+        "pip_install_no_deps": "pass",
+        "rust_compile": "pass: OAG Rust Workers crate cargo check completed with generated Cargo.lock",
+        "rust_loopback": {
+          "workers": "pass: installed client invoked POST /v1/workers/deployments/prod/invoke",
+          "stream": "pass: installed client invoked POST /v1/stream/read and received one JSON response"
+        }
+      },
+      "reproducible_wheels": {
+        "environment": {
+          "SOURCE_DATE_EPOCH": "0",
+          "PYTHONHASHSEED": "0"
+        },
+        "workers": {
+          "sha256": "5ae9cd0d6b6294f9ae5f7c155a644956585ff531c75cdbae6adf79ad72eb02ac",
+          "two_pass_match": true
+        },
+        "objects": {
+          "sha256": "8565ff707240b5c43618b622fcf2bcea7434cc2743f773fe228b04e1e07410f3",
+          "two_pass_match": true
+        },
+        "stream": {
+          "sha256": "1fc214b16eba0b0a407d0146b6d0bf6a6d48a8530cb76ca2d1a87b0bfceb3af1",
+          "two_pass_match": true
+        },
+        "inference": {
+          "sha256": "d267a3436826492d61e1e6ba527a70bf71737bba2fad1890cdb20de554551565",
+          "two_pass_match": true
+        }
+      }
+    }
+  }
+}

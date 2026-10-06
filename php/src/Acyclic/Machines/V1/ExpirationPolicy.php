@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Declares whether and when a machine expires.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ExpirationPolicy</code>
  */
 class ExpirationPolicy extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationKind kind = 1;</code>
      */
     protected $kind = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The value ms value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>uint64 value_ms = 2;</code>
      */
@@ -36,9 +36,9 @@ class ExpirationPolicy extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int $kind
-     *           A field in the Machines v1 wire contract.
+     *           The kind value carried by ExpirationPolicy.
      *     @type int|string $value_ms
-     *           A field in the Machines v1 wire contract.
+     *           The value ms value carried by ExpirationPolicy.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class ExpirationPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationKind kind = 1;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\ExpirationKind}
@@ -59,7 +59,7 @@ class ExpirationPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationKind kind = 1;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\ExpirationKind}
@@ -74,7 +74,7 @@ class ExpirationPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The value ms value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>uint64 value_ms = 2;</code>
      * @return int|string
@@ -85,7 +85,7 @@ class ExpirationPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The value ms value carried by ExpirationPolicy.
      *
      * Generated from protobuf field <code>uint64 value_ms = 2;</code>
      * @param int|string $var

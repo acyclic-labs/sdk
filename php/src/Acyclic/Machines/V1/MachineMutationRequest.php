@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies a machine for a lifecycle mutation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachineMutationRequest</code>
  */
 class MachineMutationRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
     protected $idempotency_key = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      */
@@ -42,11 +42,11 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by MachineMutationRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by MachineMutationRequest.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by MachineMutationRequest.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -77,7 +77,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -91,7 +91,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -112,7 +112,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var
@@ -126,7 +126,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -147,7 +147,7 @@ class MachineMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @param \Acyclic\Machines\V1\MachineId $var

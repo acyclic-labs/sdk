@@ -352,4 +352,3 @@ export const MultipartService = /*@__PURE__*/
  */
 export const SnapshotsService = /*@__PURE__*/
   serviceDesc(file_objects_v1_objects, 3);
-

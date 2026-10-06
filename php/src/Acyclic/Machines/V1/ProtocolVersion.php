@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies the protocol version required by a Machines request.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ProtocolVersion</code>
  */
 class ProtocolVersion extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The major value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 major = 1;</code>
      */
     protected $major = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The minor value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 minor = 2;</code>
      */
@@ -36,9 +36,9 @@ class ProtocolVersion extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int $major
-     *           A field in the Machines v1 wire contract.
+     *           The major value carried by ProtocolVersion.
      *     @type int $minor
-     *           A field in the Machines v1 wire contract.
+     *           The minor value carried by ProtocolVersion.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class ProtocolVersion extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The major value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 major = 1;</code>
      * @return int
@@ -59,7 +59,7 @@ class ProtocolVersion extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The major value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 major = 1;</code>
      * @param int $var
@@ -74,7 +74,7 @@ class ProtocolVersion extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The minor value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 minor = 2;</code>
      * @return int
@@ -85,7 +85,7 @@ class ProtocolVersion extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The minor value carried by ProtocolVersion.
      *
      * Generated from protobuf field <code>uint32 minor = 2;</code>
      * @param int $var

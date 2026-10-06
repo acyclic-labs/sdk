@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Identifies an evaluation input or output artifact by digest and size.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationArtifact</code>
  */
 class EvaluationArtifact extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>bytes digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The media type value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>string media_type = 2 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $media_type = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The logical size value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>uint64 logical_size = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
@@ -42,11 +42,11 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The digest value carried by EvaluationArtifact.
      *     @type string $media_type
-     *           A field in the Inference customer v1 wire contract.
+     *           The media type value carried by EvaluationArtifact.
      *     @type int|string $logical_size
-     *           A field in the Inference customer v1 wire contract.
+     *           The logical size value carried by EvaluationArtifact.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>bytes digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -67,7 +67,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>bytes digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -82,7 +82,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The media type value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>string media_type = 2 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -93,7 +93,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The media type value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>string media_type = 2 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -108,7 +108,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The logical size value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>uint64 logical_size = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -119,7 +119,7 @@ class EvaluationArtifact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The logical size value carried by EvaluationArtifact.
      *
      * Generated from protobuf field <code>uint64 logical_size = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var

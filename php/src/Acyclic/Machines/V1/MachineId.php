@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies a machine.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachineId</code>
  */
 class MachineId extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The value value carried by MachineId.
      *
      * Generated from protobuf field <code>bytes value = 1;</code>
      */
@@ -30,7 +30,7 @@ class MachineId extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $value
-     *           A field in the Machines v1 wire contract.
+     *           The value value carried by MachineId.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class MachineId extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The value value carried by MachineId.
      *
      * Generated from protobuf field <code>bytes value = 1;</code>
      * @return string
@@ -51,7 +51,7 @@ class MachineId extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The value value carried by MachineId.
      *
      * Generated from protobuf field <code>bytes value = 1;</code>
      * @param string $var

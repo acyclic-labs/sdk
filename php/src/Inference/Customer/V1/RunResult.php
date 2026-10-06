@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports generation output, terminal state, context, and usage receipt.
  *
  * Generated from protobuf message <code>inference.customer.v1.RunResult</code>
  */
 class RunResult extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The output value carried by RunResult.
      *
      * Generated from protobuf field <code>bytes output = 1;</code>
      */
     protected $output = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.ContextView context = 2;</code>
      */
     protected $context = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal value carried by RunResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunTerminal terminal = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
     protected $terminal = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.UsageReceipt receipt = 4;</code>
      */
@@ -48,13 +48,13 @@ class RunResult extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $output
-     *           A field in the Inference customer v1 wire contract.
+     *           The output value carried by RunResult.
      *     @type \Inference\Customer\V1\ContextView $context
-     *           A field in the Inference customer v1 wire contract.
+     *           The context value carried by RunResult.
      *     @type int $terminal
-     *           A field in the Inference customer v1 wire contract.
+     *           The terminal value carried by RunResult.
      *     @type \Inference\Customer\V1\UsageReceipt $receipt
-     *           A field in the Inference customer v1 wire contract.
+     *           The receipt value carried by RunResult.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The output value carried by RunResult.
      *
      * Generated from protobuf field <code>bytes output = 1;</code>
      * @return string
@@ -75,7 +75,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The output value carried by RunResult.
      *
      * Generated from protobuf field <code>bytes output = 1;</code>
      * @param string $var
@@ -90,7 +90,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.ContextView context = 2;</code>
      * @return \Inference\Customer\V1\ContextView|null
@@ -111,7 +111,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.ContextView context = 2;</code>
      * @param \Inference\Customer\V1\ContextView $var
@@ -125,7 +125,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal value carried by RunResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunTerminal terminal = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\RunTerminal}
@@ -136,7 +136,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal value carried by RunResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunTerminal terminal = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\RunTerminal}
@@ -151,7 +151,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.UsageReceipt receipt = 4;</code>
      * @return \Inference\Customer\V1\UsageReceipt|null
@@ -172,7 +172,7 @@ class RunResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt value carried by RunResult.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.UsageReceipt receipt = 4;</code>
      * @param \Inference\Customer\V1\UsageReceipt $var

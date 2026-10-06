@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Declares spend and concurrency bounds for a machine contract.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.Budgets</code>
  */
 class Budgets extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The spend micros value carried by Budgets.
      *
      * Generated from protobuf field <code>uint64 spend_micros = 1;</code>
      */
     protected $spend_micros = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The concurrency value carried by Budgets.
      *
      * Generated from protobuf field <code>uint32 concurrency = 2;</code>
      */
@@ -36,9 +36,9 @@ class Budgets extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int|string $spend_micros
-     *           A field in the Machines v1 wire contract.
+     *           The spend micros value carried by Budgets.
      *     @type int $concurrency
-     *           A field in the Machines v1 wire contract.
+     *           The concurrency value carried by Budgets.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class Budgets extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The spend micros value carried by Budgets.
      *
      * Generated from protobuf field <code>uint64 spend_micros = 1;</code>
      * @return int|string
@@ -59,7 +59,7 @@ class Budgets extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The spend micros value carried by Budgets.
      *
      * Generated from protobuf field <code>uint64 spend_micros = 1;</code>
      * @param int|string $var
@@ -74,7 +74,7 @@ class Budgets extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The concurrency value carried by Budgets.
      *
      * Generated from protobuf field <code>uint32 concurrency = 2;</code>
      * @return int
@@ -85,7 +85,7 @@ class Budgets extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The concurrency value carried by Budgets.
      *
      * Generated from protobuf field <code>uint32 concurrency = 2;</code>
      * @param int $var

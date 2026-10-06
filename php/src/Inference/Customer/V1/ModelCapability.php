@@ -10,50 +10,50 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Describes a model profile, limits, features, and warm-retention options.
  *
  * Generated from protobuf message <code>inference.customer.v1.ModelCapability</code>
  */
 class ModelCapability extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ModelCapability.
      *
      * Generated from protobuf field <code>string model = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $model = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ModelCapability.
      *
      * Generated from protobuf field <code>bytes execution_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $execution_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum context value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_context = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $maximum_context = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $maximum_output = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The features value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated string features = 5 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64, (.acyclic.validation.v1.nonempty_max_item_bytes) = 64];</code>
      */
     private $features;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retention profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile retention_profiles = 6 [(.acyclic.validation.v1.max_items) = 64];</code>
      */
     private $retention_profiles;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile idle_kv_profiles = 7 [(.acyclic.validation.v1.max_items) = 64];</code>
      */
@@ -66,19 +66,19 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $model
-     *           A field in the Inference customer v1 wire contract.
+     *           The model value carried by ModelCapability.
      *     @type string $execution_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The execution profile value carried by ModelCapability.
      *     @type int|string $maximum_context
-     *           A field in the Inference customer v1 wire contract.
+     *           The maximum context value carried by ModelCapability.
      *     @type int|string $maximum_output
-     *           A field in the Inference customer v1 wire contract.
+     *           The maximum output value carried by ModelCapability.
      *     @type string[] $features
-     *           A field in the Inference customer v1 wire contract.
+     *           The features value carried by ModelCapability.
      *     @type \Inference\Customer\V1\RetentionProfile[] $retention_profiles
-     *           A field in the Inference customer v1 wire contract.
+     *           The retention profiles value carried by ModelCapability.
      *     @type \Inference\Customer\V1\RetentionProfile[] $idle_kv_profiles
-     *           A field in the Inference customer v1 wire contract.
+     *           The idle kv profiles value carried by ModelCapability.
      * }
      */
     public function __construct($data = null)
@@ -88,7 +88,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ModelCapability.
      *
      * Generated from protobuf field <code>string model = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -99,7 +99,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ModelCapability.
      *
      * Generated from protobuf field <code>string model = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -114,7 +114,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ModelCapability.
      *
      * Generated from protobuf field <code>bytes execution_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -125,7 +125,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ModelCapability.
      *
      * Generated from protobuf field <code>bytes execution_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -140,7 +140,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum context value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_context = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -151,7 +151,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum context value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_context = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -166,7 +166,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -177,7 +177,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by ModelCapability.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -192,7 +192,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The features value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated string features = 5 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64, (.acyclic.validation.v1.nonempty_max_item_bytes) = 64];</code>
      * @return RepeatedField<string>
@@ -203,7 +203,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The features value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated string features = 5 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64, (.acyclic.validation.v1.nonempty_max_item_bytes) = 64];</code>
      * @param string[] $var
@@ -218,7 +218,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retention profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile retention_profiles = 6 [(.acyclic.validation.v1.max_items) = 64];</code>
      * @return RepeatedField<\Inference\Customer\V1\RetentionProfile>
@@ -229,7 +229,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retention profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile retention_profiles = 6 [(.acyclic.validation.v1.max_items) = 64];</code>
      * @param \Inference\Customer\V1\RetentionProfile[] $var
@@ -244,7 +244,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile idle_kv_profiles = 7 [(.acyclic.validation.v1.max_items) = 64];</code>
      * @return RepeatedField<\Inference\Customer\V1\RetentionProfile>
@@ -255,7 +255,7 @@ class ModelCapability extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv profiles value carried by ModelCapability.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.RetentionProfile idle_kv_profiles = 7 [(.acyclic.validation.v1.max_items) = 64];</code>
      * @param \Inference\Customer\V1\RetentionProfile[] $var

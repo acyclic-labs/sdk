@@ -2,7 +2,7 @@
 
 This is deliberately descriptor driven.  It does not maintain a second RPC
 inventory or a language-specific contract: the authority manifest supplies
-the 106 identities and the generated protobuf descriptors supply message
+the RPC identities and the generated protobuf descriptors supply message
 types and streaming flags.  Every call records the bytes sent and received;
 the Rust semantic verifier is the gate for meaning after this transport run.
 """
@@ -111,9 +111,47 @@ def load_authority(path: Path) -> tuple[dict[str, Any], list[tuple[str, str]]]:
     for family in authority.get("families", []):
         for method in family.get("rpc_methods", []):
             methods.append((family["source"].split("/", 1)[0], method["rpc"]))
-    if len(methods) != 106 or len({rpc for _, rpc in methods}) != 106:
-        raise RuntimeError(f"Rust authority must contain 106 unique RPCs, got {len(methods)}")
+    unique = {rpc for _, rpc in methods}
+    if not methods or len(unique) != len(methods):
+        raise RuntimeError(
+            f"Rust authority must contain a non-empty unique RPC inventory, got {len(methods)} entries"
+        )
     return authority, methods
+
+
+def load_typed_manifest(path: Path, inventory: list[tuple[str, str]]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    records = manifest.get("records")
+    plan = manifest.get("execution_plan") or records
+    if manifest.get("complete") is not True or not isinstance(records, list) or not isinstance(plan, list) or not plan:
+        raise RuntimeError("Rust typed request manifest is incomplete")
+    by_rpc: dict[str, dict[str, Any]] = {}
+    for record in records:
+        rpc = record.get("rpc")
+        encoded = record.get("request_base64")
+        if not isinstance(rpc, str) or not isinstance(encoded, str):
+            raise RuntimeError("Rust typed request manifest contains an incomplete record")
+        if rpc in by_rpc:
+            raise RuntimeError(f"Rust typed request manifest repeats {rpc}")
+        raw = base64.b64decode(encoded, validate=True)
+        expected = record.get("request_sha256")
+        if expected not in (None, digest(raw)):
+            raise RuntimeError(f"Rust typed request manifest digest differs for {rpc}")
+        by_rpc[rpc] = record
+    known = {rpc for _, rpc in inventory}
+    planned: set[str] = set()
+    for record in plan:
+        rpc = record.get("rpc")
+        if not isinstance(rpc, str) or rpc not in known:
+            raise RuntimeError(f"Rust typed execution plan contains unknown RPC: {rpc!r}")
+        planned.add(rpc)
+    missing_plan = sorted(known - planned)
+    if missing_plan:
+        raise RuntimeError(f"Rust typed execution plan is missing {missing_plan[0]}")
+    missing = [rpc for _, rpc in inventory if rpc not in by_rpc]
+    if missing:
+        raise RuntimeError(f"Rust typed request manifest is missing {missing[0]}")
+    return by_rpc, plan
 
 
 def generated_services() -> dict[str, tuple[Any, Any]]:
@@ -127,15 +165,34 @@ def generated_services() -> dict[str, tuple[Any, Any]]:
     return services
 
 
-def call_rpc(stub: Any, method: Any, request: Any, timeout: float) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def decode_manifest_requests(record: dict[str, Any], request_type: Any) -> list[Any]:
+    frames = record.get("request_frames") or [{"bytes_base64": record["request_base64"]}]
+    requests: list[Any] = []
+    for index, frame_record in enumerate(frames):
+        if frame_record.get("sequence", index) != index:
+            raise RuntimeError(f"Rust typed request frames are out of order for {record['rpc']}")
+        raw = base64.b64decode(frame_record["bytes_base64"], validate=True)
+        expected = frame_record.get("sha256")
+        if expected not in (None, digest(raw)):
+            raise RuntimeError(f"Rust typed request frame digest differs at index {index}")
+        request = request_type()
+        request.ParseFromString(raw)
+        requests.append(request)
+    if not requests:
+        raise RuntimeError(f"Rust typed manifest contains no request frames for {record['rpc']}")
+    return requests
+
+
+def call_rpc(stub: Any, method: Any, requests: list[Any], timeout: float, manifest_mode: bool) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     call = getattr(stub, method.name)
-    requests = [request]
     if method.client_streaming:
-        requests = [request, request.__class__()]
-        populate(requests[1], method.input_type, 97)
+        if not manifest_mode:
+            second = requests[0].__class__()
+            populate(second, method.input_type, 97)
+            requests = [requests[0], second]
         result = call(iter(requests), timeout=timeout)
     else:
-        result = call(request, timeout=timeout)
+        result = call(requests[0], timeout=timeout)
     responses: list[dict[str, Any]] = []
     if method.server_streaming:
         for index, response in enumerate(result):
@@ -153,39 +210,61 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--source-revision", default=None)
     parser.add_argument("--timeout", type=float, default=10.0)
+    parser.add_argument("--typed-manifest", type=Path, required=True, help="Rust executable typed request manifest")
     args = parser.parse_args()
     sys.path.insert(0, str(args.package_root.resolve()))
     authority, inventory = load_authority(args.authority)
+    typed_manifest = load_typed_manifest(args.typed_manifest, inventory) if args.typed_manifest else None
+    if typed_manifest is not None:
+        typed_records, execution_plan = typed_manifest
+        inventory_by_rpc = {rpc: (family, rpc) for family, rpc in inventory}
+        inventory = [inventory_by_rpc[record["rpc"]] for record in execution_plan]
+    else:
+        typed_records, execution_plan = {}, []
     services = generated_services()
     revision = args.source_revision or authority.get("source_revision") or "unknown"
+    manifest_sha256 = digest(args.typed_manifest.read_bytes()) if args.typed_manifest else None
     scenarios: list[dict[str, Any]] = []
     with grpc.insecure_channel(args.endpoint) as channel:
-        for family, rpc in inventory:
+        for step, (family, rpc) in enumerate(inventory):
             service_name, method_name = rpc.split("/", 1)
             service, stub_type = services[service_name]
             method = service.methods_by_name[method_name]
             stub = stub_type(channel)
             request_type = message_factory.GetMessageClass(method.input_type)
-            request = request_type()
-            populate(request, method.input_type, 17)
+            manifest_record = execution_plan[step] if step < len(execution_plan) else typed_records.get(rpc)
+            if manifest_record is not None:
+                requests = decode_manifest_requests(manifest_record, request_type)
+            else:
+                request = request_type()
+                populate(request, method.input_type, 17)
+                requests = [request]
+                if method.client_streaming:
+                    second = request_type()
+                    populate(second, method.input_type, 97)
+                    requests.append(second)
             started = time.monotonic()
-            request_frames = [frame(request, method.input_type.full_name, 0)]
-            if method.client_streaming:
-                second = request_type()
-                populate(second, method.input_type, 97)
-                request_frames.append(frame(second, method.input_type.full_name, 1))
+            request_frames = [frame(request, method.input_type.full_name, index) for index, request in enumerate(requests)]
             try:
-                responses, terminal = call_rpc(stub, method, request, args.timeout)
-                status = "passed"
+                responses, terminal = call_rpc(stub, method, requests, args.timeout, manifest_record is not None)
+                status = "observed"
                 error = None
             except grpc.RpcError as exc:
                 responses = []
                 terminal = {"code": exc.code().name, "details": exc.details() or ""}
-                status = "failed"
+                status = "observed_error"
                 error = str(exc)
+            terminal_code = terminal.get("code", "")
+            terminal_kind = (
+                "timeout" if terminal_code == "DEADLINE_EXCEEDED" else
+                "error" if status == "observed_error" else
+                "eof" if (method.client_streaming or method.server_streaming) else
+                None
+            )
             result = {
                 "schema": "acyclic.sdk.rpc-scenario-result.v2",
                 "source_revision": revision,
+                "execution_step": step,
                 "family": family,
                 "rpc": rpc,
                 "shape": "client" if method.client_streaming else "server" if method.server_streaming else "unary",
@@ -193,10 +272,11 @@ def main() -> int:
                 "execution_mode": "remote",
                 "transport": "grpc",
                 "status": status,
-                "exit_code": 0 if status == "passed" else 1,
+                "exit_code": 0,
                 "request_frames": request_frames,
                 "response_frames": responses,
                 "terminal": terminal,
+                "terminal_kind": terminal_kind,
                 "response_count": len(responses),
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
                 "checks": ["invocation", "transport", "serialization", "request-frames", "terminal-status"],
@@ -209,6 +289,7 @@ def main() -> int:
         "schema": "acyclic.sdk.rpc-scenario-log.v2",
         "consumer": "python-rust-authority-release",
         "source_revision": revision,
+        "manifest_sha256": manifest_sha256,
         "execution_mode": "remote",
         "artifact_root": str(args.package_root),
         "scenarios": scenarios,

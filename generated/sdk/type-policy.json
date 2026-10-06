@@ -58,7 +58,7 @@
     {
       "family": "stream",
       "field": "limit",
-      "semantic_type": "page_limit"
+      "semantic_type": "stream_page_limit"
     },
     {
       "family": "stream",
@@ -143,7 +143,12 @@
     {
       "family": "machines",
       "field": "page_limit",
-      "semantic_type": "page_limit"
+      "semantic_type": "machine_page_limit"
+    },
+    {
+      "family": "machines",
+      "field": "event_page_limit",
+      "semantic_type": "machine_event_page_limit"
     },
     {
       "family": "filesystem",
@@ -488,6 +493,305 @@
       "unknown_values": "raw enum integer and unknown table tag"
     }
   ],
+  "public_field_bindings": [
+    {
+      "direction": "request",
+      "family": "actors",
+      "field": "actor_id",
+      "message": "InvokeActorRequest",
+      "module": "actors",
+      "semantic_type": "actor_id",
+      "wire_field": "actor_id"
+    },
+    {
+      "direction": "request",
+      "family": "actors",
+      "field": "method",
+      "message": "InvokeActorRequest",
+      "module": "actors",
+      "semantic_type": "method",
+      "wire_field": "method"
+    },
+    {
+      "direction": "request",
+      "family": "workers",
+      "field": "alias",
+      "message": "SelectDeploymentRequest",
+      "module": "workers",
+      "semantic_type": "alias",
+      "wire_field": "alias"
+    },
+    {
+      "direction": "request",
+      "family": "workers",
+      "field": "version_sha256",
+      "message": "SelectDeploymentRequest",
+      "module": "workers",
+      "semantic_type": "version_sha256",
+      "wire_field": "version_sha256"
+    },
+    {
+      "direction": "request",
+      "family": "workers",
+      "field": "idempotency_key",
+      "message": "SelectDeploymentRequest",
+      "module": "workers",
+      "semantic_type": "idempotency_key_text",
+      "wire_field": "idempotency_key"
+    },
+    {
+      "direction": "request",
+      "family": "workers",
+      "field": "job_id",
+      "message": "InspectJobRequest",
+      "module": "workers",
+      "semantic_type": "job_id",
+      "wire_field": "job_id"
+    },
+    {
+      "direction": "request",
+      "family": "workers",
+      "field": "method",
+      "message": "InvokeVersionRequest",
+      "module": "workers",
+      "semantic_type": "method",
+      "wire_field": "method"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "idempotency_key",
+      "message": "AppendRequest",
+      "module": "stream",
+      "semantic_type": "idempotency_key_bytes",
+      "wire_field": "idempotency_key"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "path",
+      "message": "AppendRequest",
+      "module": "stream",
+      "semantic_type": "path",
+      "wire_field": "path"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "source",
+      "message": "ForkRequest",
+      "module": "stream",
+      "semantic_type": "source",
+      "wire_field": "source"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "destination",
+      "message": "ForkRequest",
+      "module": "stream",
+      "semantic_type": "destination",
+      "wire_field": "destination"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "limit",
+      "message": "ReadRequest",
+      "module": "stream",
+      "semantic_type": "stream_page_limit",
+      "wire_field": "limit"
+    },
+    {
+      "direction": "request",
+      "family": "stream",
+      "field": "commit_id",
+      "message": "ReadCommitRequest",
+      "module": "stream",
+      "semantic_type": "commit_id",
+      "wire_field": "commit_id"
+    },
+    {
+      "direction": "request",
+      "family": "objects",
+      "field": "key",
+      "message": "GetObjectRequest",
+      "module": "objects",
+      "semantic_type": "object_key",
+      "wire_field": "object_key"
+    },
+    {
+      "direction": "response",
+      "family": "objects",
+      "field": "etag",
+      "message": "ObjectInfo",
+      "module": "objects",
+      "semantic_type": "opaque_text",
+      "wire_field": "etag"
+    },
+    {
+      "direction": "nested_message",
+      "family": "objects",
+      "field": "idempotency_key",
+      "message": "MutationIdentity",
+      "module": "objects",
+      "semantic_type": "idempotency_key_text",
+      "wire_field": "idempotency_key"
+    },
+    {
+      "direction": "request",
+      "family": "objects",
+      "field": "upload_id",
+      "message": "ListPartsRequest",
+      "module": "objects",
+      "semantic_type": "upload_id",
+      "wire_field": "upload_id"
+    },
+    {
+      "direction": "request",
+      "family": "objects",
+      "field": "page_size",
+      "message": "ListObjectsRequest",
+      "module": "objects",
+      "semantic_type": "page_limit",
+      "wire_field": "page_size"
+    },
+    {
+      "direction": "request",
+      "family": "inference",
+      "field": "run_id",
+      "message": "InspectRunRequest",
+      "module": "inference",
+      "semantic_type": "run_id",
+      "wire_field": "run_id"
+    },
+    {
+      "direction": "request",
+      "family": "inference",
+      "field": "revision",
+      "message": "InspectContextRequest",
+      "module": "inference",
+      "semantic_type": "revision_digest",
+      "wire_field": "revision"
+    },
+    {
+      "direction": "request",
+      "family": "inference",
+      "field": "commitment",
+      "message": "InspectWarmRequest",
+      "module": "inference",
+      "semantic_type": "sha256_digest",
+      "wire_field": "commitment"
+    },
+    {
+      "direction": "request",
+      "family": "inference",
+      "field": "evaluation_id",
+      "message": "InspectEvaluationRequest",
+      "module": "inference",
+      "semantic_type": "evaluation_id",
+      "wire_field": "evaluation_id"
+    },
+    {
+      "direction": "nested_message",
+      "family": "inference",
+      "field": "spec_digest",
+      "message": "EvaluationSpec",
+      "module": "inference",
+      "semantic_type": "sha256_digest",
+      "wire_field": "spec_digest"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "image",
+      "message": "CreateMachineRequest",
+      "module": "machines",
+      "semantic_type": "immutable_image",
+      "wire_field": "image"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "image",
+      "message": "QualifyImageRequest",
+      "module": "machines",
+      "semantic_type": "immutable_image",
+      "wire_field": "image"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "idempotency_key",
+      "message": "CreateMachineRequest",
+      "module": "machines",
+      "semantic_type": "idempotency_key_message",
+      "wire_field": "idempotency_key"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "machine_id",
+      "message": "InspectMachineRequest",
+      "module": "machines",
+      "semantic_type": "machine_id",
+      "wire_field": "machine"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "checkpoint_id",
+      "message": "InspectCheckpointRequest",
+      "module": "machines",
+      "semantic_type": "checkpoint_id",
+      "wire_field": "checkpoint"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "operation_id",
+      "message": "OperationRequest",
+      "module": "machines",
+      "semantic_type": "operation_id",
+      "wire_field": "operation"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "page_limit",
+      "message": "ListMachinesRequest",
+      "module": "machines",
+      "semantic_type": "machine_page_limit",
+      "wire_field": "limit"
+    },
+    {
+      "direction": "request",
+      "family": "machines",
+      "field": "event_page_limit",
+      "message": "EventsRequest",
+      "module": "machines",
+      "semantic_type": "machine_event_page_limit",
+      "wire_field": "limit"
+    },
+    {
+      "direction": "request",
+      "family": "filesystem",
+      "field": "path",
+      "message": "ReadRequest",
+      "module": "filesystem",
+      "semantic_type": "path",
+      "wire_field": "path"
+    },
+    {
+      "direction": "response",
+      "family": "harness",
+      "field": "path",
+      "message": "FileRef",
+      "module": "harness",
+      "semantic_type": "path",
+      "wire_field": "normalized_path"
+    }
+  ],
   "schema": "acyclic.sdk.type-policy.v1",
   "semantic_types": [
     {
@@ -614,11 +918,12 @@
           "kind": "non_empty"
         },
         {
-          "kind": "utf8"
+          "kind": "fixed_length",
+          "length": 16
         }
       ],
       "rust_name": "MachineId",
-      "wire_kind": "string"
+      "wire_kind": "bytes"
     },
     {
       "id": "operation_id",
@@ -627,11 +932,12 @@
           "kind": "non_empty"
         },
         {
-          "kind": "utf8"
+          "kind": "fixed_length",
+          "length": 16
         }
       ],
       "rust_name": "OperationId",
-      "wire_kind": "string"
+      "wire_kind": "bytes"
     },
     {
       "id": "checkpoint_id",
@@ -640,11 +946,12 @@
           "kind": "non_empty"
         },
         {
-          "kind": "utf8"
+          "kind": "fixed_length",
+          "length": 16
         }
       ],
       "rust_name": "CheckpointId",
-      "wire_kind": "string"
+      "wire_kind": "bytes"
     },
     {
       "id": "idempotency_key_bytes",
@@ -671,7 +978,15 @@
     },
     {
       "id": "idempotency_key_message",
-      "rules": [],
+      "rules": [
+        {
+          "kind": "non_empty"
+        },
+        {
+          "kind": "fixed_length",
+          "length": 16
+        }
+      ],
       "rust_name": "IdempotencyKey",
       "wire_kind": "message"
     },
@@ -794,6 +1109,48 @@
         }
       ],
       "rust_name": "PageLimit",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "stream_page_limit",
+      "rules": [
+        {
+          "kind": "strictly_positive"
+        },
+        {
+          "kind": "max_items",
+          "max": 1024
+        }
+      ],
+      "rust_name": "StreamPageLimit",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "machine_page_limit",
+      "rules": [
+        {
+          "kind": "strictly_positive"
+        },
+        {
+          "kind": "max_items",
+          "max": 256
+        }
+      ],
+      "rust_name": "MachinePageLimit",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "machine_event_page_limit",
+      "rules": [
+        {
+          "kind": "strictly_positive"
+        },
+        {
+          "kind": "max_items",
+          "max": 1024
+        }
+      ],
+      "rust_name": "MachineEventPageLimit",
       "wire_kind": "unsigned_integer"
     },
     {

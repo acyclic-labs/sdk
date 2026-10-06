@@ -32,6 +32,11 @@ pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Maximum number of attachments in one message.
 pub const MAX_LIMIT_ATTACHMENTS: usize = 65_536;
+/// Maximum number of attachments represented inline before a manifest is used.
+pub const MAX_INLINE_ATTACHMENTS: usize = 128;
+/// Canonical media type for attachment manifests.
+pub const ATTACHMENT_MANIFEST_MEDIA_TYPE: &str =
+    "application/vnd.acyclic.harness.attachments+json";
 /// Maximum model steps, events, and context messages under the wire contract.
 pub const MAX_LIMIT_MODEL_STEPS: usize = 1_000_000;
 /// Maximum streamed model events per step.
@@ -1184,7 +1189,7 @@ pub fn decode_complete_attachment_manifest(
     bytes: &[u8],
 ) -> Result<Vec<Attachment>> {
     reference.validate()?;
-    if reference.descriptor().media_type() != "application/vnd.acyclic.harness.attachments+json" {
+    if reference.descriptor().media_type() != ATTACHMENT_MANIFEST_MEDIA_TYPE {
         return Err(Error::Invalid(
             "attachment manifest metadata is invalid".into(),
         ));
@@ -1290,7 +1295,7 @@ impl ReferencedAttachments {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Inline { items } => {
-                if items.len() > 128 {
+                if items.len() > MAX_INLINE_ATTACHMENTS {
                     return Err(Error::Invalid(
                         "inline attachment count exceeds limit".into(),
                     ));
@@ -1306,7 +1311,7 @@ impl ReferencedAttachments {
                 manifest.validate()?;
                 if *item_count as usize > MAX_LIMIT_ATTACHMENTS
                     || manifest.descriptor().media_type()
-                        != "application/vnd.acyclic.harness.attachments+json"
+                        != ATTACHMENT_MANIFEST_MEDIA_TYPE
                 {
                     return Err(Error::Invalid(
                         "attachment manifest metadata is invalid".into(),
@@ -1934,7 +1939,7 @@ mod tests {
             )?,
             "attachments/list.json",
             "one",
-            FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.attachments+json")?,
+            FileDescriptor::from_bytes(&bytes, ATTACHMENT_MANIFEST_MEDIA_TYPE)?,
             "list.json",
         )?;
         let first = Arc::new(StaticContent {
@@ -2049,7 +2054,7 @@ mod tests {
             "one",
             FileDescriptor::from_bytes(
                 &same_provider_bytes,
-                "application/vnd.acyclic.harness.attachments+json",
+                ATTACHMENT_MANIFEST_MEDIA_TYPE,
             )?,
             "other-owner-list.json",
         )?;

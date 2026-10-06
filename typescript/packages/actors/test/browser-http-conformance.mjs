@@ -12,8 +12,8 @@ import { fileURLToPath } from "node:url";
 import { create, fromBinary, fromJsonString, toBinary, toJsonString } from "@bufbuild/protobuf";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
-import { HTTP_ROUTES as actorRoutes } from "../dist/routes.js";
-import { HTTP_ROUTES as workerRoutes } from "../../workers/dist/routes.js";
+import { ACTORS_METHODS as actorRoutes } from "../dist/generated-client.js";
+import { WORKERS_METHODS as workerRoutes } from "../../workers/dist/generated-client.js";
 import * as objectsWire from "../../objects/generated/proto/objects/v2/objects_pb.js";
 import { MemoryObjectsV2 } from "../../objects/dist/v2.js";
 import { ObjectsV2Memory, objects_v2_http_type, decode_objects_v2_json, encode_objects_v2_json } from "../../objects/generated/wasm/acyclic_objects_wasm.js";
@@ -121,7 +121,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
       response.end(JSON.stringify(result, jsonReplacer)); return;
     }
     for (const [service, routes] of [[ActorsService, actorRoutes], [WorkersService, workerRoutes]]) for (const method of service.methods) {
-      const route = "/" + routes[method.localName].replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
+      const route = "/" + routes[method.localName].path.replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
       if (route !== pathname) continue;
       const input = fromJsonString(method.input, data.toString("utf8"));
       if (input.actorId === "oversize" || input.jobId === "oversize") { response.writeHead(200, { "content-type": "application/json" }).end(" ".repeat(64)); return; }

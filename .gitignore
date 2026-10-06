@@ -16,3 +16,35 @@ node_modules/
 *.tsbuildinfo
 *.log
 .DS_Store
+
+# Isolated Rust-source generation prototypes and qualification outputs.
+/.tmp-rust-authority/
+/build/
+/rust/crates/sdk-*/target/
+/research/**/node_modules/
+/research/**/target/
+/python/**/__pycache__/
+/python/**/.pytest_cache/
+/python/**/build/
+/python/**/dist/
+/python/**/*.egg-info/
+/python/**/.venv/
+/jvm/**/target/
+/dotnet/**/bin/
+/dotnet/**/obj/
+/cpp/**/build/
+/cpp/**/.build/
+/dart/**/.dart_tool/
+/swift/**/.build/
+
+# Portable qualification toolchains (downloaded locally, never source artifacts)
+/dart/.toolchain/
+/dotnet/.toolchain/
+/ruby/.toolchain/
+/php/.toolchain/
+/go/.toolchain/
+/jvm/.toolchain/
+/cpp/.toolchain/
+/swift/.toolchain/
+/tmp-current-review-target/
+/tmp-worker-model-target/

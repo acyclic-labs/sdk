@@ -6,6 +6,7 @@
 //! language runtime actually executes it.
 #![recursion_limit = "256"]
 
+use acyclic_harness::{AgentId, OperationId};
 use acyclic_sdk_examples::fixtures::{
     filesystem_harness_scenarios, qualification_scenarios, scenario_expectation,
 };
@@ -43,10 +44,44 @@ enum CliCommand {
 }
 
 fn main() {
+    if env::var_os("ACYCLIC_HARNESS_RECOVERY_CHILD").is_some() {
+        if let Err(error) = run_harness_recovery_child() {
+            eprintln!("sdk-examples recovery child: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("sdk-examples: {error}");
         std::process::exit(1);
     }
+}
+
+fn run_harness_recovery_child() -> Result<(), String> {
+    let root = PathBuf::from(
+        env::var("ACYCLIC_HARNESS_RECOVERY_ROOT")
+            .map_err(|_| "ACYCLIC_HARNESS_RECOVERY_ROOT is required".to_owned())?,
+    );
+    let decode_id = |name: &str| -> Result<[u8; 16], String> {
+        let value = env::var(name).map_err(|_| format!("{name} is required"))?;
+        let bytes = hex::decode(value).map_err(|error| format!("decode {name}: {error}"))?;
+        bytes
+            .try_into()
+            .map_err(|bytes: Vec<u8>| format!("{name} must contain 16 bytes, got {}", bytes.len()))
+    };
+    let agent = AgentId::from_bytes(decode_id("ACYCLIC_HARNESS_RECOVERY_AGENT")?);
+    let operation_id = OperationId::from_bytes(decode_id("ACYCLIC_HARNESS_RECOVERY_OPERATION")?);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("build recovery runtime: {error}"))?
+        .block_on(
+            acyclic_sdk_examples::harness_scenarios::run_persistent_recovery_child(
+                &root,
+                agent,
+                operation_id,
+            ),
+        )
 }
 
 fn run() -> Result<(), String> {

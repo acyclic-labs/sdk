@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Represents a rational value without floating-point rounding.
  *
  * Generated from protobuf message <code>inference.customer.v1.ExactRational</code>
  */
 class ExactRational extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The numerator value carried by ExactRational.
      *
      * Generated from protobuf field <code>sint64 numerator = 1;</code>
      */
     protected $numerator = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The denominator value carried by ExactRational.
      *
      * Generated from protobuf field <code>uint64 denominator = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
@@ -36,9 +36,9 @@ class ExactRational extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int|string $numerator
-     *           A field in the Inference customer v1 wire contract.
+     *           The numerator value carried by ExactRational.
      *     @type int|string $denominator
-     *           A field in the Inference customer v1 wire contract.
+     *           The denominator value carried by ExactRational.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class ExactRational extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The numerator value carried by ExactRational.
      *
      * Generated from protobuf field <code>sint64 numerator = 1;</code>
      * @return int|string
@@ -59,7 +59,7 @@ class ExactRational extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The numerator value carried by ExactRational.
      *
      * Generated from protobuf field <code>sint64 numerator = 1;</code>
      * @param int|string $var
@@ -74,7 +74,7 @@ class ExactRational extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The denominator value carried by ExactRational.
      *
      * Generated from protobuf field <code>uint64 denominator = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -85,7 +85,7 @@ class ExactRational extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The denominator value carried by ExactRational.
      *
      * Generated from protobuf field <code>uint64 denominator = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var

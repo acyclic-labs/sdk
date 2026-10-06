@@ -1,7 +1,7 @@
 #![doc = include_str!("../README.md")]
 #![doc = include_str!("../docs/guide.md")]
 mod body;
-#[cfg(any(feature = "grpc", feature = "http"))]
+#[cfg(all(feature = "grpc", feature = "http"))]
 /// Transport-neutral Objects client and best-transport connection helper.
 pub mod client;
 /// Canonical Objects v2 requests, responses, providers, and transport modules.
@@ -35,7 +35,7 @@ pub use v2::*;
 mod local_options;
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod physical;
-#[cfg(any(feature = "grpc", feature = "http"))]
+#[cfg(all(feature = "grpc", feature = "http"))]
 pub use client::{Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub use local_options::{LocalDurability, LocalObjectsGarbageCollection, LocalObjectsLimits};

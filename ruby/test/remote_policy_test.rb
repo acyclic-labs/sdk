@@ -70,4 +70,28 @@ class RemotePolicyTest < Minitest::Test
     assert_raises(ArgumentError) { Acyclic::Remote::Policy.validate_bearer("  ") }
     assert_raises(ArgumentError) { Acyclic::Remote::Policy.validate_bearer("token\r\nInjected: yes") }
   end
+
+  def test_public_client_round_trips_unknown_enum_and_oneof_wire_values
+    enum_wire = "\x0A\x02\x20\x63".b
+    enum_response = Acyclic::Actors::V1::InspectActorResponse.decode(enum_wire)
+    enum_client = Acyclic::Remote::Client.new(
+      family: "actors",
+      installed: { grpc: false, http_json: true },
+      endpoint: { grpc: false, http_json: true },
+      invoker: ->(_operation, _request, _transport) { enum_response },
+    )
+    returned_enum = enum_client.call("InspectActor", { actor_id: "actor-1" })
+    assert_equal enum_wire, Acyclic::Actors::V1::InspectActorResponse.encode(returned_enum)
+
+    oneof_wire = "\x0A\x00\x9A\x06\x01\x7F".b
+    oneof_response = Acyclic::Stream::V2::AppendResponse.decode(oneof_wire)
+    oneof_client = Acyclic::Remote::Client.new(
+      family: "stream",
+      installed: { grpc: false, http_json: true },
+      endpoint: { grpc: false, http_json: true },
+      invoker: ->(_operation, _request, _transport) { oneof_response },
+    )
+    returned_oneof = oneof_client.call("Append", { path: "events" })
+    assert_equal oneof_wire, Acyclic::Stream::V2::AppendResponse.encode(returned_oneof)
+  end
 end

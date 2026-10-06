@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Returns a bounded page of operation observations.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.OperationPage</code>
  */
 class OperationPage extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The operations value carried by OperationPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.OperationState operations = 1;</code>
      */
@@ -30,7 +30,7 @@ class OperationPage extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\OperationState[] $operations
-     *           A field in the Machines v1 wire contract.
+     *           The operations value carried by OperationPage.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class OperationPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operations value carried by OperationPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.OperationState operations = 1;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\OperationState>
@@ -51,7 +51,7 @@ class OperationPage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operations value carried by OperationPage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.OperationState operations = 1;</code>
      * @param \Acyclic\Machines\V1\OperationState[] $var

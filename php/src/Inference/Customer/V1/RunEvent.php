@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports one ordered output, usage, progress, or terminal event.
  *
  * Generated from protobuf message <code>inference.customer.v1.RunEvent</code>
  */
 class RunEvent extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by RunEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 1;</code>
      */
@@ -31,15 +31,15 @@ class RunEvent extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int|string $sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The sequence value carried by RunEvent.
      *     @type string $output
-     *           A field in the Inference customer v1 wire contract.
+     *           The output value carried by RunEvent.
      *     @type \Inference\Customer\V1\LogicalUsage $usage
-     *           A field in the Inference customer v1 wire contract.
+     *           The usage value carried by RunEvent.
      *     @type int $terminal
-     *           A field in the Inference customer v1 wire contract.
+     *           The terminal value carried by RunEvent.
      *     @type \Inference\Customer\V1\RunProgress $progress
-     *           A field in the Inference customer v1 wire contract.
+     *           The progress value carried by RunEvent.
      * }
      */
     public function __construct($data = null)
@@ -49,7 +49,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by RunEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 1;</code>
      * @return int|string
@@ -60,7 +60,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by RunEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 1;</code>
      * @param int|string $var
@@ -75,7 +75,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The output value carried by RunEvent.
      *
      * Generated from protobuf field <code>bytes output = 2;</code>
      * @return string
@@ -91,7 +91,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The output value carried by RunEvent.
      *
      * Generated from protobuf field <code>bytes output = 2;</code>
      * @param string $var
@@ -106,7 +106,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The usage value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.LogicalUsage usage = 3;</code>
      * @return \Inference\Customer\V1\LogicalUsage|null
@@ -122,7 +122,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The usage value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.LogicalUsage usage = 3;</code>
      * @param \Inference\Customer\V1\LogicalUsage $var
@@ -136,7 +136,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunTerminal terminal = 4 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\RunTerminal}
@@ -152,7 +152,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunTerminal terminal = 4 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\RunTerminal}
@@ -167,7 +167,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The progress value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunProgress progress = 5;</code>
      * @return \Inference\Customer\V1\RunProgress|null
@@ -183,7 +183,7 @@ class RunEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The progress value carried by RunEvent.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunProgress progress = 5;</code>
      * @param \Inference\Customer\V1\RunProgress $var

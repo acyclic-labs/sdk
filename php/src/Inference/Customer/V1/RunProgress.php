@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports progress classification for a generation run.
  *
  * Generated from protobuf message <code>inference.customer.v1.RunProgress</code>
  */
 class RunProgress extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by RunProgress.
      *
      * Generated from protobuf field <code>string kind = 1;</code>
      */
@@ -30,7 +30,7 @@ class RunProgress extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $kind
-     *           A field in the Inference customer v1 wire contract.
+     *           The kind value carried by RunProgress.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class RunProgress extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by RunProgress.
      *
      * Generated from protobuf field <code>string kind = 1;</code>
      * @return string
@@ -51,7 +51,7 @@ class RunProgress extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by RunProgress.
      *
      * Generated from protobuf field <code>string kind = 1;</code>
      * @param string $var

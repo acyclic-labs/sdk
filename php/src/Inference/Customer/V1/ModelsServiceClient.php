@@ -4,7 +4,7 @@
 namespace Inference\Customer\V1;
 
 /**
- * Remote operations for the Inference customer v1 contract.
+ * Lists model capabilities and retention profiles.
  */
 class ModelsServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class ModelsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * ModelsService.List operation.
+     * Lists model capabilities and retention profiles.
      * @param \Inference\Customer\V1\ListModelsRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

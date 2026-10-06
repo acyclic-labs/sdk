@@ -1,0 +1,408 @@
+{
+  "schema": "acyclic.sdk.website-migration-coverage.v1",
+  "website_base": "68fea323412df5461b9c54475d97b2a48ca9c14e",
+  "purpose": "Route discovery and migration backlog; this is not authored SDK documentation. Dynamic route expansion and runtime navigation still require verification.",
+  "production_docs_policy": "Existing docs dev-only/404 guard remains in force; previews do not authorize production availability.",
+  "routes": [
+    {
+      "route": "/docs",
+      "source": "src/routes/docs/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem",
+      "source": "src/routes/docs/filesystem/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/branches-merge",
+      "source": "src/routes/docs/filesystem/branches-merge/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/consistency",
+      "source": "src/routes/docs/filesystem/consistency/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/durability",
+      "source": "src/routes/docs/filesystem/durability/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/files",
+      "source": "src/routes/docs/filesystem/files/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/local-hosted",
+      "source": "src/routes/docs/filesystem/local-hosted/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/mounts",
+      "source": "src/routes/docs/filesystem/mounts/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/quickstart",
+      "source": "src/routes/docs/filesystem/quickstart/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/reference",
+      "source": "src/routes/docs/filesystem/reference/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/s3",
+      "source": "src/routes/docs/filesystem/s3/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/sources",
+      "source": "src/routes/docs/filesystem/sources/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/filesystem/workspaces",
+      "source": "src/routes/docs/filesystem/workspaces/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/harness",
+      "source": "src/routes/docs/harness/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/harness/[slug]",
+      "source": "src/routes/docs/harness/[slug]/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": true,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/inference",
+      "source": "src/routes/docs/inference/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/inference/[slug]",
+      "source": "src/routes/docs/inference/[slug]/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": true,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines",
+      "source": "src/routes/docs/machines/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/durability-recovery",
+      "source": "src/routes/docs/machines/durability-recovery/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/elastic-capacity",
+      "source": "src/routes/docs/machines/elastic-capacity/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/forks-checkpoints",
+      "source": "src/routes/docs/machines/forks-checkpoints/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/images",
+      "source": "src/routes/docs/machines/images/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/lifecycle",
+      "source": "src/routes/docs/machines/lifecycle/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/networking",
+      "source": "src/routes/docs/machines/networking/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/performance-billing",
+      "source": "src/routes/docs/machines/performance-billing/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/quickstart",
+      "source": "src/routes/docs/machines/quickstart/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/reference",
+      "source": "src/routes/docs/machines/reference/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/machines/security-limits",
+      "source": "src/routes/docs/machines/security-limits/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/managed-agent-runtime",
+      "source": "src/routes/docs/managed-agent-runtime/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects",
+      "source": "src/routes/docs/objects/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/conditional-operations",
+      "source": "src/routes/docs/objects/conditional-operations/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/durability-limits",
+      "source": "src/routes/docs/objects/durability-limits/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/lifecycle",
+      "source": "src/routes/docs/objects/lifecycle/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/listing-consistency",
+      "source": "src/routes/docs/objects/listing-consistency/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/objects-metadata",
+      "source": "src/routes/docs/objects/objects-metadata/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/quickstart",
+      "source": "src/routes/docs/objects/quickstart/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/s3-compatibility",
+      "source": "src/routes/docs/objects/s3-compatibility/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/objects/snapshots-forks",
+      "source": "src/routes/docs/objects/snapshots-forks/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/plugins",
+      "source": "src/routes/docs/plugins/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/reference/[family]",
+      "source": "src/routes/docs/reference/[family]/+page.svelte",
+      "status": "generated-preview",
+      "dynamic": true,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/roadmap",
+      "source": "src/routes/docs/roadmap/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream",
+      "source": "src/routes/docs/stream/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/access",
+      "source": "src/routes/docs/stream/access/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/append-cas",
+      "source": "src/routes/docs/stream/append-cas/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/coordination",
+      "source": "src/routes/docs/stream/coordination/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/durability",
+      "source": "src/routes/docs/stream/durability/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/forks",
+      "source": "src/routes/docs/stream/forks/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/lifecycle",
+      "source": "src/routes/docs/stream/lifecycle/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/paths",
+      "source": "src/routes/docs/stream/paths/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/quickstart",
+      "source": "src/routes/docs/stream/quickstart/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    },
+    {
+      "route": "/docs/stream/read-follow",
+      "source": "src/routes/docs/stream/read-follow/+page.svelte",
+      "status": "migration-pending",
+      "dynamic": false,
+      "preservation": "preserve-or-explicit-redirect"
+    }
+  ],
+  "legacy_content_modules": [
+    "src/lib/docs/harness/composition.ts",
+    "src/lib/docs/harness/context.ts",
+    "src/lib/docs/harness/design-references.ts",
+    "src/lib/docs/harness/extensions.ts",
+    "src/lib/docs/harness/index.ts",
+    "src/lib/docs/harness/infrastructure.ts",
+    "src/lib/docs/harness/overview.ts",
+    "src/lib/docs/harness/quickstart.ts",
+    "src/lib/docs/harness/recursive-execution.ts",
+    "src/lib/docs/harness/reference.ts",
+    "src/lib/docs/harness/state-recovery.ts",
+    "src/lib/docs/harness/tools.ts",
+    "src/lib/docs/inference/anthropic.ts",
+    "src/lib/docs/inference/billing.ts",
+    "src/lib/docs/inference/contexts.ts",
+    "src/lib/docs/inference/editing.ts",
+    "src/lib/docs/inference/forks.ts",
+    "src/lib/docs/inference/generation.ts",
+    "src/lib/docs/inference/index.ts",
+    "src/lib/docs/inference/kv.ts",
+    "src/lib/docs/inference/models.ts",
+    "src/lib/docs/inference/openai.ts",
+    "src/lib/docs/inference/operations.ts",
+    "src/lib/docs/inference/overview.ts",
+    "src/lib/docs/inference/quickstart.ts",
+    "src/lib/docs/inference/reasoning.ts",
+    "src/lib/docs/inference/reference.ts",
+    "src/lib/docs/inference/retention.ts",
+    "src/lib/docs/inference/security.ts",
+    "src/lib/docs/inference/structured-output.ts",
+    "src/lib/docs/inference/tools.ts",
+    "src/lib/docs/inference/transfer.ts",
+    "src/lib/docs/integrations.ts",
+    "src/lib/docs/managed.ts",
+    "src/lib/docs/types.ts"
+  ],
+  "completion": {
+    "legacy_removal": "pending",
+    "redirect_validation": "pending",
+    "rendered_mobile_desktop": "pending",
+    "source_bundle_coverage": "pending"
+  }
+}

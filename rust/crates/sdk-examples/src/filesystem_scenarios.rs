@@ -175,6 +175,8 @@ mod tests {
     fn source_and_snippet_are_stable() {
         assert!(SOURCE.ends_with("filesystem_scenarios.rs"));
         assert!(QUICKSTART_SNIPPET.contains("MountedView::builder"));
+        assert!(QUICKSTART_SNIPPET.contains("workspace_checkout.checkpoint"));
+        assert!(QUICKSTART_SNIPPET.contains("tool-output.txt"));
         assert!(QUICKSTART_SNIPPET.contains("view.snapshot()"));
     }
 }

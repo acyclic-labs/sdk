@@ -146,10 +146,11 @@ PY
     echo "Rust observation verifier requires scenario-log.v2 transport observations; got $schema" >&2
     return 1
   }
+  : "${ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST:?Rust authority qualification requires an independently generated canonical typed manifest}" \
   cargo run --locked --manifest-path "$source_root/rust/crates/sdk-generation/Cargo.toml" \
     --bin verify-observations -- \
     --manifest "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" \
-    --canonical-manifest "${ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST:-$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST}" \
+    --canonical-manifest "$ACYCLIC_RUST_CANONICAL_TYPED_REQUEST_MANIFEST" \
     --observed "$receipt" \
     --output "$output"
   test -s "$output"

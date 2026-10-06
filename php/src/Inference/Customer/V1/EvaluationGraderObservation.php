@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records grader output and binding digests for a case.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationGraderObservation</code>
  */
 class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The native output digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes native_output_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $native_output_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes observation_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $observation_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The binding digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes binding_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -42,11 +42,11 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $native_output_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The native output digest value carried by EvaluationGraderObservation.
      *     @type string $observation_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The observation digest value carried by EvaluationGraderObservation.
      *     @type string $binding_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The binding digest value carried by EvaluationGraderObservation.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The native output digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes native_output_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -67,7 +67,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The native output digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes native_output_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -82,7 +82,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes observation_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -93,7 +93,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes observation_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -108,7 +108,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The binding digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes binding_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -119,7 +119,7 @@ class EvaluationGraderObservation extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The binding digest value carried by EvaluationGraderObservation.
      *
      * Generated from protobuf field <code>bytes binding_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

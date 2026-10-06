@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Describes the idle KV retention profile attached to a warm context.
  *
  * Generated from protobuf message <code>inference.customer.v1.IdleKvPolicy</code>
  */
 class IdleKvPolicy extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>uint64 idle_timeout_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
@@ -36,9 +36,9 @@ class IdleKvPolicy extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The profile value carried by IdleKvPolicy.
      *     @type int|string $idle_timeout_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The idle timeout ms value carried by IdleKvPolicy.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class IdleKvPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -59,7 +59,7 @@ class IdleKvPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class IdleKvPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>uint64 idle_timeout_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -85,7 +85,7 @@ class IdleKvPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle timeout ms value carried by IdleKvPolicy.
      *
      * Generated from protobuf field <code>uint64 idle_timeout_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var

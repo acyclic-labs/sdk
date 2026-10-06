@@ -3,3 +3,4 @@ export * from "./types.js";
 export * from "./client.js";
 export * from "./memory.js";
 export * from "./http.js";
+export * from "./generated-client.js";

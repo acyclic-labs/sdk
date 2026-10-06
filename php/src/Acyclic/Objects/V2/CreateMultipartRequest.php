@@ -35,7 +35,7 @@ class CreateMultipartRequest extends \Google\Protobuf\Internal\Message
      */
     protected $metadata = null;
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      */
@@ -54,7 +54,7 @@ class CreateMultipartRequest extends \Google\Protobuf\Internal\Message
      *     @type \Acyclic\Objects\V2\ObjectMetadata $metadata
      *           Metadata for the object representation.
      *     @type \Acyclic\Objects\V2\MutationIdentity $mutation
-     *           A field in the Objects v2 wire contract.
+     *           The object mutation operation.
      * }
      */
     public function __construct($data = null)
@@ -160,7 +160,7 @@ class CreateMultipartRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      * @return \Acyclic\Objects\V2\MutationIdentity|null
@@ -181,7 +181,7 @@ class CreateMultipartRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      * @param \Acyclic\Objects\V2\MutationIdentity $var

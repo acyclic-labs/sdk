@@ -109,3 +109,4 @@ $report = [ordered]@{
 }
 $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $TargetOutput 'producer-receipt.json') -Encoding utf8NoBOM
 Write-Output "$TargetId Rust-derived five-family HTTP package staged at $TargetOutput ($hash)"
+

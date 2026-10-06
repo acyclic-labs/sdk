@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests a warm retention commitment for an existing context.
  *
  * Generated from protobuf message <code>inference.customer.v1.RetainWarmRequest</code>
  */
 class RetainWarmRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $context = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes latency_profile = 3;</code>
      */
     protected $latency_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 4;</code>
      */
     protected $expires_at_ms = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy idle_kv = 5;</code>
      */
@@ -54,15 +54,15 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by RetainWarmRequest.
      *     @type string $context
-     *           A field in the Inference customer v1 wire contract.
+     *           The context value carried by RetainWarmRequest.
      *     @type string $latency_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The latency profile value carried by RetainWarmRequest.
      *     @type int|string $expires_at_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The expires at ms value carried by RetainWarmRequest.
      *     @type \Inference\Customer\V1\IdleKvPolicy $idle_kv
-     *           A field in the Inference customer v1 wire contract.
+     *           The idle kv value carried by RetainWarmRequest.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -93,7 +93,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -107,7 +107,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -118,7 +118,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -133,7 +133,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes latency_profile = 3;</code>
      * @return string
@@ -144,7 +144,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>bytes latency_profile = 3;</code>
      * @param string $var
@@ -159,7 +159,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 4;</code>
      * @return int|string
@@ -170,7 +170,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 4;</code>
      * @param int|string $var
@@ -185,7 +185,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy idle_kv = 5;</code>
      * @return \Inference\Customer\V1\IdleKvPolicy|null
@@ -206,7 +206,7 @@ class RetainWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by RetainWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy idle_kv = 5;</code>
      * @param \Inference\Customer\V1\IdleKvPolicy $var

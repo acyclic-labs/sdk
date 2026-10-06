@@ -5,11 +5,21 @@
   "license": "Apache-2.0",
   "description": "Immutable inference contexts, recoverable runs, and warm commitments",
   "keywords": ["inference", "contexts", "runs"],
-  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/inference" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/acyclic-labs/sdk.git",
+    "directory": "typescript/packages/inference"
+  },
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./proto": { "types": "./generated/proto/inference/v1/inference_pb.d.ts", "default": "./generated/proto/inference/v1/inference_pb.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./proto": {
+      "types": "./generated/proto/inference/v1/inference_pb.d.ts",
+      "default": "./generated/proto/inference/v1/inference_pb.js"
+    }
   },
   "files": ["dist", "generated", "CHANGELOG.md"],
   "scripts": {
@@ -18,6 +28,12 @@
     "test": "bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
-  "devDependencies": { "@types/bun": "1.4.2", "typescript": "7.0.2", "@types/node": "26.4.1" }
+  "dependencies": {
+    "@bufbuild/protobuf": "2.15.0"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "typescript": "7.0.2",
+    "@types/node": "26.4.1"
+  }
 }

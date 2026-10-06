@@ -52,7 +52,8 @@ pub const MAX_PAGE_SIZE: u32 = acyclic_sdk_contract_wire::type_policy::MACHINE_P
 /// Maximum children admitted by one fork request.
 pub const MAX_FORK_CHILDREN: u32 = 1_024;
 /// Maximum events returned in one page.
-pub const MAX_EVENT_PAGE_SIZE: u32 = acyclic_sdk_contract_wire::type_policy::MACHINE_EVENT_PAGE_LIMIT_MAX;
+pub const MAX_EVENT_PAGE_SIZE: u32 =
+    acyclic_sdk_contract_wire::type_policy::MACHINE_EVENT_PAGE_LIMIT_MAX;
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 

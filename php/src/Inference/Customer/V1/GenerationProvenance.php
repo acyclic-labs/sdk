@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records the run and terminal receipt that generated a revision.
  *
  * Generated from protobuf message <code>inference.customer.v1.GenerationProvenance</code>
  */
 class GenerationProvenance extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $run_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal receipt digest value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes terminal_receipt_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -36,9 +36,9 @@ class GenerationProvenance extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $run_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The run id value carried by GenerationProvenance.
      *     @type string $terminal_receipt_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The terminal receipt digest value carried by GenerationProvenance.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class GenerationProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -59,7 +59,7 @@ class GenerationProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class GenerationProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal receipt digest value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes terminal_receipt_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -85,7 +85,7 @@ class GenerationProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The terminal receipt digest value carried by GenerationProvenance.
      *
      * Generated from protobuf field <code>bytes terminal_receipt_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

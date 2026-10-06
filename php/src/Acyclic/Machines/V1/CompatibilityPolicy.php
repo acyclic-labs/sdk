@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Declares whether image compatibility is best-effort or required.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.CompatibilityPolicy</code>
  */
 class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The mode value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityMode mode = 1;</code>
      */
     protected $mode = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The required value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability required = 2;</code>
      */
@@ -36,9 +36,9 @@ class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int $mode
-     *           A field in the Machines v1 wire contract.
+     *           The mode value carried by CompatibilityPolicy.
      *     @type int[] $required
-     *           A field in the Machines v1 wire contract.
+     *           The required value carried by CompatibilityPolicy.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The mode value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityMode mode = 1;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\CompatibilityMode}
@@ -59,7 +59,7 @@ class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The mode value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityMode mode = 1;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\CompatibilityMode}
@@ -74,7 +74,7 @@ class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The required value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability required = 2;</code>
      * @return RepeatedField<int> one of the values in {@see \Acyclic\Machines\V1\Capability}
@@ -85,7 +85,7 @@ class CompatibilityPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The required value carried by CompatibilityPolicy.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability required = 2;</code>
      * @param int[] $var one of the values in {@see \Acyclic\Machines\V1\Capability}

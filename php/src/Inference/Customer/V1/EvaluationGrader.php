@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Identifies the grader used to observe an evaluation case.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationGrader</code>
  */
 class EvaluationGrader extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The handle value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes handle = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 4096];</code>
      */
     protected $handle = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The artifact digest value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes artifact_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -36,9 +36,9 @@ class EvaluationGrader extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $handle
-     *           A field in the Inference customer v1 wire contract.
+     *           The handle value carried by EvaluationGrader.
      *     @type string $artifact_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The artifact digest value carried by EvaluationGrader.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class EvaluationGrader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The handle value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes handle = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 4096];</code>
      * @return string
@@ -59,7 +59,7 @@ class EvaluationGrader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The handle value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes handle = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 4096];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class EvaluationGrader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The artifact digest value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes artifact_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -85,7 +85,7 @@ class EvaluationGrader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The artifact digest value carried by EvaluationGrader.
      *
      * Generated from protobuf field <code>bytes artifact_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

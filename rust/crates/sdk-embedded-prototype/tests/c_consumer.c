@@ -14,6 +14,7 @@ _Static_assert(Ok == 0 && End == 1 && Pending == 2 && Cancelled == 3 &&
                "AcyclicStatus values changed");
 
 int main(void) {
+    assert(acyclic_embedded_abi_version() == 1);
     const uint8_t path[] = "c/consumer";
     const uint8_t value[] = "hello from c";
     const size_t path_len = sizeof(path) - 1;

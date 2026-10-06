@@ -10,44 +10,44 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports one ordered machine lifecycle or pressure event.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachineEvent</code>
  */
 class MachineEvent extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The sequence value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 2;</code>
      */
     protected $sequence = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The observed at unix ms value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 observed_at_unix_ms = 3;</code>
      */
     protected $observed_at_unix_ms = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.EventKind kind = 4;</code>
      */
     protected $kind = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The state value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus state = 5;</code>
      */
     protected $state = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The pressure value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PressureKind pressure = 6;</code>
      */
@@ -60,17 +60,17 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by MachineEvent.
      *     @type int|string $sequence
-     *           A field in the Machines v1 wire contract.
+     *           The sequence value carried by MachineEvent.
      *     @type int|string $observed_at_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The observed at unix ms value carried by MachineEvent.
      *     @type int $kind
-     *           A field in the Machines v1 wire contract.
+     *           The kind value carried by MachineEvent.
      *     @type int $state
-     *           A field in the Machines v1 wire contract.
+     *           The state value carried by MachineEvent.
      *     @type int $pressure
-     *           A field in the Machines v1 wire contract.
+     *           The pressure value carried by MachineEvent.
      * }
      */
     public function __construct($data = null)
@@ -80,7 +80,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -101,7 +101,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -115,7 +115,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The sequence value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 2;</code>
      * @return int|string
@@ -126,7 +126,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The sequence value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 sequence = 2;</code>
      * @param int|string $var
@@ -141,7 +141,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The observed at unix ms value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 observed_at_unix_ms = 3;</code>
      * @return int|string
@@ -152,7 +152,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The observed at unix ms value carried by MachineEvent.
      *
      * Generated from protobuf field <code>uint64 observed_at_unix_ms = 3;</code>
      * @param int|string $var
@@ -167,7 +167,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.EventKind kind = 4;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\EventKind}
@@ -178,7 +178,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.EventKind kind = 4;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\EventKind}
@@ -193,7 +193,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The state value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus state = 5;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\MachineStatus}
@@ -204,7 +204,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The state value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus state = 5;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\MachineStatus}
@@ -219,7 +219,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The pressure value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PressureKind pressure = 6;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\PressureKind}
@@ -230,7 +230,7 @@ class MachineEvent extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The pressure value carried by MachineEvent.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PressureKind pressure = 6;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\PressureKind}

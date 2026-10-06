@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Returns model capabilities and their retention profiles.
  *
  * Generated from protobuf message <code>inference.customer.v1.ListModelsResponse</code>
  */
 class ListModelsResponse extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model capabilities visible to the caller.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.ModelCapability models = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      */
@@ -30,7 +30,7 @@ class ListModelsResponse extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\ModelCapability[] $models
-     *           A field in the Inference customer v1 wire contract.
+     *           The model capabilities visible to the caller.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class ListModelsResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model capabilities visible to the caller.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.ModelCapability models = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      * @return RepeatedField<\Inference\Customer\V1\ModelCapability>
@@ -51,7 +51,7 @@ class ListModelsResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model capabilities visible to the caller.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.ModelCapability models = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      * @param \Inference\Customer\V1\ModelCapability[] $var

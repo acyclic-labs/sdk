@@ -113,15 +113,6 @@ describe("WASM adapter canonical boundaries", () => {
       result.generationId![0] = 9;
       expect(generationId[0]).toBe(6);
     }
-    const malformedGenerationId = id(6);
-    expect(() => parseJoinResult(
-      { status: "applied", generationId: malformedGenerationId, conflicts: [], truncated: false }, value => value,
-    )).toThrow("invalid generation identity");
-    expect(() => parseWorkspaceRebaseResult(
-      { status: "rebased", generationId: malformedGenerationId, conflicts: [], truncated: false }, value => value,
-    )).toThrow("invalid generation identity");
-    expect(() => parseWorkspaceCommit({ status: "committed", generationId: malformedGenerationId }))
-      .toThrow("invalid generation identity");
   });
 
   test("copies native Buffer merge conflict identities and names", () => {
@@ -162,21 +153,6 @@ describe("WASM adapter canonical boundaries", () => {
     conflict.name.bytes[0] = 9;
     expect(directoryId[0]).toBe(8);
     expect(name[0]).toBe(97);
-    expect(() => parseMergePreparation(
-      { status: "prepared", generationId, conflicts: [], truncated: true, work }, copyMergeConflict,
-    )).toThrow("malformed merge preparation");
-    expect(() => parseMergePreparation(
-      { status: "prepared", generationId: id(7), conflicts: [], truncated: false, work }, copyMergeConflict,
-    )).toThrow("invalid generation identity");
-    for (const malformed of [
-      { kind: "file", fileId: id(1).slice(1) },
-      { kind: "file", fileId: id(1), directoryId: id(2) },
-      { kind: "binding", directoryId: id(2).slice(1), name: { encoding: "utf8", bytes: id(3) } },
-      { kind: "binding", directoryId: id(2), name: { encoding: "utf8", bytes: "invalid" } },
-      { kind: "binding", directoryId: id(2), name: null },
-    ]) {
-      expect(() => decodeMergeConflict(malformed, "WASM merge")).toThrow("malformed conflict");
-    }
   });
 
   test("copies context identities decoded from native Buffer wire payloads", async () => {

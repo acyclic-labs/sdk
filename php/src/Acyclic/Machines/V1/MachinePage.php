@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Returns a bounded page of machine states and a continuation token.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachinePage</code>
  */
 class MachinePage extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by MachinePage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      */
     private $machines;
     /**
-     * A field in the Machines v1 wire contract.
+     * The next value carried by MachinePage.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId next = 2;</code>
      */
@@ -36,9 +36,9 @@ class MachinePage extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineState[] $machines
-     *           A field in the Machines v1 wire contract.
+     *           The machines value carried by MachinePage.
      *     @type \Acyclic\Machines\V1\MachineId $next
-     *           A field in the Machines v1 wire contract.
+     *           The next value carried by MachinePage.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class MachinePage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by MachinePage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineState>
@@ -59,7 +59,7 @@ class MachinePage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by MachinePage.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      * @param \Acyclic\Machines\V1\MachineState[] $var
@@ -74,7 +74,7 @@ class MachinePage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The next value carried by MachinePage.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId next = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -95,7 +95,7 @@ class MachinePage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The next value carried by MachinePage.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId next = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var

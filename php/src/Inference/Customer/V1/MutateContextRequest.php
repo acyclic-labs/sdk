@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests one immutable context mutation or release operation.
  *
  * Generated from protobuf message <code>inference.customer.v1.MutateContextRequest</code>
  */
 class MutateContextRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>bytes source = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -37,21 +37,21 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by MutateContextRequest.
      *     @type string $source
-     *           A field in the Inference customer v1 wire contract.
+     *           The source value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\Edits $edit
-     *           A field in the Inference customer v1 wire contract.
+     *           The edit value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\PBEmpty $fork
-     *           A field in the Inference customer v1 wire contract.
+     *           The fork value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\Truncate $truncate
-     *           A field in the Inference customer v1 wire contract.
+     *           The truncate value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\Compact $compact
-     *           A field in the Inference customer v1 wire contract.
+     *           The compact value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\PBEmpty $release
-     *           A field in the Inference customer v1 wire contract.
+     *           The release value carried by MutateContextRequest.
      *     @type \Inference\Customer\V1\Transfer $transfer
-     *           A field in the Inference customer v1 wire contract.
+     *           The transfer value carried by MutateContextRequest.
      * }
      */
     public function __construct($data = null)
@@ -61,7 +61,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -82,7 +82,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -96,7 +96,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>bytes source = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -107,7 +107,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>bytes source = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -122,7 +122,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The edit value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Edits edit = 3;</code>
      * @return \Inference\Customer\V1\Edits|null
@@ -138,7 +138,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The edit value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Edits edit = 3;</code>
      * @param \Inference\Customer\V1\Edits $var
@@ -152,7 +152,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The fork value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty fork = 4;</code>
      * @return \Inference\Customer\V1\PBEmpty|null
@@ -168,7 +168,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The fork value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty fork = 4;</code>
      * @param \Inference\Customer\V1\PBEmpty $var
@@ -182,7 +182,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The truncate value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Truncate truncate = 5;</code>
      * @return \Inference\Customer\V1\Truncate|null
@@ -198,7 +198,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The truncate value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Truncate truncate = 5;</code>
      * @param \Inference\Customer\V1\Truncate $var
@@ -212,7 +212,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The compact value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Compact compact = 6;</code>
      * @return \Inference\Customer\V1\Compact|null
@@ -228,7 +228,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The compact value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Compact compact = 6;</code>
      * @param \Inference\Customer\V1\Compact $var
@@ -242,7 +242,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The release value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty release = 7;</code>
      * @return \Inference\Customer\V1\PBEmpty|null
@@ -258,7 +258,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The release value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty release = 7;</code>
      * @param \Inference\Customer\V1\PBEmpty $var
@@ -272,7 +272,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The transfer value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Transfer transfer = 8;</code>
      * @return \Inference\Customer\V1\Transfer|null
@@ -288,7 +288,7 @@ class MutateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The transfer value carried by MutateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Transfer transfer = 8;</code>
      * @param \Inference\Customer\V1\Transfer $var

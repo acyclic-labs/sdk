@@ -10,68 +10,68 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports machine usage counters and the provider receipt.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.UsageReceipt</code>
  */
 class UsageReceipt extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 2;</code>
      */
     protected $start_unix_ms = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 3;</code>
      */
     protected $end_unix_ms = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The elastic cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 elastic_cpu_ns = 4;</code>
      */
     protected $elastic_cpu_ns = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The dedicated cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 dedicated_cpu_ns = 5;</code>
      */
     protected $dedicated_cpu_ns = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The private resident byte seconds value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 private_resident_byte_seconds = 6;</code>
      */
     protected $private_resident_byte_seconds = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The durable private bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 durable_private_bytes = 7;</code>
      */
     protected $durable_private_bytes = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The lineage receipt sha256 value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes lineage_receipt_sha256 = 11;</code>
      */
     protected $lineage_receipt_sha256 = '';
     /**
-     * A field in the Machines v1 wire contract.
+     * The egress bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 egress_bytes = 9;</code>
      */
     protected $egress_bytes = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The receipt value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt = 10;</code>
      */
@@ -84,25 +84,25 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by UsageReceipt.
      *     @type int|string $start_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The start unix ms value carried by UsageReceipt.
      *     @type int|string $end_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The end unix ms value carried by UsageReceipt.
      *     @type int|string $elastic_cpu_ns
-     *           A field in the Machines v1 wire contract.
+     *           The elastic cpu ns value carried by UsageReceipt.
      *     @type int|string $dedicated_cpu_ns
-     *           A field in the Machines v1 wire contract.
+     *           The dedicated cpu ns value carried by UsageReceipt.
      *     @type int|string $private_resident_byte_seconds
-     *           A field in the Machines v1 wire contract.
+     *           The private resident byte seconds value carried by UsageReceipt.
      *     @type int|string $durable_private_bytes
-     *           A field in the Machines v1 wire contract.
+     *           The durable private bytes value carried by UsageReceipt.
      *     @type string $lineage_receipt_sha256
-     *           A field in the Machines v1 wire contract.
+     *           The lineage receipt sha256 value carried by UsageReceipt.
      *     @type int|string $egress_bytes
-     *           A field in the Machines v1 wire contract.
+     *           The egress bytes value carried by UsageReceipt.
      *     @type string $receipt
-     *           A field in the Machines v1 wire contract.
+     *           The receipt value carried by UsageReceipt.
      * }
      */
     public function __construct($data = null)
@@ -112,7 +112,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -133,7 +133,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -147,7 +147,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 2;</code>
      * @return int|string
@@ -158,7 +158,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 2;</code>
      * @param int|string $var
@@ -173,7 +173,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 3;</code>
      * @return int|string
@@ -184,7 +184,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 3;</code>
      * @param int|string $var
@@ -199,7 +199,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The elastic cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 elastic_cpu_ns = 4;</code>
      * @return int|string
@@ -210,7 +210,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The elastic cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 elastic_cpu_ns = 4;</code>
      * @param int|string $var
@@ -225,7 +225,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The dedicated cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 dedicated_cpu_ns = 5;</code>
      * @return int|string
@@ -236,7 +236,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The dedicated cpu ns value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 dedicated_cpu_ns = 5;</code>
      * @param int|string $var
@@ -251,7 +251,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The private resident byte seconds value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 private_resident_byte_seconds = 6;</code>
      * @return int|string
@@ -262,7 +262,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The private resident byte seconds value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 private_resident_byte_seconds = 6;</code>
      * @param int|string $var
@@ -277,7 +277,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The durable private bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 durable_private_bytes = 7;</code>
      * @return int|string
@@ -288,7 +288,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The durable private bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 durable_private_bytes = 7;</code>
      * @param int|string $var
@@ -303,7 +303,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The lineage receipt sha256 value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes lineage_receipt_sha256 = 11;</code>
      * @return string
@@ -314,7 +314,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The lineage receipt sha256 value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes lineage_receipt_sha256 = 11;</code>
      * @param string $var
@@ -329,7 +329,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The egress bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 egress_bytes = 9;</code>
      * @return int|string
@@ -340,7 +340,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The egress bytes value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>uint64 egress_bytes = 9;</code>
      * @param int|string $var
@@ -355,7 +355,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The receipt value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt = 10;</code>
      * @return string
@@ -366,7 +366,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The receipt value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt = 10;</code>
      * @param string $var

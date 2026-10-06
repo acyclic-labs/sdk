@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Returns the admitted generation run.
  *
  * Generated from protobuf message <code>inference.customer.v1.GenerateRunResponse</code>
  */
 class GenerateRunResponse extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run value carried by GenerateRunResponse.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunView run = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
@@ -30,7 +30,7 @@ class GenerateRunResponse extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RunView $run
-     *           A field in the Inference customer v1 wire contract.
+     *           The run value carried by GenerateRunResponse.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class GenerateRunResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run value carried by GenerateRunResponse.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunView run = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RunView|null
@@ -61,7 +61,7 @@ class GenerateRunResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run value carried by GenerateRunResponse.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunView run = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RunView $var

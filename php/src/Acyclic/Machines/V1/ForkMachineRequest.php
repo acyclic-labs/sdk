@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests fresh live-fork children from a machine.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkMachineRequest</code>
  */
 class ForkMachineRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
     protected $idempotency_key = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      */
@@ -48,13 +48,13 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by ForkMachineRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by ForkMachineRequest.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by ForkMachineRequest.
      *     @type int $count
-     *           A field in the Machines v1 wire contract.
+     *           The count value carried by ForkMachineRequest.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -85,7 +85,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -99,7 +99,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -120,7 +120,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var
@@ -134,7 +134,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -155,7 +155,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -169,7 +169,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      * @return int
@@ -180,7 +180,7 @@ class ForkMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkMachineRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      * @param int $var

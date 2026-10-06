@@ -4,7 +4,7 @@
 namespace Acyclic\Machines\V1;
 
 /**
- * Remote operations for the Machines v1 contract.
+ * Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
  */
 class MachinesServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.QualifyImage operation.
+     * Qualifies an image against the protocol and capability contract.
      * @param \Acyclic\Machines\V1\QualifyImageRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -33,7 +33,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Create operation.
+     * Admits a machine with lifecycle and budget policy.
      * @param \Acyclic\Machines\V1\CreateMachineRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -48,7 +48,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Checkpoint operation.
+     * Creates an immutable checkpoint for a machine.
      * @param \Acyclic\Machines\V1\CheckpointMachineRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -93,7 +93,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Suspend operation.
+     * Requests suspension of a machine.
      * @param \Acyclic\Machines\V1\MachineMutationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -108,7 +108,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Wake operation.
+     * Requests wake of a suspended machine.
      * @param \Acyclic\Machines\V1\MachineMutationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -123,7 +123,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.SetSuspensionPolicy operation.
+     * Replaces a machine suspension policy.
      * @param \Acyclic\Machines\V1\SetSuspensionPolicyRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -138,7 +138,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.DestroyMachine operation.
+     * Destroys a machine and records the mutation outcome.
      * @param \Acyclic\Machines\V1\MachineMutationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -153,7 +153,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.DestroyCheckpoint operation.
+     * Destroys a checkpoint and records the mutation outcome.
      * @param \Acyclic\Machines\V1\CheckpointMutationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -168,7 +168,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Recover operation.
+     * Recovers the outcome of an indeterminate operation.
      * @param \Acyclic\Machines\V1\RecoverRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -183,7 +183,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.InspectMachine operation.
+     * Reads the current machine state.
      * @param \Acyclic\Machines\V1\InspectMachineRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -198,7 +198,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.InspectCheckpoint operation.
+     * Reads the current checkpoint state.
      * @param \Acyclic\Machines\V1\InspectCheckpointRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -213,7 +213,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.ListMachines operation.
+     * Lists a bounded page of machines.
      * @param \Acyclic\Machines\V1\ListMachinesRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -228,7 +228,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Events operation.
+     * Reads a bounded machine event page.
      * @param \Acyclic\Machines\V1\EventsRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -243,7 +243,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Usage operation.
+     * Reads usage for a bounded machine time interval.
      * @param \Acyclic\Machines\V1\UsageRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -258,7 +258,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.Cancel operation.
+     * Requests cancellation of an admitted operation.
      * @param \Acyclic\Machines\V1\OperationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -273,7 +273,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.InspectOperation operation.
+     * Reads the current operation state.
      * @param \Acyclic\Machines\V1\OperationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -288,7 +288,7 @@ class MachinesServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * MachinesService.WatchOperation operation.
+     * Streams ordered operation state from a sequence cursor.
      * @param \Acyclic\Machines\V1\OperationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

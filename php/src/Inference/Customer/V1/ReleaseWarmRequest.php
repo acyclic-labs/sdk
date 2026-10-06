@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Releases a warm retention commitment.
  *
  * Generated from protobuf message <code>inference.customer.v1.ReleaseWarmRequest</code>
  */
 class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -36,9 +36,9 @@ class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by ReleaseWarmRequest.
      *     @type string $commitment
-     *           A field in the Inference customer v1 wire contract.
+     *           The commitment value carried by ReleaseWarmRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -69,7 +69,7 @@ class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -83,7 +83,7 @@ class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -94,7 +94,7 @@ class ReleaseWarmRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by ReleaseWarmRequest.
      *
      * Generated from protobuf field <code>bytes commitment = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

@@ -20,7 +20,7 @@ import 'package:test/test.dart';
 void main() {
   test('all nine Rust family goldens round trip exactly', () {
     final path = Platform.environment['RUST_FAMILY_GOLDENS'] ??
-        '../../../php/tests/fixtures/rust-family-goldens.json';
+        'test/fixtures/rust-family-goldens.json';
     final fixtures = (jsonDecode(File(path).readAsStringSync()) as List)
         .cast<Map<String, dynamic>>();
     expect(fixtures, hasLength(9));

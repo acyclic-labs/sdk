@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Contains case results, aggregates, and the immutable result digest.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationResult</code>
  */
 class EvaluationResult extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes spec_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $spec_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case results value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCaseResult case_results = 2;</code>
      */
     private $case_results;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregates value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationAggregate aggregates = 3;</code>
      */
     private $aggregates;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes result_digest = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -48,13 +48,13 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $spec_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The spec digest value carried by EvaluationResult.
      *     @type \Inference\Customer\V1\EvaluationCaseResult[] $case_results
-     *           A field in the Inference customer v1 wire contract.
+     *           The case results value carried by EvaluationResult.
      *     @type \Inference\Customer\V1\EvaluationAggregate[] $aggregates
-     *           A field in the Inference customer v1 wire contract.
+     *           The aggregates value carried by EvaluationResult.
      *     @type string $result_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The result digest value carried by EvaluationResult.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes spec_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -75,7 +75,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes spec_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -90,7 +90,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case results value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCaseResult case_results = 2;</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationCaseResult>
@@ -101,7 +101,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case results value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCaseResult case_results = 2;</code>
      * @param \Inference\Customer\V1\EvaluationCaseResult[] $var
@@ -116,7 +116,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregates value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationAggregate aggregates = 3;</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationAggregate>
@@ -127,7 +127,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregates value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationAggregate aggregates = 3;</code>
      * @param \Inference\Customer\V1\EvaluationAggregate[] $var
@@ -142,7 +142,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes result_digest = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -153,7 +153,7 @@ class EvaluationResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result digest value carried by EvaluationResult.
      *
      * Generated from protobuf field <code>bytes result_digest = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

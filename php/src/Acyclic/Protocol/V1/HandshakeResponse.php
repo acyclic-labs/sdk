@@ -10,15 +10,21 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
+ * Reports the service family's protocol identity and supported capabilities after negotiation.
+ *
  * Generated from protobuf message <code>acyclic.protocol.v1.HandshakeResponse</code>
  */
 class HandshakeResponse extends \Google\Protobuf\Internal\Message
 {
     /**
+     * The protocol identity reported by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      */
     protected $protocol = null;
     /**
+     * The capabilities advertised by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet supported = 2;</code>
      */
     protected $supported = null;
@@ -30,7 +36,9 @@ class HandshakeResponse extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Protocol\V1\ProtocolIdentity $protocol
+     *           The protocol identity reported by the accepting service.
      *     @type \Acyclic\Protocol\V1\CapabilitySet $supported
+     *           The capabilities advertised by the accepting service.
      * }
      */
     public function __construct($data = null)
@@ -40,6 +48,8 @@ class HandshakeResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The protocol identity reported by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      * @return \Acyclic\Protocol\V1\ProtocolIdentity|null
      */
@@ -59,6 +69,8 @@ class HandshakeResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The protocol identity reported by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      * @param \Acyclic\Protocol\V1\ProtocolIdentity $var
      * @return $this
@@ -71,6 +83,8 @@ class HandshakeResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities advertised by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet supported = 2;</code>
      * @return \Acyclic\Protocol\V1\CapabilitySet|null
      */
@@ -90,6 +104,8 @@ class HandshakeResponse extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities advertised by the accepting service.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet supported = 2;</code>
      * @param \Acyclic\Protocol\V1\CapabilitySet $var
      * @return $this

@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Returns live-fork children and the declared fidelity.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkedLiveMachines</code>
  */
 class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      */
     protected $source = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 2;</code>
      */
     protected $fidelity = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState children = 3;</code>
      */
@@ -42,11 +42,11 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $source
-     *           A field in the Machines v1 wire contract.
+     *           The source value carried by ForkedLiveMachines.
      *     @type int $fidelity
-     *           A field in the Machines v1 wire contract.
+     *           The fidelity value carried by ForkedLiveMachines.
      *     @type \Acyclic\Machines\V1\MachineState[] $children
-     *           A field in the Machines v1 wire contract.
+     *           The children value carried by ForkedLiveMachines.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -77,7 +77,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -91,7 +91,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 2;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\ForkFidelity}
@@ -102,7 +102,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fidelity value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkFidelity fidelity = 2;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\ForkFidelity}
@@ -117,7 +117,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState children = 3;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineState>
@@ -128,7 +128,7 @@ class ForkedLiveMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkedLiveMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState children = 3;</code>
      * @param \Acyclic\Machines\V1\MachineState[] $var

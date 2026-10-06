@@ -2,7 +2,9 @@
 param(
   [string]$Root,
   [switch]$RustGrpcFixture,
-  [string]$WorkDirectory
+  [string]$WorkDirectory,
+  [string]$AuthorityRoot,
+  [string]$SourceRevision
 )
 
 $ErrorActionPreference = 'Stop'
@@ -16,6 +18,17 @@ $work = if ([string]::IsNullOrWhiteSpace($WorkDirectory)) {
 $sbtVersion = '1.10.11'
 $sbtSha256 = 'E988D533A020E5B60EC22C3B5DF4CD3E3DF465F4FDC3951C63036E21483978E4'
 $sbtJar = Join-Path $work "sbt-launch-$sbtVersion.jar"
+if ([string]::IsNullOrWhiteSpace($AuthorityRoot)) { $AuthorityRoot = Join-Path $Root 'target/sdk-contract' }
+$AuthorityRoot = [System.IO.Path]::GetFullPath($AuthorityRoot)
+$authorityManifest = Join-Path $AuthorityRoot 'rust-authority.json'
+if (-not (Test-Path -LiteralPath $authorityManifest -PathType Leaf)) { throw "Rust authority manifest is required: $authorityManifest" }
+$authorityDocument = Get-Content -LiteralPath $authorityManifest -Raw | ConvertFrom-Json
+$authorityModelRevision = [string]$authorityDocument.source_revision
+if ([string]::IsNullOrWhiteSpace($authorityModelRevision)) { throw 'Rust authority manifest has no source_revision' }
+if ([string]::IsNullOrWhiteSpace($SourceRevision)) {
+  $SourceRevision = (& git -C $Root rev-parse HEAD 2>$null).Trim()
+}
+if ($SourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw 'SourceRevision must be an exact 40-character Git revision' }
 New-Item -ItemType Directory -Force -Path $work | Out-Null
 if (-not (Test-Path $sbtJar)) {
   Invoke-WebRequest "https://repo1.maven.org/maven2/org/scala-sbt/sbt-launch/$sbtVersion/sbt-launch-$sbtVersion.jar" -OutFile $sbtJar
@@ -38,8 +51,7 @@ ThisBuild / version := "0.1.0"
 name := "acyclic-sdk-scala-grpc-prototype"
 
 Compile / PB.protoSources := Seq(
-  file("../../../../proto/actors/v1"),
-  file("../../../../rust/crates/stream/proto")
+  file("__RUST_AUTHORITY_ROOT__")
 )
 Compile / PB.targets := Seq(scalapb.gen(grpc = true) -> (Compile / sourceManaged).value / "scalapb")
 Compile / PB.protocVersion := "3.25.5"
@@ -54,11 +66,9 @@ libraryDependencies ++= Seq(
 )
 '@ | Set-Content -LiteralPath (Join-Path $work 'build.sbt') -Encoding ascii
 $buildSbtPath = Join-Path $work 'build.sbt'
-$protoActorsPath = (Join-Path $Root 'proto/actors/v1').Replace('\', '/')
-$protoStreamPath = (Join-Path $Root 'rust/crates/stream/proto').Replace('\', '/')
+$authorityProtoPath = $AuthorityRoot.Replace('\', '/')
 $buildSbt = Get-Content -LiteralPath $buildSbtPath -Raw
-$buildSbt = $buildSbt.Replace('file("../../../../proto/actors/v1")', ('file("' + $protoActorsPath + '")'))
-$buildSbt = $buildSbt.Replace('file("../../../../rust/crates/stream/proto")', ('file("' + $protoStreamPath + '")'))
+$buildSbt = $buildSbt.Replace('file("__RUST_AUTHORITY_ROOT__")', ('file("' + $authorityProtoPath + '")'))
 Set-Content -LiteralPath $buildSbtPath -Value $buildSbt -Encoding ascii
 
 Copy-Item -LiteralPath (Join-Path $scriptDir 'scala-grpc-loopback.scala') -Destination (Join-Path $work 'ScalaGrpcLoopback.scala') -Force
@@ -128,9 +138,9 @@ libraryDependencies += "dev.acyclic" %% "acyclic-sdk-scala-grpc-prototype" % "0.
 
 $artifact = Join-Path $work 'target/scala-2.13/acyclic-sdk-scala-grpc-prototype_2.13-0.1.0.jar'
 Write-Output "ScalaPB gRPC prototype passed compile/package/publishLocal: $artifact"
-$protoRoot = Join-Path $Root 'proto'
+$protoRoot = $AuthorityRoot
 $protoRows = Get-ChildItem -LiteralPath $protoRoot -Recurse -File -Filter '*.proto' | Sort-Object FullName | ForEach-Object {
-  $relative = $_.FullName.Substring($Root.Length).TrimStart('\', '/') -replace '\\', '/'
+  $relative = $_.FullName.Substring($AuthorityRoot.Length).TrimStart('\', '/') -replace '\\', '/'
   [ordered]@{ path = $relative; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
 }
 $sourceText = ($protoRows | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "`n"
@@ -144,6 +154,10 @@ $receipt = [ordered]@{
   status = 'local-prototype-passed'
   generator = [ordered]@{ scalapb = '0.11.17'; sbt_protoc = '1.0.7'; sbt = $sbtVersion; protoc = '3.25.5' }
   source_digest = $sourceDigest
+  authority_manifest = 'rust-authority.json'
+  authority_manifest_sha256 = (Get-FileHash -LiteralPath $authorityManifest -Algorithm SHA256).Hash.ToLowerInvariant()
+  source_git_revision = $SourceRevision
+  rust_model_source_revision = $authorityModelRevision
   proto_files = @($protoRows)
   generated_files = @($generatedRows)
   artifact = [ordered]@{ coordinate = 'dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0'; sha256 = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant() }
@@ -153,7 +167,7 @@ $receipt = [ordered]@{
     resolver = 'isolated Ivy resolver from the local publishLocal repository'
     status = 'passed against the Rust fixture over network gRPC'
   }
-  loopback = 'Rust fixture auth, bytes, uint64, optional presence and server stream passed; cancellation remains a separate gate'
+  loopback = 'Rust fixture auth, bytes, uint64, optional presence, server stream, idempotency replay and Context cancellation are exercised by the installed consumer'
   rust_fixture = [bool]$RustGrpcFixture
   publication = 'isolated publishLocal only'
 }

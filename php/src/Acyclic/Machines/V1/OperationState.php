@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports operation status and its stable identity.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.OperationState</code>
  */
 class OperationState extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationStatus status = 2;</code>
      */
@@ -36,9 +36,9 @@ class OperationState extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by OperationState.
      *     @type int $status
-     *           A field in the Machines v1 wire contract.
+     *           The status value carried by OperationState.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class OperationState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -69,7 +69,7 @@ class OperationState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -83,7 +83,7 @@ class OperationState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationStatus status = 2;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\OperationStatus}
@@ -94,7 +94,7 @@ class OperationState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by OperationState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationStatus status = 2;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\OperationStatus}

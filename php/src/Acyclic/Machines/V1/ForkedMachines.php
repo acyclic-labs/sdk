@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Returns machine identities created by a checkpoint fork.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkedMachines</code>
  */
 class ForkedMachines extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by ForkedMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      */
@@ -30,7 +30,7 @@ class ForkedMachines extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineState[] $machines
-     *           A field in the Machines v1 wire contract.
+     *           The machines value carried by ForkedMachines.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class ForkedMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by ForkedMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineState>
@@ -51,7 +51,7 @@ class ForkedMachines extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machines value carried by ForkedMachines.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineState machines = 1;</code>
      * @param \Acyclic\Machines\V1\MachineState[] $var

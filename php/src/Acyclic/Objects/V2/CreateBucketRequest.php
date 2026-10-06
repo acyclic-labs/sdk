@@ -23,7 +23,7 @@ class CreateBucketRequest extends \Google\Protobuf\Internal\Message
      */
     protected $name = '';
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      */
@@ -38,7 +38,7 @@ class CreateBucketRequest extends \Google\Protobuf\Internal\Message
      *     @type string $name
      *           A logical tenant bucket name.
      *     @type \Acyclic\Objects\V2\MutationIdentity $mutation
-     *           A field in the Objects v2 wire contract.
+     *           The object mutation operation.
      * }
      */
     public function __construct($data = null)
@@ -74,7 +74,7 @@ class CreateBucketRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      * @return \Acyclic\Objects\V2\MutationIdentity|null
@@ -95,7 +95,7 @@ class CreateBucketRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      * @param \Acyclic\Objects\V2\MutationIdentity $var

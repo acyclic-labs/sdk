@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests fresh machines forked from a checkpoint.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkCheckpointRequest</code>
  */
 class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
     protected $idempotency_key = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      */
     protected $checkpoint = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      */
@@ -48,13 +48,13 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by ForkCheckpointRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by ForkCheckpointRequest.
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by ForkCheckpointRequest.
      *     @type int $count
-     *           A field in the Machines v1 wire contract.
+     *           The count value carried by ForkCheckpointRequest.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -85,7 +85,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -99,7 +99,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -120,7 +120,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var
@@ -134,7 +134,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -155,7 +155,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -169,7 +169,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      * @return int
@@ -180,7 +180,7 @@ class ForkCheckpointRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The count value carried by ForkCheckpointRequest.
      *
      * Generated from protobuf field <code>uint32 count = 4;</code>
      * @param int $var

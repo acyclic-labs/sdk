@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Confirms checkpoint creation and its source and operation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.CheckpointAdmission</code>
  */
 class CheckpointAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      */
     protected $checkpoint = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      */
     protected $source = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      */
@@ -48,13 +48,13 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by CheckpointAdmission.
      *     @type \Acyclic\Machines\V1\MachineId $source
-     *           A field in the Machines v1 wire contract.
+     *           The source value carried by CheckpointAdmission.
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by CheckpointAdmission.
      *     @type \Acyclic\Machines\V1\MachineContract $contract
-     *           A field in the Machines v1 wire contract.
+     *           The contract value carried by CheckpointAdmission.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -85,7 +85,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -99,7 +99,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -120,7 +120,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -134,7 +134,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -155,7 +155,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -169,7 +169,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @return \Acyclic\Machines\V1\MachineContract|null
@@ -190,7 +190,7 @@ class CheckpointAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @param \Acyclic\Machines\V1\MachineContract $var

@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records idle KV retention policy and the last observed use.
  *
  * Generated from protobuf message <code>inference.customer.v1.IdleKvRetention</code>
  */
 class IdleKvRetention extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The policy value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy policy = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $policy = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>uint64 retained_at_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $retained_at_ms = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last used at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional uint64 last_used_at_ms = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $last_used_at_ms = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last run id value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional bytes last_run_id = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
@@ -48,13 +48,13 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\IdleKvPolicy $policy
-     *           A field in the Inference customer v1 wire contract.
+     *           The policy value carried by IdleKvRetention.
      *     @type int|string $retained_at_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The retained at ms value carried by IdleKvRetention.
      *     @type int|string $last_used_at_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The last used at ms value carried by IdleKvRetention.
      *     @type string $last_run_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The last run id value carried by IdleKvRetention.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The policy value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy policy = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\IdleKvPolicy|null
@@ -85,7 +85,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The policy value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvPolicy policy = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\IdleKvPolicy $var
@@ -99,7 +99,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>uint64 retained_at_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -110,7 +110,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>uint64 retained_at_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -125,7 +125,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last used at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional uint64 last_used_at_ms = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -146,7 +146,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last used at ms value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional uint64 last_used_at_ms = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -161,7 +161,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last run id value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional bytes last_run_id = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -182,7 +182,7 @@ class IdleKvRetention extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last run id value carried by IdleKvRetention.
      *
      * Generated from protobuf field <code>optional bytes last_run_id = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var

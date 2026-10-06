@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Inserts an item at a target position.
  *
  * Generated from protobuf message <code>inference.customer.v1.Insert</code>
  */
 class Insert extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Insert.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      */
     protected $target = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The item value carried by Insert.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item item = 2;</code>
      */
@@ -36,9 +36,9 @@ class Insert extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $target
-     *           A field in the Inference customer v1 wire contract.
+     *           The target value carried by Insert.
      *     @type \Inference\Customer\V1\Item $item
-     *           A field in the Inference customer v1 wire contract.
+     *           The item value carried by Insert.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class Insert extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Insert.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      * @return string
@@ -59,7 +59,7 @@ class Insert extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Insert.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      * @param string $var
@@ -74,7 +74,7 @@ class Insert extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The item value carried by Insert.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item item = 2;</code>
      * @return \Inference\Customer\V1\Item|null
@@ -95,7 +95,7 @@ class Insert extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The item value carried by Insert.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item item = 2;</code>
      * @param \Inference\Customer\V1\Item $var

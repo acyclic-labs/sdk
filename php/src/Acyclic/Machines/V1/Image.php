@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Describes a managed, custom, or checkpoint image source.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.Image</code>
  */
 class Image extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by Image.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ImageKind kind = 1;</code>
      */
@@ -31,13 +31,13 @@ class Image extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int $kind
-     *           A field in the Machines v1 wire contract.
+     *           The kind value carried by Image.
      *     @type string $managed_digest
-     *           A field in the Machines v1 wire contract.
+     *           The managed digest value carried by Image.
      *     @type string $custom_digest
-     *           A field in the Machines v1 wire contract.
+     *           The custom digest value carried by Image.
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by Image.
      * }
      */
     public function __construct($data = null)
@@ -47,7 +47,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by Image.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ImageKind kind = 1;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\ImageKind}
@@ -58,7 +58,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The kind value carried by Image.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ImageKind kind = 1;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\ImageKind}
@@ -73,7 +73,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The managed digest value carried by Image.
      *
      * Generated from protobuf field <code>bytes managed_digest = 2;</code>
      * @return string
@@ -89,7 +89,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The managed digest value carried by Image.
      *
      * Generated from protobuf field <code>bytes managed_digest = 2;</code>
      * @param string $var
@@ -104,7 +104,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The custom digest value carried by Image.
      *
      * Generated from protobuf field <code>bytes custom_digest = 3;</code>
      * @return string
@@ -120,7 +120,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The custom digest value carried by Image.
      *
      * Generated from protobuf field <code>bytes custom_digest = 3;</code>
      * @param string $var
@@ -135,7 +135,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by Image.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 4;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -151,7 +151,7 @@ class Image extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by Image.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 4;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var

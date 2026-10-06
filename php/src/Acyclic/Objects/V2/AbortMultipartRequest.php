@@ -35,7 +35,7 @@ class AbortMultipartRequest extends \Google\Protobuf\Internal\Message
      */
     protected $upload_id = '';
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      */
@@ -54,7 +54,7 @@ class AbortMultipartRequest extends \Google\Protobuf\Internal\Message
      *     @type string $upload_id
      *           The multipart upload identifier.
      *     @type \Acyclic\Objects\V2\MutationIdentity $mutation
-     *           A field in the Objects v2 wire contract.
+     *           The object mutation operation.
      * }
      */
     public function __construct($data = null)
@@ -151,7 +151,7 @@ class AbortMultipartRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      * @return \Acyclic\Objects\V2\MutationIdentity|null
@@ -172,7 +172,7 @@ class AbortMultipartRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 4;</code>
      * @param \Acyclic\Objects\V2\MutationIdentity $var

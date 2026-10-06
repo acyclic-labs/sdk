@@ -107,6 +107,7 @@ impl TaskGroup {
     }
 
     /// Returns an explicit rejection when cancellation has closed admission.
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn try_spawn<T, F>(&self, future: F) -> Admission<TaskHandle<T>>
     where
         T: Send + 'static,
@@ -120,6 +121,52 @@ impl TaskGroup {
         };
         let (start, admitted) = oneshot::channel();
         let join = tokio::spawn(async move {
+            let _guard = guard;
+            let _ = admitted.await;
+            match semaphore.acquire_owned().await {
+                Ok(_permit) => Outcome::Succeeded(future.await),
+                Err(_) => Outcome::Failed {
+                    message: "task group closed".into(),
+                },
+            }
+        });
+        {
+            let mut admission = self
+                .state
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if admission.closed {
+                join.abort();
+                return Admission::Rejected {
+                    reason: "task group is closed".into(),
+                };
+            }
+            admission.active.insert(id, join.abort_handle());
+        }
+        let _ = start.send(());
+        Admission::Accepted(TaskHandle {
+            id,
+            join: Some(join),
+        })
+    }
+
+    /// Browser-local variant of task admission. WASM providers use local
+    /// futures because browser executors do not cross worker threads.
+    #[cfg(target_arch = "wasm32")]
+    pub async fn try_spawn<T, F>(&self, future: F) -> Admission<TaskHandle<T>>
+    where
+        T: 'static,
+        F: Future<Output = T> + 'static,
+    {
+        let id = OperationId::new();
+        let semaphore = Arc::clone(&self.state.semaphore);
+        let guard = ActiveGuard {
+            id,
+            group: Arc::clone(&self.state),
+        };
+        let (start, admitted) = oneshot::channel();
+        let join = tokio::task::spawn_local(async move {
             let _guard = guard;
             let _ = admitted.await;
             match semaphore.acquire_owned().await {

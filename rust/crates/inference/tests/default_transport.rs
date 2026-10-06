@@ -16,10 +16,11 @@ impl acyclic_inference::control_wire::transport::v1::protocol_service_server::Pr
 {
     async fn handshake(
         &self,
-        request: tonic::Request<
-            acyclic_inference::control_wire::protocol::v1::HandshakeRequest,
-        >,
-    ) -> Result<tonic::Response<acyclic_inference::control_wire::protocol::v1::HandshakeResponse>, tonic::Status> {
+        request: tonic::Request<acyclic_inference::control_wire::protocol::v1::HandshakeRequest>,
+    ) -> Result<
+        tonic::Response<acyclic_inference::control_wire::protocol::v1::HandshakeResponse>,
+        tonic::Status,
+    > {
         let auth = request
             .metadata()
             .get("authorization")
@@ -31,16 +32,22 @@ impl acyclic_inference::control_wire::transport::v1::protocol_service_server::Pr
         let version = control::control_protocol_version(family);
         Ok(tonic::Response::new(
             acyclic_inference::control_wire::protocol::v1::HandshakeResponse {
-                protocol: Some(acyclic_inference::control_wire::protocol::v1::ProtocolIdentity {
-                    version: version.into(),
-                    descriptor_digest: self.digest.clone(),
-                }),
-                supported: Some(acyclic_inference::control_wire::protocol::v1::CapabilitySet {
-                    capabilities: vec![acyclic_inference::control_wire::protocol::v1::Capability {
-                        name: family.name().into(),
+                protocol: Some(
+                    acyclic_inference::control_wire::protocol::v1::ProtocolIdentity {
                         version: version.into(),
-                    }],
-                }),
+                        descriptor_digest: self.digest.clone(),
+                    },
+                ),
+                supported: Some(
+                    acyclic_inference::control_wire::protocol::v1::CapabilitySet {
+                        capabilities: vec![
+                            acyclic_inference::control_wire::protocol::v1::Capability {
+                                name: family.name().into(),
+                                version: version.into(),
+                            },
+                        ],
+                    },
+                ),
             },
         ))
     }
@@ -57,7 +64,10 @@ async fn native_client_verifies_authenticated_tls_grpc_before_selection() {
     let certificate_pem = certified.cert.pem();
     let private_key_pem = certified.signing_key.serialize_pem();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let endpoint = format!("https://localhost:{}", listener.local_addr().unwrap().port());
+    let endpoint = format!(
+        "https://localhost:{}",
+        listener.local_addr().unwrap().port()
+    );
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server_certificate_pem = certificate_pem.clone();
     let digest = control::archived_descriptor_digest(BindingFamily::Inference);
@@ -79,9 +89,10 @@ async fn native_client_verifies_authenticated_tls_grpc_before_selection() {
             .await
             .unwrap();
     });
-    let client = client::Client::connect_with_ca(&endpoint, "fixture-token", certificate_pem.as_bytes())
-        .await
-        .unwrap();
+    let client =
+        client::Client::connect_with_ca(&endpoint, "fixture-token", certificate_pem.as_bytes())
+            .await
+            .unwrap();
     assert_eq!(client.transport(), client::Transport::Grpc);
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -128,7 +139,11 @@ async fn endpoint(
         for index in 0..requests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request = read_request(&mut stream).await;
-            assert!(request.to_ascii_lowercase().contains("authorization: bearer fixture-token\r\n"));
+            assert!(
+                request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer fixture-token\r\n")
+            );
             observed.push(request.lines().next().unwrap().to_owned());
             let body = if index == 0 {
                 serde_json::json!({
@@ -140,15 +155,21 @@ async fn endpoint(
                         "name": BindingFamily::Inference.name(),
                         "version": control::control_protocol_version(BindingFamily::Inference),
                     }] }
-                }).to_string()
-            } else if request.lines().next().is_some_and(|line| line.contains("/runs/watch")) {
+                })
+                .to_string()
+            } else if request
+                .lines()
+                .next()
+                .is_some_and(|line| line.contains("/runs/watch"))
+            {
                 "[]".to_owned()
             } else {
                 "{}".to_owned()
             };
             let response = format!(
                 "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(), body
+                body.len(),
+                body
             );
             stream.write_all(response.as_bytes()).await.unwrap();
             stream.shutdown().await.unwrap();
@@ -170,20 +191,65 @@ async fn default_client_verifies_http_then_executes_all_fourteen_operations() {
         .await
         .unwrap();
     assert_eq!(client.transport(), client::Transport::Http);
-    client.list(&wire::ListModelsRequest::default()).await.unwrap();
-    client.create_context(&wire::CreateContextRequest::default()).await.unwrap();
-    client.inspect_context(&wire::InspectContextRequest::default()).await.unwrap();
-    client.mutate_context(&wire::MutateContextRequest::default()).await.unwrap();
-    client.retain_warm(&wire::RetainWarmRequest::default()).await.unwrap();
-    client.inspect_warm(&wire::InspectWarmRequest::default()).await.unwrap();
-    client.renew_warm(&wire::RenewWarmRequest::default()).await.unwrap();
-    client.release_warm(&wire::ReleaseWarmRequest::default()).await.unwrap();
-    client.generate_run(&wire::GenerateRunRequest::default()).await.unwrap();
-    client.inspect_run(&wire::InspectRunRequest::default()).await.unwrap();
-    assert!(client.watch_run(&wire::WatchRunRequest::default()).await.unwrap().is_empty());
-    client.cancel_run(&wire::InspectRunRequest::default()).await.unwrap();
-    client.create_evaluation(&wire::CreateEvaluationRequest::default()).await.unwrap();
-    client.inspect_evaluation(&wire::InspectEvaluationRequest::default()).await.unwrap();
+    client
+        .list(&wire::ListModelsRequest::default())
+        .await
+        .unwrap();
+    client
+        .create_context(&wire::CreateContextRequest::default())
+        .await
+        .unwrap();
+    client
+        .inspect_context(&wire::InspectContextRequest::default())
+        .await
+        .unwrap();
+    client
+        .mutate_context(&wire::MutateContextRequest::default())
+        .await
+        .unwrap();
+    client
+        .retain_warm(&wire::RetainWarmRequest::default())
+        .await
+        .unwrap();
+    client
+        .inspect_warm(&wire::InspectWarmRequest::default())
+        .await
+        .unwrap();
+    client
+        .renew_warm(&wire::RenewWarmRequest::default())
+        .await
+        .unwrap();
+    client
+        .release_warm(&wire::ReleaseWarmRequest::default())
+        .await
+        .unwrap();
+    client
+        .generate_run(&wire::GenerateRunRequest::default())
+        .await
+        .unwrap();
+    client
+        .inspect_run(&wire::InspectRunRequest::default())
+        .await
+        .unwrap();
+    assert!(
+        client
+            .watch_run(&wire::WatchRunRequest::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    client
+        .cancel_run(&wire::InspectRunRequest::default())
+        .await
+        .unwrap();
+    client
+        .create_evaluation(&wire::CreateEvaluationRequest::default())
+        .await
+        .unwrap();
+    client
+        .inspect_evaluation(&wire::InspectEvaluationRequest::default())
+        .await
+        .unwrap();
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
         .unwrap()
@@ -196,9 +262,11 @@ async fn default_client_verifies_http_then_executes_all_fourteen_operations() {
 #[tokio::test]
 async fn incompatible_http_identity_stops_before_any_application_call() {
     let (endpoint, server) = endpoint(200, "substituted-descriptor".into(), 1).await;
-    assert!(client::Client::connect(&endpoint, "fixture-token")
-        .await
-        .is_err());
+    assert!(
+        client::Client::connect(&endpoint, "fixture-token")
+            .await
+            .is_err()
+    );
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
         .unwrap()
@@ -208,10 +276,17 @@ async fn incompatible_http_identity_stops_before_any_application_call() {
 
 #[tokio::test]
 async fn failed_http_auth_stops_before_any_application_call() {
-    let (endpoint, server) = endpoint(401, control::archived_descriptor_digest(BindingFamily::Inference), 1).await;
-    assert!(client::Client::connect(&endpoint, "fixture-token")
-        .await
-        .is_err());
+    let (endpoint, server) = endpoint(
+        401,
+        control::archived_descriptor_digest(BindingFamily::Inference),
+        1,
+    )
+    .await;
+    assert!(
+        client::Client::connect(&endpoint, "fixture-token")
+            .await
+            .is_err()
+    );
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
         .unwrap()

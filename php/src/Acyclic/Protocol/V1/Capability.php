@@ -10,15 +10,21 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
+ * Identifies a named, versioned capability offered or requested during a handshake.
+ *
  * Generated from protobuf message <code>acyclic.protocol.v1.Capability</code>
  */
 class Capability extends \Google\Protobuf\Internal\Message
 {
     /**
+     * The capability name recognized by the service family.
+     *
      * Generated from protobuf field <code>string name = 1;</code>
      */
     protected $name = '';
     /**
+     * The version associated with this named capability.
+     *
      * Generated from protobuf field <code>string version = 2;</code>
      */
     protected $version = '';
@@ -30,7 +36,9 @@ class Capability extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $name
+     *           The capability name recognized by the service family.
      *     @type string $version
+     *           The version associated with this named capability.
      * }
      */
     public function __construct($data = null)
@@ -40,6 +48,8 @@ class Capability extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capability name recognized by the service family.
+     *
      * Generated from protobuf field <code>string name = 1;</code>
      * @return string
      */
@@ -49,6 +59,8 @@ class Capability extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capability name recognized by the service family.
+     *
      * Generated from protobuf field <code>string name = 1;</code>
      * @param string $var
      * @return $this
@@ -62,6 +74,8 @@ class Capability extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The version associated with this named capability.
+     *
      * Generated from protobuf field <code>string version = 2;</code>
      * @return string
      */
@@ -71,6 +85,8 @@ class Capability extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The version associated with this named capability.
+     *
      * Generated from protobuf field <code>string version = 2;</code>
      * @param string $var
      * @return $this

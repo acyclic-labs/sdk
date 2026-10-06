@@ -12,8 +12,6 @@ import {
   CONFLICT_USE_TO_USAGE,
   JOIN_HISTORY_FROM_PUBLIC,
   EXTENT_KIND_TO_KIND,
-  SOURCE_INVALIDATION_REASON_TO_REASON,
-  SOURCE_STATE_TO_STATUS,
   REBASE_STATUS_TO_STATUS,
   JOIN_STATUS_TO_STATUS,
   SPARSE_TARGET_TO_TARGET,
@@ -35,7 +33,6 @@ import {
   NameEncoding,
   OperationOptionsSchema,
   RebaseStatus,
-  SourceInvalidationReason as WireSourceInvalidationReason,
   type Conflict as WireConflict,
   type DiffResponse,
   type FileRecordSnapshot as WireFileRecordSnapshot,
@@ -111,6 +108,13 @@ type HostedRustPolicy = {
     maximumPageItems: number,
   ): void;
   validateHostedSourceState(state: number, reason: number, hasGeneration: boolean): void;
+  projectHostedSourceState(
+    state: number,
+    reason: number,
+    hasGeneration: boolean,
+  ): { readonly status: SourceResult["status"]; readonly reason: SourceResult["reason"] };
+  validateHostedAdvertisedLimits(maximumTransactionMutations: number, maximumPageItems: number): void;
+  validateHostedResponseBytes(maximumResponseBytes: number, minimumHandshakeResponseBytes: number): void;
   validateHostedGenerationIdentity(
     generationId: Uint8Array,
     ownerWorkspaceId: Uint8Array,
@@ -154,15 +158,16 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     validateHostedTransactionBounds: rustWasm.validateHostedTransactionBounds,
     validateHostedGenerationBounds: rustWasm.validateHostedGenerationBounds,
     validateHostedSourceState: rustWasm.validateHostedSourceState,
+    projectHostedSourceState: rustWasm.projectHostedSourceState,
+    validateHostedAdvertisedLimits: rustWasm.validateHostedAdvertisedLimits,
+    validateHostedResponseBytes: rustWasm.validateHostedResponseBytes,
     validateHostedGenerationIdentity: rustWasm.validateHostedGenerationIdentity,
   };
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
-  positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
-  if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {
-    throw new RangeError(
-      `maximum response bytes must be at least ${DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes}`,
-    );
-  }
+  rustPolicy.validateHostedResponseBytes(
+    maximumResponseBytes,
+    DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes,
+  );
   const maximumPayloadResponseBytes = maximumResponseBytes - DEFAULT_HOSTED_OPTIONS.maximumByteResponseEnvelopeBytes;
   const send = options.fetch ?? globalThis.fetch;
   if (send === undefined) throw new TypeError("this runtime does not provide fetch");
@@ -201,8 +206,10 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
     throw new HostedFsError("protocol", error instanceof Error ? error.message : String(error));
   }
   negotiatedMaximumRequestBytes = advertised.maximumRequestBytes;
-  positiveSafeInteger(advertised.maximumTransactionMutations, "maximum transaction mutations");
-  positiveSafeInteger(advertised.maximumPageItems, "maximum page items");
+  rustPolicy.validateHostedAdvertisedLimits(
+    advertised.maximumTransactionMutations,
+    advertised.maximumPageItems,
+  );
   const profiles = advertised.profiles.map(profileFromWire);
   const negotiatedResponseBytes = advertised.maximumResponseBytes < BigInt(maximumPayloadResponseBytes)
     ? advertised.maximumResponseBytes
@@ -429,22 +436,12 @@ function sourceResult(
   workspace: WireWorkspaceRef,
   response: WireSourceResponse,
 ): SourceResult {
-  client.rustPolicy.validateHostedSourceState(
+  const projection = client.rustPolicy.projectHostedSourceState(
     response.state,
     response.reason,
     response.generation !== undefined,
   );
-  const status = SOURCE_STATE_TO_STATUS[response.state];
-  if (status === undefined) throw new HostedFsError("invalid_response", "source state is invalid");
-  const reason = response.reason === WireSourceInvalidationReason.UNSPECIFIED
-    ? undefined
-    : SOURCE_INVALIDATION_REASON_TO_REASON[response.reason];
-  if (response.reason !== WireSourceInvalidationReason.UNSPECIFIED && reason === undefined) {
-    throw new HostedFsError("invalid_response", "source invalidation reason is invalid");
-  }
-  if ((status === "needs-rescan") !== (reason !== undefined)) {
-    throw new HostedFsError("invalid_response", "source state and invalidation reason do not match");
-  }
+  const { status, reason } = projection;
   const selected = response.generation;
   if ((status === "clean" || status === "sealed") !== (selected !== undefined)) {
     throw new HostedFsError("invalid_response", "source generation does not match its state");
@@ -1053,9 +1050,6 @@ function assertOpen(client: HostedClient): void {
   if (client.closed) throw new HostedFsError("closed", "hosted filesystem is closed");
 }
 function requireName(value: string): void { if (value.length === 0) throw new RangeError("name must be non-empty"); }
-function positiveSafeInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new RangeError(`${name} must be positive`);
-}
 function required<T>(value: T | undefined, name: string): T {
   if (value === undefined) throw new HostedFsError("invalid_response", `${name} is absent`);
   return value;

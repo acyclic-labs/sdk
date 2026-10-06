@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Compacts selected context content into a replacement item.
  *
  * Generated from protobuf message <code>inference.customer.v1.Compact</code>
  */
 class Compact extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The selected value carried by Compact.
      *
      * Generated from protobuf field <code>repeated bytes selected = 1;</code>
      */
     private $selected;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The replacement value carried by Compact.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item replacement = 2;</code>
      */
@@ -36,9 +36,9 @@ class Compact extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string[] $selected
-     *           A field in the Inference customer v1 wire contract.
+     *           The selected value carried by Compact.
      *     @type \Inference\Customer\V1\Item[] $replacement
-     *           A field in the Inference customer v1 wire contract.
+     *           The replacement value carried by Compact.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class Compact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The selected value carried by Compact.
      *
      * Generated from protobuf field <code>repeated bytes selected = 1;</code>
      * @return RepeatedField<string>
@@ -59,7 +59,7 @@ class Compact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The selected value carried by Compact.
      *
      * Generated from protobuf field <code>repeated bytes selected = 1;</code>
      * @param string[] $var
@@ -74,7 +74,7 @@ class Compact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The replacement value carried by Compact.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item replacement = 2;</code>
      * @return RepeatedField<\Inference\Customer\V1\Item>
@@ -85,7 +85,7 @@ class Compact extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The replacement value carried by Compact.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item replacement = 2;</code>
      * @param \Inference\Customer\V1\Item[] $var

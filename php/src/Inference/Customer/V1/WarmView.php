@@ -10,68 +10,68 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports the admitted warm commitment and its current state.
  *
  * Generated from protobuf message <code>inference.customer.v1.WarmView</code>
  */
 class WarmView extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes commitment = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $commitment = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $context = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes model_profile = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $model_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes latency_profile = 4;</code>
      */
     protected $latency_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $expires_at_ms = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.WarmState state = 6 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
     protected $state = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evidence digest value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes evidence_digest = 7 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $evidence_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The admission receipt id value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes admission_receipt_id = 8 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $admission_receipt_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 sequence = 9 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $sequence = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvRetention idle_kv = 10;</code>
      */
@@ -84,25 +84,25 @@ class WarmView extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $commitment
-     *           A field in the Inference customer v1 wire contract.
+     *           The commitment value carried by WarmView.
      *     @type string $context
-     *           A field in the Inference customer v1 wire contract.
+     *           The context value carried by WarmView.
      *     @type string $model_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The model profile value carried by WarmView.
      *     @type string $latency_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The latency profile value carried by WarmView.
      *     @type int|string $expires_at_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The expires at ms value carried by WarmView.
      *     @type int $state
-     *           A field in the Inference customer v1 wire contract.
+     *           The state value carried by WarmView.
      *     @type string $evidence_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The evidence digest value carried by WarmView.
      *     @type string $admission_receipt_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The admission receipt id value carried by WarmView.
      *     @type int|string $sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The sequence value carried by WarmView.
      *     @type \Inference\Customer\V1\IdleKvRetention $idle_kv
-     *           A field in the Inference customer v1 wire contract.
+     *           The idle kv value carried by WarmView.
      * }
      */
     public function __construct($data = null)
@@ -112,7 +112,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes commitment = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -123,7 +123,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The commitment value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes commitment = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -138,7 +138,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -149,7 +149,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -164,7 +164,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes model_profile = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -175,7 +175,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes model_profile = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -190,7 +190,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes latency_profile = 4;</code>
      * @return string
@@ -201,7 +201,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The latency profile value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes latency_profile = 4;</code>
      * @param string $var
@@ -216,7 +216,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -227,7 +227,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The expires at ms value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 expires_at_ms = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -242,7 +242,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.WarmState state = 6 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\WarmState}
@@ -253,7 +253,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.WarmState state = 6 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\WarmState}
@@ -268,7 +268,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evidence digest value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes evidence_digest = 7 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -279,7 +279,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evidence digest value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes evidence_digest = 7 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -294,7 +294,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The admission receipt id value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes admission_receipt_id = 8 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -305,7 +305,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The admission receipt id value carried by WarmView.
      *
      * Generated from protobuf field <code>bytes admission_receipt_id = 8 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -320,7 +320,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 sequence = 9 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -331,7 +331,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by WarmView.
      *
      * Generated from protobuf field <code>uint64 sequence = 9 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -346,7 +346,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvRetention idle_kv = 10;</code>
      * @return \Inference\Customer\V1\IdleKvRetention|null
@@ -367,7 +367,7 @@ class WarmView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The idle kv value carried by WarmView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.IdleKvRetention idle_kv = 10;</code>
      * @param \Inference\Customer\V1\IdleKvRetention $var

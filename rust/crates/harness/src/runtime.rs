@@ -27,8 +27,12 @@ use crate::{
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
     workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
 };
-use futures::future::BoxFuture;
-use futures::{StreamExt as _, stream, stream::BoxStream};
+use crate::{BoxFuture, SendBoxFuture};
+#[cfg(not(target_arch = "wasm32"))]
+use futures::stream::BoxStream;
+#[cfg(target_arch = "wasm32")]
+use futures::stream::LocalBoxStream as BoxStream;
+use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
@@ -53,7 +57,7 @@ pub const DEFAULT_PRIVATE_DIRECTORY_PAGE: usize = 256;
 /// Maximum number of inputs admitted by one durable batch.
 pub const MAX_BATCH_INPUTS: usize = 65_536;
 
-type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> BoxFuture<'static, Result<O>> + Send + Sync;
+type LiveHandler<I, O> = dyn Fn(TaskContext, I) -> SendBoxFuture<'static, Result<O>> + Send + Sync;
 
 enum TaskImplementation<I, O> {
     Live(Arc<LiveHandler<I, O>>),
@@ -618,7 +622,18 @@ impl TaskAdmissionRecord {
 /// Provider boundary for stable durable admission and outcome observation.
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
-pub trait DurableTaskHost: Send + Sync {
+#[cfg(not(target_arch = "wasm32"))]
+pub trait HostThreadSafety: Send + Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + Sync + ?Sized> HostThreadSafety for T {}
+#[cfg(target_arch = "wasm32")]
+/// Marker for components that stay on the browser executor.
+pub trait HostThreadSafety {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> HostThreadSafety for T {}
+
+/// Provider boundary for stable durable admission and outcome observation.
+pub trait DurableTaskHost: HostThreadSafety {
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -845,7 +860,7 @@ pub trait DurableTaskHost: Send + Sync {
 
 /// Owner-bound durable task state, independently replaceable from admission
 /// and execution. Returned observations are authoritative for typed handles.
-pub trait TaskStateProvider: Send + Sync {
+pub trait TaskStateProvider: HostThreadSafety {
     /// Exact policy revision enforced when state-bound effects are reconciled.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route retained and observable by this state owner.
@@ -1064,7 +1079,7 @@ impl TaskStateProvider for HostTaskState {
 /// Independently replaceable durable admission boundary. A spawner commits
 /// identities and requests; the bound state host remains the authority for
 /// typed observation, resumed scope, and cancellation.
-pub trait TaskSpawner: Send + Sync {
+pub trait TaskSpawner: HostThreadSafety {
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route this spawner can actually dispatch to.
@@ -1222,7 +1237,7 @@ pub trait ExecutionProvider: Send + Sync {
 
 /// Replaceable owner-bound observer for an already planned provider effect.
 /// Reconciliation never creates a new dispatch attempt.
-pub trait DurableEffectObserver: Send + Sync {
+pub trait DurableEffectObserver: HostThreadSafety {
     /// Returns the latest attested status after querying the pinned attempt.
     fn reconcile<'a>(
         &'a self,
@@ -1542,13 +1557,20 @@ pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
     tasks: Vec<RuntimeTask<O>>,
 ) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
     let concurrency = tasks.len().clamp(1, 64);
-    stream::iter(tasks)
+    let stream = stream::iter(tasks)
         .map(|task| async move {
             let id = task.identity();
             (id, task.result().await)
         })
-        .buffer_unordered(concurrency)
-        .boxed()
+        .buffer_unordered(concurrency);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        stream.boxed()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        stream.boxed_local()
+    }
 }
 
 /// Folds observed outcomes in admission order, regardless of completion order.

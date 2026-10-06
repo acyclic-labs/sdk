@@ -17,16 +17,12 @@ fn normalize_tonic_response(mut response: CodeGeneratorResponse) -> CodeGenerato
             ("acyclic.machines.v1.rs", "acyclic.machines.v1"),
         ]
         .iter()
-        .find_map(|(suffix, service)| name.ends_with(suffix).then_some(*service))
-        else {
+        .find_map(|(suffix, service)| name.ends_with(suffix).then_some(*service)) else {
             continue;
         };
         let include = format!("include!(\"{service}.tonic.rs\");");
         if content.contains(&include) {
-            *content = content.replace(
-                &include,
-                &format!("#[cfg(feature = \"grpc\")]\n{include}"),
-            );
+            *content = content.replace(&include, &format!("#[cfg(feature = \"grpc\")]\n{include}"));
         }
     }
     response
@@ -38,9 +34,9 @@ fn main() -> io::Result<()> {
     io::stdin().read_to_end(&mut request)?;
     let response = match generator.as_deref() {
         Some("prost") => protoc_gen_prost::execute(&request).unwrap_codegen_response(),
-        Some("tonic") => normalize_tonic_response(
-            protoc_gen_tonic::execute(&request).unwrap_codegen_response(),
-        ),
+        Some("tonic") => {
+            normalize_tonic_response(protoc_gen_tonic::execute(&request).unwrap_codegen_response())
+        }
         _ => return Err(io::Error::other("expected prost or tonic generator")),
     };
     let mut encoded = Vec::new();
@@ -51,7 +47,7 @@ fn main() -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::normalize_tonic_response;
-    use prost_types::compiler::{code_generator_response::File, CodeGeneratorResponse};
+    use prost_types::compiler::{CodeGeneratorResponse, code_generator_response::File};
 
     #[test]
     fn tonic_service_include_is_feature_gated_by_the_rust_generator() {

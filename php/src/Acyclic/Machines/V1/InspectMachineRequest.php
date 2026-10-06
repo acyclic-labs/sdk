@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies a machine to inspect.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.InspectMachineRequest</code>
  */
 class InspectMachineRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      */
@@ -36,9 +36,9 @@ class InspectMachineRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by InspectMachineRequest.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by InspectMachineRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class InspectMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -69,7 +69,7 @@ class InspectMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -83,7 +83,7 @@ class InspectMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -104,7 +104,7 @@ class InspectMachineRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by InspectMachineRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var

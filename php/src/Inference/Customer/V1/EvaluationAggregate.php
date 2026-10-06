@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records an aggregate metric value for one candidate.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationAggregate</code>
  */
 class EvaluationAggregate extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $candidate_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>string metric_identity = 2;</code>
      */
     protected $metric_identity = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
     protected $aggregation = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      */
@@ -48,13 +48,13 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $candidate_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The candidate digest value carried by EvaluationAggregate.
      *     @type string $metric_identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The metric identity value carried by EvaluationAggregate.
      *     @type int $aggregation
-     *           A field in the Inference customer v1 wire contract.
+     *           The aggregation value carried by EvaluationAggregate.
      *     @type \Inference\Customer\V1\ExactRational $value
-     *           A field in the Inference customer v1 wire contract.
+     *           The value value carried by EvaluationAggregate.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -75,7 +75,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -90,7 +90,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>string metric_identity = 2;</code>
      * @return string
@@ -101,7 +101,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>string metric_identity = 2;</code>
      * @param string $var
@@ -116,7 +116,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\EvaluationAggregation}
@@ -127,7 +127,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\EvaluationAggregation}
@@ -142,7 +142,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\ExactRational|null
@@ -163,7 +163,7 @@ class EvaluationAggregate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationAggregate.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\ExactRational $var

@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports a reachable endpoint associated with a machine.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.Endpoint</code>
  */
 class Endpoint extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The name value carried by Endpoint.
      *
      * Generated from protobuf field <code>string name = 1;</code>
      */
     protected $name = '';
     /**
-     * A field in the Machines v1 wire contract.
+     * The uri value carried by Endpoint.
      *
      * Generated from protobuf field <code>string uri = 2;</code>
      */
@@ -36,9 +36,9 @@ class Endpoint extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $name
-     *           A field in the Machines v1 wire contract.
+     *           The name value carried by Endpoint.
      *     @type string $uri
-     *           A field in the Machines v1 wire contract.
+     *           The uri value carried by Endpoint.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class Endpoint extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The name value carried by Endpoint.
      *
      * Generated from protobuf field <code>string name = 1;</code>
      * @return string
@@ -59,7 +59,7 @@ class Endpoint extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The name value carried by Endpoint.
      *
      * Generated from protobuf field <code>string name = 1;</code>
      * @param string $var
@@ -74,7 +74,7 @@ class Endpoint extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The uri value carried by Endpoint.
      *
      * Generated from protobuf field <code>string uri = 2;</code>
      * @return string
@@ -85,7 +85,7 @@ class Endpoint extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The uri value carried by Endpoint.
      *
      * Generated from protobuf field <code>string uri = 2;</code>
      * @param string $var

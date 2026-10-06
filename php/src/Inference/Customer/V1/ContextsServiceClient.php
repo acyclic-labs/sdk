@@ -4,7 +4,7 @@
 namespace Inference\Customer\V1;
 
 /**
- * Remote operations for the Inference customer v1 contract.
+ * Creates, inspects, and mutates immutable context revisions.
  */
 class ContextsServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class ContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * ContextsService.Create operation.
+     * Creates an immutable context revision.
      * @param \Inference\Customer\V1\CreateContextRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -33,7 +33,7 @@ class ContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * ContextsService.Inspect operation.
+     * Reads an immutable context revision by digest.
      * @param \Inference\Customer\V1\InspectContextRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -48,7 +48,7 @@ class ContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * ContextsService.Mutate operation.
+     * Admits one immutable context mutation or release.
      * @param \Inference\Customer\V1\MutateContextRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

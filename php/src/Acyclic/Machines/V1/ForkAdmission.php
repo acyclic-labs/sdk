@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Confirms checkpoint fork children and the admitted operation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ForkAdmission</code>
  */
 class ForkAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      */
     protected $checkpoint = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      */
     private $children;
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      */
@@ -48,13 +48,13 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by ForkAdmission.
      *     @type \Acyclic\Machines\V1\MachineId[] $children
-     *           A field in the Machines v1 wire contract.
+     *           The children value carried by ForkAdmission.
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by ForkAdmission.
      *     @type \Acyclic\Machines\V1\MachineContract $contract
-     *           A field in the Machines v1 wire contract.
+     *           The contract value carried by ForkAdmission.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -85,7 +85,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -99,7 +99,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\MachineId>
@@ -110,7 +110,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The children value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.MachineId children = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId[] $var
@@ -125,7 +125,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -146,7 +146,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 3;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -160,7 +160,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @return \Acyclic\Machines\V1\MachineContract|null
@@ -181,7 +181,7 @@ class ForkAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by ForkAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 4;</code>
      * @param \Acyclic\Machines\V1\MachineContract $var

@@ -4,7 +4,7 @@
 namespace Inference\Customer\V1;
 
 /**
- * Remote operations for the Inference customer v1 contract.
+ * Admits and manages explicit warm-retention commitments.
  */
 class WarmContextsServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class WarmContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * WarmContextsService.Retain operation.
+     * Admits an explicit warm-retention commitment.
      * @param \Inference\Customer\V1\RetainWarmRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -33,7 +33,7 @@ class WarmContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * WarmContextsService.Inspect operation.
+     * Reads the current warm-retention commitment.
      * @param \Inference\Customer\V1\InspectWarmRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -48,7 +48,7 @@ class WarmContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * WarmContextsService.Renew operation.
+     * Extends a warm-retention commitment.
      * @param \Inference\Customer\V1\RenewWarmRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -63,7 +63,7 @@ class WarmContextsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * WarmContextsService.Release operation.
+     * Releases a warm-retention commitment.
      * @param \Inference\Customer\V1\ReleaseWarmRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

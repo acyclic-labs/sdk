@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports bounded logical usage counters for a run.
  *
  * Generated from protobuf message <code>inference.customer.v1.LogicalUsage</code>
  */
 class LogicalUsage extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The new prefill value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 new_prefill = 1;</code>
      */
     protected $new_prefill = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The generated output value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 generated_output = 2;</code>
      */
     protected $generated_output = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The effective context reads value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 effective_context_reads = 3;</code>
      */
     protected $effective_context_reads = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained byte millis value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 retained_byte_millis = 4;</code>
      */
@@ -48,13 +48,13 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type int|string $new_prefill
-     *           A field in the Inference customer v1 wire contract.
+     *           The new prefill value carried by LogicalUsage.
      *     @type int|string $generated_output
-     *           A field in the Inference customer v1 wire contract.
+     *           The generated output value carried by LogicalUsage.
      *     @type int|string $effective_context_reads
-     *           A field in the Inference customer v1 wire contract.
+     *           The effective context reads value carried by LogicalUsage.
      *     @type int|string $retained_byte_millis
-     *           A field in the Inference customer v1 wire contract.
+     *           The retained byte millis value carried by LogicalUsage.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The new prefill value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 new_prefill = 1;</code>
      * @return int|string
@@ -75,7 +75,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The new prefill value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 new_prefill = 1;</code>
      * @param int|string $var
@@ -90,7 +90,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The generated output value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 generated_output = 2;</code>
      * @return int|string
@@ -101,7 +101,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The generated output value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 generated_output = 2;</code>
      * @param int|string $var
@@ -116,7 +116,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The effective context reads value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 effective_context_reads = 3;</code>
      * @return int|string
@@ -127,7 +127,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The effective context reads value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 effective_context_reads = 3;</code>
      * @param int|string $var
@@ -142,7 +142,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained byte millis value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 retained_byte_millis = 4;</code>
      * @return int|string
@@ -153,7 +153,7 @@ class LogicalUsage extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained byte millis value carried by LogicalUsage.
      *
      * Generated from protobuf field <code>uint64 retained_byte_millis = 4;</code>
      * @param int|string $var

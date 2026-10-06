@@ -1,0 +1,212 @@
+name: JVM typed SDK qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jvm-typed-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+
+jobs:
+  rust-generation-bundle:
+    name: Rust generation bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact release or dispatch source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Generate and drift-check the Rust-owned bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/rust-jvm-bundle"
+          cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
+            generate --source-root "$GITHUB_WORKSPACE" --output "$bundle"
+          cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
+            drift --source-root "$GITHUB_WORKSPACE" --output "$bundle"
+          test -s "$bundle/sdk-generation-manifest.json"
+          test -s "$bundle/source-authority.json"
+          test -s "$bundle/wire/rust-authority.json"
+          test -s "$bundle/language-producers/java/package/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"
+          test -s "$bundle/language-producers/java/package/.m2/dev/acyclic/acyclic-sdk-jvm-transport/0.2.0-SNAPSHOT/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"
+          mapfile -t manifests < <(find "$bundle" -type f -name 'rust-typed-request-manifest*.json' -print)
+          test "${#manifests[@]}" -eq 1
+          python3 - "$bundle" "$(git rev-parse HEAD)" "${manifests[0]}" <<'PY'
+          import json, pathlib, sys
+          bundle = pathlib.Path(sys.argv[1])
+          revision = sys.argv[2]
+          typed = pathlib.Path(sys.argv[3])
+          generation = json.loads((bundle / "sdk-generation-manifest.json").read_text(encoding="utf-8"))
+          source = generation.get("source", {}).get("revision")
+          if source != revision:
+              raise SystemExit(f"generation source revision {source!r} differs from checkout {revision!r}")
+          authority = json.loads((bundle / "source-authority.json").read_text(encoding="utf-8"))
+          if authority.get("source_revision") != revision:
+              raise SystemExit("source authority is not bound to this checkout")
+          manifest = json.loads(typed.read_text(encoding="utf-8"))
+          if manifest.get("authority", {}).get("source_git_sha") != revision:
+              raise SystemExit("typed request manifest is stale or not Rust-bound")
+          if manifest.get("method_count") != 106 or len(manifest.get("methods", [])) != 106:
+              raise SystemExit("typed request manifest must contain all 106 Rust methods")
+          print(f"Rust bundle is bound to {revision} with 106 typed methods")
+          PY
+
+      - name: Upload Rust generation bundle
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: rust-jvm-generation-bundle
+          path: ${{ runner.temp }}/rust-jvm-bundle
+          if-no-files-found: error
+          retention-days: 14
+
+  kotlin:
+    name: Kotlin generated-stub consumer
+    needs: rust-generation-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact release or dispatch source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Download Rust generation bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rust-jvm-generation-bundle
+          path: ${{ runner.temp }}/rust-jvm-bundle
+
+      - name: Run installed Kotlin consumer against the local Rust fixture
+        shell: bash
+        env:
+          FIXTURE_ENDPOINT: 127.0.0.1:18081
+          BUNDLE_ROOT: ${{ runner.temp }}/rust-jvm-bundle
+          OUTPUT_ROOT: ${{ runner.temp }}/jvm-kotlin
+        run: |
+          set -euo pipefail
+          command -v java >/dev/null
+          command -v mvn >/dev/null
+          java -version
+          mvn -version
+          mapfile -t manifests < <(find "$BUNDLE_ROOT" -type f -name 'rust-typed-request-manifest*.json' -print)
+          test "${#manifests[@]}" -eq 1
+          manifest="${manifests[0]}"
+          test -s "$BUNDLE_ROOT/language-producers/java/package/.m2/dev/acyclic/acyclic-sdk-jvm-transport/0.2.0-SNAPSHOT/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"
+          expected="$(git rev-parse HEAD)"
+          actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["authority"]["source_git_sha"])' "$manifest")"
+          test "$actual" = "$expected"
+          fixture_log="$RUNNER_TEMP/jvm-kotlin-fixture.log"
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- \
+            --port 0 --grpc-port 18081 --max-requests 256 >"$fixture_log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1
+          export ACYCLIC_FIXTURE_ENDPOINT="$FIXTURE_ENDPOINT"
+          export ACYCLIC_TYPED_REQUEST_MANIFEST="$manifest"
+          export ACYCLIC_SOURCE_GIT_REVISION="$expected"
+          pwsh -NoLogo -NoProfile -File "$GITHUB_WORKSPACE/research/acceptance/run-jvm-kotlin-typed.ps1" \
+            -SdkRoot "$GITHUB_WORKSPACE" \
+            -PackageRoot "$BUNDLE_ROOT/language-producers/java/package" \
+            -WireRoot "$BUNDLE_ROOT/wire" \
+            -Endpoint "$ACYCLIC_FIXTURE_ENDPOINT" \
+            -Manifest "$ACYCLIC_TYPED_REQUEST_MANIFEST" \
+            -OutputRoot "$OUTPUT_ROOT"
+
+      - name: Upload Kotlin evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: jvm-kotlin-typed-consumer
+          path: ${{ runner.temp }}/jvm-kotlin
+          if-no-files-found: error
+          retention-days: 14
+
+  scala:
+    name: ScalaPB generated-stub consumer
+    needs: rust-generation-bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact release or dispatch source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Download Rust generation bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rust-jvm-generation-bundle
+          path: ${{ runner.temp }}/rust-jvm-bundle
+
+      - name: Run installed ScalaPB consumer against the local Rust fixture
+        shell: bash
+        env:
+          FIXTURE_ENDPOINT: 127.0.0.1:18081
+          BUNDLE_ROOT: ${{ runner.temp }}/rust-jvm-bundle
+          OUTPUT_ROOT: ${{ runner.temp }}/jvm-scala
+        run: |
+          set -euo pipefail
+          command -v java >/dev/null
+          command -v sbt >/dev/null
+          java -version
+          sbt --version
+          mapfile -t manifests < <(find "$BUNDLE_ROOT" -type f -name 'rust-typed-request-manifest*.json' -print)
+          test "${#manifests[@]}" -eq 1
+          manifest="${manifests[0]}"
+          expected="$(git rev-parse HEAD)"
+          actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1],encoding="utf-8"))["authority"]["source_git_sha"])' "$manifest")"
+          test "$actual" = "$expected"
+          fixture_log="$RUNNER_TEMP/jvm-scala-fixture.log"
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- \
+            --port 0 --grpc-port 18081 --max-requests 256 >"$fixture_log" 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1
+          export ACYCLIC_FIXTURE_ENDPOINT="$FIXTURE_ENDPOINT"
+          export ACYCLIC_TYPED_REQUEST_MANIFEST="$manifest"
+          export ACYCLIC_SOURCE_GIT_REVISION="$expected"
+          pwsh -NoLogo -NoProfile -File "$GITHUB_WORKSPACE/research/acceptance/run-jvm-scala-typed.ps1" \
+            -SdkRoot "$GITHUB_WORKSPACE" \
+            -PackageRoot "$BUNDLE_ROOT/language-producers/java/package" \
+            -WireRoot "$BUNDLE_ROOT/wire" \
+            -Endpoint "$ACYCLIC_FIXTURE_ENDPOINT" \
+            -Manifest "$ACYCLIC_TYPED_REQUEST_MANIFEST" \
+            -OutputRoot "$OUTPUT_ROOT"
+
+      - name: Upload Scala evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: jvm-scala-typed-consumer
+          path: ${{ runner.temp }}/jvm-scala
+          if-no-files-found: error
+          retention-days: 14
+
+

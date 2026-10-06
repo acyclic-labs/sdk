@@ -10,50 +10,50 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports machine lifecycle state, contract, endpoints, and timestamps.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachineState</code>
  */
 class MachineState extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus status = 2;</code>
      */
     protected $status = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      */
     protected $contract = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The endpoints value carried by MachineState.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Endpoint endpoints = 4;</code>
      */
     private $endpoints;
     /**
-     * A field in the Machines v1 wire contract.
+     * The last checkpoint value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId last_checkpoint = 5;</code>
      */
     protected $last_checkpoint = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 6;</code>
      */
     protected $created_at_unix_ms = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The changed at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 changed_at_unix_ms = 7;</code>
      */
@@ -66,19 +66,19 @@ class MachineState extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by MachineState.
      *     @type int $status
-     *           A field in the Machines v1 wire contract.
+     *           The status value carried by MachineState.
      *     @type \Acyclic\Machines\V1\MachineContract $contract
-     *           A field in the Machines v1 wire contract.
+     *           The contract value carried by MachineState.
      *     @type \Acyclic\Machines\V1\Endpoint[] $endpoints
-     *           A field in the Machines v1 wire contract.
+     *           The endpoints value carried by MachineState.
      *     @type \Acyclic\Machines\V1\CheckpointId $last_checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The last checkpoint value carried by MachineState.
      *     @type int|string $created_at_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The created at unix ms value carried by MachineState.
      *     @type int|string $changed_at_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The changed at unix ms value carried by MachineState.
      * }
      */
     public function __construct($data = null)
@@ -88,7 +88,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -109,7 +109,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -123,7 +123,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus status = 2;</code>
      * @return int one of the values in {@see \Acyclic\Machines\V1\MachineStatus}
@@ -134,7 +134,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The status value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineStatus status = 2;</code>
      * @param int $var one of the values in {@see \Acyclic\Machines\V1\MachineStatus}
@@ -149,7 +149,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      * @return \Acyclic\Machines\V1\MachineContract|null
@@ -170,7 +170,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      * @param \Acyclic\Machines\V1\MachineContract $var
@@ -184,7 +184,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The endpoints value carried by MachineState.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Endpoint endpoints = 4;</code>
      * @return RepeatedField<\Acyclic\Machines\V1\Endpoint>
@@ -195,7 +195,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The endpoints value carried by MachineState.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Endpoint endpoints = 4;</code>
      * @param \Acyclic\Machines\V1\Endpoint[] $var
@@ -210,7 +210,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The last checkpoint value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId last_checkpoint = 5;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -231,7 +231,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The last checkpoint value carried by MachineState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId last_checkpoint = 5;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -245,7 +245,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 6;</code>
      * @return int|string
@@ -256,7 +256,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 6;</code>
      * @param int|string $var
@@ -271,7 +271,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The changed at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 changed_at_unix_ms = 7;</code>
      * @return int|string
@@ -282,7 +282,7 @@ class MachineState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The changed at unix ms value carried by MachineState.
      *
      * Generated from protobuf field <code>uint64 changed_at_unix_ms = 7;</code>
      * @param int|string $var

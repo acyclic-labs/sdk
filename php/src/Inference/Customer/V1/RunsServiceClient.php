@@ -4,7 +4,7 @@
 namespace Inference\Customer\V1;
 
 /**
- * Remote operations for the Inference customer v1 contract.
+ * Admits, inspects, watches, and cancels recoverable generation runs.
  */
 class RunsServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class RunsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * RunsService.Generate operation.
+     * Admits a recoverable generation run.
      * @param \Inference\Customer\V1\GenerateRunRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -33,7 +33,7 @@ class RunsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * RunsService.Inspect operation.
+     * Reads the current generation run view.
      * @param \Inference\Customer\V1\InspectRunRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -48,7 +48,7 @@ class RunsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * RunsService.Watch operation.
+     * Streams ordered run events from a sequence cursor.
      * @param \Inference\Customer\V1\WatchRunRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -63,7 +63,7 @@ class RunsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * RunsService.Cancel operation.
+     * Requests cancellation of a generation run.
      * @param \Inference\Customer\V1\InspectRunRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

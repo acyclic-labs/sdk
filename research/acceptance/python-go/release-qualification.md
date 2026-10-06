@@ -1,7 +1,7 @@
 # Python and Go release qualification
 
 `release-python-consumer.py` and `release-go-consumer.go` derive their method
-sets from `rust-authority.json`. They call all 106 Rust-authority RPCs against
+sets from `rust-authority.json`. They call every Rust-authority RPC and every
 the Rust fixture and capture deterministic protobuf bytes for every request
 frame and response frame. Client-streaming calls capture every sent frame;
 server-streaming calls preserve response order; empty streams retain their
@@ -10,7 +10,7 @@ terminal gRPC status.
 `validate-runtime-frames.py` is deliberately stricter than a reachability
 probe. It requires an installed consumer to report a passed remote call,
 source identity, contiguous raw frames with matching SHA-256 values, and an
-exact one-to-one match with the 106-method Rust inventory. The shared Rust
+exact one-to-one match with the Rust inventory. The shared Rust
 semantic verifier remains the semantic gate; language adapters normalize their
 receipts into its canonical observation shape.
 

@@ -1,6 +1,6 @@
 # Acyclic Ruby transport package
 
-This directory is the transport-only Ruby prototype for the Rust-owned Actors
+This directory is the transport-only Ruby package for the Rust-owned Actors
 v1 and Stream v2 contracts. The package deliberately contains no handwritten
 API model or service behavior. `generate.rb` reads the canonical protobuf
 sources from the repository and invokes the pinned upstream gRPC Ruby
@@ -26,11 +26,12 @@ regenerate from a clean checkout and fail on a dirty generated tree.
 Ruby's gRPC implementation supports unary, server-streaming, client-streaming,
 and bidirectional RPCs. Actors is unary; Stream's `Read`, `Follow`, and
 `Children` are server streams. The package also exposes
-`Acyclic::Remote::Client`, a thin policy-aware invoker facade. It defaults
-native callers to Rust-qualified gRPC and accepts an explicit compatible
-transport override. The caller injects the wire invoker, so this facade does
-not claim a handwritten HTTP encoder or retry policy. Bearer credentials follow
-Rust's `bearer-no-crlf` rule.
+`Acyclic::Remote::Client`, a thin policy-aware invoker facade. Its automatic
+runtime resolver selects the native policy for Ruby and the browser policy for
+`ruby.wasm`; callers may still provide an explicit compatible transport
+override. The caller injects the wire invoker, so this facade does not claim a
+handwritten HTTP encoder or retry policy. Bearer credentials follow Rust's
+`bearer-no-crlf` rule.
 
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
@@ -40,7 +41,4 @@ the Rust-emitted `lib/acyclic_sdk/generated_remote_policy.rb` snapshot. Refresh
 that snapshot with the `sdk-contract-wire generate-products` command whenever
 the Rust transport policy changes.
 
-Ruby and the gem toolchain were unavailable on the Windows coordinator during
-the prototype pass. That is an environment limitation, not a language
-feasibility result. The CI job must run the generation and install checks on a
-Ruby 3.2+ runner.
+Run the generation and install checks on a Ruby 3.2+ runner.

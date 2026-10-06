@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Confirms a machine or checkpoint mutation and resulting identities.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MutationAdmission</code>
  */
 class MutationAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      */
@@ -42,11 +42,11 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by MutationAdmission.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by MutationAdmission.
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by MutationAdmission.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -77,7 +77,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -91,7 +91,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -112,7 +112,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -126,7 +126,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -147,7 +147,7 @@ class MutationAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by MutationAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var

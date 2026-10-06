@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports recovered mutation outcomes associated with an operation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.RecoveredAdmission</code>
  */
 class RecoveredAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      */
@@ -31,25 +31,25 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\MachineAdmission $create
-     *           A field in the Machines v1 wire contract.
+     *           The create value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\CheckpointAdmission $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\ForkAdmission $fork
-     *           A field in the Machines v1 wire contract.
+     *           The fork value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\MutationAdmission $suspend
-     *           A field in the Machines v1 wire contract.
+     *           The suspend value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\MutationAdmission $wake
-     *           A field in the Machines v1 wire contract.
+     *           The wake value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\MutationAdmission $destroy_machine
-     *           A field in the Machines v1 wire contract.
+     *           The destroy machine value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\PolicyAdmission $set_suspension_policy
-     *           A field in the Machines v1 wire contract.
+     *           The set suspension policy value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\MutationAdmission $destroy_checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The destroy checkpoint value carried by RecoveredAdmission.
      *     @type \Acyclic\Machines\V1\ForkMachineAdmission $fork_machine
-     *           A field in the Machines v1 wire contract.
+     *           The fork machine value carried by RecoveredAdmission.
      * }
      */
     public function __construct($data = null)
@@ -59,7 +59,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -80,7 +80,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 1;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -94,7 +94,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The create value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineAdmission create = 2;</code>
      * @return \Acyclic\Machines\V1\MachineAdmission|null
@@ -110,7 +110,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The create value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineAdmission create = 2;</code>
      * @param \Acyclic\Machines\V1\MachineAdmission $var
@@ -124,7 +124,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointAdmission checkpoint = 3;</code>
      * @return \Acyclic\Machines\V1\CheckpointAdmission|null
@@ -140,7 +140,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointAdmission checkpoint = 3;</code>
      * @param \Acyclic\Machines\V1\CheckpointAdmission $var
@@ -154,7 +154,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fork value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkAdmission fork = 4;</code>
      * @return \Acyclic\Machines\V1\ForkAdmission|null
@@ -170,7 +170,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fork value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkAdmission fork = 4;</code>
      * @param \Acyclic\Machines\V1\ForkAdmission $var
@@ -184,7 +184,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspend value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission suspend = 5;</code>
      * @return \Acyclic\Machines\V1\MutationAdmission|null
@@ -200,7 +200,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspend value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission suspend = 5;</code>
      * @param \Acyclic\Machines\V1\MutationAdmission $var
@@ -214,7 +214,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The wake value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission wake = 6;</code>
      * @return \Acyclic\Machines\V1\MutationAdmission|null
@@ -230,7 +230,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The wake value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission wake = 6;</code>
      * @param \Acyclic\Machines\V1\MutationAdmission $var
@@ -244,7 +244,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The destroy machine value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission destroy_machine = 7;</code>
      * @return \Acyclic\Machines\V1\MutationAdmission|null
@@ -260,7 +260,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The destroy machine value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission destroy_machine = 7;</code>
      * @param \Acyclic\Machines\V1\MutationAdmission $var
@@ -274,7 +274,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The set suspension policy value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PolicyAdmission set_suspension_policy = 8;</code>
      * @return \Acyclic\Machines\V1\PolicyAdmission|null
@@ -290,7 +290,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The set suspension policy value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PolicyAdmission set_suspension_policy = 8;</code>
      * @param \Acyclic\Machines\V1\PolicyAdmission $var
@@ -304,7 +304,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The destroy checkpoint value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission destroy_checkpoint = 9;</code>
      * @return \Acyclic\Machines\V1\MutationAdmission|null
@@ -320,7 +320,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The destroy checkpoint value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MutationAdmission destroy_checkpoint = 9;</code>
      * @param \Acyclic\Machines\V1\MutationAdmission $var
@@ -334,7 +334,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fork machine value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkMachineAdmission fork_machine = 10;</code>
      * @return \Acyclic\Machines\V1\ForkMachineAdmission|null
@@ -350,7 +350,7 @@ class RecoveredAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The fork machine value carried by RecoveredAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkMachineAdmission fork_machine = 10;</code>
      * @param \Acyclic\Machines\V1\ForkMachineAdmission $var

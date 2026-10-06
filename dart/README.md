@@ -1,6 +1,6 @@
 # Acyclic Dart transport package
 
-This is the transport-only Dart prototype for the Rust-owned Actors v1 and
+This is the transport-only Dart package for the Rust-owned Actors v1 and
 Stream v2 contracts. It contains no handwritten shared models or service
 behavior. `tool/generate.dart` invokes the pinned official Dart protobuf
 plugin against the canonical protobuf files.
@@ -27,16 +27,15 @@ methods, which covers Actors and Stream's Read/Follow/Children RPCs.
 Generated provenance contains SHA-256 content hashes for the lock file, each
 schema input, and the optional Rust authority manifest.
 
-The repository includes no SDK binaries. A clean qualification run used the
-official Dart 3.8.3 stable Windows archive in an ignored local toolchain and
-passed generation, analysis, and all transport tests. CI must repeat those
-checks with a fresh supported SDK rather than relying on that local cache.
+The qualification configuration uses the official Dart 3.8.3 stable Windows
+archive and records the toolchain inputs with the generated provenance. Run
+generation, analysis, and transport tests on CI with the pinned toolchain.
 
-The package also exposes a thin `RemoteClient` facade. Native callers default
-to Rust-qualified gRPC, and callers may request a compatible transport override
-before invocation. The wire adapter is injected, so this facade does not add a
-handwritten HTTP encoder or retry/recovery policy. Bearer credentials follow
-Rust's `bearer-no-crlf` rule.
+The package also exposes a thin `RemoteClient` facade. Its automatic resolver
+selects the native policy on Dart VM and the browser policy on Dart web;
+callers may request a compatible transport override before invocation. The wire
+adapter is injected, so this facade does not add a handwritten HTTP encoder or
+retry/recovery policy. Bearer credentials follow Rust's `bearer-no-crlf` rule.
 
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.

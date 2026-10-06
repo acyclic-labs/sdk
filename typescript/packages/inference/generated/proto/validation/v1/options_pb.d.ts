@@ -16,8 +16,6 @@ export declare const file_validation_v1_options: GenFile;
 export declare const nonzero_fixed_bytes: GenExtension<FieldOptions, number>;
 
 /**
- * Presence required for a message that carries a replay or binding invariant.
- *
  * @generated from extension: optional bool required_message = 51002;
  */
 export declare const required_message: GenExtension<FieldOptions, boolean>;
@@ -38,8 +36,6 @@ export declare const min_items: GenExtension<FieldOptions, number>;
 export declare const max_items: GenExtension<FieldOptions, number>;
 
 /**
- * Nonempty UTF-8 string or bytes value, bounded by its encoded byte length.
- *
  * @generated from extension: optional uint32 nonempty_max_bytes = 51007;
  */
 export declare const nonempty_max_bytes: GenExtension<FieldOptions, number>;

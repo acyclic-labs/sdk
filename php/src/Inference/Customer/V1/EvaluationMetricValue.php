@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Associates a metric identity with an exact value.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationMetricValue</code>
  */
 class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>string metric_identity = 1;</code>
      */
     protected $metric_identity = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      */
@@ -36,9 +36,9 @@ class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $metric_identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The metric identity value carried by EvaluationMetricValue.
      *     @type \Inference\Customer\V1\ExactRational $value
-     *           A field in the Inference customer v1 wire contract.
+     *           The value value carried by EvaluationMetricValue.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>string metric_identity = 1;</code>
      * @return string
@@ -59,7 +59,7 @@ class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metric identity value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>string metric_identity = 1;</code>
      * @param string $var
@@ -74,7 +74,7 @@ class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\ExactRational|null
@@ -95,7 +95,7 @@ class EvaluationMetricValue extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The value value carried by EvaluationMetricValue.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ExactRational value = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\ExactRational $var

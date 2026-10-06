@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Represents one typed item in an immutable context revision.
  *
  * Generated from protobuf message <code>inference.customer.v1.Item</code>
  */
 class Item extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The id value carried by Item.
      *
      * Generated from protobuf field <code>bytes id = 1;</code>
      */
     protected $id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by Item.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ItemKind kind = 2;</code>
      */
     protected $kind = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Item.
      *
      * Generated from protobuf field <code>bytes payload = 3;</code>
      */
     protected $payload = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The link value carried by Item.
      *
      * Generated from protobuf field <code>bytes link = 4;</code>
      */
     protected $link = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The continuation profile value carried by Item.
      *
      * Generated from protobuf field <code>bytes continuation_profile = 5;</code>
      */
@@ -54,15 +54,15 @@ class Item extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $id
-     *           A field in the Inference customer v1 wire contract.
+     *           The id value carried by Item.
      *     @type int $kind
-     *           A field in the Inference customer v1 wire contract.
+     *           The kind value carried by Item.
      *     @type string $payload
-     *           A field in the Inference customer v1 wire contract.
+     *           The payload value carried by Item.
      *     @type string $link
-     *           A field in the Inference customer v1 wire contract.
+     *           The link value carried by Item.
      *     @type string $continuation_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The continuation profile value carried by Item.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The id value carried by Item.
      *
      * Generated from protobuf field <code>bytes id = 1;</code>
      * @return string
@@ -83,7 +83,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The id value carried by Item.
      *
      * Generated from protobuf field <code>bytes id = 1;</code>
      * @param string $var
@@ -98,7 +98,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by Item.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ItemKind kind = 2;</code>
      * @return int one of the values in {@see \Inference\Customer\V1\ItemKind}
@@ -109,7 +109,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The kind value carried by Item.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ItemKind kind = 2;</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\ItemKind}
@@ -124,7 +124,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Item.
      *
      * Generated from protobuf field <code>bytes payload = 3;</code>
      * @return string
@@ -135,7 +135,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Item.
      *
      * Generated from protobuf field <code>bytes payload = 3;</code>
      * @param string $var
@@ -150,7 +150,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The link value carried by Item.
      *
      * Generated from protobuf field <code>bytes link = 4;</code>
      * @return string
@@ -161,7 +161,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The link value carried by Item.
      *
      * Generated from protobuf field <code>bytes link = 4;</code>
      * @param string $var
@@ -176,7 +176,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The continuation profile value carried by Item.
      *
      * Generated from protobuf field <code>bytes continuation_profile = 5;</code>
      * @return string
@@ -187,7 +187,7 @@ class Item extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The continuation profile value carried by Item.
      *
      * Generated from protobuf field <code>bytes continuation_profile = 5;</code>
      * @param string $var

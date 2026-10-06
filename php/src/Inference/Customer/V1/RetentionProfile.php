@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Describes a bounded duration profile for retained context state.
  *
  * Generated from protobuf message <code>inference.customer.v1.RetentionProfile</code>
  */
 class RetentionProfile extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The minimum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 minimum_duration_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $minimum_duration_ms = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 maximum_duration_ms = 3;</code>
      */
@@ -42,11 +42,11 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The profile value carried by RetentionProfile.
      *     @type int|string $minimum_duration_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The minimum duration ms value carried by RetentionProfile.
      *     @type int|string $maximum_duration_ms
-     *           A field in the Inference customer v1 wire contract.
+     *           The maximum duration ms value carried by RetentionProfile.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -67,7 +67,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The profile value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>bytes profile = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -82,7 +82,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The minimum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 minimum_duration_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -93,7 +93,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The minimum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 minimum_duration_ms = 2 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -108,7 +108,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 maximum_duration_ms = 3;</code>
      * @return int|string
@@ -119,7 +119,7 @@ class RetentionProfile extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum duration ms value carried by RetentionProfile.
      *
      * Generated from protobuf field <code>uint64 maximum_duration_ms = 3;</code>
      * @param int|string $var

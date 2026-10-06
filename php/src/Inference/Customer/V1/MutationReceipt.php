@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Confirms an admitted context revision and its command digest.
  *
  * Generated from protobuf message <code>inference.customer.v1.MutationReceipt</code>
  */
 class MutationReceipt extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $revision = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The command digest value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes command_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $command_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>uint64 sequence = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $sequence = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bool retained = 4;</code>
      */
@@ -48,13 +48,13 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $revision
-     *           A field in the Inference customer v1 wire contract.
+     *           The revision value carried by MutationReceipt.
      *     @type string $command_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The command digest value carried by MutationReceipt.
      *     @type int|string $sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The sequence value carried by MutationReceipt.
      *     @type bool $retained
-     *           A field in the Inference customer v1 wire contract.
+     *           The retained value carried by MutationReceipt.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -75,7 +75,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -90,7 +90,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The command digest value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes command_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -101,7 +101,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The command digest value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bytes command_digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -116,7 +116,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>uint64 sequence = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -127,7 +127,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>uint64 sequence = 3 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -142,7 +142,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bool retained = 4;</code>
      * @return bool
@@ -153,7 +153,7 @@ class MutationReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The retained value carried by MutationReceipt.
      *
      * Generated from protobuf field <code>bool retained = 4;</code>
      * @param bool $var

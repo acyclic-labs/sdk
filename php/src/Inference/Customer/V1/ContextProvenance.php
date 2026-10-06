@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records how a context revision was created or derived.
  *
  * Generated from protobuf message <code>inference.customer.v1.ContextProvenance</code>
  */
@@ -25,17 +25,17 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\PBEmpty $created
-     *           A field in the Inference customer v1 wire contract.
+     *           The created value carried by ContextProvenance.
      *     @type \Inference\Customer\V1\ProvenanceSource $derived
-     *           A field in the Inference customer v1 wire contract.
+     *           The derived value carried by ContextProvenance.
      *     @type \Inference\Customer\V1\ProvenanceSource $forked
-     *           A field in the Inference customer v1 wire contract.
+     *           The forked value carried by ContextProvenance.
      *     @type \Inference\Customer\V1\TransferProvenance $transferred
-     *           A field in the Inference customer v1 wire contract.
+     *           The transferred value carried by ContextProvenance.
      *     @type \Inference\Customer\V1\GenerationProvenance $generated
-     *           A field in the Inference customer v1 wire contract.
+     *           The generated value carried by ContextProvenance.
      *     @type \Inference\Customer\V1\RunInputProvenance $run_input
-     *           A field in the Inference customer v1 wire contract.
+     *           The run input value carried by ContextProvenance.
      * }
      */
     public function __construct($data = null)
@@ -45,7 +45,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The created value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty created = 1;</code>
      * @return \Inference\Customer\V1\PBEmpty|null
@@ -61,7 +61,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The created value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Empty created = 1;</code>
      * @param \Inference\Customer\V1\PBEmpty $var
@@ -75,7 +75,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The derived value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ProvenanceSource derived = 2;</code>
      * @return \Inference\Customer\V1\ProvenanceSource|null
@@ -91,7 +91,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The derived value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ProvenanceSource derived = 2;</code>
      * @param \Inference\Customer\V1\ProvenanceSource $var
@@ -105,7 +105,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The forked value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ProvenanceSource forked = 3;</code>
      * @return \Inference\Customer\V1\ProvenanceSource|null
@@ -121,7 +121,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The forked value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ProvenanceSource forked = 3;</code>
      * @param \Inference\Customer\V1\ProvenanceSource $var
@@ -135,7 +135,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The transferred value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.TransferProvenance transferred = 4;</code>
      * @return \Inference\Customer\V1\TransferProvenance|null
@@ -151,7 +151,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The transferred value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.TransferProvenance transferred = 4;</code>
      * @param \Inference\Customer\V1\TransferProvenance $var
@@ -165,7 +165,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The generated value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.GenerationProvenance generated = 5;</code>
      * @return \Inference\Customer\V1\GenerationProvenance|null
@@ -181,7 +181,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The generated value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.GenerationProvenance generated = 5;</code>
      * @param \Inference\Customer\V1\GenerationProvenance $var
@@ -195,7 +195,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run input value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunInputProvenance run_input = 6;</code>
      * @return \Inference\Customer\V1\RunInputProvenance|null
@@ -211,7 +211,7 @@ class ContextProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run input value carried by ContextProvenance.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RunInputProvenance run_input = 6;</code>
      * @param \Inference\Customer\V1\RunInputProvenance $var

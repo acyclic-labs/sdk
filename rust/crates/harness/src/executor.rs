@@ -1,5 +1,6 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
+use crate::BoxFuture;
 use crate::{
     Error, InteractionId, OperationId, Result,
     context::{ContextInput, ContextPipeline},
@@ -16,7 +17,7 @@ use crate::{
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
-use futures::{StreamExt as _, future::BoxFuture};
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
@@ -263,7 +264,7 @@ pub struct TurnOutput {
 }
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
-pub trait Executor: Send + Sync {
+pub trait Executor: crate::runtime::HostThreadSafety {
     /// Executes or resumes one turn using only explicit durable host services.
     fn execute<'a>(
         &'a self,

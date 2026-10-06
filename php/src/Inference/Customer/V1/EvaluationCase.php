@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Defines one evaluation input case and its optional artifact reference.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationCase</code>
  */
 class EvaluationCase extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes case_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $case_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes input = 2;</code>
      */
     protected $input = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input artifact digest value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>optional bytes input_artifact_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -42,11 +42,11 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $case_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The case id value carried by EvaluationCase.
      *     @type string $input
-     *           A field in the Inference customer v1 wire contract.
+     *           The input value carried by EvaluationCase.
      *     @type string $input_artifact_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The input artifact digest value carried by EvaluationCase.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes case_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -67,7 +67,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes case_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -82,7 +82,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes input = 2;</code>
      * @return string
@@ -93,7 +93,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>bytes input = 2;</code>
      * @param string $var
@@ -108,7 +108,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input artifact digest value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>optional bytes input_artifact_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -129,7 +129,7 @@ class EvaluationCase extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input artifact digest value carried by EvaluationCase.
      *
      * Generated from protobuf field <code>optional bytes input_artifact_digest = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

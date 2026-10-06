@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports which machine lifecycle outcomes were admitted.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MutationOutcome</code>
  */
@@ -25,23 +25,23 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineState $created
-     *           A field in the Machines v1 wire contract.
+     *           The created value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\CheckpointState $checkpointed
-     *           A field in the Machines v1 wire contract.
+     *           The checkpointed value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\ForkedMachines $forked
-     *           A field in the Machines v1 wire contract.
+     *           The forked value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\MachineId $suspended
-     *           A field in the Machines v1 wire contract.
+     *           The suspended value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\MachineId $woken
-     *           A field in the Machines v1 wire contract.
+     *           The woken value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\PolicySet $suspension_policy_set
-     *           A field in the Machines v1 wire contract.
+     *           The suspension policy set value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\MachineId $machine_destroyed
-     *           A field in the Machines v1 wire contract.
+     *           The machine destroyed value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint_destroyed
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint destroyed value carried by MutationOutcome.
      *     @type \Acyclic\Machines\V1\ForkedLiveMachines $machine_forked
-     *           A field in the Machines v1 wire contract.
+     *           The machine forked value carried by MutationOutcome.
      * }
      */
     public function __construct($data = null)
@@ -51,7 +51,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineState created = 1;</code>
      * @return \Acyclic\Machines\V1\MachineState|null
@@ -67,7 +67,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineState created = 1;</code>
      * @param \Acyclic\Machines\V1\MachineState $var
@@ -81,7 +81,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpointed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointState checkpointed = 2;</code>
      * @return \Acyclic\Machines\V1\CheckpointState|null
@@ -97,7 +97,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpointed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointState checkpointed = 2;</code>
      * @param \Acyclic\Machines\V1\CheckpointState $var
@@ -111,7 +111,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The forked value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkedMachines forked = 3;</code>
      * @return \Acyclic\Machines\V1\ForkedMachines|null
@@ -127,7 +127,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The forked value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkedMachines forked = 3;</code>
      * @param \Acyclic\Machines\V1\ForkedMachines $var
@@ -141,7 +141,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspended value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId suspended = 4;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -157,7 +157,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspended value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId suspended = 4;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -171,7 +171,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The woken value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId woken = 5;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -187,7 +187,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The woken value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId woken = 5;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -201,7 +201,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspension policy set value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PolicySet suspension_policy_set = 6;</code>
      * @return \Acyclic\Machines\V1\PolicySet|null
@@ -217,7 +217,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspension policy set value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.PolicySet suspension_policy_set = 6;</code>
      * @param \Acyclic\Machines\V1\PolicySet $var
@@ -231,7 +231,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine destroyed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine_destroyed = 7;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -247,7 +247,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine destroyed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine_destroyed = 7;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -261,7 +261,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint destroyed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint_destroyed = 8;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -277,7 +277,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint destroyed value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint_destroyed = 8;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -291,7 +291,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine forked value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkedLiveMachines machine_forked = 9;</code>
      * @return \Acyclic\Machines\V1\ForkedLiveMachines|null
@@ -307,7 +307,7 @@ class MutationOutcome extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine forked value carried by MutationOutcome.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ForkedLiveMachines machine_forked = 9;</code>
      * @param \Acyclic\Machines\V1\ForkedLiveMachines $var

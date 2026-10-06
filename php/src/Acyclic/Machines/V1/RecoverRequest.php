@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests recovery of an indeterminate mutation operation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.RecoverRequest</code>
  */
 class RecoverRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
@@ -36,9 +36,9 @@ class RecoverRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by RecoverRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by RecoverRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class RecoverRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -69,7 +69,7 @@ class RecoverRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -83,7 +83,7 @@ class RecoverRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -104,7 +104,7 @@ class RecoverRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by RecoverRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var

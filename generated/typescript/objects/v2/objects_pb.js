@@ -314,4 +314,3 @@ export const ObjectsService = /*@__PURE__*/
  */
 export const MultipartService = /*@__PURE__*/
   serviceDesc(file_objects_v2_objects, 2);
-

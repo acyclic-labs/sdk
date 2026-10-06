@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies a checkpoint for a mutation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.CheckpointMutationRequest</code>
  */
 class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
     protected $idempotency_key = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      */
@@ -42,11 +42,11 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by CheckpointMutationRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by CheckpointMutationRequest.
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by CheckpointMutationRequest.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -77,7 +77,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -91,7 +91,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -112,7 +112,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var
@@ -126,7 +126,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -147,7 +147,7 @@ class CheckpointMutationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointMutationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 3;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var

@@ -10,11 +10,15 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
+ * Groups the named, versioned capabilities exchanged during protocol negotiation.
+ *
  * Generated from protobuf message <code>acyclic.protocol.v1.CapabilitySet</code>
  */
 class CapabilitySet extends \Google\Protobuf\Internal\Message
 {
     /**
+     * The capabilities in this set, each identified by its name and version.
+     *
      * Generated from protobuf field <code>repeated .acyclic.protocol.v1.Capability capabilities = 1;</code>
      */
     private $capabilities;
@@ -26,6 +30,7 @@ class CapabilitySet extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Protocol\V1\Capability[] $capabilities
+     *           The capabilities in this set, each identified by its name and version.
      * }
      */
     public function __construct($data = null)
@@ -35,6 +40,8 @@ class CapabilitySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities in this set, each identified by its name and version.
+     *
      * Generated from protobuf field <code>repeated .acyclic.protocol.v1.Capability capabilities = 1;</code>
      * @return RepeatedField<\Acyclic\Protocol\V1\Capability>
      */
@@ -44,6 +51,8 @@ class CapabilitySet extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities in this set, each identified by its name and version.
+     *
      * Generated from protobuf field <code>repeated .acyclic.protocol.v1.Capability capabilities = 1;</code>
      * @param \Acyclic\Protocol\V1\Capability[] $var
      * @return $this

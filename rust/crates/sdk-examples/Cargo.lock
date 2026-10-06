@@ -219,6 +219,7 @@ dependencies = [
  "bytes",
  "futures",
  "hex",
+ "http",
  "prost",
  "prost-reflect",
  "rcgen",

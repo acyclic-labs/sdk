@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports metered usage and the receipt revision for a run.
  *
  * Generated from protobuf message <code>inference.customer.v1.UsageReceipt</code>
  */
 class UsageReceipt extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt id value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $receipt_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes model_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $model_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The meter revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes meter_revision = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $meter_revision = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The usage value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.inference.customer.v1.LogicalUsage usage = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $usage = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The rate card revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes rate_card_revision = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -54,15 +54,15 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $receipt_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The receipt id value carried by UsageReceipt.
      *     @type string $model_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The model profile value carried by UsageReceipt.
      *     @type string $meter_revision
-     *           A field in the Inference customer v1 wire contract.
+     *           The meter revision value carried by UsageReceipt.
      *     @type \Inference\Customer\V1\LogicalUsage $usage
-     *           A field in the Inference customer v1 wire contract.
+     *           The usage value carried by UsageReceipt.
      *     @type string $rate_card_revision
-     *           A field in the Inference customer v1 wire contract.
+     *           The rate card revision value carried by UsageReceipt.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt id value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -83,7 +83,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The receipt id value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes receipt_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -98,7 +98,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes model_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -109,7 +109,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model profile value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes model_profile = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -124,7 +124,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The meter revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes meter_revision = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -135,7 +135,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The meter revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes meter_revision = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -150,7 +150,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The usage value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.inference.customer.v1.LogicalUsage usage = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\LogicalUsage|null
@@ -171,7 +171,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The usage value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>.inference.customer.v1.LogicalUsage usage = 4 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\LogicalUsage $var
@@ -185,7 +185,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The rate card revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes rate_card_revision = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -196,7 +196,7 @@ class UsageReceipt extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The rate card revision value carried by UsageReceipt.
      *
      * Generated from protobuf field <code>bytes rate_card_revision = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

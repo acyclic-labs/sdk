@@ -23,7 +23,7 @@ class DeleteBucketRequest extends \Google\Protobuf\Internal\Message
      */
     protected $bucket = null;
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      */
@@ -38,7 +38,7 @@ class DeleteBucketRequest extends \Google\Protobuf\Internal\Message
      *     @type \Acyclic\Objects\V2\BucketRef $bucket
      *           The logical object bucket.
      *     @type \Acyclic\Objects\V2\MutationIdentity $mutation
-     *           A field in the Objects v2 wire contract.
+     *           The object mutation operation.
      * }
      */
     public function __construct($data = null)
@@ -83,7 +83,7 @@ class DeleteBucketRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      * @return \Acyclic\Objects\V2\MutationIdentity|null
@@ -104,7 +104,7 @@ class DeleteBucketRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 2;</code>
      * @param \Acyclic\Objects\V2\MutationIdentity $var

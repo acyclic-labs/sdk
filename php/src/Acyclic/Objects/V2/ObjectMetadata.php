@@ -23,6 +23,7 @@ class ObjectMetadata extends \Google\Protobuf\Internal\Message
      */
     protected $content_type = '';
     /**
+     * One entry in the user metadata map.
      * User-defined metadata entries.
      *
      * Generated from protobuf field <code>map<string, string> user = 2;</code>
@@ -68,6 +69,7 @@ class ObjectMetadata extends \Google\Protobuf\Internal\Message
      *     @type string $content_type
      *           The object media type.
      *     @type array|\Google\Protobuf\Internal\MapField $user
+     *           One entry in the user metadata map.
      *           User-defined metadata entries.
      *     @type string $content_encoding
      *           The object content encoding.
@@ -114,6 +116,7 @@ class ObjectMetadata extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * One entry in the user metadata map.
      * User-defined metadata entries.
      *
      * Generated from protobuf field <code>map<string, string> user = 2;</code>
@@ -125,6 +128,7 @@ class ObjectMetadata extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * One entry in the user metadata map.
      * User-defined metadata entries.
      *
      * Generated from protobuf field <code>map<string, string> user = 2;</code>

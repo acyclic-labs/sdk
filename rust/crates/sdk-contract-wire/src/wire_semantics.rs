@@ -6,12 +6,15 @@
 //! presence, oneof selection, scalar/enum values, repeated values, and map
 //! contents recursively.
 
-use std::collections::HashMap;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, MapKey, MessageDescriptor, MethodDescriptor, ReflectMessage, Value};
+use prost_reflect::{
+    DescriptorPool, DynamicMessage, FieldDescriptor, MapKey, MessageDescriptor, MethodDescriptor,
+    ReflectMessage, Value,
+};
 
 use crate::family_registry::family_view;
 
@@ -42,7 +45,10 @@ pub struct CompareOptions {
 
 /// Selects the Rust-owned protobuf type bound to one RPC direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RpcDirection { Request, Response }
+pub enum RpcDirection {
+    Request,
+    Response,
+}
 
 /// Streaming shape declared by the Rust-owned RPC descriptor.
 ///
@@ -60,13 +66,20 @@ pub struct RpcStreaming {
 /// Failure resolving or comparing a Rust-owned RPC message.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RpcSemanticError {
-    InvalidIdentity(String), UnknownFamily(String), UnknownService(String), UnknownMethod(String), Semantic(SemanticMismatch),
+    InvalidIdentity(String),
+    UnknownFamily(String),
+    UnknownService(String),
+    UnknownMethod(String),
+    Semantic(SemanticMismatch),
 }
 
 impl fmt::Display for RpcSemanticError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidIdentity(value) => write!(f, "invalid RPC identity {value:?}; expected /fully.qualified.Service/Method"),
+            Self::InvalidIdentity(value) => write!(
+                f,
+                "invalid RPC identity {value:?}; expected /fully.qualified.Service/Method"
+            ),
             Self::UnknownFamily(value) => write!(f, "unknown Rust-owned contract family {value}"),
             Self::UnknownService(value) => write!(f, "unknown Rust-owned RPC service {value}"),
             Self::UnknownMethod(value) => write!(f, "unknown Rust-owned RPC method {value}"),
@@ -76,12 +89,17 @@ impl fmt::Display for RpcSemanticError {
 }
 impl std::error::Error for RpcSemanticError {}
 impl From<SemanticMismatch> for RpcSemanticError {
-    fn from(value: SemanticMismatch) -> Self { Self::Semantic(value) }
+    fn from(value: SemanticMismatch) -> Self {
+        Self::Semantic(value)
+    }
 }
 
 impl Default for CompareOptions {
     fn default() -> Self {
-        Self { unknown_fields: UnknownFieldPolicy::CompareCanonical, floats: FloatPolicy::Bitwise }
+        Self {
+            unknown_fields: UnknownFieldPolicy::CompareCanonical,
+            floats: FloatPolicy::Bitwise,
+        }
     }
 }
 
@@ -94,7 +112,14 @@ pub fn compare_rpc_message(
     expected: &[u8],
     observed: &[u8],
 ) -> Result<(), RpcSemanticError> {
-    compare_rpc_message_with_options(pool, full_rpc, direction, expected, observed, CompareOptions::default())
+    compare_rpc_message_with_options(
+        pool,
+        full_rpc,
+        direction,
+        expected,
+        observed,
+        CompareOptions::default(),
+    )
 }
 
 /// Resolve the Rust-owned streaming shape for one fully qualified RPC.
@@ -135,8 +160,8 @@ pub fn compare_family_rpc_message(
 }
 
 fn family_descriptor_pool(family: &str) -> Result<DescriptorPool, RpcSemanticError> {
-    let view = family_view(family)
-        .ok_or_else(|| RpcSemanticError::UnknownFamily(family.to_owned()))?;
+    let view =
+        family_view(family).ok_or_else(|| RpcSemanticError::UnknownFamily(family.to_owned()))?;
     // Inference's public model descriptor is intentionally a compact target
     // file. Its Rust-owned option closure retains the validation extension
     // definitions and their dependency descriptors; use that closure here so
@@ -148,30 +173,37 @@ fn family_descriptor_pool(family: &str) -> Result<DescriptorPool, RpcSemanticErr
         view.model.descriptor()
     };
     let mut descriptor_set = prost_types::FileDescriptorSet::decode(model_descriptor.as_slice())
-        .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))?;
+        .map_err(|error| {
+            RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}"))
+        })?;
     if descriptor_set.file.iter().any(|file| {
         file.dependency
             .iter()
             .any(|dependency| dependency == "google/protobuf/timestamp.proto")
-    }) && !descriptor_set.file.iter().any(|file| {
-        file.name.as_deref() == Some("google/protobuf/timestamp.proto")
-    }) {
+    }) && !descriptor_set
+        .file
+        .iter()
+        .any(|file| file.name.as_deref() == Some("google/protobuf/timestamp.proto"))
+    {
         descriptor_set.file.push(timestamp_descriptor());
     }
     if descriptor_set.file.iter().any(|file| {
         file.dependency
             .iter()
             .any(|dependency| dependency == "validation/v1/options.proto")
-    }) && !descriptor_set.file.iter().any(|file| {
-        file.name.as_deref() == Some("validation/v1/options.proto")
-    }) {
-        return Err(RpcSemanticError::UnknownFamily(
-            format!("{family}: Rust-owned validation option descriptor closure is incomplete"),
-        ));
+    }) && !descriptor_set
+        .file
+        .iter()
+        .any(|file| file.name.as_deref() == Some("validation/v1/options.proto"))
+    {
+        return Err(RpcSemanticError::UnknownFamily(format!(
+            "{family}: Rust-owned validation option descriptor closure is incomplete"
+        )));
     }
     let descriptor_bytes = descriptor_set.encode_to_vec();
-    DescriptorPool::decode(descriptor_bytes.as_slice())
-        .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))
+    DescriptorPool::decode(descriptor_bytes.as_slice()).map_err(|error| {
+        RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}"))
+    })
 }
 
 fn timestamp_descriptor() -> prost_types::FileDescriptorProto {
@@ -212,11 +244,17 @@ pub fn compare_rpc_message_with_options(
     options: CompareOptions,
 ) -> Result<(), RpcSemanticError> {
     let method = resolve_method(pool, full_rpc)?;
-    let descriptor = match direction { RpcDirection::Request => method.input(), RpcDirection::Response => method.output() };
+    let descriptor = match direction {
+        RpcDirection::Request => method.input(),
+        RpcDirection::Response => method.output(),
+    };
     compare_message_with_options(descriptor, expected, observed, options).map_err(Into::into)
 }
 
-fn resolve_method(pool: &DescriptorPool, full_rpc: &str) -> Result<MethodDescriptor, RpcSemanticError> {
+fn resolve_method(
+    pool: &DescriptorPool,
+    full_rpc: &str,
+) -> Result<MethodDescriptor, RpcSemanticError> {
     let identity = full_rpc.trim_start_matches('/');
     let (service_name, method_name) = identity
         .split_once('/')
@@ -243,7 +281,11 @@ pub struct SemanticMismatch {
 
 impl fmt::Display for SemanticMismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "protobuf semantic mismatch at {}: expected {}, observed {}", self.path, self.expected, self.observed)
+        write!(
+            f,
+            "protobuf semantic mismatch at {}: expected {}, observed {}",
+            self.path, self.expected, self.observed
+        )
     }
 }
 
@@ -271,16 +313,18 @@ pub fn compare_message_with_options(
     observed: &[u8],
     options: CompareOptions,
 ) -> Result<(), SemanticMismatch> {
-    let expected = DynamicMessage::decode(descriptor.clone(), expected).map_err(|error| SemanticMismatch {
-        path: "<decode expected>".to_owned(),
-        expected: "valid protobuf bytes".to_owned(),
-        observed: error.to_string(),
-    })?;
-    let observed = DynamicMessage::decode(descriptor, observed).map_err(|error| SemanticMismatch {
-        path: "<decode observed>".to_owned(),
-        expected: "valid protobuf bytes".to_owned(),
-        observed: error.to_string(),
-    })?;
+    let expected =
+        DynamicMessage::decode(descriptor.clone(), expected).map_err(|error| SemanticMismatch {
+            path: "<decode expected>".to_owned(),
+            expected: "valid protobuf bytes".to_owned(),
+            observed: error.to_string(),
+        })?;
+    let observed =
+        DynamicMessage::decode(descriptor, observed).map_err(|error| SemanticMismatch {
+            path: "<decode observed>".to_owned(),
+            expected: "valid protobuf bytes".to_owned(),
+            observed: error.to_string(),
+        })?;
     compare_dynamic("$", &expected, &observed, options)
 }
 
@@ -297,8 +341,16 @@ fn compare_dynamic(
         if expected_present != observed_present {
             return Err(mismatch(
                 field_path,
-                if expected_present { "present" } else { "absent" },
-                if observed_present { "present" } else { "absent" },
+                if expected_present {
+                    "present"
+                } else {
+                    "absent"
+                },
+                if observed_present {
+                    "present"
+                } else {
+                    "absent"
+                },
             ));
         }
         if !expected_present {
@@ -306,13 +358,23 @@ fn compare_dynamic(
         }
         let expected_value = expected.get_field(&field);
         let observed_value = observed.get_field(&field);
-        compare_value(&field_path, &field, expected_value.as_ref(), observed_value.as_ref(), options)?;
+        compare_value(
+            &field_path,
+            &field,
+            expected_value.as_ref(),
+            observed_value.as_ref(),
+            options,
+        )?;
     }
     if options.unknown_fields == UnknownFieldPolicy::CompareCanonical {
         let expected_unknown = unknown_signature(expected);
         let observed_unknown = unknown_signature(observed);
         if expected_unknown != observed_unknown {
-            return Err(mismatch(format!("{path}.<unknown>"), format!("{expected_unknown:?}"), format!("{observed_unknown:?}")));
+            return Err(mismatch(
+                format!("{path}.<unknown>"),
+                format!("{expected_unknown:?}"),
+                format!("{observed_unknown:?}"),
+            ));
         }
     }
     Ok(())
@@ -326,22 +388,37 @@ fn compare_value(
     options: CompareOptions,
 ) -> Result<(), SemanticMismatch> {
     match (expected, observed) {
-        (Value::Message(expected), Value::Message(observed)) => compare_dynamic(path, expected, observed, options),
+        (Value::Message(expected), Value::Message(observed)) => {
+            compare_dynamic(path, expected, observed, options)
+        }
         (Value::List(expected), Value::List(observed)) => {
             if expected.len() != observed.len() {
-                return Err(mismatch(path, format!("list[{} items]", expected.len()), format!("list[{} items]", observed.len())));
+                return Err(mismatch(
+                    path,
+                    format!("list[{} items]", expected.len()),
+                    format!("list[{} items]", observed.len()),
+                ));
             }
             for (index, (expected, observed)) in expected.iter().zip(observed).enumerate() {
                 compare_value(path, field, expected, observed, options).map_err(|mut error| {
-                    error.path = format!("{path}[{index}]{}", error.path.strip_prefix(path).unwrap_or(""));
+                    error.path = format!(
+                        "{path}[{index}]{}",
+                        error.path.strip_prefix(path).unwrap_or("")
+                    );
                     error
                 })?;
             }
             Ok(())
         }
-        (Value::Map(expected), Value::Map(observed)) => compare_map(path, field, expected, observed, options),
+        (Value::Map(expected), Value::Map(observed)) => {
+            compare_map(path, field, expected, observed, options)
+        }
         _ if values_equal(expected, observed, options.floats) => Ok(()),
-        _ => Err(mismatch(path, value_summary(expected), value_summary(observed))),
+        _ => Err(mismatch(
+            path,
+            value_summary(expected),
+            value_summary(observed),
+        )),
     }
 }
 
@@ -353,13 +430,23 @@ fn compare_map(
     options: CompareOptions,
 ) -> Result<(), SemanticMismatch> {
     if expected.len() != observed.len() {
-        return Err(mismatch(path, format!("map[{} entries]", expected.len()), format!("map[{} entries]", observed.len())));
+        return Err(mismatch(
+            path,
+            format!("map[{} entries]", expected.len()),
+            format!("map[{} entries]", observed.len()),
+        ));
     }
     for (key, expected_value) in expected {
-        let observed_value = observed.get(key).ok_or_else(|| {
-            mismatch(format!("{path}[{key:?}]"), "present", "absent")
-        })?;
-        compare_value(&format!("{path}[{key:?}]"), field, expected_value, observed_value, options)?;
+        let observed_value = observed
+            .get(key)
+            .ok_or_else(|| mismatch(format!("{path}[{key:?}]"), "present", "absent"))?;
+        compare_value(
+            &format!("{path}[{key:?}]"),
+            field,
+            expected_value,
+            observed_value,
+            options,
+        )?;
     }
     Ok(())
 }
@@ -367,10 +454,12 @@ fn compare_map(
 fn values_equal(expected: &Value, observed: &Value, floats: FloatPolicy) -> bool {
     match (expected, observed) {
         (Value::F32(left), Value::F32(right)) => {
-            (left.to_bits() == right.to_bits()) || (floats == FloatPolicy::AllNaNsEqual && left.is_nan() && right.is_nan())
+            (left.to_bits() == right.to_bits())
+                || (floats == FloatPolicy::AllNaNsEqual && left.is_nan() && right.is_nan())
         }
         (Value::F64(left), Value::F64(right)) => {
-            (left.to_bits() == right.to_bits()) || (floats == FloatPolicy::AllNaNsEqual && left.is_nan() && right.is_nan())
+            (left.to_bits() == right.to_bits())
+                || (floats == FloatPolicy::AllNaNsEqual && left.is_nan() && right.is_nan())
         }
         _ => expected == observed,
     }
@@ -384,13 +473,24 @@ fn unknown_signature(message: &DynamicMessage) -> BTreeMap<u32, Vec<(String, Vec
         // Sort distinct field numbers, but preserve the complete wire order
         // within one field. A future descriptor may reinterpret a mixture of
         // packed and unpacked values as one repeated field.
-        grouped.entry(unknown.number()).or_insert_with(Vec::new).push((format!("{:?}", unknown.wire_type()), bytes));
+        grouped
+            .entry(unknown.number())
+            .or_insert_with(Vec::new)
+            .push((format!("{:?}", unknown.wire_type()), bytes));
     }
     grouped
 }
 
-fn mismatch(path: impl Into<String>, expected: impl Into<String>, observed: impl Into<String>) -> SemanticMismatch {
-    SemanticMismatch { path: path.into(), expected: expected.into(), observed: observed.into() }
+fn mismatch(
+    path: impl Into<String>,
+    expected: impl Into<String>,
+    observed: impl Into<String>,
+) -> SemanticMismatch {
+    SemanticMismatch {
+        path: path.into(),
+        expected: expected.into(),
+        observed: observed.into(),
+    }
 }
 
 fn value_summary(value: &Value) -> String {
@@ -408,7 +508,10 @@ fn value_summary(value: &Value) -> String {
 mod tests {
     use prost::Message;
     use prost_reflect::DescriptorPool;
-    use prost_types::{DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet, MessageOptions, MethodDescriptorProto, ServiceDescriptorProto, field_descriptor_proto};
+    use prost_types::{
+        DescriptorProto, FieldDescriptorProto, FileDescriptorProto, FileDescriptorSet,
+        MessageOptions, MethodDescriptorProto, ServiceDescriptorProto, field_descriptor_proto,
+    };
 
     use super::*;
 
@@ -416,28 +519,52 @@ mod tests {
         let entry = DescriptorProto {
             name: Some("LabelsEntry".to_owned()),
             field: vec![
-                FieldDescriptorProto { name: Some("key".to_owned()), number: Some(1), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::String as i32), ..Default::default() },
-                FieldDescriptorProto { name: Some("value".to_owned()), number: Some(2), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::Int32 as i32), ..Default::default() },
+                FieldDescriptorProto {
+                    name: Some("key".to_owned()),
+                    number: Some(1),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::String as i32),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("value".to_owned()),
+                    number: Some(2),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::Int32 as i32),
+                    ..Default::default()
+                },
             ],
-            options: Some(MessageOptions { map_entry: Some(true), ..Default::default() }),
+            options: Some(MessageOptions {
+                map_entry: Some(true),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let message = DescriptorProto {
             name: Some("Envelope".to_owned()),
             field: vec![FieldDescriptorProto {
-                name: Some("labels".to_owned()), number: Some(1),
+                name: Some("labels".to_owned()),
+                number: Some(1),
                 label: Some(field_descriptor_proto::Label::Repeated as i32),
                 r#type: Some(field_descriptor_proto::Type::Message as i32),
-                type_name: Some(".example.Envelope.LabelsEntry".to_owned()), ..Default::default()
+                type_name: Some(".example.Envelope.LabelsEntry".to_owned()),
+                ..Default::default()
             }],
-            nested_type: vec![entry], ..Default::default()
+            nested_type: vec![entry],
+            ..Default::default()
         };
-        let files = FileDescriptorSet { file: vec![FileDescriptorProto {
-            name: Some("example.proto".to_owned()), package: Some("example".to_owned()),
-            syntax: Some("proto3".to_owned()), message_type: vec![message], ..Default::default()
-        }] };
+        let files = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("example.proto".to_owned()),
+                package: Some("example".to_owned()),
+                syntax: Some("proto3".to_owned()),
+                message_type: vec![message],
+                ..Default::default()
+            }],
+        };
         let pool = DescriptorPool::decode(files.encode_to_vec().as_slice()).expect("descriptor");
-        pool.get_message_by_name("example.Envelope").expect("message")
+        pool.get_message_by_name("example.Envelope")
+            .expect("message")
     }
 
     fn encoded(entries: &[(&str, i32)]) -> Vec<u8> {
@@ -445,9 +572,14 @@ mod tests {
         let mut output = Vec::new();
         for (key, value) in entries {
             let mut entry = Vec::new();
-            entry.push(0x0a); entry.push(key.len() as u8); entry.extend_from_slice(key.as_bytes());
-            entry.push(0x10); entry.push(*value as u8);
-            output.push(0x0a); output.push(entry.len() as u8); output.extend_from_slice(&entry);
+            entry.push(0x0a);
+            entry.push(key.len() as u8);
+            entry.extend_from_slice(key.as_bytes());
+            entry.push(0x10);
+            entry.push(*value as u8);
+            output.push(0x0a);
+            output.push(entry.len() as u8);
+            output.extend_from_slice(&entry);
         }
         output
     }
@@ -455,8 +587,14 @@ mod tests {
     #[test]
     fn map_order_is_semantic() {
         let descriptor = map_descriptor();
-        compare_message(descriptor.clone(), &encoded(&[("a", 1), ("b", 2)]), &encoded(&[("b", 2), ("a", 1)])).expect("map order is irrelevant");
-        let error = compare_message(descriptor, &encoded(&[("a", 1)]), &encoded(&[("a", 2)])).expect_err("typed value changed");
+        compare_message(
+            descriptor.clone(),
+            &encoded(&[("a", 1), ("b", 2)]),
+            &encoded(&[("b", 2), ("a", 1)]),
+        )
+        .expect("map order is irrelevant");
+        let error = compare_message(descriptor, &encoded(&[("a", 1)]), &encoded(&[("a", 2)]))
+            .expect_err("typed value changed");
         assert!(error.path.contains("labels"));
     }
 
@@ -464,35 +602,111 @@ mod tests {
         let message = DescriptorProto {
             name: Some("Presence".to_owned()),
             oneof_decl: vec![
-                prost_types::OneofDescriptorProto { name: Some("_explicit".to_owned()), ..Default::default() },
-                prost_types::OneofDescriptorProto { name: Some("choice".to_owned()), ..Default::default() },
+                prost_types::OneofDescriptorProto {
+                    name: Some("_explicit".to_owned()),
+                    ..Default::default()
+                },
+                prost_types::OneofDescriptorProto {
+                    name: Some("choice".to_owned()),
+                    ..Default::default()
+                },
             ],
             field: vec![
-                FieldDescriptorProto { name: Some("explicit".to_owned()), number: Some(1), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::Int32 as i32), proto3_optional: Some(true), oneof_index: Some(0), ..Default::default() },
-                FieldDescriptorProto { name: Some("left".to_owned()), number: Some(2), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::String as i32), oneof_index: Some(1), ..Default::default() },
-                FieldDescriptorProto { name: Some("right".to_owned()), number: Some(3), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::String as i32), oneof_index: Some(1), ..Default::default() },
-                FieldDescriptorProto { name: Some("float_value".to_owned()), number: Some(4), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::Float as i32), ..Default::default() },
+                FieldDescriptorProto {
+                    name: Some("explicit".to_owned()),
+                    number: Some(1),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::Int32 as i32),
+                    proto3_optional: Some(true),
+                    oneof_index: Some(0),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("left".to_owned()),
+                    number: Some(2),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::String as i32),
+                    oneof_index: Some(1),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("right".to_owned()),
+                    number: Some(3),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::String as i32),
+                    oneof_index: Some(1),
+                    ..Default::default()
+                },
+                FieldDescriptorProto {
+                    name: Some("float_value".to_owned()),
+                    number: Some(4),
+                    label: Some(field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(field_descriptor_proto::Type::Float as i32),
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
-        let files = FileDescriptorSet { file: vec![FileDescriptorProto {
-            name: Some("presence.proto".to_owned()), package: Some("example".to_owned()),
-            syntax: Some("proto3".to_owned()), message_type: vec![message], ..Default::default()
-        }] };
+        let files = FileDescriptorSet {
+            file: vec![FileDescriptorProto {
+                name: Some("presence.proto".to_owned()),
+                package: Some("example".to_owned()),
+                syntax: Some("proto3".to_owned()),
+                message_type: vec![message],
+                ..Default::default()
+            }],
+        };
         let pool = DescriptorPool::decode(files.encode_to_vec().as_slice()).expect("descriptor");
-        pool.get_message_by_name("example.Presence").expect("message")
+        pool.get_message_by_name("example.Presence")
+            .expect("message")
     }
 
     fn rpc_pool() -> DescriptorPool {
-        let request = DescriptorProto { name: Some("Request".to_owned()), field: vec![FieldDescriptorProto { name: Some("value".to_owned()), number: Some(1), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::Int32 as i32), ..Default::default() }], ..Default::default() };
-        let response = DescriptorProto { name: Some("Response".to_owned()), field: vec![FieldDescriptorProto { name: Some("value".to_owned()), number: Some(1), label: Some(field_descriptor_proto::Label::Optional as i32), r#type: Some(field_descriptor_proto::Type::String as i32), ..Default::default() }], ..Default::default() };
-        let file = FileDescriptorProto {
-            name: Some("rpc.proto".to_owned()), package: Some("example".to_owned()), syntax: Some("proto3".to_owned()),
-            message_type: vec![request, response],
-            service: vec![ServiceDescriptorProto { name: Some("Service".to_owned()), method: vec![MethodDescriptorProto { name: Some("Call".to_owned()), input_type: Some(".example.Request".to_owned()), output_type: Some(".example.Response".to_owned()), ..Default::default() }], ..Default::default() }],
+        let request = DescriptorProto {
+            name: Some("Request".to_owned()),
+            field: vec![FieldDescriptorProto {
+                name: Some("value".to_owned()),
+                number: Some(1),
+                label: Some(field_descriptor_proto::Label::Optional as i32),
+                r#type: Some(field_descriptor_proto::Type::Int32 as i32),
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        DescriptorPool::decode(FileDescriptorSet { file: vec![file] }.encode_to_vec().as_slice()).expect("RPC descriptor pool")
+        let response = DescriptorProto {
+            name: Some("Response".to_owned()),
+            field: vec![FieldDescriptorProto {
+                name: Some("value".to_owned()),
+                number: Some(1),
+                label: Some(field_descriptor_proto::Label::Optional as i32),
+                r#type: Some(field_descriptor_proto::Type::String as i32),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let file = FileDescriptorProto {
+            name: Some("rpc.proto".to_owned()),
+            package: Some("example".to_owned()),
+            syntax: Some("proto3".to_owned()),
+            message_type: vec![request, response],
+            service: vec![ServiceDescriptorProto {
+                name: Some("Service".to_owned()),
+                method: vec![MethodDescriptorProto {
+                    name: Some("Call".to_owned()),
+                    input_type: Some(".example.Request".to_owned()),
+                    output_type: Some(".example.Response".to_owned()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        DescriptorPool::decode(
+            FileDescriptorSet { file: vec![file] }
+                .encode_to_vec()
+                .as_slice(),
+        )
+        .expect("RPC descriptor pool")
     }
 
     fn enum_and_repeated_descriptor() -> MessageDescriptor {
@@ -520,9 +734,21 @@ mod tests {
         let state = prost_types::EnumDescriptorProto {
             name: Some("State".to_owned()),
             value: vec![
-                prost_types::EnumValueDescriptorProto { name: Some("STATE_UNSPECIFIED".to_owned()), number: Some(0), options: None },
-                prost_types::EnumValueDescriptorProto { name: Some("READY".to_owned()), number: Some(1), options: None },
-                prost_types::EnumValueDescriptorProto { name: Some("DONE".to_owned()), number: Some(2), options: None },
+                prost_types::EnumValueDescriptorProto {
+                    name: Some("STATE_UNSPECIFIED".to_owned()),
+                    number: Some(0),
+                    options: None,
+                },
+                prost_types::EnumValueDescriptorProto {
+                    name: Some("READY".to_owned()),
+                    number: Some(1),
+                    options: None,
+                },
+                prost_types::EnumValueDescriptorProto {
+                    name: Some("DONE".to_owned()),
+                    number: Some(2),
+                    options: None,
+                },
             ],
             ..Default::default()
         };
@@ -534,40 +760,77 @@ mod tests {
             enum_type: vec![state],
             ..Default::default()
         };
-        DescriptorPool::decode(FileDescriptorSet { file: vec![file] }.encode_to_vec().as_slice())
-            .expect("enum descriptor pool")
-            .get_message_by_name("example.StateEnvelope")
-            .expect("state envelope")
+        DescriptorPool::decode(
+            FileDescriptorSet { file: vec![file] }
+                .encode_to_vec()
+                .as_slice(),
+        )
+        .expect("enum descriptor pool")
+        .get_message_by_name("example.StateEnvelope")
+        .expect("state envelope")
     }
 
     #[test]
     fn presence_oneof_unknown_and_nan_policies_are_explicit() {
         let descriptor = presence_descriptor();
-        let presence = compare_message(descriptor.clone(), &[], &[0x08, 0x00]).expect_err("explicit default presence changed");
+        let presence = compare_message(descriptor.clone(), &[], &[0x08, 0x00])
+            .expect_err("explicit default presence changed");
         assert!(presence.path.contains("explicit"));
 
-        let oneof = compare_message(descriptor.clone(), &[0x12, 0x01, b'a'], &[0x1a, 0x01, b'a']).expect_err("oneof case changed");
+        let oneof = compare_message(descriptor.clone(), &[0x12, 0x01, b'a'], &[0x1a, 0x01, b'a'])
+            .expect_err("oneof case changed");
         assert!(oneof.path.contains("left") || oneof.path.contains("right"));
 
         let nan_a = [0x25, 0x01, 0x00, 0x80, 0x7f];
         let nan_b = [0x25, 0x02, 0x00, 0x80, 0x7f];
-        compare_message(descriptor.clone(), &nan_a, &nan_b).expect_err("bitwise NaN policy rejects payload change");
-        compare_message_with_options(descriptor, &nan_a, &nan_b, CompareOptions { floats: FloatPolicy::AllNaNsEqual, ..CompareOptions::default() }).expect("semantic NaN policy accepts payload change");
+        compare_message(descriptor.clone(), &nan_a, &nan_b)
+            .expect_err("bitwise NaN policy rejects payload change");
+        compare_message_with_options(
+            descriptor,
+            &nan_a,
+            &nan_b,
+            CompareOptions {
+                floats: FloatPolicy::AllNaNsEqual,
+                ..CompareOptions::default()
+            },
+        )
+        .expect("semantic NaN policy accepts payload change");
 
         let unknown_descriptor = map_descriptor();
-        compare_message(unknown_descriptor.clone(), &[], &[0x48, 0x01]).expect_err("default policy checks unknown fields");
-        compare_message_with_options(unknown_descriptor, &[], &[0x48, 0x01], CompareOptions { unknown_fields: UnknownFieldPolicy::Ignore, ..CompareOptions::default() }).expect("forward-compatible policy ignores unknown fields");
+        compare_message(unknown_descriptor.clone(), &[], &[0x48, 0x01])
+            .expect_err("default policy checks unknown fields");
+        compare_message_with_options(
+            unknown_descriptor,
+            &[],
+            &[0x48, 0x01],
+            CompareOptions {
+                unknown_fields: UnknownFieldPolicy::Ignore,
+                ..CompareOptions::default()
+            },
+        )
+        .expect("forward-compatible policy ignores unknown fields");
     }
 
     #[test]
     fn unknown_fields_sort_by_identity_but_preserve_repeated_order() {
         let descriptor = map_descriptor();
         // Unknown fields with distinct numbers are canonicalized by identity.
-        compare_message(descriptor.clone(), &[0x48, 0x01, 0x50, 0x02], &[0x50, 0x02, 0x48, 0x01]).expect("distinct unknown field order is irrelevant");
+        compare_message(
+            descriptor.clone(),
+            &[0x48, 0x01, 0x50, 0x02],
+            &[0x50, 0x02, 0x48, 0x01],
+        )
+        .expect("distinct unknown field order is irrelevant");
         // Repeated values for one unknown field retain their wire order.
-        compare_message(descriptor.clone(), &[0x48, 0x01, 0x48, 0x02], &[0x48, 0x02, 0x48, 0x01]).expect_err("repeated unknown order is meaningful");
+        compare_message(
+            descriptor.clone(),
+            &[0x48, 0x01, 0x48, 0x02],
+            &[0x48, 0x02, 0x48, 0x01],
+        )
+        .expect_err("repeated unknown order is meaningful");
         // Unknown varints are re-encoded canonically before comparison.
-        compare_message(descriptor, &[0x48, 0x81, 0x00], &[0x48, 0x01]).expect("equivalent varint encodings are canonicalized");
+        compare_message(descriptor, &[0x48, 0x81, 0x00], &[0x48, 0x01])
+            .expect("equivalent varint encodings are canonicalized");
     }
 
     #[test]
@@ -577,16 +840,38 @@ mod tests {
         // segment. Reordering those entries must remain observable.
         let original = [0x50, 0x01, 0x52, 0x02, 0x02, 0x03, 0x50, 0x04];
         let reordered = [0x50, 0x01, 0x50, 0x04, 0x52, 0x02, 0x02, 0x03];
-        compare_message(descriptor, &original, &reordered).expect_err("mixed packed and unpacked order is meaningful");
+        compare_message(descriptor, &original, &reordered)
+            .expect_err("mixed packed and unpacked order is meaningful");
     }
 
     #[test]
     fn rpc_binding_rejects_unknown_and_wrong_direction() {
         let pool = rpc_pool();
-        compare_rpc_message(&pool, "/example.Service/Call", RpcDirection::Request, &[0x08, 0x01], &[0x08, 0x01]).expect("request binds to input type");
-        let wrong_direction = compare_rpc_message(&pool, "/example.Service/Call", RpcDirection::Response, &[0x08, 0x01], &[0x08, 0x01]).expect_err("request bytes do not satisfy response descriptor");
+        compare_rpc_message(
+            &pool,
+            "/example.Service/Call",
+            RpcDirection::Request,
+            &[0x08, 0x01],
+            &[0x08, 0x01],
+        )
+        .expect("request binds to input type");
+        let wrong_direction = compare_rpc_message(
+            &pool,
+            "/example.Service/Call",
+            RpcDirection::Response,
+            &[0x08, 0x01],
+            &[0x08, 0x01],
+        )
+        .expect_err("request bytes do not satisfy response descriptor");
         assert!(matches!(wrong_direction, RpcSemanticError::Semantic(_)));
-        let unknown = compare_rpc_message(&pool, "/example.Service/Missing", RpcDirection::Request, &[], &[]).expect_err("unknown method rejected");
+        let unknown = compare_rpc_message(
+            &pool,
+            "/example.Service/Missing",
+            RpcDirection::Request,
+            &[],
+            &[],
+        )
+        .expect_err("unknown method rejected");
         assert!(matches!(unknown, RpcSemanticError::UnknownMethod(_)));
     }
 
@@ -638,18 +923,26 @@ mod tests {
             .iter()
             .find(|file| file.name.as_deref() == Some("validation/v1/options.proto"))
             .expect("validation option descriptor is included in the closure");
-        assert!(!options.extension.is_empty(), "validation extension definitions are retained");
+        assert!(
+            !options.extension.is_empty(),
+            "validation extension definitions are retained"
+        );
         let pool = DescriptorPool::decode(bytes.as_slice())
             .expect("Rust-owned Inference descriptor closure resolves");
-        assert!(pool
-            .get_service_by_name("inference.customer.v1.RunsService")
-            .is_some());
+        assert!(
+            pool.get_service_by_name("inference.customer.v1.RunsService")
+                .is_some()
+        );
     }
 
     #[test]
     fn every_rust_registry_rpc_binds_input_and_output_descriptors() {
         let family_views = crate::family_registry::FAMILY_VIEWS;
-        assert_eq!(family_views.len(), 8, "all Rust-owned families are registered");
+        assert_eq!(
+            family_views.len(),
+            8,
+            "all Rust-owned families are registered"
+        );
         let mut total_methods = 0;
         for family in family_views {
             let descriptor = family.model.descriptor();
@@ -693,10 +986,17 @@ mod tests {
                     }
                 }
             }
-            assert!(family_methods > 0, "{0} has no descriptor-bound RPCs", family.name);
+            assert!(
+                family_methods > 0,
+                "{0} has no descriptor-bound RPCs",
+                family.name
+            );
             total_methods += family_methods;
         }
-        assert_eq!(total_methods, 106, "registry descriptor RPC inventory remains complete");
+        assert_eq!(
+            total_methods, 106,
+            "registry descriptor RPC inventory remains complete"
+        );
     }
 
     #[test]
@@ -707,12 +1007,17 @@ mod tests {
         // Map-like reordering is allowed only for map fields; repeated order is
         // part of the Rust-owned contract.
         let reordered = [0x08, 0x01, 0x12, 0x01, b'b', 0x12, 0x01, b'a'];
-        compare_message(descriptor.clone(), &expected, &expected).expect("equal enum and repeated values");
+        compare_message(descriptor.clone(), &expected, &expected)
+            .expect("equal enum and repeated values");
         let repeated_error = compare_message(descriptor.clone(), &expected, &reordered)
             .expect_err("repeated order changed");
         assert!(repeated_error.path.contains("items"));
-        let enum_error = compare_message(descriptor, &expected, &[0x08, 0x02, 0x12, 0x01, b'a', 0x12, 0x01, b'b'])
-            .expect_err("enum value changed");
+        let enum_error = compare_message(
+            descriptor,
+            &expected,
+            &[0x08, 0x02, 0x12, 0x01, b'a', 0x12, 0x01, b'b'],
+        )
+        .expect_err("enum value changed");
         assert!(enum_error.path.contains("state"));
     }
 }

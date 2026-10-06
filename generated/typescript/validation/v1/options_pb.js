@@ -82,4 +82,3 @@ export const required_oneof = /*@__PURE__*/
  */
 export const http_path = /*@__PURE__*/
   extDesc(file_validation_v1_options, 11);
-

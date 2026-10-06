@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records one candidate result, observation, metrics, and outcome.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationCaseResult</code>
  */
 class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $candidate_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes case_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $case_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGraderObservation observation = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $observation = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetricValue metrics = 4;</code>
      */
     private $metrics;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The outcome value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationCaseOutcome outcome = 5 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
@@ -54,15 +54,15 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $candidate_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The candidate digest value carried by EvaluationCaseResult.
      *     @type string $case_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The case id value carried by EvaluationCaseResult.
      *     @type \Inference\Customer\V1\EvaluationGraderObservation $observation
-     *           A field in the Inference customer v1 wire contract.
+     *           The observation value carried by EvaluationCaseResult.
      *     @type \Inference\Customer\V1\EvaluationMetricValue[] $metrics
-     *           A field in the Inference customer v1 wire contract.
+     *           The metrics value carried by EvaluationCaseResult.
      *     @type int $outcome
-     *           A field in the Inference customer v1 wire contract.
+     *           The outcome value carried by EvaluationCaseResult.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -83,7 +83,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidate digest value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes candidate_digest = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -98,7 +98,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes case_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -109,7 +109,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The case id value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>bytes case_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -124,7 +124,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGraderObservation observation = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\EvaluationGraderObservation|null
@@ -145,7 +145,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The observation value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGraderObservation observation = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\EvaluationGraderObservation $var
@@ -159,7 +159,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetricValue metrics = 4;</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationMetricValue>
@@ -170,7 +170,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetricValue metrics = 4;</code>
      * @param \Inference\Customer\V1\EvaluationMetricValue[] $var
@@ -185,7 +185,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The outcome value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationCaseOutcome outcome = 5 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\EvaluationCaseOutcome}
@@ -196,7 +196,7 @@ class EvaluationCaseResult extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The outcome value carried by EvaluationCaseResult.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationCaseOutcome outcome = 5 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\EvaluationCaseOutcome}

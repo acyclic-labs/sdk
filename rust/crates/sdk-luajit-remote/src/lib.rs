@@ -509,22 +509,26 @@ fn family_operation_names(family: &str) -> Vec<String> {
         .filter(|service| service.parent_file().package_name() == view.package())
         .flat_map(|service| {
             let service_name = service.full_name().to_owned();
-            service.methods().collect::<Vec<_>>().into_iter().map(move |method| {
-                let rpc = format!("{service_name}/{}", method.name(),);
-                view.routes()
-                    .iter()
-                    .find(|route| route.rpc.ends_with(&rpc))
-                    .map_or_else(
-                        || {
-                            let mut name = method.name().to_owned();
-                            if let Some(first) = name.get_mut(..1) {
-                                first.make_ascii_lowercase();
-                            }
-                            name
-                        },
-                        |route| route.operation_id.to_owned(),
-                    )
-            })
+            service
+                .methods()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(move |method| {
+                    let rpc = format!("{service_name}/{}", method.name(),);
+                    view.routes()
+                        .iter()
+                        .find(|route| route.rpc.ends_with(&rpc))
+                        .map_or_else(
+                            || {
+                                let mut name = method.name().to_owned();
+                                if let Some(first) = name.get_mut(..1) {
+                                    first.make_ascii_lowercase();
+                                }
+                                name
+                            },
+                            |route| route.operation_id.to_owned(),
+                        )
+                })
         })
         .collect()
 }
@@ -614,20 +618,24 @@ fn family_method(family: &str, operation: &str) -> Result<(MethodDescriptor, Str
         .filter(|service| service.parent_file().package_name() == view.package())
         .flat_map(|service| {
             let service_name = service.full_name().to_owned();
-            service.methods().collect::<Vec<_>>().into_iter().map(move |method| {
-                let rpc = format!("{service_name}/{}", method.name());
-                let route = view.routes().iter().find(|route| {
-                    (route.operation_id == operation || route.rpc == operation)
-                        && route.rpc.ends_with(&rpc)
-                });
-                let mut fallback = method.name().to_owned();
-                if let Some(first) = fallback.get_mut(..1) {
-                    first.make_ascii_lowercase();
-                }
-                let matches =
-                    route.is_some() || fallback == operation || method.name() == operation;
-                (method, format!("/{rpc}"), matches)
-            })
+            service
+                .methods()
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(move |method| {
+                    let rpc = format!("{service_name}/{}", method.name());
+                    let route = view.routes().iter().find(|route| {
+                        (route.operation_id == operation || route.rpc == operation)
+                            && route.rpc.ends_with(&rpc)
+                    });
+                    let mut fallback = method.name().to_owned();
+                    if let Some(first) = fallback.get_mut(..1) {
+                        first.make_ascii_lowercase();
+                    }
+                    let matches =
+                        route.is_some() || fallback == operation || method.name() == operation;
+                    (method, format!("/{rpc}"), matches)
+                })
         })
         .find_map(|(method, path, matches)| matches.then_some((method, path)))
         .ok_or_else(|| format!("unknown Rust-owned operation {family}/{operation}"))

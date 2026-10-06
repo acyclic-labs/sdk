@@ -29,7 +29,7 @@ class ContentRange extends \Google\Protobuf\Internal\Message
      */
     protected $end = 0;
     /**
-     * A field in the Objects v2 wire contract.
+     * The complete size of the selected range in bytes.
      *
      * Generated from protobuf field <code>uint64 total = 3;</code>
      */
@@ -46,7 +46,7 @@ class ContentRange extends \Google\Protobuf\Internal\Message
      *     @type int|string $end
      *           The inclusive range end offset.
      *     @type int|string $total
-     *           A field in the Objects v2 wire contract.
+     *           The complete size of the selected range in bytes.
      * }
      */
     public function __construct($data = null)
@@ -108,7 +108,7 @@ class ContentRange extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The complete size of the selected range in bytes.
      *
      * Generated from protobuf field <code>uint64 total = 3;</code>
      * @return int|string
@@ -119,7 +119,7 @@ class ContentRange extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The complete size of the selected range in bytes.
      *
      * Generated from protobuf field <code>uint64 total = 3;</code>
      * @param int|string $var

@@ -5,15 +5,60 @@ source-of-truth migration. It does not implement language generators. It
 captures one immutable source identity, writes a request envelope for each
 family tool, invokes tools that are present, and records their exact outputs.
 
-The crate is intentionally outside the root workspace during bootstrap. This
-keeps the migration command usable before the workspace can depend on the new
-generator, and avoids editing the root manifest or lockfile as a side effect.
+The crate remains outside the root workspace so the generation command has a
+stable, independently locked build and never edits the root manifest or
+lockfile as a side effect.
 
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- generate --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- check --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- drift --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- inventory --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- qualify --source-root . --output target/sdk-generation
+
+After the generation manifest and consumer scenario result files exist, the
+Rust receipt writer creates a unified remote qualification receipt from the
+actual scenario log:
+
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --bin sdk-qualification-receipt -- --source-root . --output target/sdk-generation --scenario-log target/sdk-generation/qualification/consumers/scenario-log.json --language python --tool grpcio-tools --suite remote-conformance
+
+The scenario log uses `acyclic.sdk.rpc-scenario-log.v1` and contains the
+consumer identity plus `scenarios` entries pointing at existing
+`acyclic.sdk.rpc-scenario-result.v1` files. The writer computes the Git
+`HEAD` revision itself, verifies it is clean, reads the generation manifest's
+`source.digest` as `contract_digest`, verifies every consumer and scenario
+byte hash against the artifact set, and derives `families`, RPC identities,
+shapes, and exercised features from the Rust authority and result files.
+There is no option to pass family names, RPCs, a status, or an exit code on
+the command line. The authority model digest and the Git revision therefore
+remain separate fields; a SHA-256 authority digest must never be relabeled as
+`source_revision`.
+
+The log input is intentionally small and contains no hand-authored family
+inventory:
+
+```json
+{
+  "schema": "acyclic.sdk.rpc-scenario-log.v1",
+  "source_revision": "<git HEAD>",
+  "consumer": {
+    "name": "python-consumer",
+    "version": "0.2.0",
+    "artifact_path": "qualification/consumers/python-consumer",
+    "artifact_sha256": "sha256:<consumer bytes>"
+  },
+  "scenarios": [
+    {
+      "output_path": "qualification/consumers/actors-create.json",
+      "output_sha256": "sha256:<scenario result bytes>"
+    }
+  ]
+}
+```
+
+Each result file supplies its own Rust-authority family, fully qualified RPC,
+shape, transport, invocation, exit code, and checks. The writer rejects a
+missing method, a duplicate, a stale hash, a nonzero exit, or a result that is
+not present in the generated artifact manifest.
 
 The repository-level `generate` and `check:generated` scripts are currently
 compatibility wrappers around the pre-migration Bun projections. They are not
@@ -119,6 +164,7 @@ digest. The file must contain JSON with this schema and identity binding:
   "language": "rust",
   "capability": "remote",
   "source_revision": "<manifest source revision>",
+  "source_revision_kind": "git-oid",
   "contract_digest": "sha256:<manifest source digest>",
   "artifact_digest": "sha256:<manifest artifact-set digest>",
   "status": "passed",
@@ -131,7 +177,17 @@ digest. The file must contain JSON with this schema and identity binding:
     "version": "<consumer version>",
     "source_revision": "<manifest source revision>",
     "artifact_path": "qualification/consumers/remote.bin",
-    "artifact_sha256": "sha256:<consumer artifact hash>"
+    "artifact_sha256": "sha256:<consumer artifact hash>",
+    "scenarios": [
+      {
+        "family": "actors",
+        "rpc": "acyclic.actors.v1.ActorsService/List",
+        "shape": "unary",
+        "status": "passed",
+        "output_path": "qualification/consumers/actors-list.json",
+        "output_sha256": "sha256:<scenario-result hash>"
+      }
+    ]
   },
   "families": [
     {
@@ -149,11 +205,20 @@ hash-valid, identity-matched to the current generated output, and records a
 passed suite with a nonzero assertion count. The `consumer` object proves that
 an executable consumer actually ran and binds its portable runtime path and
 SHA-256 to the generated artifact manifest. A stale executable relabeled with
-the current source revision therefore fails the byte check. The `families`
-array must cover every Rust descriptor family emitted in `wire/`; each entry
-names the methods and exercised features. Each capability is evaluated
-independently. An unavailable capability can be marked `excluded` only with a
-nonempty scoped `scope` value; an unscoped exclusion remains pending.
+the current source revision therefore fails the byte check. Every
+`consumer.scenarios` entry must also be present in that same artifact manifest;
+its `output_path` and `output_sha256` bind to a JSON
+`acyclic.sdk.rpc-scenario-result.v1` result with `invoked: true`, zero exit
+status, the exact family/RPC/shape identity, and invocation/transport checks.
+This prevents a producer from qualifying a method by merely naming it in a
+receipt or by relabeling an unrelated output file. The `families` array must
+cover every Rust descriptor family emitted in `wire/`; each entry names the
+methods and exercised features, and its method set must agree with the
+scenario set. Each capability is evaluated independently. An unavailable
+capability can be marked `excluded` only with a nonempty scoped `scope` value;
+an unscoped exclusion remains pending. A receipt that exercises only a subset
+of the Rust-authoritative methods is `partial` only when the capability has an
+explicit nonempty `scope`; otherwise it remains pending.
 
 Rust snippets in `sdk-examples-manifest.json` have a stricter receipt. A
 generic `cargo test` result for the examples crate does not qualify a rendered

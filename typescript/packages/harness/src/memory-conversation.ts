@@ -1,5 +1,11 @@
 /** Ephemeral owner-controlled conversation host; the Rust reducer owns admission. */
 import { Harness, type AgentId, type Command, type Event, type OperationId, type Scope } from "./index.js";
+import {
+  harnessAttachmentManifestMediaType,
+  harnessDefaultResidentBytes,
+  harnessDefaultResidentFiles,
+  harnessMaxInlineAttachments,
+} from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationState,
   FileRef, Limits, ReferencedAttachments, VolumeRef,
@@ -12,9 +18,22 @@ import { IndeterminateModelTurnError, TerminalModelTurnError, type AgentHarness,
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 
 const encoder = new TextEncoder();
-const manifestType = "application/vnd.acyclic.harness.attachments+json";
-const defaultResidentBytes = 256 * 1024 * 1024;
-const defaultResidentFiles = 65_536;
+
+interface RustContentPolicy {
+  readonly manifestType: string;
+  readonly defaultResidentBytes: number;
+  readonly defaultResidentFiles: number;
+  readonly maxInlineAttachments: number;
+}
+
+function rustContentPolicy(): RustContentPolicy {
+  return {
+    manifestType: harnessAttachmentManifestMediaType(),
+    defaultResidentBytes: harnessDefaultResidentBytes(),
+    defaultResidentFiles: harnessDefaultResidentFiles(),
+    maxInlineAttachments: harnessMaxInlineAttachments(),
+  };
+}
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -38,6 +57,8 @@ export class MemoryConversation {
   readonly #stagingLimits: Limits;
   readonly #maxResidentBytes: number;
   readonly #maxResidentFiles: number;
+  readonly #manifestType: string;
+  readonly #maxInlineAttachments: number;
   readonly #content: MemoryContentStore;
   readonly #foreign = new Map<string, ContentReader>();
   #foreignMount: ((volume: VolumeRef) => Readonly<{ owner: MemoryConversation; scope: Scope }>) | undefined;
@@ -46,13 +67,16 @@ export class MemoryConversation {
   #turns: Promise<void> = Promise.resolve();
 
   private constructor(core: Harness, scope: Scope, volume: VolumeRef<"agent_private", "memory">,
-    limits: Limits, maxResidentBytes: number, maxResidentFiles: number, content: MemoryContentStore) {
+    limits: Limits, maxResidentBytes: number, maxResidentFiles: number,
+    policy: RustContentPolicy, content: MemoryContentStore) {
     this.#core = core;
     this.#scope = scope;
     this.#volume = core.validateVolumeRef(volume);
     this.#stagingLimits = limits;
     this.#maxResidentBytes = maxResidentBytes;
     this.#maxResidentFiles = maxResidentFiles;
+    this.#manifestType = policy.manifestType;
+    this.#maxInlineAttachments = policy.maxInlineAttachments;
     this.#content = content;
   }
 
@@ -63,15 +87,12 @@ export class MemoryConversation {
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
       ...(options.wasm === undefined ? {} : { wasm: options.wasm }),
     });
+    const policy = rustContentPolicy();
     let limits: Limits;
-    const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;
-    const maxResidentFiles = options.maxResidentFiles ?? defaultResidentFiles;
+    const maxResidentBytes = options.maxResidentBytes ?? policy.defaultResidentBytes;
+    const maxResidentFiles = options.maxResidentFiles ?? policy.defaultResidentFiles;
     try {
       limits = core.validateLimits(options.limits ?? DEFAULT_LIMITS);
-      if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
-        || !Number.isSafeInteger(maxResidentFiles) || maxResidentFiles < 1) {
-        throw new RangeError("memory content retention limits are invalid");
-      }
     }
     catch (error) { core.free(); throw error; }
     try {
@@ -84,9 +105,9 @@ export class MemoryConversation {
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
       ]);
       const content = new MemoryContentStore(volume, limits.file_bytes, limits.path_bytes,
-        maxResidentBytes, maxResidentFiles);
+        options.maxResidentBytes, options.maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, limits, maxResidentBytes,
-        maxResidentFiles, content);
+        maxResidentFiles, policy, content);
       host.#apply(core.identity("operation", crypto.randomUUID()), "bind", { kind: "bind_conversation", agent: options.agent });
       return host;
     } catch (error) {
@@ -504,10 +525,10 @@ export class MemoryConversation {
     if (items.length > limits.attachments) throw new TypeError("attachments exceed harness limits");
     const checked = items.map(item => ({ file: this.#validatedFile(item.file), label: item.label }));
     for (const item of checked) { this.#core.validateFileUnderLimits(item.file, limits); await this.read(item.file); }
-    if (checked.length <= 128) return { kind: "inline", items: checked };
+    if (checked.length <= this.#maxInlineAttachments) return { kind: "inline", items: checked };
     const manifest = await this.stage(`turns/${operation}/${role}-attachments.json`,
       this.#core.encodeAttachmentManifest(checked),
-      manifestType, "attachments.json");
+      this.#manifestType, "attachments.json");
     this.#core.validateFileUnderLimits(manifest, limits);
     this.#core.decodeAttachmentManifest(manifest, await this.read(manifest), checked.length);
     return { kind: "manifest", manifest, item_count: checked.length };

@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports an admitted evaluation, its state, result, and sequence.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationView</code>
  */
 class EvaluationView extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by EvaluationView.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $evaluation_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $spec = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationState state = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
     protected $state = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by EvaluationView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.EvaluationResult result = 4;</code>
      */
     protected $result = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by EvaluationView.
      *
      * Generated from protobuf field <code>uint64 sequence = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
@@ -54,15 +54,15 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $evaluation_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The evaluation id value carried by EvaluationView.
      *     @type \Inference\Customer\V1\EvaluationSpec $spec
-     *           A field in the Inference customer v1 wire contract.
+     *           The spec value carried by EvaluationView.
      *     @type int $state
-     *           A field in the Inference customer v1 wire contract.
+     *           The state value carried by EvaluationView.
      *     @type \Inference\Customer\V1\EvaluationResult $result
-     *           A field in the Inference customer v1 wire contract.
+     *           The result value carried by EvaluationView.
      *     @type int|string $sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The sequence value carried by EvaluationView.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by EvaluationView.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -83,7 +83,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by EvaluationView.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -98,7 +98,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\EvaluationSpec|null
@@ -119,7 +119,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\EvaluationSpec $var
@@ -133,7 +133,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationState state = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\EvaluationState}
@@ -144,7 +144,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The state value carried by EvaluationView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationState state = 3 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\EvaluationState}
@@ -159,7 +159,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by EvaluationView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.EvaluationResult result = 4;</code>
      * @return \Inference\Customer\V1\EvaluationResult|null
@@ -180,7 +180,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by EvaluationView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.EvaluationResult result = 4;</code>
      * @param \Inference\Customer\V1\EvaluationResult $var
@@ -194,7 +194,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by EvaluationView.
      *
      * Generated from protobuf field <code>uint64 sequence = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -205,7 +205,7 @@ class EvaluationView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The sequence value carried by EvaluationView.
      *
      * Generated from protobuf field <code>uint64 sequence = 5 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var

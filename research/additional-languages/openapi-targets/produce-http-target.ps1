@@ -9,7 +9,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$jarSha256 = '41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE'
 $families = @('actors', 'workers', 'stream', 'objects', 'inference')
 
 function Resolve-RepoPath([string] $Path) {
@@ -46,9 +45,9 @@ foreach ($family in $families) {
     }
 }
 
-$jar = Resolve-RepoPath 'research/additional-languages/target/bash/openapi-generator-cli-7.25.0.jar'
-if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw "Pinned OpenAPI Generator jar is missing: $jar" }
-if ((Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash -ne $jarSha256) { throw 'Pinned OpenAPI Generator jar checksum mismatch' }
+$jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+$jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
 if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'java is required for the pinned OpenAPI Generator jar' }
 
 $packageRoot = Join-Path $TargetOutput 'generated'

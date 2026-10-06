@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests admission of an immutable evaluation specification.
  *
  * Generated from protobuf message <code>inference.customer.v1.CreateEvaluationRequest</code>
  */
 class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      */
@@ -36,9 +36,9 @@ class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by CreateEvaluationRequest.
      *     @type \Inference\Customer\V1\EvaluationSpec $spec
-     *           A field in the Inference customer v1 wire contract.
+     *           The spec value carried by CreateEvaluationRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -69,7 +69,7 @@ class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -83,7 +83,7 @@ class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\EvaluationSpec|null
@@ -104,7 +104,7 @@ class CreateEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec value carried by CreateEvaluationRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSpec spec = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\EvaluationSpec $var

@@ -10,12 +10,154 @@ use crate::{
 };
 use futures::{StreamExt as _, stream::BoxStream};
 use std::sync::Arc;
-use tonic::{Request, Response, Status};
+use tonic::{
+    Request, Response, Status,
+    metadata::{Ascii, MetadataValue},
+    transport::{Channel, Endpoint},
+};
 
 /// Generated tonic client and server surfaces using the canonical Harness messages.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
+}
+
+const HARNESS_CAPABILITIES: &[(&str, &str)] = &[
+    ("submit", "1"),
+    ("replay", "1"),
+    ("observe", "1"),
+    ("cancel", "1"),
+];
+
+/// Authenticated native Harness client with an identity-checked handshake.
+#[derive(Clone)]
+pub struct HarnessGrpcClient {
+    inner: transport::harness_service_client::HarnessServiceClient<Channel>,
+    authorization: MetadataValue<Ascii>,
+}
+
+impl HarnessGrpcClient {
+    /// Connects to a Harness endpoint and completes protocol negotiation before
+    /// returning a client that can issue application requests.
+    pub async fn connect(
+        endpoint: impl Into<String>,
+        bearer_token: impl AsRef<str>,
+    ) -> Result<Self, Status> {
+        let authorization: MetadataValue<Ascii> = format!("Bearer {}", bearer_token.as_ref())
+            .parse()
+            .map_err(|_| Status::invalid_argument("invalid bearer credential"))?;
+        let channel = Endpoint::from_shared(endpoint.into())
+            .map_err(|error| Status::invalid_argument(error.to_string()))?
+            .connect()
+            .await
+            .map_err(|error| Status::unavailable(error.to_string()))?;
+        let mut inner = transport::harness_service_client::HarnessServiceClient::new(channel);
+        let mut request = Request::new(wire::HandshakeRequest {
+            protocol: Some(crate::wire_api::current_protocol()),
+            required: Some(wire::CapabilitySet {
+                capabilities: HARNESS_CAPABILITIES
+                    .iter()
+                    .map(|(name, version)| wire::Capability {
+                        name: (*name).into(),
+                        version: (*version).into(),
+                    })
+                    .collect(),
+            }),
+        });
+        request
+            .metadata_mut()
+            .insert("authorization", authorization.clone());
+        let response = inner.handshake(request).await?.into_inner();
+        validate_handshake(&response)?;
+        Ok(Self {
+            inner,
+            authorization,
+        })
+    }
+
+    fn request<T>(&self, value: T) -> Request<T> {
+        let mut request = Request::new(value);
+        request
+            .metadata_mut()
+            .insert("authorization", self.authorization.clone());
+        request
+    }
+
+    /// Submits one identity-bound command.
+    pub async fn submit(&self, command: wire::CommandEnvelope) -> Result<wire::Admission, Status> {
+        let mut inner = self.inner.clone();
+        let response = inner
+            .submit(self.request(command.clone()))
+            .await?
+            .into_inner();
+        validate_admission(&command, &response).map_err(status)?;
+        Ok(response)
+    }
+
+    /// Replays validated deliveries while preserving the server stream.
+    pub async fn replay(
+        &self,
+        resume: wire::ResumeRequest,
+    ) -> Result<tonic::Streaming<wire::Delivery>, Status> {
+        validate_resume_protocol(&resume).map_err(status)?;
+        let mut inner = self.inner.clone();
+        Ok(inner.replay(self.request(resume)).await?.into_inner())
+    }
+
+    /// Observes one authenticated durable operation.
+    pub async fn observe(
+        &self,
+        request: wire::ObserveRequest,
+    ) -> Result<wire::OperationStatus, Status> {
+        let mut inner = self.inner.clone();
+        let response = inner
+            .observe(self.request(request.clone()))
+            .await?
+            .into_inner();
+        validate_operation_status(&request, &response).map_err(status)?;
+        Ok(response)
+    }
+
+    /// Requests one authenticated idempotent cancellation.
+    pub async fn cancel(
+        &self,
+        request: wire::CancelRequest,
+    ) -> Result<wire::CancelResponse, Status> {
+        let mut inner = self.inner.clone();
+        let response = inner
+            .cancel(self.request(request.clone()))
+            .await?
+            .into_inner();
+        validate_cancel_response(&request, &response).map_err(status)?;
+        Ok(response)
+    }
+}
+
+fn validate_handshake(response: &wire::HandshakeResponse) -> Result<(), Status> {
+    let protocol = response
+        .protocol
+        .as_ref()
+        .ok_or_else(|| Status::failed_precondition("harness handshake protocol is absent"))?;
+    if protocol != &crate::wire_api::current_protocol() {
+        return Err(Status::failed_precondition(
+            "harness protocol identity does not match",
+        ));
+    }
+    let supported = response
+        .supported
+        .as_ref()
+        .ok_or_else(|| Status::failed_precondition("harness capabilities are absent"))?;
+    if HARNESS_CAPABILITIES.iter().any(|(name, version)| {
+        !supported
+            .capabilities
+            .iter()
+            .any(|capability| capability.name == *name && capability.version == *version)
+    }) {
+        return Err(Status::failed_precondition(
+            "harness operation capability is unsupported",
+        ));
+    }
+    Ok(())
 }
 
 /// Thin tonic service; all admission and replay semantics belong to [`HarnessWireApi`].

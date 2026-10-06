@@ -1,5 +1,5 @@
 import { fromBinary } from "@bufbuild/protobuf";
-import { is_stream_error_code, projectMemoryResponse, WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, projectMemoryResponse, publicHttpErrorCode, WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
@@ -174,10 +174,7 @@ function streamError(error: unknown, operation: string): Error {
   if (typeof rawCode !== "string" || !isKnownStreamErrorCode(rawCode)) {
     return error instanceof Error ? error : new Error(message);
   }
-  let code: string = rawCode;
-  if (rawCode === "not_found") code = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
-  else if (rawCode === "already_exists") code = "destination_exists";
-  else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+  const code = publicHttpErrorCode(rawCode, operation) ?? rawCode;
   return new StreamError(code, message);
 }
 function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array; committedAtMicros: bigint }): EncodedRecord {

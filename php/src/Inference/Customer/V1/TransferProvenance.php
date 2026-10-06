@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Records a model transfer and compatible-state reuse.
  *
  * Generated from protobuf message <code>inference.customer.v1.TransferProvenance</code>
  */
 class TransferProvenance extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $source = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The reused compatible state value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bool reused_compatible_state = 2;</code>
      */
@@ -36,9 +36,9 @@ class TransferProvenance extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $source
-     *           A field in the Inference customer v1 wire contract.
+     *           The source value carried by TransferProvenance.
      *     @type bool $reused_compatible_state
-     *           A field in the Inference customer v1 wire contract.
+     *           The reused compatible state value carried by TransferProvenance.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class TransferProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -59,7 +59,7 @@ class TransferProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class TransferProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The reused compatible state value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bool reused_compatible_state = 2;</code>
      * @return bool
@@ -85,7 +85,7 @@ class TransferProvenance extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The reused compatible state value carried by TransferProvenance.
      *
      * Generated from protobuf field <code>bool reused_compatible_state = 2;</code>
      * @param bool $var

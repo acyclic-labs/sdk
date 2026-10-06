@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Identifies an operation to inspect, cancel, or watch.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.OperationRequest</code>
  */
 class OperationRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      */
@@ -36,9 +36,9 @@ class OperationRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by OperationRequest.
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by OperationRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class OperationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -69,7 +69,7 @@ class OperationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -83,7 +83,7 @@ class OperationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -104,7 +104,7 @@ class OperationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by OperationRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      * @param \Acyclic\Machines\V1\OperationId $var

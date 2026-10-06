@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests usage for a machine and half-open time interval.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.UsageRequest</code>
  */
 class UsageRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 3;</code>
      */
     protected $start_unix_ms = 0;
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 4;</code>
      */
@@ -48,13 +48,13 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by UsageRequest.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by UsageRequest.
      *     @type int|string $start_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The start unix ms value carried by UsageRequest.
      *     @type int|string $end_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The end unix ms value carried by UsageRequest.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -85,7 +85,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -99,7 +99,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -120,7 +120,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by UsageRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -134,7 +134,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 3;</code>
      * @return int|string
@@ -145,7 +145,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The start unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 start_unix_ms = 3;</code>
      * @param int|string $var
@@ -160,7 +160,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 4;</code>
      * @return int|string
@@ -171,7 +171,7 @@ class UsageRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The end unix ms value carried by UsageRequest.
      *
      * Generated from protobuf field <code>uint64 end_unix_ms = 4;</code>
      * @param int|string $var

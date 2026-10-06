@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests creation of an immutable context revision.
  *
  * Generated from protobuf message <code>inference.customer.v1.CreateContextRequest</code>
  */
 class CreateContextRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>string model = 2;</code>
      */
     protected $model = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 3;</code>
      */
@@ -42,11 +42,11 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by CreateContextRequest.
      *     @type string $model
-     *           A field in the Inference customer v1 wire contract.
+     *           The model value carried by CreateContextRequest.
      *     @type \Inference\Customer\V1\Item[] $items
-     *           A field in the Inference customer v1 wire contract.
+     *           The items value carried by CreateContextRequest.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -77,7 +77,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -91,7 +91,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>string model = 2;</code>
      * @return string
@@ -102,7 +102,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>string model = 2;</code>
      * @param string $var
@@ -117,7 +117,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 3;</code>
      * @return RepeatedField<\Inference\Customer\V1\Item>
@@ -128,7 +128,7 @@ class CreateContextRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by CreateContextRequest.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 3;</code>
      * @param \Inference\Customer\V1\Item[] $var

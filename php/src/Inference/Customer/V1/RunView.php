@@ -10,44 +10,44 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports the current recoverable run state and latest result.
  *
  * Generated from protobuf message <code>inference.customer.v1.RunView</code>
  */
 class RunView extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by RunView.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $run_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by RunView.
      *
      * Generated from protobuf field <code>bytes input = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $input = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by RunView.
      *
      * Generated from protobuf field <code>string model = 3 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $model = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last sequence value carried by RunView.
      *
      * Generated from protobuf field <code>uint64 last_sequence = 4;</code>
      */
     protected $last_sequence = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cancellation requested value carried by RunView.
      *
      * Generated from protobuf field <code>bool cancellation_requested = 5;</code>
      */
     protected $cancellation_requested = false;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by RunView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.RunResult result = 6;</code>
      */
@@ -60,17 +60,17 @@ class RunView extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $run_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The run id value carried by RunView.
      *     @type string $input
-     *           A field in the Inference customer v1 wire contract.
+     *           The input value carried by RunView.
      *     @type string $model
-     *           A field in the Inference customer v1 wire contract.
+     *           The model value carried by RunView.
      *     @type int|string $last_sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The last sequence value carried by RunView.
      *     @type bool $cancellation_requested
-     *           A field in the Inference customer v1 wire contract.
+     *           The cancellation requested value carried by RunView.
      *     @type \Inference\Customer\V1\RunResult $result
-     *           A field in the Inference customer v1 wire contract.
+     *           The result value carried by RunView.
      * }
      */
     public function __construct($data = null)
@@ -80,7 +80,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by RunView.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -91,7 +91,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by RunView.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -106,7 +106,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by RunView.
      *
      * Generated from protobuf field <code>bytes input = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -117,7 +117,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by RunView.
      *
      * Generated from protobuf field <code>bytes input = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -132,7 +132,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by RunView.
      *
      * Generated from protobuf field <code>string model = 3 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -143,7 +143,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by RunView.
      *
      * Generated from protobuf field <code>string model = 3 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -158,7 +158,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last sequence value carried by RunView.
      *
      * Generated from protobuf field <code>uint64 last_sequence = 4;</code>
      * @return int|string
@@ -169,7 +169,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The last sequence value carried by RunView.
      *
      * Generated from protobuf field <code>uint64 last_sequence = 4;</code>
      * @param int|string $var
@@ -184,7 +184,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cancellation requested value carried by RunView.
      *
      * Generated from protobuf field <code>bool cancellation_requested = 5;</code>
      * @return bool
@@ -195,7 +195,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cancellation requested value carried by RunView.
      *
      * Generated from protobuf field <code>bool cancellation_requested = 5;</code>
      * @param bool $var
@@ -209,7 +209,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by RunView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.RunResult result = 6;</code>
      * @return \Inference\Customer\V1\RunResult|null
@@ -230,7 +230,7 @@ class RunView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The result value carried by RunView.
      *
      * Generated from protobuf field <code>optional .inference.customer.v1.RunResult result = 6;</code>
      * @param \Inference\Customer\V1\RunResult $var

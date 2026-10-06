@@ -1,0 +1,41 @@
+{
+  "$schema": "https://sdk.acyclic.dev/embedded-producer.v1.json",
+  "schema": "acyclic.sdk.dotnet.embedded-producer.v1",
+  "authority": "rust/crates/sdk-embedded-prototype",
+  "abi": {
+    "library": "acyclic_sdk_embedded_prototype",
+    "version_function": "acyclic_embedded_abi_version",
+    "version": 1,
+    "operations": [
+      "append",
+      "read",
+      "follow",
+      "cancel",
+      "owned-buffers",
+      "provider-recovery"
+    ]
+  },
+  "producer": "scripts/build-dotnet-embedded-package.ps1",
+  "package": {
+    "project": "dotnet/Acyclic.Sdk.Embedded.csproj",
+    "id": "Acyclic.Sdk.Embedded",
+    "rid_asset_selection": "NuGet runtime graph",
+    "consumer": "dotnet/embedded-consumer/Embedded.Consumer.csproj"
+  },
+  "targets": {
+    "x86_64-pc-windows-msvc": { "rid": "win-x64", "library": "acyclic_sdk_embedded_prototype.dll" },
+    "aarch64-pc-windows-msvc": { "rid": "win-arm64", "library": "acyclic_sdk_embedded_prototype.dll" },
+    "x86_64-unknown-linux-gnu": { "rid": "linux-x64", "library": "libacyclic_sdk_embedded_prototype.so" },
+    "aarch64-unknown-linux-gnu": { "rid": "linux-arm64", "library": "libacyclic_sdk_embedded_prototype.so" },
+    "x86_64-unknown-linux-musl": { "rid": "linux-musl-x64", "library": "libacyclic_sdk_embedded_prototype.so" },
+    "aarch64-unknown-linux-musl": { "rid": "linux-musl-arm64", "library": "libacyclic_sdk_embedded_prototype.so" },
+    "x86_64-apple-darwin": { "rid": "osx-x64", "library": "libacyclic_sdk_embedded_prototype.dylib" },
+    "aarch64-apple-darwin": { "rid": "osx-arm64", "library": "libacyclic_sdk_embedded_prototype.dylib" }
+  },
+  "qualification": {
+    "status": "prototype",
+    "remote_rpc_surface": "separate generated Grpc.Net.Client package",
+    "installed_consumer_checks": ["append", "read", "follow-cancel", "recovery"],
+    "registry_published": false
+  }
+}

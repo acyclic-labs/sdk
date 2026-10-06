@@ -10,15 +10,21 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
+ * Requests protocol negotiation with a service family's identity and required capabilities. The family defines which omissions and capabilities it accepts.
+ *
  * Generated from protobuf message <code>acyclic.protocol.v1.HandshakeRequest</code>
  */
 class HandshakeRequest extends \Google\Protobuf\Internal\Message
 {
     /**
+     * The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      */
     protected $protocol = null;
     /**
+     * The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet required = 2;</code>
      */
     protected $required = null;
@@ -30,7 +36,9 @@ class HandshakeRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Protocol\V1\ProtocolIdentity $protocol
+     *           The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
      *     @type \Acyclic\Protocol\V1\CapabilitySet $required
+     *           The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
      * }
      */
     public function __construct($data = null)
@@ -40,6 +48,8 @@ class HandshakeRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      * @return \Acyclic\Protocol\V1\ProtocolIdentity|null
      */
@@ -59,6 +69,8 @@ class HandshakeRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The protocol identity presented by the caller. Message presence is represented independently from empty identity strings.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.ProtocolIdentity protocol = 1;</code>
      * @param \Acyclic\Protocol\V1\ProtocolIdentity $var
      * @return $this
@@ -71,6 +83,8 @@ class HandshakeRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet required = 2;</code>
      * @return \Acyclic\Protocol\V1\CapabilitySet|null
      */
@@ -90,6 +104,8 @@ class HandshakeRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The capabilities requested by the caller. Acceptance is determined by the service family's negotiation implementation.
+     *
      * Generated from protobuf field <code>.acyclic.protocol.v1.CapabilitySet required = 2;</code>
      * @param \Acyclic\Protocol\V1\CapabilitySet $var
      * @return $this

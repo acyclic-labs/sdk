@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests the model capabilities visible to the caller.
  *
  * Generated from protobuf message <code>inference.customer.v1.ListModelsRequest</code>
  */

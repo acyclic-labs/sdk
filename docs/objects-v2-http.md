@@ -1,9 +1,8 @@
 # Objects v2 HTTP contract
 
-Objects v2 exposes logical tenant bucket names and object keys. Placement,
-generations and service retention claims are private. This gateway and the
-S3-compatible HTTP binding use the same owning authority and storage model.
-This gateway uses Protobuf JSON, rather than S3 wire syntax.
+Objects v2 exposes logical tenant bucket names and object keys. Placement and
+hosted retention claims are private. This gateway uses canonical Protobuf JSON
+for the Objects v2 contract; it is not an S3 wire endpoint.
 
 The authoritative route inventory is `acyclic_objects::v2::HTTP_ROUTES`. Every
 route is POST under `/v2/objects/`, with a bearer credential on every request.
@@ -46,7 +45,7 @@ false completion, duplicate completion, or any frame after completion is invalid
 EOF alone does not authorize publication: cancellation can appear as clean EOF
 to a server. A successful upload returns a unary response. Incomplete, malformed,
 or oversized requests must not publish bytes. The same completion rule applies
-to the native gRPC upload messages; S3 uses its own body completion rules.
+to the native gRPC upload messages.
 The complete decoded upload is at most 5 GiB; clients and service authorities
 may impose smaller explicit bounds. Conditions are evaluated at publication,
 including multipart completion, never only at upload creation.
@@ -94,7 +93,7 @@ and durable service retention remain the owning provider's atomic responsibility
 
 Listings are eventual live lexical traversal. Cursors bind bucket, prefix,
 delimiter and page size. A concurrent insertion before the cursor can be missed.
-ETags are opaque and are not promised to be content checksums. S3 checksum
-headers belong to the S3 binding; no checksum is hidden in user metadata.
+ETags are opaque and are not promised to be content checksums. No checksum is
+hidden in user metadata.
 
 This inventory does not establish Cloud gateway deployment or live acceptance.

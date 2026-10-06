@@ -1,7 +1,8 @@
 # acyclic-workers
 
-Rust-owned Workers v1 public contract. Code versions are immutable SHA-256
-identities; creating an absent deployment alias omits the expected revision.
+Workers run immutable code versions through HTTP invocations and durable jobs.
+Publish a version, select a deployment alias, and submit work through one client.
+Code versions are SHA-256 identities; creating an absent deployment alias omits the expected revision.
 Changing an existing alias requires its positive current revision. Each accepted
 selection advances the revision.
 An accepted durable job pins its resolved code version. HTTP invocation has
@@ -19,13 +20,10 @@ Job observations return an exact `JobResult` body bounded by the accepted output
 budget (at most 1 MiB); they expose no mutable object pointer or public Object
 version. The service owns durable acceptance, retention and attempt fencing.
 
-The service implementation and execution authority live outside this crate.
-This crate validates customer-authored requests and packages the versioned wire
-descriptor used to generate TypeScript bindings.
-
-`grpc::connect(endpoint, token)` exposes every generated Workers service RPC.
-Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
-`http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
-seven operations using canonical Protobuf JSON. Version invocation addresses the
+`connect(endpoint, token)` creates an authenticated client for all seven
+operations. It automatically uses gRPC on native platforms and Protobuf JSON
+over HTTP in browsers, with the same methods and response types on both.
+Private certificate authorities can be configured through
+`grpc::connect_with_ca_certificate`. Version invocation addresses the
 exact digest; alias invocation reports the version and revision resolved by the
 service. HTTP mutations are not automatically retried.

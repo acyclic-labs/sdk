@@ -10,44 +10,44 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Defines candidates, cases, grader, metrics, limits, and specification digest.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationSpec</code>
  */
 class EvaluationSpec extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidates value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationArtifact candidates = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 256];</code>
      */
     private $candidates;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The suite value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSuite suite = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $suite = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The grader value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGrader grader = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $grader = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetric metrics = 4 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64];</code>
      */
     private $metrics;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum case results value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>uint64 maximum_case_results = 5 [(.acyclic.validation.v1.positive_uint64) = true, (.acyclic.validation.v1.max_uint64) = 65536];</code>
      */
     protected $maximum_case_results = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>bytes spec_digest = 6 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -60,17 +60,17 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\EvaluationArtifact[] $candidates
-     *           A field in the Inference customer v1 wire contract.
+     *           The candidates value carried by EvaluationSpec.
      *     @type \Inference\Customer\V1\EvaluationSuite $suite
-     *           A field in the Inference customer v1 wire contract.
+     *           The suite value carried by EvaluationSpec.
      *     @type \Inference\Customer\V1\EvaluationGrader $grader
-     *           A field in the Inference customer v1 wire contract.
+     *           The grader value carried by EvaluationSpec.
      *     @type \Inference\Customer\V1\EvaluationMetric[] $metrics
-     *           A field in the Inference customer v1 wire contract.
+     *           The metrics value carried by EvaluationSpec.
      *     @type int|string $maximum_case_results
-     *           A field in the Inference customer v1 wire contract.
+     *           The maximum case results value carried by EvaluationSpec.
      *     @type string $spec_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The spec digest value carried by EvaluationSpec.
      * }
      */
     public function __construct($data = null)
@@ -80,7 +80,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidates value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationArtifact candidates = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 256];</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationArtifact>
@@ -91,7 +91,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The candidates value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationArtifact candidates = 1 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 256];</code>
      * @param \Inference\Customer\V1\EvaluationArtifact[] $var
@@ -106,7 +106,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The suite value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSuite suite = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\EvaluationSuite|null
@@ -127,7 +127,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The suite value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationSuite suite = 2 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\EvaluationSuite $var
@@ -141,7 +141,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The grader value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGrader grader = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\EvaluationGrader|null
@@ -162,7 +162,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The grader value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationGrader grader = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\EvaluationGrader $var
@@ -176,7 +176,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetric metrics = 4 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64];</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationMetric>
@@ -187,7 +187,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The metrics value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationMetric metrics = 4 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 64];</code>
      * @param \Inference\Customer\V1\EvaluationMetric[] $var
@@ -202,7 +202,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum case results value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>uint64 maximum_case_results = 5 [(.acyclic.validation.v1.positive_uint64) = true, (.acyclic.validation.v1.max_uint64) = 65536];</code>
      * @return int|string
@@ -213,7 +213,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum case results value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>uint64 maximum_case_results = 5 [(.acyclic.validation.v1.positive_uint64) = true, (.acyclic.validation.v1.max_uint64) = 65536];</code>
      * @param int|string $var
@@ -228,7 +228,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>bytes spec_digest = 6 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -239,7 +239,7 @@ class EvaluationSpec extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The spec digest value carried by EvaluationSpec.
      *
      * Generated from protobuf field <code>bytes spec_digest = 6 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

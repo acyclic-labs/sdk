@@ -10,18 +10,21 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * Version negotiation shared by every Acyclic service family. Each family
- * names its own contract in ProtocolIdentity; nothing here depends on one.
+ * Identifies a service family's versioned wire contract and descriptor digest. The accepting service defines its identity matching policy.
  *
  * Generated from protobuf message <code>acyclic.protocol.v1.ProtocolIdentity</code>
  */
 class ProtocolIdentity extends \Google\Protobuf\Internal\Message
 {
     /**
+     * The version identifier of the service family's wire contract.
+     *
      * Generated from protobuf field <code>string version = 1;</code>
      */
     protected $version = '';
     /**
+     * The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
+     *
      * Generated from protobuf field <code>string descriptor_digest = 2;</code>
      */
     protected $descriptor_digest = '';
@@ -33,7 +36,9 @@ class ProtocolIdentity extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $version
+     *           The version identifier of the service family's wire contract.
      *     @type string $descriptor_digest
+     *           The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
      * }
      */
     public function __construct($data = null)
@@ -43,6 +48,8 @@ class ProtocolIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The version identifier of the service family's wire contract.
+     *
      * Generated from protobuf field <code>string version = 1;</code>
      * @return string
      */
@@ -52,6 +59,8 @@ class ProtocolIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The version identifier of the service family's wire contract.
+     *
      * Generated from protobuf field <code>string version = 1;</code>
      * @param string $var
      * @return $this
@@ -65,6 +74,8 @@ class ProtocolIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
+     *
      * Generated from protobuf field <code>string descriptor_digest = 2;</code>
      * @return string
      */
@@ -74,6 +85,8 @@ class ProtocolIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
+     * The service family's descriptor identity digest. Its canonical bytes and digest convention are defined by that family; generating documentation does not change an archived handshake identity.
+     *
      * Generated from protobuf field <code>string descriptor_digest = 2;</code>
      * @param string $var
      * @return $this

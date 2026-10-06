@@ -2,6 +2,7 @@ import 'package:acyclic_sdk/src/generated/actors/v1/actors.pb.dart' as actors;
 import 'package:acyclic_sdk/src/generated/stream/v2/stream.pb.dart' as stream;
 import 'package:acyclic_sdk/src/generated/stream/v2/stream.pbgrpc.dart'
     as stream_rpc;
+import 'package:acyclic_sdk/src/remote_policy.dart';
 import 'package:fixnum/fixnum.dart';
 import 'package:grpc/grpc.dart';
 import 'package:test/test.dart';
@@ -41,5 +42,31 @@ void main() {
     expect(client.follow, isNotNull);
     expect(client.children, isNotNull);
     await channel.shutdown();
+  });
+
+  test('public client round trips unknown enum and oneof wire values', () async {
+    final enumWire = <int>[0x0A, 0x02, 0x20, 0x63];
+    final enumResponse = actors.InspectActorResponse.fromBuffer(enumWire);
+    final enumClient = RemoteClient(
+      family: 'actors',
+      installed: const {RemoteTransport.grpc: false, RemoteTransport.httpJson: true},
+      endpoint: const {RemoteTransport.grpc: false, RemoteTransport.httpJson: true},
+      invoker: (_, __, ___) => enumResponse,
+    );
+    final returnedEnum = await enumClient.call('InspectActor', {'actor_id': 'actor-1'})
+        as actors.InspectActorResponse;
+    expect(returnedEnum.writeToBuffer(), enumWire);
+
+    final oneofWire = <int>[0x0A, 0x00, 0x9A, 0x06, 0x01, 0x7F];
+    final oneofResponse = stream.AppendResponse.fromBuffer(oneofWire);
+    final oneofClient = RemoteClient(
+      family: 'stream',
+      installed: const {RemoteTransport.grpc: false, RemoteTransport.httpJson: true},
+      endpoint: const {RemoteTransport.grpc: false, RemoteTransport.httpJson: true},
+      invoker: (_, __, ___) => oneofResponse,
+    );
+    final returnedOneof = await oneofClient.call('Append', {'path': 'events'})
+        as stream.AppendResponse;
+    expect(returnedOneof.writeToBuffer(), oneofWire);
   });
 }

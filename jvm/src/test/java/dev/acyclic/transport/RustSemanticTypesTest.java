@@ -28,7 +28,7 @@ class RustSemanticTypesTest {
     var invoke = RustTypedRequests.actorsInvokeActor(RustSemanticTypes.ActorId.of("actor-1"), RustSemanticTypes.MethodName.of("GET"));
     assertEquals("actor-1", invoke.getActorId());
     assertEquals("GET", invoke.getMethod());
-    var read = RustTypedRequests.streamRead(RustSemanticTypes.PageLimit.of(5));
+    var read = RustTypedRequests.streamRead(RustSemanticTypes.StreamPageLimit.of(5));
     assertEquals(5, read.getLimit());
   }
 }

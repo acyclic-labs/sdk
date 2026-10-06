@@ -274,6 +274,9 @@ func validateInput(root, relative, want string) error {
 }
 
 func copyModuleFiles(sourceRoot, outputRoot string) error {
+	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
+		return fmt.Errorf("create module output: %w", err)
+	}
 	moduleRoot := filepath.Join(sourceRoot, "go")
 	// client.go is a Rust-owned generated facade. Keep it inside the staged
 	// module so consumers receive seamless transport defaults with bindings.

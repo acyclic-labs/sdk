@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Replaces the payload at a target position.
  *
  * Generated from protobuf message <code>inference.customer.v1.Replace</code>
  */
 class Replace extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Replace.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      */
     protected $target = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Replace.
      *
      * Generated from protobuf field <code>bytes payload = 2;</code>
      */
@@ -36,9 +36,9 @@ class Replace extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $target
-     *           A field in the Inference customer v1 wire contract.
+     *           The target value carried by Replace.
      *     @type string $payload
-     *           A field in the Inference customer v1 wire contract.
+     *           The payload value carried by Replace.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class Replace extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Replace.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      * @return string
@@ -59,7 +59,7 @@ class Replace extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The target value carried by Replace.
      *
      * Generated from protobuf field <code>bytes target = 1;</code>
      * @param string $var
@@ -74,7 +74,7 @@ class Replace extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Replace.
      *
      * Generated from protobuf field <code>bytes payload = 2;</code>
      * @return string
@@ -85,7 +85,7 @@ class Replace extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The payload value carried by Replace.
      *
      * Generated from protobuf field <code>bytes payload = 2;</code>
      * @param string $var

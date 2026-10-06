@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Identifies an evaluation to inspect.
  *
  * Generated from protobuf message <code>inference.customer.v1.InspectEvaluationRequest</code>
  */
 class InspectEvaluationRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by InspectEvaluationRequest.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
@@ -30,7 +30,7 @@ class InspectEvaluationRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $evaluation_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The evaluation id value carried by InspectEvaluationRequest.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class InspectEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by InspectEvaluationRequest.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -51,7 +51,7 @@ class InspectEvaluationRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The evaluation id value carried by InspectEvaluationRequest.
      *
      * Generated from protobuf field <code>bytes evaluation_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var

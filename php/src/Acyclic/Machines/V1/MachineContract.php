@@ -10,56 +10,56 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Captures image, capability, lifecycle, network, and budget policy.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.MachineContract</code>
  */
 class MachineContract extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      */
     protected $image = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by MachineContract.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      */
     private $capabilities;
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityPolicy compatibility = 3;</code>
      */
     protected $compatibility = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 4;</code>
      */
     protected $compatibility_revision = '';
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspension value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy suspension = 6;</code>
      */
     protected $suspension = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The expiration value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationPolicy expiration = 7;</code>
      */
     protected $expiration = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The network policy digest value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes network_policy_digest = 8;</code>
      */
     protected $network_policy_digest = '';
     /**
-     * A field in the Machines v1 wire contract.
+     * The budgets value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Budgets budgets = 9;</code>
      */
@@ -72,21 +72,21 @@ class MachineContract extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\Image $image
-     *           A field in the Machines v1 wire contract.
+     *           The image value carried by MachineContract.
      *     @type int[] $capabilities
-     *           A field in the Machines v1 wire contract.
+     *           The capabilities value carried by MachineContract.
      *     @type \Acyclic\Machines\V1\CompatibilityPolicy $compatibility
-     *           A field in the Machines v1 wire contract.
+     *           The compatibility value carried by MachineContract.
      *     @type string $compatibility_revision
-     *           A field in the Machines v1 wire contract.
+     *           The compatibility revision value carried by MachineContract.
      *     @type \Acyclic\Machines\V1\SuspensionPolicy $suspension
-     *           A field in the Machines v1 wire contract.
+     *           The suspension value carried by MachineContract.
      *     @type \Acyclic\Machines\V1\ExpirationPolicy $expiration
-     *           A field in the Machines v1 wire contract.
+     *           The expiration value carried by MachineContract.
      *     @type string $network_policy_digest
-     *           A field in the Machines v1 wire contract.
+     *           The network policy digest value carried by MachineContract.
      *     @type \Acyclic\Machines\V1\Budgets $budgets
-     *           A field in the Machines v1 wire contract.
+     *           The budgets value carried by MachineContract.
      * }
      */
     public function __construct($data = null)
@@ -96,7 +96,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      * @return \Acyclic\Machines\V1\Image|null
@@ -117,7 +117,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The image value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Image image = 1;</code>
      * @param \Acyclic\Machines\V1\Image $var
@@ -131,7 +131,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by MachineContract.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      * @return RepeatedField<int> one of the values in {@see \Acyclic\Machines\V1\Capability}
@@ -142,7 +142,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The capabilities value carried by MachineContract.
      *
      * Generated from protobuf field <code>repeated .acyclic.machines.v1.Capability capabilities = 2;</code>
      * @param int[] $var one of the values in {@see \Acyclic\Machines\V1\Capability}
@@ -157,7 +157,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityPolicy compatibility = 3;</code>
      * @return \Acyclic\Machines\V1\CompatibilityPolicy|null
@@ -178,7 +178,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CompatibilityPolicy compatibility = 3;</code>
      * @param \Acyclic\Machines\V1\CompatibilityPolicy $var
@@ -192,7 +192,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 4;</code>
      * @return string
@@ -203,7 +203,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The compatibility revision value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes compatibility_revision = 4;</code>
      * @param string $var
@@ -218,7 +218,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspension value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy suspension = 6;</code>
      * @return \Acyclic\Machines\V1\SuspensionPolicy|null
@@ -239,7 +239,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The suspension value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy suspension = 6;</code>
      * @param \Acyclic\Machines\V1\SuspensionPolicy $var
@@ -253,7 +253,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The expiration value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationPolicy expiration = 7;</code>
      * @return \Acyclic\Machines\V1\ExpirationPolicy|null
@@ -274,7 +274,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The expiration value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ExpirationPolicy expiration = 7;</code>
      * @param \Acyclic\Machines\V1\ExpirationPolicy $var
@@ -288,7 +288,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The network policy digest value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes network_policy_digest = 8;</code>
      * @return string
@@ -299,7 +299,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The network policy digest value carried by MachineContract.
      *
      * Generated from protobuf field <code>bytes network_policy_digest = 8;</code>
      * @param string $var
@@ -314,7 +314,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The budgets value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Budgets budgets = 9;</code>
      * @return \Acyclic\Machines\V1\Budgets|null
@@ -335,7 +335,7 @@ class MachineContract extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The budgets value carried by MachineContract.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.Budgets budgets = 9;</code>
      * @param \Acyclic\Machines\V1\Budgets $var

@@ -89,6 +89,23 @@ final class RemoteClient
 
     public function call(string $operation, mixed $request): mixed
     {
-        return ($this->invoker)($operation, $request, $this->transport);
+        $request = GeneratedRemotePolicy::validateRequest($operation, $request, $this->family);
+        if (class_exists('Acyclic\\TypePolicy\\Wire')) {
+            $request = \Acyclic\TypePolicy\Wire::normalizeRequest($this->family, $request);
+        }
+        $response = ($this->invoker)($operation, $request, $this->transport);
+        return GeneratedRemotePolicy::validateResponse($operation, $response, $this->family);
+    }
+
+    public function typedField(mixed $response, string $field): mixed
+    {
+        if (!class_exists('Acyclic\\TypePolicy\\Wire')) {
+            return $response;
+        }
+        $getter = 'get' . str_replace(' ', '', ucwords(str_replace('_', ' ', $field)));
+        $value = is_array($response)
+            ? ($response[$field] ?? null)
+            : (method_exists($response, $getter) ? $response->{$getter}() : (method_exists($response, $field) ? $response->{$field}() : null));
+        return \Acyclic\TypePolicy\Wire::typedField($this->family, $field, $value);
     }
 }

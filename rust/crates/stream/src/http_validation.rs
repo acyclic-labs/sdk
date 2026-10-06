@@ -21,9 +21,7 @@ pub fn validate_endpoint(endpoint: &str) -> Result {
         return Err("invalid_endpoint");
     }
     let authority_end = remainder.find(['/', '?', '#']).unwrap_or(remainder.len());
-    let authority = remainder
-        .get(..authority_end)
-        .ok_or("invalid_endpoint")?;
+    let authority = remainder.get(..authority_end).ok_or("invalid_endpoint")?;
     if authority.is_empty()
         || authority.contains('@')
         || remainder
@@ -42,7 +40,10 @@ pub fn validate_endpoint(endpoint: &str) -> Result {
         if !port.is_empty() && !port.starts_with(':') {
             return Err("invalid_endpoint");
         }
-        (host.get(..end).ok_or("invalid_endpoint")?, port.strip_prefix(':'))
+        (
+            host.get(..end).ok_or("invalid_endpoint")?,
+            port.strip_prefix(':'),
+        )
     } else {
         let (host, port) = match authority.rsplit_once(':') {
             Some((host, port)) => (host, Some(port)),

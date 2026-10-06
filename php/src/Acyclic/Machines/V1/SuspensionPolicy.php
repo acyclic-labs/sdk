@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Declares manual or idle based machine suspension.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.SuspensionPolicy</code>
  */
@@ -25,9 +25,9 @@ class SuspensionPolicy extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type bool $manual
-     *           A field in the Machines v1 wire contract.
+     *           The manual value carried by SuspensionPolicy.
      *     @type int|string $after_idle_ms
-     *           A field in the Machines v1 wire contract.
+     *           The after idle ms value carried by SuspensionPolicy.
      * }
      */
     public function __construct($data = null)
@@ -37,7 +37,7 @@ class SuspensionPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The manual value carried by SuspensionPolicy.
      *
      * Generated from protobuf field <code>bool manual = 1;</code>
      * @return bool
@@ -53,7 +53,7 @@ class SuspensionPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The manual value carried by SuspensionPolicy.
      *
      * Generated from protobuf field <code>bool manual = 1;</code>
      * @param bool $var
@@ -67,7 +67,7 @@ class SuspensionPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The after idle ms value carried by SuspensionPolicy.
      *
      * Generated from protobuf field <code>uint64 after_idle_ms = 2;</code>
      * @return int|string
@@ -83,7 +83,7 @@ class SuspensionPolicy extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The after idle ms value carried by SuspensionPolicy.
      *
      * Generated from protobuf field <code>uint64 after_idle_ms = 2;</code>
      * @param int|string $var

@@ -677,13 +677,21 @@ impl HttpFollowCursor {
         let request = wire::FollowRequest::decode(input)
             .map_err(|_| js_error(StreamError::InvalidArgument))?;
         let (path, from) = wire_codec::follow_from_wire(request).map_err(js_error)?;
-        Ok(Self { path: path.to_string(), next: from, empty: false, closed: false })
+        Ok(Self {
+            path: path.to_string(),
+            next: from,
+            empty: false,
+            closed: false,
+        })
     }
 
     #[wasm_bindgen(js_name = tailRequest)]
     pub fn tail_request(&self) -> Result<Vec<u8>, JsValue> {
         self.ensure_open()?;
-        Ok(wire::TailRequest { path: self.path.clone() }.encode_to_vec())
+        Ok(wire::TailRequest {
+            path: self.path.clone(),
+        }
+        .encode_to_vec())
     }
 
     #[wasm_bindgen(js_name = readRequest)]
@@ -693,7 +701,8 @@ impl HttpFollowCursor {
             path: self.path.clone(),
             from: self.next,
             limit: HTTP_FOLLOW_READ_LIMIT,
-        }.encode_to_vec())
+        }
+        .encode_to_vec())
     }
 
     #[wasm_bindgen(js_name = acceptTail)]
@@ -702,7 +711,9 @@ impl HttpFollowCursor {
         let value: Value = serde_json::from_str(response_json)
             .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
         let tail = crate::http_validation::tail_value(&value).map_err(JsValue::from_str)?;
-        if self.next > tail { return Err(js_error(StreamError::OutOfRange)); }
+        if self.next > tail {
+            return Err(js_error(StreamError::OutOfRange));
+        }
         Ok(())
     }
 
@@ -719,19 +730,29 @@ impl HttpFollowCursor {
     }
 
     #[wasm_bindgen(js_name = shouldPoll)]
-    pub fn should_poll(&self) -> bool { !self.closed && self.empty }
+    pub fn should_poll(&self) -> bool {
+        !self.closed && self.empty
+    }
 
     #[wasm_bindgen(js_name = pollDelayMillis)]
-    pub fn poll_delay_millis(&self) -> u32 { HTTP_FOLLOW_POLL_DELAY_MILLIS }
+    pub fn poll_delay_millis(&self) -> u32 {
+        HTTP_FOLLOW_POLL_DELAY_MILLIS
+    }
 
     #[wasm_bindgen(js_name = isClosed)]
-    pub fn is_closed(&self) -> bool { self.closed }
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
 
     #[wasm_bindgen]
-    pub fn close(&mut self) { self.closed = true; }
+    pub fn close(&mut self) {
+        self.closed = true;
+    }
 
     fn ensure_open(&self) -> Result<(), JsValue> {
-        (!self.closed).then_some(()).ok_or_else(|| js_error(StreamError::Unavailable))
+        (!self.closed)
+            .then_some(())
+            .ok_or_else(|| js_error(StreamError::Unavailable))
     }
 }
 

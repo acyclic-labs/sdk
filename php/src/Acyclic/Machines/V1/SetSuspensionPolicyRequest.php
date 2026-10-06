@@ -10,32 +10,32 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests replacement of a machine suspension policy.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.SetSuspensionPolicyRequest</code>
  */
 class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      */
     protected $idempotency_key = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 4;</code>
      */
@@ -48,13 +48,13 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by SetSuspensionPolicyRequest.
      *     @type \Acyclic\Machines\V1\IdempotencyKey $idempotency_key
-     *           A field in the Machines v1 wire contract.
+     *           The idempotency key value carried by SetSuspensionPolicyRequest.
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by SetSuspensionPolicyRequest.
      *     @type \Acyclic\Machines\V1\SuspensionPolicy $policy
-     *           A field in the Machines v1 wire contract.
+     *           The policy value carried by SetSuspensionPolicyRequest.
      * }
      */
     public function __construct($data = null)
@@ -64,7 +64,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -85,7 +85,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -99,7 +99,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @return \Acyclic\Machines\V1\IdempotencyKey|null
@@ -120,7 +120,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The idempotency key value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.IdempotencyKey idempotency_key = 2;</code>
      * @param \Acyclic\Machines\V1\IdempotencyKey $var
@@ -134,7 +134,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -155,7 +155,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 3;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -169,7 +169,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 4;</code>
      * @return \Acyclic\Machines\V1\SuspensionPolicy|null
@@ -190,7 +190,7 @@ class SetSuspensionPolicyRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by SetSuspensionPolicyRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 4;</code>
      * @param \Acyclic\Machines\V1\SuspensionPolicy $var

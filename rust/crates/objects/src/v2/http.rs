@@ -77,11 +77,7 @@ impl HttpObjects {
                     Body::from(bytes)
                 };
                 let reply = self
-                    .post(
-                        "objects/put",
-                        "application/x-ndjson",
-                        request_body,
-                    )
+                    .post("objects/put", "application/x-ndjson", request_body)
                     .await?;
                 self.decode("ObjectInfo", reply).await
             },

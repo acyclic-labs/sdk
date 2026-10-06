@@ -8,15 +8,12 @@ use std::process::Command;
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
     BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
-    generate_csharp_typed_facade,
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
-    generate_embedded_facades, generate_jvm_semantic_types, generate_jvm_typed_clients,
-    generate_jvm_typed_requests, generate_jvm_typed_responses,
-    generate_swift_cpp_typed_facades,
-    generate_product_bindings,
-    generate_remote_facades,
-    generate_type_policy_qualification_tests,
+    generate_csharp_typed_facade, generate_embedded_facades, generate_jvm_semantic_types,
+    generate_jvm_typed_clients, generate_jvm_typed_requests, generate_jvm_typed_responses,
+    generate_portable_typed_facades, generate_product_bindings, generate_remote_facades,
+    generate_swift_cpp_typed_facades, generate_type_policy_qualification_tests,
     harness::{harness_descriptor, harness_proto},
     inference::{inference_descriptor, inference_proto},
     machines::{machines_descriptor, machines_proto},
@@ -26,9 +23,9 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     transport_control::{control_descriptor, control_proto},
     type_policy::{
-        FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, SEMANTIC_TYPES, PublicFieldDirection, SemanticRule, TYPE_PROJECTION_PROFILES,
-        WIRE_UNION_VARIANTS,
-        TypePolicyLanguage, WireValueKind,
+        FIELD_SEMANTIC_TYPES, PUBLIC_FIELD_BINDINGS, PublicFieldDirection, SEMANTIC_TYPES,
+        SemanticRule, TYPE_PROJECTION_PROFILES, TypePolicyLanguage, WIRE_UNION_VARIANTS,
+        WireValueKind,
     },
     workers::{workers_descriptor, workers_proto},
 };
@@ -227,6 +224,7 @@ fn type_policy_json() -> Vec<u8> {
                     PublicFieldDirection::Request => "request",
                     PublicFieldDirection::Response => "response",
                     PublicFieldDirection::NestedMessage => "nested_message",
+                    PublicFieldDirection::EmbeddedOnly => "embedded_only",
                 },
             })
         })
@@ -502,6 +500,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
         }
     }
     for facade in generate_remote_facades() {
+        artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
+    }
+    for facade in generate_portable_typed_facades() {
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
     }
     for (path, source) in generate_jvm_semantic_types() {

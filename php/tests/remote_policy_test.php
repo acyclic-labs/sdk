@@ -25,6 +25,30 @@ if ($client->transport() !== $expectedNative || $client->call('append', ['path' 
 if ($client->runtime() !== 'native' || RemotePolicy::resolveRuntime() !== 'native') {
     throw new RuntimeException('automatic native runtime resolution failed');
 }
+if (class_exists('Acyclic\\TypePolicy\\Path')) {
+    $typed = new RemoteClient(
+        'stream',
+        static function (string $operation, array $request, string $transport) use (&$calls): string {
+            $calls[] = [$operation, $request, $transport];
+            return 'typed-ok';
+        },
+        'native',
+        false,
+        null,
+        null,
+        true,
+        ['grpc' => false, 'http_json' => true],
+        ['grpc' => false, 'http_json' => true],
+    );
+    if ($typed->call('append', ['path' => \Acyclic\TypePolicy\Path::from('events')]) !== 'typed-ok') {
+        throw new RuntimeException('Rust-owned PHP value object was not accepted by the public facade');
+    }
+    try {
+        $typed->call('append', ['path' => '']);
+        throw new RuntimeException('invalid Rust-owned PHP value was accepted by the public facade');
+    } catch (InvalidArgumentException $expected) {
+    }
+}
 $browser = RemotePolicy::select('stream', true, 'browser');
 if ($browser !== RemotePolicy::HTTP_JSON) {
     throw new RuntimeException('embedded browser runtime did not select HTTP JSON');

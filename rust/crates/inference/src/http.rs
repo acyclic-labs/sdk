@@ -64,7 +64,10 @@ impl Client {
         ca_pem: Option<&[u8]>,
     ) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-        let loopback = matches!(endpoint.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
+        let loopback = matches!(
+            endpoint.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        );
         if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
@@ -107,8 +110,10 @@ impl Client {
             endpoint,
             token: token.to_owned(),
             maximum: maximum_response_bytes.min(MAXIMUM_HTTP_JSON_BYTES),
-            descriptors: DescriptorPool::decode(include_bytes!("../inference_descriptor.bin").as_slice())
-                .map_err(|_| Error::MalformedResponse)?,
+            descriptors: DescriptorPool::decode(
+                include_bytes!("../inference_descriptor.bin").as_slice(),
+            )
+            .map_err(|_| Error::MalformedResponse)?,
         })
     }
 
@@ -142,7 +147,10 @@ impl Client {
             return Ok(false);
         }
         if !(200..300).contains(&status) {
-            return Err(Error::Service { status, detail: None });
+            return Err(Error::Service {
+                status,
+                detail: None,
+            });
         }
         if !response
             .headers()
@@ -190,8 +198,7 @@ impl Client {
             .map_err(|_| Error::MalformedResponse)?
             .into_iter()
             .find(|route| {
-                route.method.name() == method_name
-                    && route.method.input().full_name() == input_name
+                route.method.name() == method_name && route.method.input().full_name() == input_name
             })
             .ok_or(Error::InvalidArgument)?;
         Ok((route.path, route.method.output().full_name().to_owned()))
@@ -252,7 +259,11 @@ impl Client {
         }
         let response = self
             .transport
-            .post(self.endpoint.join(&route).map_err(|_| Error::InvalidArgument)?)
+            .post(
+                self.endpoint
+                    .join(&route)
+                    .map_err(|_| Error::InvalidArgument)?,
+            )
             .timeout(std::time::Duration::from_secs(60))
             .bearer_auth(&self.token)
             .header("content-type", "application/json")
@@ -269,10 +280,7 @@ impl Client {
         self.decode(output.as_str(), &bytes)
     }
 
-    async fn stream(
-        &self,
-        request: &wire::WatchRunRequest,
-    ) -> Result<Vec<wire::RunEvent>, Error> {
+    async fn stream(&self, request: &wire::WatchRunRequest) -> Result<Vec<wire::RunEvent>, Error> {
         let input = "inference.customer.v1.WatchRunRequest";
         let (route, output) = self.route("Watch", input)?;
         let descriptor = self
@@ -291,7 +299,11 @@ impl Client {
         }
         let response = self
             .transport
-            .post(self.endpoint.join(&route).map_err(|_| Error::InvalidArgument)?)
+            .post(
+                self.endpoint
+                    .join(&route)
+                    .map_err(|_| Error::InvalidArgument)?,
+            )
             .timeout(std::time::Duration::from_secs(60))
             .bearer_auth(&self.token)
             .header("content-type", "application/json")
@@ -315,11 +327,13 @@ impl Client {
             for line in bytes.split(|byte| *byte == b'\n') {
                 let line = line.strip_suffix(b"\r").unwrap_or(line);
                 if !line.is_empty() {
-                    values.push(serde_json::from_slice(line).map_err(|_| Error::MalformedResponse)?);
+                    values
+                        .push(serde_json::from_slice(line).map_err(|_| Error::MalformedResponse)?);
                 }
             }
         } else {
-            let value: Value = serde_json::from_slice(&bytes).map_err(|_| Error::MalformedResponse)?;
+            let value: Value =
+                serde_json::from_slice(&bytes).map_err(|_| Error::MalformedResponse)?;
             match value {
                 Value::Array(items) => values = items,
                 value => values.push(value),
@@ -339,60 +353,151 @@ impl Client {
     }
 
     /// Models/List.
-    pub async fn list(&self, request: &wire::ListModelsRequest) -> Result<wire::ListModelsResponse, Error> {
-        self.call("List", "inference.customer.v1.ListModelsRequest", request).await
+    pub async fn list(
+        &self,
+        request: &wire::ListModelsRequest,
+    ) -> Result<wire::ListModelsResponse, Error> {
+        self.call("List", "inference.customer.v1.ListModelsRequest", request)
+            .await
     }
     /// Contexts/Create.
-    pub async fn create_context(&self, request: &wire::CreateContextRequest) -> Result<wire::MutationReceipt, Error> {
-        self.call("Create", "inference.customer.v1.CreateContextRequest", request).await
+    pub async fn create_context(
+        &self,
+        request: &wire::CreateContextRequest,
+    ) -> Result<wire::MutationReceipt, Error> {
+        self.call(
+            "Create",
+            "inference.customer.v1.CreateContextRequest",
+            request,
+        )
+        .await
     }
     /// Contexts/Inspect.
-    pub async fn inspect_context(&self, request: &wire::InspectContextRequest) -> Result<wire::ContextView, Error> {
-        self.call("Inspect", "inference.customer.v1.InspectContextRequest", request).await
+    pub async fn inspect_context(
+        &self,
+        request: &wire::InspectContextRequest,
+    ) -> Result<wire::ContextView, Error> {
+        self.call(
+            "Inspect",
+            "inference.customer.v1.InspectContextRequest",
+            request,
+        )
+        .await
     }
     /// Contexts/Mutate.
-    pub async fn mutate_context(&self, request: &wire::MutateContextRequest) -> Result<wire::MutationReceipt, Error> {
-        self.call("Mutate", "inference.customer.v1.MutateContextRequest", request).await
+    pub async fn mutate_context(
+        &self,
+        request: &wire::MutateContextRequest,
+    ) -> Result<wire::MutationReceipt, Error> {
+        self.call(
+            "Mutate",
+            "inference.customer.v1.MutateContextRequest",
+            request,
+        )
+        .await
     }
     /// WarmContexts/Retain.
-    pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<wire::WarmView, Error> {
-        self.call("Retain", "inference.customer.v1.RetainWarmRequest", request).await
+    pub async fn retain_warm(
+        &self,
+        request: &wire::RetainWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
+        self.call("Retain", "inference.customer.v1.RetainWarmRequest", request)
+            .await
     }
     /// WarmContexts/Inspect.
-    pub async fn inspect_warm(&self, request: &wire::InspectWarmRequest) -> Result<wire::WarmView, Error> {
-        self.call("Inspect", "inference.customer.v1.InspectWarmRequest", request).await
+    pub async fn inspect_warm(
+        &self,
+        request: &wire::InspectWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
+        self.call(
+            "Inspect",
+            "inference.customer.v1.InspectWarmRequest",
+            request,
+        )
+        .await
     }
     /// WarmContexts/Renew.
-    pub async fn renew_warm(&self, request: &wire::RenewWarmRequest) -> Result<wire::WarmView, Error> {
-        self.call("Renew", "inference.customer.v1.RenewWarmRequest", request).await
+    pub async fn renew_warm(
+        &self,
+        request: &wire::RenewWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
+        self.call("Renew", "inference.customer.v1.RenewWarmRequest", request)
+            .await
     }
     /// WarmContexts/Release.
-    pub async fn release_warm(&self, request: &wire::ReleaseWarmRequest) -> Result<wire::WarmView, Error> {
-        self.call("Release", "inference.customer.v1.ReleaseWarmRequest", request).await
+    pub async fn release_warm(
+        &self,
+        request: &wire::ReleaseWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
+        self.call(
+            "Release",
+            "inference.customer.v1.ReleaseWarmRequest",
+            request,
+        )
+        .await
     }
     /// Runs/Generate.
-    pub async fn generate_run(&self, request: &wire::GenerateRunRequest) -> Result<wire::GenerateRunResponse, Error> {
-        self.call("Generate", "inference.customer.v1.GenerateRunRequest", request).await
+    pub async fn generate_run(
+        &self,
+        request: &wire::GenerateRunRequest,
+    ) -> Result<wire::GenerateRunResponse, Error> {
+        self.call(
+            "Generate",
+            "inference.customer.v1.GenerateRunRequest",
+            request,
+        )
+        .await
     }
     /// Runs/Inspect.
-    pub async fn inspect_run(&self, request: &wire::InspectRunRequest) -> Result<wire::RunView, Error> {
-        self.call("Inspect", "inference.customer.v1.InspectRunRequest", request).await
+    pub async fn inspect_run(
+        &self,
+        request: &wire::InspectRunRequest,
+    ) -> Result<wire::RunView, Error> {
+        self.call(
+            "Inspect",
+            "inference.customer.v1.InspectRunRequest",
+            request,
+        )
+        .await
     }
     /// Runs/Watch, returned as an ordered finite stream.
-    pub async fn watch_run(&self, request: &wire::WatchRunRequest) -> Result<Vec<wire::RunEvent>, Error> {
+    pub async fn watch_run(
+        &self,
+        request: &wire::WatchRunRequest,
+    ) -> Result<Vec<wire::RunEvent>, Error> {
         self.stream(request).await
     }
     /// Runs/Cancel.
-    pub async fn cancel_run(&self, request: &wire::InspectRunRequest) -> Result<wire::RunView, Error> {
-        self.call("Cancel", "inference.customer.v1.InspectRunRequest", request).await
+    pub async fn cancel_run(
+        &self,
+        request: &wire::InspectRunRequest,
+    ) -> Result<wire::RunView, Error> {
+        self.call("Cancel", "inference.customer.v1.InspectRunRequest", request)
+            .await
     }
     /// Evaluations/Create.
-    pub async fn create_evaluation(&self, request: &wire::CreateEvaluationRequest) -> Result<wire::EvaluationView, Error> {
-        self.call("Create", "inference.customer.v1.CreateEvaluationRequest", request).await
+    pub async fn create_evaluation(
+        &self,
+        request: &wire::CreateEvaluationRequest,
+    ) -> Result<wire::EvaluationView, Error> {
+        self.call(
+            "Create",
+            "inference.customer.v1.CreateEvaluationRequest",
+            request,
+        )
+        .await
     }
     /// Evaluations/Inspect.
-    pub async fn inspect_evaluation(&self, request: &wire::InspectEvaluationRequest) -> Result<wire::EvaluationView, Error> {
-        self.call("Inspect", "inference.customer.v1.InspectEvaluationRequest", request).await
+    pub async fn inspect_evaluation(
+        &self,
+        request: &wire::InspectEvaluationRequest,
+    ) -> Result<wire::EvaluationView, Error> {
+        self.call(
+            "Inspect",
+            "inference.customer.v1.InspectEvaluationRequest",
+            request,
+        )
+        .await
     }
 }
 

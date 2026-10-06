@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Describes one append, insert, replace, or delete edit.
  *
  * Generated from protobuf message <code>inference.customer.v1.Edit</code>
  */
@@ -25,15 +25,15 @@ class Edit extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\Item $append
-     *           A field in the Inference customer v1 wire contract.
+     *           The append value carried by Edit.
      *     @type \Inference\Customer\V1\Insert $insert_before
-     *           A field in the Inference customer v1 wire contract.
+     *           The insert before value carried by Edit.
      *     @type \Inference\Customer\V1\Insert $insert_after
-     *           A field in the Inference customer v1 wire contract.
+     *           The insert after value carried by Edit.
      *     @type \Inference\Customer\V1\Replace $replace
-     *           A field in the Inference customer v1 wire contract.
+     *           The replace value carried by Edit.
      *     @type string $delete
-     *           A field in the Inference customer v1 wire contract.
+     *           The delete value carried by Edit.
      * }
      */
     public function __construct($data = null)
@@ -43,7 +43,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The append value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item append = 1;</code>
      * @return \Inference\Customer\V1\Item|null
@@ -59,7 +59,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The append value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item append = 1;</code>
      * @param \Inference\Customer\V1\Item $var
@@ -73,7 +73,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The insert before value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Insert insert_before = 2;</code>
      * @return \Inference\Customer\V1\Insert|null
@@ -89,7 +89,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The insert before value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Insert insert_before = 2;</code>
      * @param \Inference\Customer\V1\Insert $var
@@ -103,7 +103,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The insert after value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Insert insert_after = 3;</code>
      * @return \Inference\Customer\V1\Insert|null
@@ -119,7 +119,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The insert after value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Insert insert_after = 3;</code>
      * @param \Inference\Customer\V1\Insert $var
@@ -133,7 +133,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The replace value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Replace replace = 4;</code>
      * @return \Inference\Customer\V1\Replace|null
@@ -149,7 +149,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The replace value carried by Edit.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Replace replace = 4;</code>
      * @param \Inference\Customer\V1\Replace $var
@@ -163,7 +163,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The delete value carried by Edit.
      *
      * Generated from protobuf field <code>bytes delete = 5;</code>
      * @return string
@@ -179,7 +179,7 @@ class Edit extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The delete value carried by Edit.
      *
      * Generated from protobuf field <code>bytes delete = 5;</code>
      * @param string $var

@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Truncates a context through a selected position.
  *
  * Generated from protobuf message <code>inference.customer.v1.Truncate</code>
  */
 class Truncate extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The through value carried by Truncate.
      *
      * Generated from protobuf field <code>optional bytes through = 1;</code>
      */
@@ -30,7 +30,7 @@ class Truncate extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $through
-     *           A field in the Inference customer v1 wire contract.
+     *           The through value carried by Truncate.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class Truncate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The through value carried by Truncate.
      *
      * Generated from protobuf field <code>optional bytes through = 1;</code>
      * @return string
@@ -61,7 +61,7 @@ class Truncate extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The through value carried by Truncate.
      *
      * Generated from protobuf field <code>optional bytes through = 1;</code>
      * @param string $var

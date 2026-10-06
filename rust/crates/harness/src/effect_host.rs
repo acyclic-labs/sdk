@@ -1,5 +1,6 @@
 //! Conversation-owned reconciliation of already dispatched provider effects.
 
+use crate::BoxFuture;
 use crate::{
     EffectId, Error, IdempotencyKey, OperationId, Result,
     conversation::ContentResidencyVerifier,
@@ -9,7 +10,6 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_stream::{StreamClient, StreamProvider};
-use futures::future::BoxFuture;
 use std::sync::Arc;
 
 /// Resolves a pinned provider attempt into its owning conversation history.

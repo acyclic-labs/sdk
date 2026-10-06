@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Binds a mutation or run request to a caller-supplied identity.
  *
  * Generated from protobuf message <code>inference.customer.v1.RequestIdentity</code>
  */
 class RequestIdentity extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller instance identity.
      *
      * Generated from protobuf field <code>bytes client_instance = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $client_instance = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller request identity.
      *
      * Generated from protobuf field <code>bytes request_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
@@ -36,9 +36,9 @@ class RequestIdentity extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $client_instance
-     *           A field in the Inference customer v1 wire contract.
+     *           The caller instance identity.
      *     @type string $request_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The caller request identity.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class RequestIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller instance identity.
      *
      * Generated from protobuf field <code>bytes client_instance = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -59,7 +59,7 @@ class RequestIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller instance identity.
      *
      * Generated from protobuf field <code>bytes client_instance = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class RequestIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller request identity.
      *
      * Generated from protobuf field <code>bytes request_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -85,7 +85,7 @@ class RequestIdentity extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The caller request identity.
      *
      * Generated from protobuf field <code>bytes request_id = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var

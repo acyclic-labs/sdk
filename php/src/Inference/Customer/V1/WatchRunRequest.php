@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Identifies a run and starting event sequence to watch.
  *
  * Generated from protobuf message <code>inference.customer.v1.WatchRunRequest</code>
  */
 class WatchRunRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      */
     protected $run_id = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The from sequence value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>uint64 from_sequence = 2;</code>
      */
@@ -36,9 +36,9 @@ class WatchRunRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $run_id
-     *           A field in the Inference customer v1 wire contract.
+     *           The run id value carried by WatchRunRequest.
      *     @type int|string $from_sequence
-     *           A field in the Inference customer v1 wire contract.
+     *           The from sequence value carried by WatchRunRequest.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class WatchRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @return string
@@ -59,7 +59,7 @@ class WatchRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The run id value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>bytes run_id = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 16];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class WatchRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The from sequence value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>uint64 from_sequence = 2;</code>
      * @return int|string
@@ -85,7 +85,7 @@ class WatchRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The from sequence value carried by WatchRunRequest.
      *
      * Generated from protobuf field <code>uint64 from_sequence = 2;</code>
      * @param int|string $var

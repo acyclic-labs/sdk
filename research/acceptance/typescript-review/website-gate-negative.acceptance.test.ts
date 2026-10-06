@@ -73,6 +73,10 @@ async function writeSourceAuthority(repositoryRoot: string, authorityPath: strin
 async function stageDocsCrate(scratch: string) {
   const docsManifestRoot = join(scratch, "sdk-docs");
   await cp(join(root, "rust/crates/sdk-docs"), docsManifestRoot, { recursive: true });
+  // sdk-docs has a local path dependency; stage that sibling too so the
+  // disposable crate exercises the production manifest instead of failing
+  // before the website gate is reached.
+  await cp(join(root, "rust/crates/sdk-source-identity"), join(scratch, "sdk-source-identity"), { recursive: true });
   const lock = spawnSync("cargo", [
     "generate-lockfile", "--manifest-path", join(docsManifestRoot, "Cargo.toml"), "--offline",
   ], { cwd: root, encoding: "utf8" });

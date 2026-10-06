@@ -1,5 +1,9 @@
 /** Rust-backed bounded storage for MemoryConversation's ephemeral volume. */
-import { WasmContentStore } from "../generated/wasm/acyclic_harness_wasm.js";
+import {
+  harnessDefaultResidentBytes,
+  harnessDefaultResidentFiles,
+  WasmContentStore,
+} from "../generated/wasm/acyclic_harness_wasm.js";
 import type { FileRef, VolumeRef } from "./conversation.js";
 import type { PrivateDirectoryPage } from "./runtime.js";
 
@@ -21,16 +25,20 @@ export class MemoryContentStore {
     volume: VolumeRef,
     maximumFileBytes: number,
     maximumPathBytes: number,
-    maximumResidentBytes: number,
-    maximumResidentFiles: number,
+    maximumResidentBytes?: number,
+    maximumResidentFiles?: number,
   ) {
-    this.#native = new WasmContentStore(
-      volume,
-      maximumFileBytes,
-      maximumPathBytes,
-      maximumResidentBytes,
-      maximumResidentFiles,
-    );
+    if (maximumResidentBytes === undefined && maximumResidentFiles === undefined) {
+      this.#native = WasmContentStore.newDefault(volume, maximumFileBytes, maximumPathBytes);
+    } else {
+      this.#native = new WasmContentStore(
+        volume,
+        maximumFileBytes,
+        maximumPathBytes,
+        maximumResidentBytes ?? harnessDefaultResidentBytes(),
+        maximumResidentFiles ?? harnessDefaultResidentFiles(),
+      );
+    }
   }
 
   stage(

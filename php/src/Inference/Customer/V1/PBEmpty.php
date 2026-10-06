@@ -10,7 +10,7 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * An empty context mutation operation.
  *
  * Generated from protobuf message <code>inference.customer.v1.Empty</code>
  */

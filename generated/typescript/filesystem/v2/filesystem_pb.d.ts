@@ -54,6 +54,10 @@ export declare type GenerationRef = Message<"acyclic.filesystem.v2.GenerationRef
 export declare const GenerationRefSchema: GenMessage<GenerationRef>;
 
 /**
+ * Durable context control-plane records. Paths are UTF-8 native absolute paths;
+ * file contents and credentials never travel in these records. The repeated
+ * roots are ordered by root_id, and duplicate IDs are invalid.
+ *
  * @generated from message acyclic.filesystem.v2.WorkspaceContextRoot
  */
 export declare type WorkspaceContextRoot = Message<"acyclic.filesystem.v2.WorkspaceContextRoot"> & {
@@ -76,6 +80,16 @@ export declare type WorkspaceContextRoot = Message<"acyclic.filesystem.v2.Worksp
    * @generated from field: string workspace_name = 4;
    */
   workspaceName: string;
+
+  /**
+   * @generated from field: optional bytes parent_workspace_id = 5;
+   */
+  parentWorkspaceId?: Uint8Array | undefined;
+
+  /**
+   * @generated from field: optional string mount_path = 6;
+   */
+  mountPath?: string | undefined;
 };
 
 /**
@@ -118,6 +132,11 @@ export declare type WorkspaceContextSnapshot = Message<"acyclic.filesystem.v2.Wo
    * @generated from field: bytes context_id = 3;
    */
   contextId: Uint8Array;
+
+  /**
+   * @generated from field: optional bytes parent_context_id = 4;
+   */
+  parentContextId?: Uint8Array | undefined;
 
   /**
    * @generated from field: repeated acyclic.filesystem.v2.WorkspaceContextRoot roots = 5;
@@ -1511,6 +1530,9 @@ export declare const MutationSchema: GenMessage<Mutation>;
  */
 export declare type ApplyTransactionRequest = Message<"acyclic.filesystem.v2.ApplyTransactionRequest"> & {
   /**
+   * Exact immutable base observed by the caller. Independent head changes are
+   * rebased from this state; dependency overlap is returned as conflicts.
+   *
    * @generated from field: acyclic.filesystem.v2.GenerationRef base = 1;
    */
   base?: GenerationRef | undefined;
@@ -2609,6 +2631,16 @@ export declare const CredentialRequestSchema: GenMessage<CredentialRequest>;
  */
 export declare type CredentialResponse = Message<"acyclic.filesystem.v2.CredentialResponse"> & {
   /**
+   * @generated from field: string endpoint = 1;
+   */
+  endpoint: string;
+
+  /**
+   * @generated from field: int64 expires_at_unix_seconds = 2;
+   */
+  expiresAtUnixSeconds: bigint;
+
+  /**
    * @generated from oneof acyclic.filesystem.v2.CredentialResponse.credential
    */
   credential: {
@@ -2624,16 +2656,6 @@ export declare type CredentialResponse = Message<"acyclic.filesystem.v2.Credenti
     value: S3Credential;
     case: "s3";
   } | { case: undefined; value?: undefined };
-
-  /**
-   * @generated from field: string endpoint = 1;
-   */
-  endpoint: string;
-
-  /**
-   * @generated from field: int64 expires_at_unix_seconds = 2;
-   */
-  expiresAtUnixSeconds: bigint;
 };
 
 /**
@@ -3512,4 +3534,3 @@ export declare const FilesystemService: GenService<{
     output: typeof CancelResponseSchema;
   },
 }>;
-

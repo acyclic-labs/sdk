@@ -57,19 +57,19 @@ object RustSemanticTypesKotlin {
     companion object { fun of(value: String): JobId { require(value.isNotEmpty()) { "JobId must be non-empty" }; require(value.isNotEmpty()) { "JobId must be non-empty" }; return JobId(value) } }
   }
 
-  @JvmInline value class MachineId private constructor(val value: String) {
-    fun toWire(): String = value
-    companion object { fun of(value: String): MachineId { require(value.isNotEmpty()) { "MachineId must be non-empty" }; require(value.isNotEmpty()) { "MachineId must be non-empty" }; return MachineId(value) } }
+  @JvmInline value class MachineId private constructor(val value: com.google.protobuf.ByteString) {
+    fun toWire(): com.google.protobuf.ByteString = value
+    companion object { fun of(value: com.google.protobuf.ByteString): MachineId { require(value.size() > 0) { "MachineId must be non-empty" }; require(value.size() == 16) { "MachineId must contain exactly 16 bytes" }; return MachineId(value) } }
   }
 
-  @JvmInline value class OperationId private constructor(val value: String) {
-    fun toWire(): String = value
-    companion object { fun of(value: String): OperationId { require(value.isNotEmpty()) { "OperationId must be non-empty" }; require(value.isNotEmpty()) { "OperationId must be non-empty" }; return OperationId(value) } }
+  @JvmInline value class OperationId private constructor(val value: com.google.protobuf.ByteString) {
+    fun toWire(): com.google.protobuf.ByteString = value
+    companion object { fun of(value: com.google.protobuf.ByteString): OperationId { require(value.size() > 0) { "OperationId must be non-empty" }; require(value.size() == 16) { "OperationId must contain exactly 16 bytes" }; return OperationId(value) } }
   }
 
-  @JvmInline value class CheckpointId private constructor(val value: String) {
-    fun toWire(): String = value
-    companion object { fun of(value: String): CheckpointId { require(value.isNotEmpty()) { "CheckpointId must be non-empty" }; require(value.isNotEmpty()) { "CheckpointId must be non-empty" }; return CheckpointId(value) } }
+  @JvmInline value class CheckpointId private constructor(val value: com.google.protobuf.ByteString) {
+    fun toWire(): com.google.protobuf.ByteString = value
+    companion object { fun of(value: com.google.protobuf.ByteString): CheckpointId { require(value.size() > 0) { "CheckpointId must be non-empty" }; require(value.size() == 16) { "CheckpointId must contain exactly 16 bytes" }; return CheckpointId(value) } }
   }
 
   @JvmInline value class IdempotencyKeyBytes private constructor(val value: com.google.protobuf.ByteString) {
@@ -130,6 +130,21 @@ object RustSemanticTypesKotlin {
   @JvmInline value class PageLimit private constructor(val value: Long) {
     fun toWire(): Long = value
     companion object { fun of(value: Long): PageLimit { require(value > 0) { "PageLimit must be positive" }; require(value <= 1000) { "PageLimit exceeds its maximum" }; return PageLimit(value) } }
+  }
+
+  @JvmInline value class StreamPageLimit private constructor(val value: Long) {
+    fun toWire(): Long = value
+    companion object { fun of(value: Long): StreamPageLimit { require(value > 0) { "StreamPageLimit must be positive" }; require(value <= 1024) { "StreamPageLimit exceeds its maximum" }; return StreamPageLimit(value) } }
+  }
+
+  @JvmInline value class MachinePageLimit private constructor(val value: Long) {
+    fun toWire(): Long = value
+    companion object { fun of(value: Long): MachinePageLimit { require(value > 0) { "MachinePageLimit must be positive" }; require(value <= 256) { "MachinePageLimit exceeds its maximum" }; return MachinePageLimit(value) } }
+  }
+
+  @JvmInline value class MachineEventPageLimit private constructor(val value: Long) {
+    fun toWire(): Long = value
+    companion object { fun of(value: Long): MachineEventPageLimit { require(value > 0) { "MachineEventPageLimit must be positive" }; require(value <= 1024) { "MachineEventPageLimit exceeds its maximum" }; return MachineEventPageLimit(value) } }
   }
 
   @JvmInline value class CommitId private constructor(val value: com.google.protobuf.ByteString) {

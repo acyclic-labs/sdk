@@ -10,56 +10,56 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Reports an immutable context revision and its provenance.
  *
  * Generated from protobuf message <code>inference.customer.v1.ContextView</code>
  */
 class ContextView extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $revision = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The parent value carried by ContextView.
      *
      * Generated from protobuf field <code>optional bytes parent = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $parent = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The lineage value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes lineage = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $lineage = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes execution_profile = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $execution_profile = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The content digest value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes content_digest = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $content_digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by ContextView.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 6;</code>
      */
     private $items;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ContextView.
      *
      * Generated from protobuf field <code>string model = 7 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $model = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The provenance value carried by ContextView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ContextProvenance provenance = 8 [(.acyclic.validation.v1.required_message) = true];</code>
      */
@@ -72,21 +72,21 @@ class ContextView extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $revision
-     *           A field in the Inference customer v1 wire contract.
+     *           The revision value carried by ContextView.
      *     @type string $parent
-     *           A field in the Inference customer v1 wire contract.
+     *           The parent value carried by ContextView.
      *     @type string $lineage
-     *           A field in the Inference customer v1 wire contract.
+     *           The lineage value carried by ContextView.
      *     @type string $execution_profile
-     *           A field in the Inference customer v1 wire contract.
+     *           The execution profile value carried by ContextView.
      *     @type string $content_digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The content digest value carried by ContextView.
      *     @type \Inference\Customer\V1\Item[] $items
-     *           A field in the Inference customer v1 wire contract.
+     *           The items value carried by ContextView.
      *     @type string $model
-     *           A field in the Inference customer v1 wire contract.
+     *           The model value carried by ContextView.
      *     @type \Inference\Customer\V1\ContextProvenance $provenance
-     *           A field in the Inference customer v1 wire contract.
+     *           The provenance value carried by ContextView.
      * }
      */
     public function __construct($data = null)
@@ -96,7 +96,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -107,7 +107,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The revision value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes revision = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -122,7 +122,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The parent value carried by ContextView.
      *
      * Generated from protobuf field <code>optional bytes parent = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -143,7 +143,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The parent value carried by ContextView.
      *
      * Generated from protobuf field <code>optional bytes parent = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -158,7 +158,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The lineage value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes lineage = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -169,7 +169,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The lineage value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes lineage = 3 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -184,7 +184,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes execution_profile = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -195,7 +195,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The execution profile value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes execution_profile = 4 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -210,7 +210,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The content digest value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes content_digest = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -221,7 +221,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The content digest value carried by ContextView.
      *
      * Generated from protobuf field <code>bytes content_digest = 5 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -236,7 +236,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by ContextView.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 6;</code>
      * @return RepeatedField<\Inference\Customer\V1\Item>
@@ -247,7 +247,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The items value carried by ContextView.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.Item items = 6;</code>
      * @param \Inference\Customer\V1\Item[] $var
@@ -262,7 +262,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ContextView.
      *
      * Generated from protobuf field <code>string model = 7 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -273,7 +273,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The model value carried by ContextView.
      *
      * Generated from protobuf field <code>string model = 7 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -288,7 +288,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The provenance value carried by ContextView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ContextProvenance provenance = 8 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\ContextProvenance|null
@@ -309,7 +309,7 @@ class ContextView extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The provenance value carried by ContextView.
      *
      * Generated from protobuf field <code>.inference.customer.v1.ContextProvenance provenance = 8 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\ContextProvenance $var

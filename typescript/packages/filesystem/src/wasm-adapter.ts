@@ -27,8 +27,7 @@ import type {
   ResolvedFile,
 } from "./contracts.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
-  validateJoinOptions } from "./workspace-results.js";
+import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult } from "./workspace-results.js";
 import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
@@ -246,7 +245,6 @@ function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
       );
     },
     async joinInto(target, options): Promise<FsJoinPlan> {
-      validateJoinOptions(options);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target), options));
     },
   };

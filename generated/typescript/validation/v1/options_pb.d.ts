@@ -69,4 +69,3 @@ export declare const required_oneof: GenExtension<OneofOptions, boolean>;
  * @generated from extension: optional string http_path = 51012;
  */
 export declare const http_path: GenExtension<MethodOptions, string>;
-

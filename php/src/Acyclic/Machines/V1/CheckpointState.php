@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Reports checkpoint lineage, contract, and forkability.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.CheckpointState</code>
  */
 class CheckpointState extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      */
     protected $checkpoint = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      */
     protected $source = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      */
     protected $contract = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The forkable value carried by CheckpointState.
      *
      * Generated from protobuf field <code>bool forkable = 4;</code>
      */
     protected $forkable = false;
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by CheckpointState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 5;</code>
      */
@@ -54,15 +54,15 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\CheckpointId $checkpoint
-     *           A field in the Machines v1 wire contract.
+     *           The checkpoint value carried by CheckpointState.
      *     @type \Acyclic\Machines\V1\MachineId $source
-     *           A field in the Machines v1 wire contract.
+     *           The source value carried by CheckpointState.
      *     @type \Acyclic\Machines\V1\MachineContract $contract
-     *           A field in the Machines v1 wire contract.
+     *           The contract value carried by CheckpointState.
      *     @type bool $forkable
-     *           A field in the Machines v1 wire contract.
+     *           The forkable value carried by CheckpointState.
      *     @type int|string $created_at_unix_ms
-     *           A field in the Machines v1 wire contract.
+     *           The created at unix ms value carried by CheckpointState.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @return \Acyclic\Machines\V1\CheckpointId|null
@@ -93,7 +93,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The checkpoint value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.CheckpointId checkpoint = 1;</code>
      * @param \Acyclic\Machines\V1\CheckpointId $var
@@ -107,7 +107,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -128,7 +128,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The source value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId source = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -142,7 +142,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      * @return \Acyclic\Machines\V1\MachineContract|null
@@ -163,7 +163,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The contract value carried by CheckpointState.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineContract contract = 3;</code>
      * @param \Acyclic\Machines\V1\MachineContract $var
@@ -177,7 +177,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The forkable value carried by CheckpointState.
      *
      * Generated from protobuf field <code>bool forkable = 4;</code>
      * @return bool
@@ -188,7 +188,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The forkable value carried by CheckpointState.
      *
      * Generated from protobuf field <code>bool forkable = 4;</code>
      * @param bool $var
@@ -202,7 +202,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by CheckpointState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 5;</code>
      * @return int|string
@@ -213,7 +213,7 @@ class CheckpointState extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The created at unix ms value carried by CheckpointState.
      *
      * Generated from protobuf field <code>uint64 created_at_unix_ms = 5;</code>
      * @param int|string $var

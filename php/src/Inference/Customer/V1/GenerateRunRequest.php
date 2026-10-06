@@ -10,38 +10,38 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Requests a recoverable generation run from a context revision.
  *
  * Generated from protobuf message <code>inference.customer.v1.GenerateRunRequest</code>
  */
 class GenerateRunRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $identity = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $context = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item input = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      */
     protected $input = null;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      */
     protected $maximum_output = 0;
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The seed value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>optional uint64 seed = 5;</code>
      */
@@ -54,15 +54,15 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Inference\Customer\V1\RequestIdentity $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by GenerateRunRequest.
      *     @type string $context
-     *           A field in the Inference customer v1 wire contract.
+     *           The context value carried by GenerateRunRequest.
      *     @type \Inference\Customer\V1\Item $input
-     *           A field in the Inference customer v1 wire contract.
+     *           The input value carried by GenerateRunRequest.
      *     @type int|string $maximum_output
-     *           A field in the Inference customer v1 wire contract.
+     *           The maximum output value carried by GenerateRunRequest.
      *     @type int|string $seed
-     *           A field in the Inference customer v1 wire contract.
+     *           The seed value carried by GenerateRunRequest.
      * }
      */
     public function __construct($data = null)
@@ -72,7 +72,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\RequestIdentity|null
@@ -93,7 +93,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.RequestIdentity identity = 1 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\RequestIdentity $var
@@ -107,7 +107,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -118,7 +118,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The context value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>bytes context = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -133,7 +133,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item input = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @return \Inference\Customer\V1\Item|null
@@ -154,7 +154,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The input value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>.inference.customer.v1.Item input = 3 [(.acyclic.validation.v1.required_message) = true];</code>
      * @param \Inference\Customer\V1\Item $var
@@ -168,7 +168,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @return int|string
@@ -179,7 +179,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The maximum output value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>uint64 maximum_output = 4 [(.acyclic.validation.v1.positive_uint64) = true];</code>
      * @param int|string $var
@@ -194,7 +194,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The seed value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>optional uint64 seed = 5;</code>
      * @return int|string
@@ -215,7 +215,7 @@ class GenerateRunRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The seed value carried by GenerateRunRequest.
      *
      * Generated from protobuf field <code>optional uint64 seed = 5;</code>
      * @param int|string $var

@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Groups evaluation cases under an immutable suite identity.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationSuite</code>
  */
 class EvaluationSuite extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $identity = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>bytes digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
     protected $digest = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cases value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCase cases = 3 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      */
@@ -42,11 +42,11 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by EvaluationSuite.
      *     @type string $digest
-     *           A field in the Inference customer v1 wire contract.
+     *           The digest value carried by EvaluationSuite.
      *     @type \Inference\Customer\V1\EvaluationCase[] $cases
-     *           A field in the Inference customer v1 wire contract.
+     *           The cases value carried by EvaluationSuite.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -67,7 +67,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -82,7 +82,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>bytes digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -93,7 +93,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The digest value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>bytes digest = 2 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var
@@ -108,7 +108,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cases value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCase cases = 3 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      * @return RepeatedField<\Inference\Customer\V1\EvaluationCase>
@@ -119,7 +119,7 @@ class EvaluationSuite extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The cases value carried by EvaluationSuite.
      *
      * Generated from protobuf field <code>repeated .inference.customer.v1.EvaluationCase cases = 3 [(.acyclic.validation.v1.min_items) = 1, (.acyclic.validation.v1.max_items) = 4096];</code>
      * @param \Inference\Customer\V1\EvaluationCase[] $var

@@ -88,8 +88,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
-  validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
+import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult } from "./workspace-results.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -394,7 +393,6 @@ function adaptOperationWindowCoordinator(
       return parseOperationWindowPhase(await raw.inspect(workspaceId));
     },
     async finishWorkspace(workspace, lease, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.finishWorkspace(
         rawWorkspace(workspace, scope),
         nativeOperationWindowLease(lease),
@@ -411,7 +409,6 @@ function adaptOperationWindowCoordinator(
       throw new TypeError("native operation window returned a malformed workspace close result");
     },
     async recoverWorkspace(workspace, nowMillis, options) {
-      validateWorkspaceRebaseOptions(options);
       const result = await raw.recoverWorkspace(rawWorkspace(workspace, scope), nowMillis, options);
       return result == null ? undefined : parseWorkspaceRebaseResult(nativeBoundary<WasmRawJoinResult>(result));
     },
@@ -984,7 +981,6 @@ function adaptWorkspace(
       );
     },
     async joinInto(target, options): Promise<ResolvableFsJoinPlan> {
-      validateJoinOptions(options);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target, scope), options));
     },
     async mount(destination, options): Promise<NativeWorkspaceMount> {

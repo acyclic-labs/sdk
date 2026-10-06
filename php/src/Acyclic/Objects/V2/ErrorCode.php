@@ -8,7 +8,7 @@ namespace Acyclic\Objects\V2;
 use UnexpectedValueException;
 
 /**
- * Stable error categories returned by the Objects service.
+ * Stable customer-visible error categories returned by Objects services.
  *
  * Protobuf type <code>acyclic.objects.v2.ErrorCode</code>
  */

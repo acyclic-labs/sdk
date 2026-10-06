@@ -33,7 +33,9 @@ pub enum Error {
 impl From<crate::http::Error> for Error {
     fn from(error: crate::http::Error) -> Self {
         match error {
-            crate::http::Error::InvalidArgument => Self::Configuration("invalid endpoint or credential".into()),
+            crate::http::Error::InvalidArgument => {
+                Self::Configuration("invalid endpoint or credential".into())
+            }
             crate::http::Error::Transport(error) => Self::Transport(error.to_string()),
             crate::http::Error::ResponseTooLarge => Self::ResponseTooLarge,
             crate::http::Error::MalformedResponse => Self::MalformedResponse,
@@ -50,7 +52,9 @@ impl From<crate::http::Error> for Error {
 impl From<crate::grpc::Error> for Error {
     fn from(error: crate::grpc::Error) -> Self {
         match error {
-            crate::grpc::Error::Invalid => Self::Configuration("invalid endpoint or credential".into()),
+            crate::grpc::Error::Invalid => {
+                Self::Configuration("invalid endpoint or credential".into())
+            }
             crate::grpc::Error::Transport(error) => Self::Transport(error.to_string()),
             crate::grpc::Error::Status(error) => Self::Service(error.to_string()),
             crate::grpc::Error::Negotiation(error) => Self::Configuration(error),
@@ -94,13 +98,8 @@ impl Client {
         token: &str,
         ca_pem: &[u8],
     ) -> Result<Self, Error> {
-        Self::connect_with_limit_and_ca(
-            endpoint,
-            token,
-            crate::MAXIMUM_HTTP_JSON_BYTES,
-            ca_pem,
-        )
-        .await
+        Self::connect_with_limit_and_ca(endpoint, token, crate::MAXIMUM_HTTP_JSON_BYTES, ca_pem)
+            .await
     }
 
     /// Connect with an explicit bounded HTTP response size using platform trust.
@@ -119,7 +118,7 @@ impl Client {
         maximum_response_bytes: usize,
         ca_pem: &[u8],
     ) -> Result<Self, Error> {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+        #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
         {
             if endpoint.starts_with("https://") {
                 match crate::grpc::Client::connect_verified(endpoint, token, ca_pem).await {
@@ -191,122 +190,161 @@ impl Client {
     #[must_use]
     pub fn transport(&self) -> Transport {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(_) => Transport::Grpc,
             Backend::Http(_) => Transport::Http,
         }
     }
 
     /// Models/List.
-    pub async fn list(&self, request: &wire::ListModelsRequest) -> Result<wire::ListModelsResponse, Error> {
+    pub async fn list(
+        &self,
+        request: &wire::ListModelsRequest,
+    ) -> Result<wire::ListModelsResponse, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.list(request).await?),
             Backend::Http(client) => Ok(client.list(request).await?),
         }
     }
 
     /// Contexts/Create.
-    pub async fn create_context(&self, request: &wire::CreateContextRequest) -> Result<wire::MutationReceipt, Error> {
+    pub async fn create_context(
+        &self,
+        request: &wire::CreateContextRequest,
+    ) -> Result<wire::MutationReceipt, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.create_context(request).await?),
             Backend::Http(client) => Ok(client.create_context(request).await?),
         }
     }
 
     /// Contexts/Inspect.
-    pub async fn inspect_context(&self, request: &wire::InspectContextRequest) -> Result<wire::ContextView, Error> {
+    pub async fn inspect_context(
+        &self,
+        request: &wire::InspectContextRequest,
+    ) -> Result<wire::ContextView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.inspect_context(request).await?),
             Backend::Http(client) => Ok(client.inspect_context(request).await?),
         }
     }
 
     /// Contexts/Mutate.
-    pub async fn mutate_context(&self, request: &wire::MutateContextRequest) -> Result<wire::MutationReceipt, Error> {
+    pub async fn mutate_context(
+        &self,
+        request: &wire::MutateContextRequest,
+    ) -> Result<wire::MutationReceipt, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.mutate_context(request).await?),
             Backend::Http(client) => Ok(client.mutate_context(request).await?),
         }
     }
 
     /// WarmContexts/Retain.
-    pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<wire::WarmView, Error> {
+    pub async fn retain_warm(
+        &self,
+        request: &wire::RetainWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.retain_warm(request).await?),
             Backend::Http(client) => Ok(client.retain_warm(request).await?),
         }
     }
 
     /// WarmContexts/Inspect.
-    pub async fn inspect_warm(&self, request: &wire::InspectWarmRequest) -> Result<wire::WarmView, Error> {
+    pub async fn inspect_warm(
+        &self,
+        request: &wire::InspectWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.inspect_warm(request).await?),
             Backend::Http(client) => Ok(client.inspect_warm(request).await?),
         }
     }
 
     /// WarmContexts/Renew.
-    pub async fn renew_warm(&self, request: &wire::RenewWarmRequest) -> Result<wire::WarmView, Error> {
+    pub async fn renew_warm(
+        &self,
+        request: &wire::RenewWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.renew_warm(request).await?),
             Backend::Http(client) => Ok(client.renew_warm(request).await?),
         }
     }
 
     /// WarmContexts/Release.
-    pub async fn release_warm(&self, request: &wire::ReleaseWarmRequest) -> Result<wire::WarmView, Error> {
+    pub async fn release_warm(
+        &self,
+        request: &wire::ReleaseWarmRequest,
+    ) -> Result<wire::WarmView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.release_warm(request).await?),
             Backend::Http(client) => Ok(client.release_warm(request).await?),
         }
     }
 
     /// Runs/Generate.
-    pub async fn generate_run(&self, request: &wire::GenerateRunRequest) -> Result<wire::GenerateRunResponse, Error> {
+    pub async fn generate_run(
+        &self,
+        request: &wire::GenerateRunRequest,
+    ) -> Result<wire::GenerateRunResponse, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.generate_run(request).await?),
             Backend::Http(client) => Ok(client.generate_run(request).await?),
         }
     }
 
     /// Runs/Inspect.
-    pub async fn inspect_run(&self, request: &wire::InspectRunRequest) -> Result<wire::RunView, Error> {
+    pub async fn inspect_run(
+        &self,
+        request: &wire::InspectRunRequest,
+    ) -> Result<wire::RunView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.inspect_run(request).await?),
             Backend::Http(client) => Ok(client.inspect_run(request).await?),
         }
     }
 
     /// Runs/Watch, preserving the ordered event sequence.
-    pub async fn watch_run(&self, request: &wire::WatchRunRequest) -> Result<Vec<wire::RunEvent>, Error> {
+    pub async fn watch_run(
+        &self,
+        request: &wire::WatchRunRequest,
+    ) -> Result<Vec<wire::RunEvent>, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.watch_run(request).await?),
             Backend::Http(client) => Ok(client.watch_run(request).await?),
         }
     }
 
     /// Runs/Cancel.
-    pub async fn cancel_run(&self, request: &wire::InspectRunRequest) -> Result<wire::RunView, Error> {
+    pub async fn cancel_run(
+        &self,
+        request: &wire::InspectRunRequest,
+    ) -> Result<wire::RunView, Error> {
         match &self.backend {
-#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+            #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.cancel_run(request).await?),
             Backend::Http(client) => Ok(client.cancel_run(request).await?),
         }
     }
 
     /// Evaluations/Create.
-    pub async fn create_evaluation(&self, request: &wire::CreateEvaluationRequest) -> Result<wire::EvaluationView, Error> {
+    pub async fn create_evaluation(
+        &self,
+        request: &wire::CreateEvaluationRequest,
+    ) -> Result<wire::EvaluationView, Error> {
         match &self.backend {
             #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.create_evaluation(request).await?),
@@ -315,7 +353,10 @@ impl Client {
     }
 
     /// Evaluations/Inspect.
-    pub async fn inspect_evaluation(&self, request: &wire::InspectEvaluationRequest) -> Result<wire::EvaluationView, Error> {
+    pub async fn inspect_evaluation(
+        &self,
+        request: &wire::InspectEvaluationRequest,
+    ) -> Result<wire::EvaluationView, Error> {
         match &self.backend {
             #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
             Backend::Grpc(client) => Ok(client.inspect_evaluation(request).await?),

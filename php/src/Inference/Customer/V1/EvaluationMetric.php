@@ -10,20 +10,20 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Defines a named aggregation applied to evaluation observations.
  *
  * Generated from protobuf message <code>inference.customer.v1.EvaluationMetric</code>
  */
 class EvaluationMetric extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      */
     protected $identity = '';
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 2 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      */
@@ -36,9 +36,9 @@ class EvaluationMetric extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $identity
-     *           A field in the Inference customer v1 wire contract.
+     *           The identity value carried by EvaluationMetric.
      *     @type int $aggregation
-     *           A field in the Inference customer v1 wire contract.
+     *           The aggregation value carried by EvaluationMetric.
      * }
      */
     public function __construct($data = null)
@@ -48,7 +48,7 @@ class EvaluationMetric extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @return string
@@ -59,7 +59,7 @@ class EvaluationMetric extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The identity value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>string identity = 1 [(.acyclic.validation.v1.nonempty_max_bytes) = 256];</code>
      * @param string $var
@@ -74,7 +74,7 @@ class EvaluationMetric extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 2 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @return int one of the values in {@see \Inference\Customer\V1\EvaluationAggregation}
@@ -85,7 +85,7 @@ class EvaluationMetric extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The aggregation value carried by EvaluationMetric.
      *
      * Generated from protobuf field <code>.inference.customer.v1.EvaluationAggregation aggregation = 2 [(.acyclic.validation.v1.known_nonzero_enum) = true];</code>
      * @param int $var one of the values in {@see \Inference\Customer\V1\EvaluationAggregation}

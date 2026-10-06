@@ -41,7 +41,7 @@ class UploadPartHeader extends \Google\Protobuf\Internal\Message
      */
     protected $part_number = 0;
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 5;</code>
      */
@@ -62,7 +62,7 @@ class UploadPartHeader extends \Google\Protobuf\Internal\Message
      *     @type int $part_number
      *           The multipart part number.
      *     @type \Acyclic\Objects\V2\MutationIdentity $mutation
-     *           A field in the Objects v2 wire contract.
+     *           The object mutation operation.
      * }
      */
     public function __construct($data = null)
@@ -185,7 +185,7 @@ class UploadPartHeader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 5;</code>
      * @return \Acyclic\Objects\V2\MutationIdentity|null
@@ -206,7 +206,7 @@ class UploadPartHeader extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Objects v2 wire contract.
+     * The object mutation operation.
      *
      * Generated from protobuf field <code>.acyclic.objects.v2.MutationIdentity mutation = 5;</code>
      * @param \Acyclic\Objects\V2\MutationIdentity $var

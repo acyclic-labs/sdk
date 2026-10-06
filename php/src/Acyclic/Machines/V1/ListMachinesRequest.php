@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Requests a bounded page of machines.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.ListMachinesRequest</code>
  */
 class ListMachinesRequest extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      */
     protected $protocol = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The after value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId after = 2;</code>
      */
     protected $after = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The limit value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>uint32 limit = 3;</code>
      */
@@ -42,11 +42,11 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\ProtocolVersion $protocol
-     *           A field in the Machines v1 wire contract.
+     *           The protocol value carried by ListMachinesRequest.
      *     @type \Acyclic\Machines\V1\MachineId $after
-     *           A field in the Machines v1 wire contract.
+     *           The after value carried by ListMachinesRequest.
      *     @type int $limit
-     *           A field in the Machines v1 wire contract.
+     *           The limit value carried by ListMachinesRequest.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @return \Acyclic\Machines\V1\ProtocolVersion|null
@@ -77,7 +77,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The protocol value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.ProtocolVersion protocol = 1;</code>
      * @param \Acyclic\Machines\V1\ProtocolVersion $var
@@ -91,7 +91,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The after value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId after = 2;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -112,7 +112,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The after value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId after = 2;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -126,7 +126,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The limit value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>uint32 limit = 3;</code>
      * @return int
@@ -137,7 +137,7 @@ class ListMachinesRequest extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The limit value carried by ListMachinesRequest.
      *
      * Generated from protobuf field <code>uint32 limit = 3;</code>
      * @param int $var

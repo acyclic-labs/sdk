@@ -10,14 +10,14 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Inference customer v1 wire contract.
+ * Identifies the source revision for a derived context.
  *
  * Generated from protobuf message <code>inference.customer.v1.ProvenanceSource</code>
  */
 class ProvenanceSource extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by ProvenanceSource.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      */
@@ -30,7 +30,7 @@ class ProvenanceSource extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type string $source
-     *           A field in the Inference customer v1 wire contract.
+     *           The source value carried by ProvenanceSource.
      * }
      */
     public function __construct($data = null)
@@ -40,7 +40,7 @@ class ProvenanceSource extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by ProvenanceSource.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @return string
@@ -51,7 +51,7 @@ class ProvenanceSource extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Inference customer v1 wire contract.
+     * The source value carried by ProvenanceSource.
      *
      * Generated from protobuf field <code>bytes source = 1 [(.acyclic.validation.v1.nonzero_fixed_bytes) = 32];</code>
      * @param string $var

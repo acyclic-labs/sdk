@@ -107,3 +107,35 @@ test("Cancellation remains an IO adapter concern, while Rust owns operation poli
   // mutation retry or a terminal success claim.
   expect(harness).not.toContain("retry(command)");
 });
+
+test("operation-level capability audit distinguishes generated HTTP policy from native adapters", async () => {
+  const [filesystemRust, filesystemTs, inferenceRust, inferenceTs, machinesRust, machinesTs, harnessTs] = await Promise.all([
+    source("rust/crates/filesystem/src/hosted.rs"),
+    source("typescript/packages/filesystem/src/hosted.ts"),
+    source("rust/crates/inference/src/host.rs"),
+    source("typescript/packages/inference/src/index.ts"),
+    source("rust/crates/machines/src/grpc.rs"),
+    source("typescript/packages/machines/src/http.ts"),
+    source("typescript/packages/harness/src/wire-transport.ts"),
+  ]);
+
+  // Filesystem's Rust hosted boundary rejects malformed bearer metadata when
+  // constructing tonic MetadataValue, and the generated TS policy is now
+  // consumed before the hosted handshake.
+  expect(filesystemRust).toContain("bearer credential is not HTTP metadata");
+  expect(filesystemTs).toContain("validateRustOwnedCredentialPolicy(options.bearerToken)");
+  expect(filesystemTs).toContain("invalid bearer token");
+
+  // Inference has descriptor-derived routes and Rust API-key validation, and
+  // its TS transport now applies the same generated credential policy.
+  expect(inferenceRust).toContain('authorization("line\\nbreak")');
+  expect(inferenceTs).toContain("validateRustOwnedCredentialPolicy(token)");
+  expect(inferenceTs).toContain("invalid bearer credential");
+
+  // Machines HTTP is a Rust-WASM route/codec adapter; the canonical Rust
+  // remote service uses mandatory mutual TLS, so its bearer token is not a
+  // shared generated credential policy. Harness has no remote HTTP facade.
+  expect(machinesRust).toContain("mandatory mutual TLS");
+  expect(machinesTs).toContain("authorization: `Bearer ${this.#token}`");
+  expect(harnessTs).not.toContain("fetch(");
+});

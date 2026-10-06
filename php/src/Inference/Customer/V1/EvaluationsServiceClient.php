@@ -4,7 +4,7 @@
 namespace Inference\Customer\V1;
 
 /**
- * Remote operations for the Inference customer v1 contract.
+ * Admits and inspects immutable evaluation results.
  */
 class EvaluationsServiceClient extends \Grpc\BaseStub {
 
@@ -18,7 +18,7 @@ class EvaluationsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * EvaluationsService.Create operation.
+     * Admits an immutable evaluation specification.
      * @param \Inference\Customer\V1\CreateEvaluationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options
@@ -33,7 +33,7 @@ class EvaluationsServiceClient extends \Grpc\BaseStub {
     }
 
     /**
-     * EvaluationsService.Inspect operation.
+     * Reads an immutable evaluation view.
      * @param \Inference\Customer\V1\InspectEvaluationRequest $argument input argument
      * @param array $metadata metadata
      * @param array $options call options

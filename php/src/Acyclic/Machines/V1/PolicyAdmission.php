@@ -10,26 +10,26 @@ use Google\Protobuf\Internal\GPBUtil;
 use Google\Protobuf\RepeatedField;
 
 /**
- * A message in the Machines v1 wire contract.
+ * Confirms a suspension policy mutation.
  *
  * Generated from protobuf message <code>acyclic.machines.v1.PolicyAdmission</code>
  */
 class PolicyAdmission extends \Google\Protobuf\Internal\Message
 {
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      */
     protected $machine = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      */
     protected $operation = null;
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 3;</code>
      */
@@ -42,11 +42,11 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
      *     Optional. Data for populating the Message object.
      *
      *     @type \Acyclic\Machines\V1\MachineId $machine
-     *           A field in the Machines v1 wire contract.
+     *           The machine value carried by PolicyAdmission.
      *     @type \Acyclic\Machines\V1\OperationId $operation
-     *           A field in the Machines v1 wire contract.
+     *           The operation value carried by PolicyAdmission.
      *     @type \Acyclic\Machines\V1\SuspensionPolicy $policy
-     *           A field in the Machines v1 wire contract.
+     *           The policy value carried by PolicyAdmission.
      * }
      */
     public function __construct($data = null)
@@ -56,7 +56,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @return \Acyclic\Machines\V1\MachineId|null
@@ -77,7 +77,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The machine value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.MachineId machine = 1;</code>
      * @param \Acyclic\Machines\V1\MachineId $var
@@ -91,7 +91,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      * @return \Acyclic\Machines\V1\OperationId|null
@@ -112,7 +112,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The operation value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.OperationId operation = 2;</code>
      * @param \Acyclic\Machines\V1\OperationId $var
@@ -126,7 +126,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 3;</code>
      * @return \Acyclic\Machines\V1\SuspensionPolicy|null
@@ -147,7 +147,7 @@ class PolicyAdmission extends \Google\Protobuf\Internal\Message
     }
 
     /**
-     * A field in the Machines v1 wire contract.
+     * The policy value carried by PolicyAdmission.
      *
      * Generated from protobuf field <code>.acyclic.machines.v1.SuspensionPolicy policy = 3;</code>
      * @param \Acyclic\Machines\V1\SuspensionPolicy $var

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -7,6 +8,18 @@ extern "C" {
 #include "acyclic_embedded_prototype.h"
 }
 #undef __STDC_VERSION__
+
+static_assert(sizeof(AcyclicBuffer) == 32, "embedded ABI layout mismatch: AcyclicBuffer");
+static_assert(offsetof(AcyclicBuffer, id) == 0, "embedded ABI layout mismatch: buffer id");
+static_assert(offsetof(AcyclicBuffer, ptr) == 8, "embedded ABI layout mismatch: buffer pointer");
+static_assert(offsetof(AcyclicBuffer, len) == 16, "embedded ABI layout mismatch: buffer length");
+static_assert(offsetof(AcyclicBuffer, capacity) == 24, "embedded ABI layout mismatch: buffer capacity");
+static_assert(sizeof(AcyclicAppendResult) == 64, "embedded ABI layout mismatch: append result");
+static_assert(sizeof(AcyclicOpenResult) == 48, "embedded ABI layout mismatch: open result");
+static_assert(sizeof(AcyclicNextResult) == 80, "embedded ABI layout mismatch: next result");
+static_assert(sizeof(AcyclicWireResult) == 72, "embedded ABI layout mismatch: wire result");
+static_assert(offsetof(AcyclicWireResult, response) == 8, "embedded ABI layout mismatch: wire response");
+static_assert(offsetof(AcyclicWireResult, message) == 40, "embedded ABI layout mismatch: wire message");
 
 namespace {
 
@@ -77,12 +90,33 @@ int main() {
       live_engine, kPath, sizeof(kPath) - 1, 0, 0, 99);
   require(invalid.status == InvalidArgument && invalid.message.id != 0,
           "invalid mode did not produce an owned diagnostic");
+  AcyclicBuffer wrong_length = invalid.message;
+  ++wrong_length.len;
+  require(acyclic_buffer_release(wrong_length) == InvalidArgument,
+          "buffer release accepted a forged length");
+  AcyclicBuffer wrong_capacity = invalid.message;
+  ++wrong_capacity.capacity;
+  require(acyclic_buffer_release(wrong_capacity) == InvalidArgument,
+          "buffer release accepted a forged capacity");
+  AcyclicBuffer wrong_pointer = invalid.message;
+  wrong_pointer.ptr = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(1));
+  require(acyclic_buffer_release(wrong_pointer) == InvalidArgument,
+          "buffer release accepted a forged pointer");
   const AcyclicBuffer duplicate = invalid.message;
   require(acyclic_buffer_release(invalid.message) == Ok,
           "first owned-buffer release failed");
   require(acyclic_buffer_release(duplicate) == InvalidArgument,
           "duplicate owned-buffer release was accepted");
   acyclic_open_result_release(invalid);
+
+  const uint8_t unknown_operation[] = "unknown_operation";
+  const AcyclicWireResult invalid_wire = acyclic_embedded_engine_wire_call(
+      live_engine, unknown_operation, sizeof(unknown_operation) - 1, nullptr, 0);
+  require(invalid_wire.status == InvalidArgument,
+          "unknown wire operation was not rejected");
+  acyclic_wire_result_release(invalid_wire);
+  // Releasing the same result again must be harmless because Rust checks buffer identity.
+  acyclic_wire_result_release(invalid_wire);
 
   acyclic_embedded_engine_close(live_engine);
   puts("C++ embedded lifetime negative smoke passed");
