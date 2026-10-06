@@ -570,6 +570,7 @@ struct ChildCursor {
     remaining: u32,
     active: Option<ActiveChildren>,
     emitted: bool,
+    terminal: bool,
 }
 
 struct ActiveChildren {
@@ -807,10 +808,11 @@ impl StreamProvider for Client {
                 remaining: request.limit,
                 active: None,
                 emitted: false,
+                terminal: false,
             },
             |mut cursor| async move {
                 loop {
-                    if cursor.remaining == 0 {
+                    if cursor.terminal || cursor.remaining == 0 {
                         return None;
                     }
                     if cursor.active.is_none() {
@@ -826,12 +828,14 @@ impl StreamProvider for Client {
                         Some(Ok(response)) => {
                             let Some(child) = response.child else {
                                 cursor.active = None;
+                                cursor.terminal = true;
                                 return Some((Err(StreamError::Unavailable), cursor));
                             };
                             let child = match path(child.path) {
                                 Ok(path) => Child { path },
                                 Err(error) => {
                                     cursor.active = None;
+                                    cursor.terminal = true;
                                     return Some((Err(error), cursor));
                                 }
                             };
@@ -848,6 +852,7 @@ impl StreamProvider for Client {
                         }
                         Some(Err(error)) => {
                             cursor.active = None;
+                            cursor.terminal = true;
                             return Some((Err(status(&error)), cursor));
                         }
                         None => return None,
@@ -1340,6 +1345,8 @@ mod tests {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         cancelled: Arc<tokio::sync::Notify>,
+        burst: Option<usize>,
+        fail_after_first: bool,
     }
 
     #[async_trait]
@@ -1376,6 +1383,25 @@ mod tests {
         }
 
         async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            if let Some(count) = self.burst {
+                return Ok(stream::iter((0..count).map(|index| {
+                    Ok(Child {
+                        path: StreamPath::new(format!("burst/{index}"))
+                            .unwrap_or_else(|_| unreachable!("test path is valid")),
+                    })
+                }))
+                .boxed());
+            }
+            if self.fail_after_first {
+                return Ok(stream::iter([
+                    Ok(Child {
+                        path: StreamPath::new("partial/child")
+                            .unwrap_or_else(|_| unreachable!("test path is valid")),
+                    }),
+                    Err(StreamError::Unavailable),
+                ])
+                .boxed());
+            }
             let started = self.started.clone();
             let release = self.release.clone();
             let cancelled = self.cancelled.clone();
@@ -1446,6 +1472,8 @@ mod tests {
                 started: started.clone(),
                 release: release.clone(),
                 cancelled: cancelled.clone(),
+                burst: None,
+                fail_after_first: false,
             })))]),
             "fixture",
         )?;
@@ -1490,6 +1518,71 @@ mod tests {
                 .await,
             Err(StreamError::LimitExceeded)
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_stops_at_the_requested_bound_without_draining()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(tokio::sync::Notify::new()),
+                burst: Some(2),
+                fail_after_first: false,
+            })))]),
+            "fixture",
+        )?;
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(
+            children
+                .next()
+                .await
+                .transpose()?
+                .map(|child| child.path.to_string()),
+            Some("burst/0".to_owned())
+        );
+        assert!(children.next().await.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_surfaces_partial_stream_failure_without_replaying()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: Arc::new(tokio::sync::Notify::new()),
+                release: Arc::new(tokio::sync::Notify::new()),
+                cancelled: Arc::new(tokio::sync::Notify::new()),
+                burst: None,
+                fail_after_first: true,
+            })))]),
+            "fixture",
+        )?;
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 2,
+            })
+            .await?;
+        assert_eq!(
+            children
+                .next()
+                .await
+                .transpose()?
+                .map(|child| child.path.to_string()),
+            Some("partial/child".to_owned())
+        );
+        assert!(matches!(children.next().await, Some(Err(StreamError::Unavailable))));
+        assert!(children.next().await.is_none());
         Ok(())
     }
 
