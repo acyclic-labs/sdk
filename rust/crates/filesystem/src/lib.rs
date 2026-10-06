@@ -120,6 +120,7 @@ pub mod operation_window;
 pub mod path;
 mod path_index;
 pub mod performance;
+mod record_store;
 pub mod s3;
 #[cfg(all(feature = "s3-http", not(target_arch = "wasm32")))]
 pub mod s3_http;

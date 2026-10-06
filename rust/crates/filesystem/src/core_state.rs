@@ -8,6 +8,7 @@
 //! Keeping the implementation here prevents adapters from inventing separate
 //! lineage, lease, and Git-compatibility databases.
 
+use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
     update_context_children,
@@ -159,6 +160,12 @@ struct MultiRootParentClaim {
     operation_id: OperationId,
 }
 
+impl Revisioned for MultiRootParentClaim {
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
 impl LocalCoreStateStore {
     /// Opens a private companion namespace below `root` for transactional use.
     ///
@@ -249,6 +256,50 @@ impl LocalCoreStateStore {
     ) -> Result<T, LocalCoreStateStoreError> {
         let store = self.clone();
         run_local_transaction(move || operation(&store.namespace()?)).await
+    }
+
+    /// Loads one journaled record without blocking an async executor.
+    async fn load_record<T: DeserializeOwned + Send + 'static>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+    ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        self.transaction(move |namespace| read_locked(&namespace.record(family, &key)))
+            .await
+    }
+
+    /// Replaces one journaled record only at `expected_revision` (`0` means absent).
+    async fn compare_and_swap_record<T>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+        expected_revision: u64,
+        replacement: T,
+    ) -> Result<bool, LocalCoreStateStoreError>
+    where
+        T: DeserializeOwned + Serialize + Revisioned + Send + 'static,
+    {
+        self.transaction(move |namespace| {
+            compare_and_swap(
+                &namespace.record(family, &key),
+                expected_revision,
+                &replacement,
+            )
+        })
+        .await
+    }
+
+    /// Removes one journaled record only at `expected_revision`.
+    async fn compare_and_delete_record<T: DeserializeOwned + Revisioned>(
+        &self,
+        family: &'static str,
+        key: [u8; 16],
+        expected_revision: u64,
+    ) -> Result<bool, LocalCoreStateStoreError> {
+        self.transaction(move |namespace| {
+            compare_and_delete::<T>(&namespace.record(family, &key), expected_revision)
+        })
+        .await
     }
 
     /// Lists materialization operation ids with durable recovery state.
@@ -353,15 +404,14 @@ struct RecordPaths<'a> {
     namespace: PhantomData<&'a Namespace>,
 }
 
-fn compare_and_swap<T: DeserializeOwned + Serialize>(
+fn compare_and_swap<T: DeserializeOwned + Serialize + Revisioned>(
     paths: &RecordPaths,
     expected_revision: u64,
     replacement: &T,
-    revision: impl Fn(&T) -> u64,
 ) -> Result<bool, LocalCoreStateStoreError> {
     with_lock(paths, || {
         let current: Option<T> = read_recoverable(paths)?;
-        if current.as_ref().map_or(0, &revision) != expected_revision {
+        if current.as_ref().map_or(0, T::revision) != expected_revision {
             return Ok(false);
         }
         write_journaled(paths, replacement)?;
@@ -369,14 +419,13 @@ fn compare_and_swap<T: DeserializeOwned + Serialize>(
     })
 }
 
-fn compare_and_delete<T: DeserializeOwned>(
+fn compare_and_delete<T: DeserializeOwned + Revisioned>(
     paths: &RecordPaths,
     expected_revision: u64,
-    revision: impl Fn(&T) -> u64,
 ) -> Result<bool, LocalCoreStateStoreError> {
     with_lock(paths, || {
         let current: Option<T> = read_recoverable(paths)?;
-        if current.as_ref().map_or(0, &revision) != expected_revision {
+        if current.as_ref().map_or(0, T::revision) != expected_revision {
             return Ok(false);
         }
         remove_record(paths)?;
@@ -677,10 +726,8 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_logged(workspace_id, expected_revision, replacement, |record| {
-            record.revision
-        })
-        .await
+        self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
+            .await
     }
 }
 
@@ -737,7 +784,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 let mut before = BTreeMap::new();
                 for (context_id, expected) in &expected_revisions {
                     let current = log.get::<WorkspaceContext>(root, *context_id)?;
-                    if current.as_ref().map_or(0, |record| record.revision) != *expected {
+                    if current.as_ref().map_or(0, Revisioned::revision) != *expected {
                         return Ok(false);
                     }
                     before.insert(*context_id, current);
@@ -883,16 +930,15 @@ impl LocalCoreStateStore {
 
     /// Commits `replacement` only while the record is at `expected_revision`
     /// (`0` means absent).
-    async fn compare_and_swap_logged<T: Logged>(
+    async fn compare_and_swap_logged<T: Logged + Revisioned>(
         &self,
         id: T::Id,
         expected_revision: u64,
         replacement: T,
-        revision: impl Fn(&T) -> u64 + Send + 'static,
     ) -> Result<bool, LocalCoreStateStoreError> {
         self.transaction(move |root| {
             root.with_log(|log| {
-                if log.get::<T>(root, id)?.as_ref().map_or(0, &revision) != expected_revision {
+                if log.get::<T>(root, id)?.as_ref().map_or(0, T::revision) != expected_revision {
                     return Ok(false);
                 }
                 let mut change = Change::default();
@@ -1572,10 +1618,8 @@ impl GitCompatStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
 
     async fn load(&self, workspace_id: WorkspaceId) -> Result<Option<GitCompatState>, Self::Error> {
-        self.transaction(move |namespace| {
-            read_locked(&namespace.record(GIT_COMPAT_NAMESPACE, &workspace_id.into_bytes()))
-        })
-        .await
+        self.load_record(GIT_COMPAT_NAMESPACE, workspace_id.into_bytes())
+            .await
     }
 
     async fn compare_and_swap(
@@ -1584,14 +1628,12 @@ impl GitCompatStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: GitCompatState,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_swap(
-                &namespace.record(GIT_COMPAT_NAMESPACE, &workspace_id.into_bytes()),
-                expected_revision,
-                &replacement,
-                |record| record.revision,
-            )
-        })
+        self.compare_and_swap_record(
+            GIT_COMPAT_NAMESPACE,
+            workspace_id.into_bytes(),
+            expected_revision,
+            replacement,
+        )
         .await
     }
 
@@ -1600,13 +1642,11 @@ impl GitCompatStore for LocalCoreStateStore {
         workspace_id: WorkspaceId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_delete(
-                &namespace.record(GIT_COMPAT_NAMESPACE, &workspace_id.into_bytes()),
-                expected_revision,
-                |record: &GitCompatState| record.revision,
-            )
-        })
+        self.compare_and_delete_record::<GitCompatState>(
+            GIT_COMPAT_NAMESPACE,
+            workspace_id.into_bytes(),
+            expected_revision,
+        )
         .await
     }
 }
@@ -1618,10 +1658,8 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MaterializationJournal>, Self::Error> {
-        self.transaction(move |namespace| {
-            read_locked(&namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes()))
-        })
-        .await
+        self.load_record(MATERIALIZATION_FAMILY, operation_id.into_bytes())
+            .await
     }
 
     async fn compare_and_swap(
@@ -1630,14 +1668,12 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: MaterializationJournal,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_swap(
-                &namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes()),
-                expected_revision,
-                &replacement,
-                |journal| journal.revision,
-            )
-        })
+        self.compare_and_swap_record(
+            MATERIALIZATION_FAMILY,
+            operation_id.into_bytes(),
+            expected_revision,
+            replacement,
+        )
         .await
     }
 }
@@ -1649,12 +1685,8 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         &self,
         operation_id: OperationId,
     ) -> Result<Option<MultiRootPublication>, Self::Error> {
-        self.transaction(move |namespace| {
-            read_locked(
-                &namespace.record(MULTI_ROOT_PUBLICATION_FAMILY, &operation_id.into_bytes()),
-            )
-        })
-        .await
+        self.load_record(MULTI_ROOT_PUBLICATION_FAMILY, operation_id.into_bytes())
+            .await
     }
 
     async fn compare_and_swap(
@@ -1663,14 +1695,12 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: MultiRootPublication,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_swap(
-                &namespace.record(MULTI_ROOT_PUBLICATION_FAMILY, &operation_id.into_bytes()),
-                expected_revision,
-                &replacement,
-                |publication| publication.revision,
-            )
-        })
+        self.compare_and_swap_record(
+            MULTI_ROOT_PUBLICATION_FAMILY,
+            operation_id.into_bytes(),
+            expected_revision,
+            replacement,
+        )
         .await
     }
 
@@ -1684,13 +1714,11 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
         operation_id: OperationId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        self.transaction(move |namespace| {
-            compare_and_delete(
-                &namespace.record(MULTI_ROOT_PUBLICATION_FAMILY, &operation_id.into_bytes()),
-                expected_revision,
-                |publication: &MultiRootPublication| publication.revision,
-            )
-        })
+        self.compare_and_delete_record::<MultiRootPublication>(
+            MULTI_ROOT_PUBLICATION_FAMILY,
+            operation_id.into_bytes(),
+            expected_revision,
+        )
         .await
     }
 
@@ -1715,7 +1743,6 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
                         revision: 1,
                         operation_id,
                     },
-                    |claim| claim.revision,
                 )? {
                     return Ok(true);
                 }
@@ -1741,9 +1768,7 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
             if claim.operation_id != operation_id {
                 return Ok(true);
             }
-            compare_and_delete(&paths, claim.revision, |claim: &MultiRootParentClaim| {
-                claim.revision
-            })
+            compare_and_delete::<MultiRootParentClaim>(&paths, claim.revision)
         })
         .await
     }
@@ -1973,10 +1998,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         expected_revision: u64,
         replacement: LazyWorkspaceState,
     ) -> Result<bool, Self::Error> {
-        self.compare_and_swap_logged(workspace_id, expected_revision, replacement, |state| {
-            state.revision
-        })
-        .await
+        self.compare_and_swap_logged(workspace_id, expected_revision, replacement)
+            .await
     }
 
     async fn load_lazy_overlay(
@@ -2337,6 +2360,38 @@ mod tests {
     use crate::{
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
+
+    #[test]
+    fn record_families_keep_their_durable_names() {
+        assert_eq!(
+            [
+                GIT_COMPAT_NAMESPACE,
+                LAZY_WORKSPACE_FAMILY,
+                MATERIALIZATION_FAMILY,
+                MULTI_ROOT_PARENT_CLAIM_FAMILY,
+                MULTI_ROOT_PUBLICATION_FAMILY,
+                WORKSPACE_CONTEXT_FAMILY,
+                CONTEXT_CHILDREN_FAMILY,
+                CONTEXT_CHILDREN_INDEX_FAMILY,
+                CONTEXT_CHILD_COUNT_FAMILY,
+                LINEAGE_FAMILY,
+                CORE_LOG_FAMILY,
+            ],
+            [
+                "git-compat-v9",
+                "lazy-workspaces",
+                "materialization",
+                "multi-root-parent-claims",
+                "multi-root-publications",
+                "workspace-contexts-v2",
+                "workspace-context-children-v1",
+                "workspace-context-children-index-v1",
+                "workspace-context-child-counts-v1",
+                "lineage",
+                "core-state-log-v1",
+            ]
+        );
+    }
 
     #[test]
     fn local_transactions_work_without_a_tokio_runtime() {
