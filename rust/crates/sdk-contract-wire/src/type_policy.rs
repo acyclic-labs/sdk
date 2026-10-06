@@ -3329,6 +3329,12 @@ fn source_binding_value<'a>(value: &'a serde_json::Value, key: &str) -> Option<&
     value.get(key).and_then(serde_json::Value::as_str)
 }
 
+fn model_digest_matches(actual: Option<&str>, expected: &str) -> bool {
+    actual.is_some_and(|value| {
+        value == expected || value.strip_prefix("sha256:") == Some(expected)
+    })
+}
+
 fn validate_producer_authority_document(
     document: &serde_json::Value,
     expected_git_revision: Option<&str>,
@@ -3365,7 +3371,7 @@ fn validate_producer_authority_document(
             // manifest instead uses source_digest for the same value.
             git_revision.and_then(|_| source_revision)
         });
-        if actual != Some(expected) {
+        if !model_digest_matches(actual, expected) {
             errors.push(format!(
                 "Rust model digest differs from generation: expected {expected}, got {}",
                 actual.unwrap_or("<missing>")

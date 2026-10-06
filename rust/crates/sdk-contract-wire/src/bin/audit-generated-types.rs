@@ -1,10 +1,11 @@
 //! Executable acceptance check over generated public SDK type surfaces.
 use acyclic_sdk_contract_wire::type_policy::{
-    audit_generated_type_features, audit_required_generated_descriptor_shape_coverage,
-    audit_required_generated_public_surfaces, resolved_enum_fields, resolved_oneof_members,
-    resolved_presence_fields, REQUIRED_PRODUCT_SURFACES,
+    REQUIRED_PRODUCT_SURFACES, audit_generated_type_features,
+    audit_language_producer_source_bindings, discover_language_producer_surfaces,
+    audit_required_generated_descriptor_shape_coverage, audit_required_generated_public_surfaces,
+    resolved_enum_fields, resolved_oneof_members, resolved_presence_fields,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -90,10 +91,11 @@ fn artifact_hashes(root: &Path) -> Result<BTreeMap<String, String>, String> {
 
 fn parse_args(
     args: impl IntoIterator<Item = String>,
-) -> Result<(PathBuf, Vec<String>, Option<String>), String> {
+) -> Result<(PathBuf, Vec<String>, Option<String>, Option<String>), String> {
     let mut root = None;
     let mut required = Vec::new();
     let mut source_revision = None;
+    let mut source_digest = None;
     let mut args = args.into_iter();
     while let Some(argument) = args.next() {
         match argument.as_str() {
@@ -128,6 +130,19 @@ fn parse_args(
                 }
                 source_revision = Some(revision);
             }
+            "--model-digest" => {
+                if source_digest.is_some() {
+                    return Err("--model-digest must occur once".into());
+                }
+                let digest = args
+                    .next()
+                    .ok_or("--model-digest requires a 64-character model digest")?;
+                if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    return Err("--model-digest must be 64 hexadecimal characters".into());
+                }
+                source_digest = Some(digest);
+            }
             _ => return Err(format!("unknown argument: {argument}")),
         }
     }
@@ -141,18 +156,26 @@ fn parse_args(
         root.ok_or("--artifact-root is required")?,
         required,
         source_revision,
+        source_digest,
     ))
 }
 
 #[cfg(test)]
 fn audit(root: &Path, required: &[String]) -> Result<(Value, bool), String> {
-    audit_with_source(root, required, None)
+    audit_with_source(root, required, None, None)
 }
 
 fn source_revision_from_metadata(value: &Value) -> Option<String> {
     value
-        .get("source_revision")
+        .get("source_git_sha")
         .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("source")
+                .and_then(|source| source.get("git_sha"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| value.get("source_revision").and_then(Value::as_str))
         .or_else(|| {
             value
                 .get("source")
@@ -294,26 +317,29 @@ fn surface_registry(hashes: &BTreeMap<String, String>, source_revision: Option<&
                 .push((relative, hash));
         }
     }
-    json!(TARGET_LANGUAGE_REGISTRY
-        .iter()
-        .map(|language| json!({
-            "language": language,
-            "present": by_language.contains_key(language),
-            "source_revision": source_revision,
-            "files": by_language
-                .get(language)
-                .into_iter()
-                .flatten()
-                .map(|(path, sha256)| json!({"path": path, "sha256": sha256}))
-                .collect::<Vec<_>>(),
-        }))
-        .collect::<Vec<_>>())
+    json!(
+        TARGET_LANGUAGE_REGISTRY
+            .iter()
+            .map(|language| json!({
+                "language": language,
+                "present": by_language.contains_key(language),
+                "source_revision": source_revision,
+                "files": by_language
+                    .get(language)
+                    .into_iter()
+                    .flatten()
+                    .map(|(path, sha256)| json!({"path": path, "sha256": sha256}))
+                    .collect::<Vec<_>>(),
+            }))
+            .collect::<Vec<_>>()
+    )
 }
 
 fn audit_with_source(
     root: &Path,
     required: &[String],
     expected_source_revision: Option<&str>,
+    expected_model_digest: Option<&str>,
 ) -> Result<(Value, bool), String> {
     let root = root
         .canonicalize()
@@ -329,6 +355,41 @@ fn audit_with_source(
     if let Some(error) = source_binding_error {
         errors.push(error);
     }
+    let producer_source_binding = if root.join("language-producers").is_dir() {
+        let surface_files = discover_language_producer_surfaces(&root)?;
+        let producer_findings = audit_language_producer_source_bindings(
+            &root,
+            expected_source_revision,
+            expected_model_digest,
+        )?;
+        let findings = producer_findings
+            .iter()
+            .map(|finding| {
+                json!({
+                    "producer": finding.producer,
+                    "path": finding.path,
+                    "reason": finding.reason,
+                })
+            })
+            .collect::<Vec<_>>();
+        json!({
+            "status": if findings.is_empty() { "passed" } else { "mismatch" },
+            "surface_files": surface_files.iter().map(|path| {
+                path.strip_prefix(&root)
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            }).collect::<Vec<_>>(),
+            "violations": findings,
+        })
+    } else {
+        json!({
+            "status": "not_present",
+            "surface_files": [],
+            "violations": [],
+        })
+    };
+    let producer_binding_failed = producer_source_binding["status"] == "mismatch";
     let mut violations = Vec::new();
     let descriptor_shape_inventory = match (
         resolved_enum_fields(),
@@ -385,7 +446,7 @@ fn audit_with_source(
         "{:x}",
         Sha256::digest(fs::read(executable).map_err(|error| error.to_string())?)
     );
-    let passed = errors.is_empty() && violations.is_empty();
+    let passed = errors.is_empty() && violations.is_empty() && !producer_binding_failed;
     let violations = violations
         .into_iter()
         .map(|violation| {
@@ -403,6 +464,7 @@ fn audit_with_source(
             "passed": passed, "required_languages": required,
             "verifier_sha256": verifier_hash, "artifact_sha256": before,
             "source_binding": source_binding,
+            "producer_source_binding": producer_source_binding,
             "language_registry": surface_registry(&before, expected_source_revision),
             "descriptor_shape_inventory": descriptor_shape_inventory,
             "errors": errors, "violations": violations,
@@ -413,11 +475,16 @@ fn audit_with_source(
 
 fn main() -> ExitCode {
     let result =
-        parse_args(env::args().skip(1)).and_then(|(root, required, source_revision)| {
+        parse_args(env::args().skip(1)).and_then(|(root, required, source_revision, source_digest)| {
             let source_revision = source_revision.ok_or(
                 "--source-revision is required for executable audits; bind generated artifacts to the Rust checkout revision",
             )?;
-            audit_with_source(&root, &required, Some(&source_revision))
+            audit_with_source(
+                &root,
+                &required,
+                Some(&source_revision),
+                source_digest.as_deref(),
+            )
         });
     match result {
         Ok((report, passed)) => {
@@ -452,10 +519,31 @@ mod tests {
             parse_args(["--artifact-root", "x", "--artifact-root", "y"].map(str::to_owned))
                 .is_err()
         );
-        let (_, required, source_revision) =
+        let (_, required, source_revision, source_digest) =
             parse_args(["--artifact-root", "x"].map(str::to_owned)).unwrap();
         assert_eq!(required, REQUIRED_PRODUCT_SURFACES);
         assert_eq!(source_revision, None);
+        assert_eq!(source_digest, None);
+        let (_, _, revision, digest) = parse_args(
+            [
+                "--artifact-root",
+                "x",
+                "--source-revision",
+                "a".repeat(40).as_str(),
+                "--model-digest",
+                "b".repeat(64).as_str(),
+            ]
+            .into_iter()
+            .map(str::to_owned),
+        )
+        .unwrap();
+        assert_eq!(revision, Some("a".repeat(40)));
+        assert_eq!(digest, Some("b".repeat(64)));
+        assert!(parse_args(
+            ["--artifact-root", "x", "--model-digest", "not-a-digest"]
+                .map(str::to_owned),
+        )
+        .is_err());
     }
     #[test]
     fn empty_artifact_directory_reports_missing_surface() {
@@ -473,10 +561,12 @@ mod tests {
         let (report, passed) = result.unwrap();
         assert!(!passed);
         assert_eq!(report["passed"], false);
-        assert!(report["errors"][0]
-            .as_str()
-            .unwrap()
-            .contains("missing generated public SDK surfaces"));
+        assert!(
+            report["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("missing generated public SDK surfaces")
+        );
         assert_eq!(report["artifact_sha256"], json!({}));
     }
     #[test]
@@ -508,13 +598,15 @@ mod tests {
 
         let (report, passed) = audit(&root, &["jvm".into()]).unwrap();
         assert!(!passed);
-        assert!(report["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|finding| {
-                finding["reason"] == "generated facade omits a Rust descriptor enum identity"
-            }));
+        assert!(
+            report["violations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|finding| {
+                    finding["reason"] == "generated facade omits a Rust descriptor enum identity"
+                })
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -540,9 +632,11 @@ mod tests {
             &hashes,
             Some("1111111111111111111111111111111111111111"),
         );
-        assert!(error
-            .unwrap()
-            .contains("does not match expected Rust revision"));
+        assert!(
+            error
+                .unwrap()
+                .contains("does not match expected Rust revision")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -623,9 +717,11 @@ mod tests {
             Some("1111111111111111111111111111111111111111"),
         );
         assert_eq!(report["status"], "mismatch");
-        assert!(error
-            .unwrap()
-            .contains("does not match expected Rust revision"));
+        assert!(
+            error
+                .unwrap()
+                .contains("does not match expected Rust revision")
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
