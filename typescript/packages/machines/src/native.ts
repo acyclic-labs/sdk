@@ -5,6 +5,7 @@ import type {
   MachinePage, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy,
   UsageReceipt,
 } from "./index.js";
+import { MACHINES_NATIVE_COMPANION_TARGETS } from "./generated-client.js";
 
 /** mTLS material passed to the Rust-owned native Machines bridge. */
 export interface NativeMachinesOptions {
@@ -45,10 +46,6 @@ interface NativeMachinesModule {
   };
 }
 
-const TARGETS = new Set([
-  "win32-x64", "win32-arm64", "linux-x64-gnu", "linux-arm64-gnu", "darwin-x64", "darwin-arm64",
-]);
-
 let bindingPromise: Promise<NativeMachinesModule> | undefined;
 
 /** Resolve the companion name from the runtime ABI and the package matrix. */
@@ -71,7 +68,7 @@ export function nativeCompanionTarget(
 
 async function binding(): Promise<NativeMachinesModule> {
   const target = nativeCompanionTarget();
-  if (!TARGETS.has(target)) throw new Error(`@acyclic-labs/machines has no native companion for ${target}`);
+  if (!(MACHINES_NATIVE_COMPANION_TARGETS as readonly string[]).includes(target)) throw new Error(`@acyclic-labs/machines has no native companion for ${target}`);
   bindingPromise ??= import(`@acyclic-labs/machines-${target}`).then((module) => {
     const namespace = module as NativeMachinesModule & { readonly default?: NativeMachinesModule };
     const candidate = namespace.MachinesNativeClient === undefined ? namespace.default : namespace;
