@@ -375,7 +375,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification, windows, rust_source, rust_stream_native, embedded_native_packages, additional_languages, dotnet_native, python_go, http_targets]
+    needs: [plan, qualification, windows, rust_source, rust_stream_native, rust_inference_native, embedded_native_packages, additional_languages, dotnet_native, python_go, http_targets]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -387,6 +387,7 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows.result }}
           RUST_SOURCE_RESULT: ${{ needs.rust_source.result }}
           RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
+          RUST_INFERENCE_RESULT: ${{ needs.rust_inference_native.result }}
           EMBEDDED_NATIVE_RESULT: ${{ needs.embedded_native_packages.result }}
           ADDITIONAL_LANGUAGES_RESULT: ${{ needs.additional_languages.result }}
           PYTHON_GO_RESULT: ${{ needs.python_go.result }}
@@ -404,6 +405,7 @@ jobs:
           if test "$REQUIRE_RUST_RESULTS" = true; then
             test "$RUST_SOURCE_RESULT" = success
             test "$RUST_STREAM_RESULT" = success
+            test "$RUST_INFERENCE_RESULT" = success
             test "$EMBEDDED_NATIVE_RESULT" = success
             test "$ADDITIONAL_LANGUAGES_RESULT" = success
             test "$PYTHON_GO_RESULT" = success
@@ -422,6 +424,13 @@ jobs:
     name: Installed native Stream packages
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
     uses: ./.github/workflows/stream-native-packages.yml
+    with:
+      source_revision: ${{ github.sha }}
+
+  rust_inference_native:
+    name: Installed native Inference packages
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force)
+    uses: ./.github/workflows/inference-native-packages.yml
     with:
       source_revision: ${{ github.sha }}
 

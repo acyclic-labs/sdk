@@ -25,7 +25,7 @@ const content: FileRef = {
   volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
     id: "project", class: "project", owner: { kind: "project", id: "project" } },
   path: "messages/committed.txt", version: "generation-1",
-  descriptor: { sha256: Array(32).fill(0n), byte_length: 0n, media_type: "text/plain" },
+  descriptor: { sha256: Array(32).fill(0), byte_length: 0, media_type: "text/plain" },
   display_name: "committed.txt",
 };
 

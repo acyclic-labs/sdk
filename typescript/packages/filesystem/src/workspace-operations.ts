@@ -25,7 +25,7 @@ export function workspaceOperations(
   raw: RawOperations,
   adaptGeneration: (raw: WasmRawGeneration) => FsGeneration,
   parseRebase: (raw: WasmRawJoinResult) => WorkspaceRebaseResult,
-  validatePositiveBound: (value: number, label: string) => void,
+  validatePositiveBound: (value: number, label: string) => void = requirePositiveInteger,
 ): WorkspaceOperations {
   return {
     async head() { return Uint8Array.from(await raw.head()); },
@@ -37,9 +37,11 @@ export function workspaceOperations(
       return adaptGeneration(await raw.pin(identity));
     },
     async delete(idempotencyKey) {
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return parseWorkspaceDelete(await raw.delete(idempotencyKey));
     },
     async read(path, maximumBytes) {
+      if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
       return Uint8Array.from(await raw.read(path, maximumBytes));
     },
     async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
@@ -70,6 +72,8 @@ export function adaptJoinPlanBase(
     get targetHead() { return Uint8Array.from(raw.targetHead); },
     get commonAncestor() { return Uint8Array.from(raw.commonAncestor); },
     async apply(ifTarget, idempotencyKey) {
+      requireGenerationIdentity(ifTarget, "generation identity");
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.apply(ifTarget, idempotencyKey)));
     },
     async close() {},
@@ -86,6 +90,8 @@ export function adaptResolvableJoinPlan(
       selections: readonly MergeConflictSelection[],
       idempotencyKey?: Uint8Array,
     ): Promise<JoinResult> {
+      requireGenerationIdentity(ifTarget, "generation identity");
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
         selection.kind === "file"
           ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
@@ -98,4 +104,18 @@ export function adaptResolvableJoinPlan(
       ))));
     },
   });
+}
+
+function requireIdentity(value: Uint8Array, label: string): void {
+  if (value.byteLength !== 16) throw new RangeError(`${label} must be exactly 16 bytes`);
+}
+
+function requireGenerationIdentity(value: Uint8Array, label: string): void {
+  if (value.byteLength !== 32) throw new RangeError(`${label} must be exactly 32 bytes`);
+}
+
+function requirePositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive safe integer`);
+  }
 }

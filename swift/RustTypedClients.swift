@@ -14,36 +14,139 @@ public struct RustWireUnknownOneof: Sendable {
  public let payload: Data
  public init(rawTag: Int32, payload: Data) { self.rawTag = rawTag; self.payload = payload }
 }
-public protocol RustWireRequest { associatedtype Wire; func toWire() -> Wire }
-public protocol RustWireResponse { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }
+public protocol RustWireRequest: Sendable { associatedtype Wire; func toWire() -> Wire }
+public protocol RustWireResponse: Sendable { associatedtype Wire; static func fromWire(_ wire: Wire) throws -> Self }
+
+private final class RustTypedSerialExecutor: @unchecked Sendable {
+ private let lock = NSLock()
+ private var nextTicket = 0
+ private var servingTicket = 0
+ private var waiters: [Int: CheckedContinuation<Void, Never>] = [:]
+ func submit<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) -> Task<T, Error> {
+   lock.lock()
+   let ticket = nextTicket
+   nextTicket += 1
+   lock.unlock()
+   return Task<T, Error> {
+    await self.waitForTurn(ticket)
+    defer { self.complete(ticket) }
+    return try await operation()
+   }
+ }
+ private func waitForTurn(_ ticket: Int) async {
+  lock.lock()
+  if ticket == servingTicket {
+   lock.unlock()
+   return
+  }
+  await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+   waiters[ticket] = continuation
+   lock.unlock()
+  }
+ }
+ private func complete(_ ticket: Int) {
+  lock.lock()
+  guard ticket == servingTicket else { lock.unlock(); return }
+  servingTicket += 1
+  let continuation = waiters.removeValue(forKey: servingTicket)
+  lock.unlock()
+  continuation?.resume()
+ }
+}
+
+private final class RustTypedCancellationState: @unchecked Sendable {
+ private let lock = NSLock()
+ private var cancelled = false
+ private let operation: @Sendable () -> Void
+ init(_ operation: @escaping @Sendable () -> Void) { self.operation = operation }
+ func cancelIfNeeded() {
+  lock.lock()
+  guard !cancelled else { lock.unlock(); return }
+  cancelled = true
+  lock.unlock()
+  operation()
+ }
+ func completeWithoutCancel() {
+  lock.lock()
+  cancelled = true
+  lock.unlock()
+ }
+}
+
+public enum RustTypedStreamState: Sendable, Equatable { case open; case finished; case cancelled }
 public final class RustTypedStream<Element: RustWireResponse>: @unchecked Sendable {
  private let nextOperation: @Sendable () async throws -> Element?
- private let cancelOperation: @Sendable () -> Void
- public init(next: @escaping @Sendable () async throws -> Element?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancelOperation = cancel }
- public func next() async throws -> Element? { try await nextOperation() }
- public func cancel() { cancelOperation() }
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
+ private let lock = NSLock()
+ private var lifecycle: RustTypedStreamState = .open
+ public init(next: @escaping @Sendable () async throws -> Element?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
+ public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
+ public func next() async throws -> Element? {
+  let operation = nextOperation
+  lock.lock()
+  guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("stream is not open") }
+  let task = executor.submit { try await operation() }
+  lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
 }
-public enum RustTypedStreamState: Sendable, Equatable { case open; case finished; case cancelled }
 public final class RustTypedRequestSequence<Request: RustWireRequest>: @unchecked Sendable {
  private let nextOperation: @Sendable () async throws -> Request?
- private let cancelOperation: @Sendable () -> Void
- public init(next: @escaping @Sendable () async throws -> Request?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancelOperation = cancel }
- public func next() async throws -> Request? { try await nextOperation() }
- public func cancel() { cancelOperation() }
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
+ private let lock = NSLock()
+ private var lifecycle: RustTypedStreamState = .open
+ public init(next: @escaping @Sendable () async throws -> Request?, cancel: @escaping @Sendable () -> Void) { self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
+ public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
+ public func next() async throws -> Request? {
+  let operation = nextOperation
+  lock.lock()
+  guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("request sequence is not open") }
+  let task = executor.submit { try await operation() }
+  lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
 }
 public final class RustTypedClientStream<Request: RustWireRequest, Response: RustWireResponse>: @unchecked Sendable {
  private let sendOperation: @Sendable (Request) async throws -> Void
  private let finishOperation: @Sendable () async throws -> Response
  private let nextOperation: (@Sendable () async throws -> Response?)?
- private let cancelOperation: @Sendable () -> Void
+ private let executor = RustTypedSerialExecutor()
+ private let cancellation: RustTypedCancellationState
  private let lock = NSLock()
  private var lifecycle: RustTypedStreamState = .open
- public init(send: @escaping @Sendable (Request) async throws -> Void, finish: @escaping @Sendable () async throws -> Response, next: (@Sendable () async throws -> Response?)? = nil, cancel: @escaping @Sendable () -> Void) { self.sendOperation = send; self.finishOperation = finish; self.nextOperation = next; self.cancelOperation = cancel }
+ public init(send: @escaping @Sendable (Request) async throws -> Void, finish: @escaping @Sendable () async throws -> Response, next: (@Sendable () async throws -> Response?)? = nil, cancel: @escaping @Sendable () -> Void) { self.sendOperation = send; self.finishOperation = finish; self.nextOperation = next; self.cancellation = RustTypedCancellationState(cancel) }
+ deinit { cancellation.cancelIfNeeded() }
  public var state: RustTypedStreamState { lock.lock(); defer { lock.unlock() }; return lifecycle }
- public func send(_ request: Request) async throws { lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lock.unlock(); try await sendOperation(request) }
- public func next() async throws -> Response? { guard let nextOperation else { throw RustWireDecodeError.invalidField("client stream has no response sequence") }; return try await nextOperation() }
- public func finish() async throws -> Response { lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lifecycle = .finished; lock.unlock(); return try await finishOperation() }
- public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancelOperation() }
+ public func send(_ request: Request) async throws {
+  let operation = sendOperation
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; let task = executor.submit { try await operation(request) }; lock.unlock()
+  try await task.value
+ }
+ public func next() async throws -> Response? {
+  guard let nextOperation else { throw RustWireDecodeError.invalidField("client stream has no response sequence") }
+  lock.lock(); guard lifecycle == .open || lifecycle == .finished else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is cancelled") }; let task = executor.submit { try await nextOperation() }; lock.unlock()
+  let result = try await task.value
+  if result == nil { lock.lock(); if lifecycle == .open { lifecycle = .finished }; lock.unlock(); cancellation.completeWithoutCancel() }
+  return result
+ }
+ public func finish() async throws -> Response {
+  let operation = finishOperation
+  lock.lock(); guard lifecycle == .open else { lock.unlock(); throw RustWireDecodeError.invalidField("client stream is not open") }; lifecycle = .finished; let task = executor.submit { try await operation() }; lock.unlock()
+  let result = try await task.value
+  cancellation.completeWithoutCancel()
+  return result
+ }
+ public func cancel() { lock.lock(); guard lifecycle == .open else { lock.unlock(); return }; lifecycle = .cancelled; lock.unlock(); cancellation.cancelIfNeeded() }
 }
 
 public struct ActorId: Sendable { public let value: String; public init?(_ value: String) { guard !value.isEmpty else { return nil }; self.value = value } }
@@ -78,20 +181,14 @@ public struct RevisionDigest: Sendable { public let value: Data; public init?(_ 
 public final class Image: Sendable {
  private let wire: RustWireMessage
 public let kind: MachinesImageKindWire?;
-public let managed_digest: Sha256Digest?;
-public let custom_digest: Sha256Digest?;
-public let checkpoint: CheckpointId?;
+public let ImmutableReferenceChoice: MachinesImageImmutableReferenceChoice;
  internal init?(_ wire: RustWireMessage) { self.wire = wire
 self.kind = nil
-self.managed_digest = nil
-self.custom_digest = nil
-self.checkpoint = nil
+self.ImmutableReferenceChoice = .none
  }
- public init?(kind: MachinesImageKindWire? = nil, managed_digest: Sha256Digest? = nil, custom_digest: Sha256Digest? = nil, checkpoint: CheckpointId? = nil) { guard [managed_digest != nil, custom_digest != nil, checkpoint != nil].filter { $0 }.count == 1 else { return nil }; self.wire = RustWireMessage(wire: Data())
+ public init?(kind: MachinesImageKindWire? = nil, ImmutableReferenceChoice: MachinesImageImmutableReferenceChoice? = nil) { guard let choice = ImmutableReferenceChoice else { return nil }; if case .none = choice { return nil }; self.wire = RustWireMessage(wire: Data())
 self.kind = kind
-self.managed_digest = managed_digest
-self.custom_digest = custom_digest
-self.checkpoint = checkpoint
+self.ImmutableReferenceChoice = ImmutableReferenceChoice ?? .none
  }
 }
 public struct Revision: Sendable { public let value: UInt64; public init?(_ value: UInt64) { self.value = value } }
@@ -3591,7 +3688,7 @@ self.subscription = subscription
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "subscription": subscription, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "subscription": subscription, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsCheckpointActorRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3601,7 +3698,7 @@ self.actor_id = actor_id
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsCreateActorRequest: RustWireRequest, Sendable {
 public let code_sha256: Data;
@@ -3619,7 +3716,7 @@ self.subscriptions = subscriptions
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["codeSha256": code_sha256, "homeRegion": home_region, "bindings": bindings, "limits": limits, "subscriptions": subscriptions, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["codeSha256": code_sha256, "homeRegion": home_region, "bindings": bindings, "limits": limits, "subscriptions": subscriptions, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsInspectActorRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3627,7 +3724,7 @@ public let actor_id: ActorId;
 self.actor_id = actor_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id]; return wire }
 }
 public struct ActorsInvokeActorRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3643,7 +3740,7 @@ self.body = body
 self.headers = headers
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "method": method, "url": url, "body": body, "headers": headers] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "method": method, "url": url, "body": body, "headers": headers]; return wire }
 }
 public struct ActorsRemoveSubscriptionRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3655,7 +3752,7 @@ self.subscription_id = subscription_id
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "subscriptionId": subscription_id, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "subscriptionId": subscription_id, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsResumeSubscriptionRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3667,7 +3764,7 @@ self.subscription_id = subscription_id
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "subscriptionId": subscription_id, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "subscriptionId": subscription_id, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsUpdateActorRequest: RustWireRequest, Sendable {
 public let actor_id: ActorId;
@@ -3685,7 +3782,7 @@ self.expected_configuration_revision = expected_configuration_revision
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["actorId": actor_id, "codeSha256": code_sha256, "bindings": bindings, "limits": limits, "expectedConfigurationRevision": expected_configuration_revision, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["actorId": actor_id, "codeSha256": code_sha256, "bindings": bindings, "limits": limits, "expectedConfigurationRevision": expected_configuration_revision, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct FilesystemApplyJoinRequest: RustWireRequest, Sendable {
 public let plan: FilesystemJoinPlanWire?;
@@ -3695,7 +3792,7 @@ self.plan = plan
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["plan": plan, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["plan": plan, "operation": operation]; return wire }
 }
 public struct FilesystemApplyTransactionRequest: RustWireRequest, Sendable {
 public let base: FilesystemGenerationRefWire?;
@@ -3709,7 +3806,7 @@ self.operation = operation
 self.maximum_conflicts = maximum_conflicts
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["base": base, "mutations": mutations, "operation": operation, "maximumConflicts": maximum_conflicts] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["base": base, "mutations": mutations, "operation": operation, "maximumConflicts": maximum_conflicts]; return wire }
 }
 public struct FilesystemCancelRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3719,7 +3816,7 @@ self.workspace = workspace
 self.operation_id = operation_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "operationId": operation_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "operationId": operation_id]; return wire }
 }
 public struct FilesystemCreateWorkspaceRequest: RustWireRequest, Sendable {
 public let name: String;
@@ -3731,7 +3828,7 @@ self.profile = profile
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["name": name, "profile": profile, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["name": name, "profile": profile, "operation": operation]; return wire }
 }
 public struct FilesystemCredentialRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3747,7 +3844,7 @@ self.expires_after_seconds = expires_after_seconds
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "generation": generation, "writable": writable, "expiresAfterSeconds": expires_after_seconds, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "generation": generation, "writable": writable, "expiresAfterSeconds": expires_after_seconds, "operation": operation]; return wire }
 }
 public struct FilesystemDeleteWorkspaceRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3757,7 +3854,7 @@ self.workspace = workspace
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "operation": operation]; return wire }
 }
 public struct FilesystemDiffRequest: RustWireRequest, Sendable {
 public let from: FilesystemGenerationRefWire?;
@@ -3769,7 +3866,7 @@ self.to = to
 self.maximum_changes = maximum_changes
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["from": from, "to": to, "maximumChanges": maximum_changes] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["from": from, "to": to, "maximumChanges": maximum_changes]; return wire }
 }
 public struct FilesystemExportRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3783,7 +3880,7 @@ self.maximum_objects = maximum_objects
 self.maximum_bytes = maximum_bytes
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "after": after, "maximumObjects": maximum_objects, "maximumBytes": maximum_bytes] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "after": after, "maximumObjects": maximum_objects, "maximumBytes": maximum_bytes]; return wire }
 }
 public struct FilesystemForkWorkspaceRequest: RustWireRequest, Sendable {
 public let source: FilesystemGenerationRefWire?;
@@ -3795,7 +3892,7 @@ self.destination_name = destination_name
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["source": source, "destinationName": destination_name, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["source": source, "destinationName": destination_name, "operation": operation]; return wire }
 }
 public struct FilesystemGetGenerationRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3803,7 +3900,7 @@ public let generation: FilesystemGenerationRefWire?;
 self.generation = generation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation]; return wire }
 }
 public struct FilesystemGetHeadRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3811,7 +3908,7 @@ public let workspace: FilesystemWorkspaceRefWire?;
 self.workspace = workspace
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace]; return wire }
 }
 public struct FilesystemHandshakeRequest: RustWireRequest, Sendable {
 public let `protocol`: FilesystemHandshakeRequestWire?;
@@ -3821,7 +3918,7 @@ self.`protocol` = `protocol`
 self.`required` = `required`
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "required": `required`] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "required": `required`]; return wire }
 }
 public struct FilesystemImportChunkRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3839,7 +3936,7 @@ self.contents = contents
 self.terminal = terminal
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "operationId": operation_id, "cursor": cursor, "objectId": object_id, "contents": contents, "terminal": terminal] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "operationId": operation_id, "cursor": cursor, "objectId": object_id, "contents": contents, "terminal": terminal]; return wire }
 }
 public struct FilesystemListDirectoryRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3851,7 +3948,7 @@ self.path = path
 self.page = page
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "path": path, "page": page] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "path": path, "page": page]; return wire }
 }
 public struct FilesystemObserveRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3861,22 +3958,15 @@ self.workspace = workspace
 self.operation_id = operation_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "operationId": operation_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "operationId": operation_id]; return wire }
 }
 public struct FilesystemOpenWorkspaceRequest: RustWireRequest, Sendable {
-public let workspace: FilesystemWorkspaceRefWire?;
-public let name: String?;
 public let SelectorChoice: FilesystemOpenWorkspaceRequestSelectorChoice;
- public init(workspace: FilesystemWorkspaceRefWire?, name: String?, SelectorChoice: FilesystemOpenWorkspaceRequestSelectorChoice? = nil) {
- precondition([workspace != nil, name != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
-self.workspace = workspace
-self.name = name
- let active_SelectorChoice = [workspace != nil, name != nil].filter { $0 }.count
- precondition(active_SelectorChoice <= 1, "oneof selector contains multiple arms")
- if let choice = SelectorChoice { if case .unknown = choice { precondition(active_SelectorChoice == 0, "oneof selector contains an unknown and known arm") }; self.SelectorChoice = choice } else if active_SelectorChoice == 0 { self.SelectorChoice = .none } else if let value = workspace { self.SelectorChoice = .Workspace(value) } else if let value = name { self.SelectorChoice = .Name(value) } else { self.SelectorChoice = .none }
+ public init(SelectorChoice: FilesystemOpenWorkspaceRequestSelectorChoice? = nil) {
+self.SelectorChoice = SelectorChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "name": name] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = [:]; switch SelectorChoice { case .Workspace(let value): wire["workspace"] = value; case .Name(let value): wire["name"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown_selector"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct FilesystemPlanExtentsRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3890,7 +3980,7 @@ self.range = range
 self.maximum_extents = maximum_extents
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "path": path, "range": range, "maximumExtents": maximum_extents] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "path": path, "range": range, "maximumExtents": maximum_extents]; return wire }
 }
 public struct FilesystemPlanJoinRequest: RustWireRequest, Sendable {
 public let source: FilesystemGenerationRefWire?;
@@ -3908,7 +3998,7 @@ self.maximum_generations = maximum_generations
 self.history = history
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["source": source, "target": target, "maximumChanges": maximum_changes, "maximumConflicts": maximum_conflicts, "maximumGenerations": maximum_generations, "history": history] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["source": source, "target": target, "maximumChanges": maximum_changes, "maximumConflicts": maximum_conflicts, "maximumGenerations": maximum_generations, "history": history]; return wire }
 }
 public struct FilesystemReadLinkRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3920,7 +4010,7 @@ self.path = path
 self.maximum_bytes = maximum_bytes
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "path": path, "maximumBytes": maximum_bytes] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "path": path, "maximumBytes": maximum_bytes]; return wire }
 }
 public struct FilesystemReadRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3934,7 +4024,7 @@ self.range = range
 self.maximum_bytes = maximum_bytes
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "path": path, "range": range, "maximumBytes": maximum_bytes] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "path": path, "range": range, "maximumBytes": maximum_bytes]; return wire }
 }
 public struct FilesystemRebaseRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3950,7 +4040,7 @@ self.maximum_generations = maximum_generations
 self.maximum_changes = maximum_changes
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "maximumConflicts": maximum_conflicts, "operation": operation, "maximumGenerations": maximum_generations, "maximumChanges": maximum_changes] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "maximumConflicts": maximum_conflicts, "operation": operation, "maximumGenerations": maximum_generations, "maximumChanges": maximum_changes]; return wire }
 }
 public struct FilesystemRebaseTransactionRequest: RustWireRequest, Sendable {
 public let base: FilesystemGenerationRefWire?;
@@ -3964,7 +4054,7 @@ self.maximum_conflicts = maximum_conflicts
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["base": base, "mutations": mutations, "maximumConflicts": maximum_conflicts, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["base": base, "mutations": mutations, "maximumConflicts": maximum_conflicts, "operation": operation]; return wire }
 }
 public struct FilesystemRetainGenerationRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -3976,7 +4066,7 @@ self.identity = identity
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "identity": identity, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "identity": identity, "operation": operation]; return wire }
 }
 public struct FilesystemSourceOperationRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3986,7 +4076,7 @@ self.workspace = workspace
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace, "operation": operation]; return wire }
 }
 public struct FilesystemSourceStateRequest: RustWireRequest, Sendable {
 public let workspace: FilesystemWorkspaceRefWire?;
@@ -3994,7 +4084,7 @@ public let workspace: FilesystemWorkspaceRefWire?;
 self.workspace = workspace
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["workspace": workspace] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["workspace": workspace]; return wire }
 }
 public struct FilesystemStatRequest: RustWireRequest, Sendable {
 public let generation: FilesystemGenerationRefWire?;
@@ -4004,7 +4094,7 @@ self.generation = generation
 self.path = path
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["generation": generation, "path": path] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["generation": generation, "path": path]; return wire }
 }
 public struct HarnessCancelRequest: RustWireRequest, Sendable {
 public let operation_id: String;
@@ -4022,7 +4112,7 @@ self.recursive = recursive
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["operationId": operation_id, "protocol": `protocol`, "owner": owner, "scope": scope, "recursive": recursive, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["operationId": operation_id, "protocol": `protocol`, "owner": owner, "scope": scope, "recursive": recursive, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct HarnessCommandEnvelopeRequest: RustWireRequest, Sendable {
 public let `protocol`: HarnessProtocolIdentityWire?;
@@ -4046,7 +4136,7 @@ self.canonical_action_json = canonical_action_json
 self.intent_digest = intent_digest
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "authority": authority, "operation": operation, "expectedRevision": expected_revision, "scope": scope, "causalParent": causal_parent, "actionType": action_type, "canonicalActionJson": canonical_action_json, "intentDigest": intent_digest] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "authority": authority, "operation": operation, "expectedRevision": expected_revision, "scope": scope, "causalParent": causal_parent, "actionType": action_type, "canonicalActionJson": canonical_action_json, "intentDigest": intent_digest]; return wire }
 }
 public struct HarnessHandshakeRequest: RustWireRequest, Sendable {
 public let `protocol`: HarnessProtocolIdentityWire?;
@@ -4056,7 +4146,7 @@ self.`protocol` = `protocol`
 self.`required` = `required`
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "required": `required`] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "required": `required`]; return wire }
 }
 public struct HarnessObserveRequest: RustWireRequest, Sendable {
 public let operation_id: String;
@@ -4070,7 +4160,7 @@ self.owner = owner
 self.scope = scope
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["operationId": operation_id, "protocol": `protocol`, "owner": owner, "scope": scope] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["operationId": operation_id, "protocol": `protocol`, "owner": owner, "scope": scope]; return wire }
 }
 public struct HarnessResumeRequest: RustWireRequest, Sendable {
 public let `protocol`: HarnessProtocolIdentityWire?;
@@ -4080,7 +4170,7 @@ self.`protocol` = `protocol`
 self.cursors = cursors
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "cursors": cursors] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "cursors": cursors]; return wire }
 }
 public struct InferenceCreateContextRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
@@ -4092,7 +4182,7 @@ self.model = model
 self.items = items
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "model": model, "items": items] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "model": model, "items": items]; return wire }
 }
 public struct InferenceCreateEvaluationRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
@@ -4102,28 +4192,23 @@ self.identity = identity
 self.spec = spec
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "spec": spec] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "spec": spec]; return wire }
 }
 public struct InferenceGenerateRunRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
 public let context: Sha256Digest;
 public let input: InferenceItemWire?;
 public let maximum_output: UInt64;
-public let seed: UInt64?;
 public let SeedChoice: InferenceCustomerGenerateRunRequestSeedChoice;
- public init(identity: InferenceRequestIdentityWire?, context: Sha256Digest, input: InferenceItemWire?, maximum_output: UInt64, seed: UInt64?, SeedChoice: InferenceCustomerGenerateRunRequestSeedChoice? = nil) {
- precondition([seed != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(identity: InferenceRequestIdentityWire?, context: Sha256Digest, input: InferenceItemWire?, maximum_output: UInt64, SeedChoice: InferenceCustomerGenerateRunRequestSeedChoice? = nil) {
 self.identity = identity
 self.context = context
 self.input = input
 self.maximum_output = maximum_output
-self.seed = seed
- let active_SeedChoice = [seed != nil].filter { $0 }.count
- precondition(active_SeedChoice <= 1, "oneof _seed contains multiple arms")
- if let choice = SeedChoice { if case .unknown = choice { precondition(active_SeedChoice == 0, "oneof _seed contains an unknown and known arm") }; self.SeedChoice = choice } else if active_SeedChoice == 0 { self.SeedChoice = .none } else if let value = seed { self.SeedChoice = .Seed(value) } else { self.SeedChoice = .none }
+self.SeedChoice = SeedChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "context": context, "input": input, "maximumOutput": maximum_output, "seed": seed] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "context": context, "input": input, "maximumOutput": maximum_output]; switch SeedChoice { case .Seed(let value): wire["seed"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__seed"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct InferenceInspectContextRequest: RustWireRequest, Sendable {
 public let revision: RevisionDigest;
@@ -4131,7 +4216,7 @@ public let revision: RevisionDigest;
 self.revision = revision
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["revision": revision] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["revision": revision]; return wire }
 }
 public struct InferenceInspectEvaluationRequest: RustWireRequest, Sendable {
 public let evaluation_id: EvaluationId;
@@ -4139,7 +4224,7 @@ public let evaluation_id: EvaluationId;
 self.evaluation_id = evaluation_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["evaluationId": evaluation_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["evaluationId": evaluation_id]; return wire }
 }
 public struct InferenceInspectRunRequest: RustWireRequest, Sendable {
 public let run_id: RunId;
@@ -4147,7 +4232,7 @@ public let run_id: RunId;
 self.run_id = run_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["runId": run_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["runId": run_id]; return wire }
 }
 public struct InferenceInspectWarmRequest: RustWireRequest, Sendable {
 public let commitment: Sha256Digest;
@@ -4155,40 +4240,25 @@ public let commitment: Sha256Digest;
 self.commitment = commitment
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["commitment": commitment] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["commitment": commitment]; return wire }
 }
 public struct InferenceListModelsRequest: RustWireRequest, Sendable {
  public init() {
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { [:] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = [:]; return wire }
 }
 public struct InferenceMutateContextRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
 public let source: Data;
-public let edit: InferenceEditsWire?;
-public let fork: InferenceEmptyWire?;
-public let truncate: InferenceTruncateWire?;
-public let compact: InferenceCompactWire?;
-public let release: InferenceEmptyWire?;
-public let transfer: InferenceTransferWire?;
 public let ActionChoice: InferenceCustomerMutateContextRequestActionChoice;
- public init(identity: InferenceRequestIdentityWire?, source: Data, edit: InferenceEditsWire?, fork: InferenceEmptyWire?, truncate: InferenceTruncateWire?, compact: InferenceCompactWire?, release: InferenceEmptyWire?, transfer: InferenceTransferWire?, ActionChoice: InferenceCustomerMutateContextRequestActionChoice? = nil) {
- precondition([edit != nil, fork != nil, truncate != nil, compact != nil, release != nil, transfer != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(identity: InferenceRequestIdentityWire?, source: Data, ActionChoice: InferenceCustomerMutateContextRequestActionChoice? = nil) {
 self.identity = identity
 self.source = source
-self.edit = edit
-self.fork = fork
-self.truncate = truncate
-self.compact = compact
-self.release = release
-self.transfer = transfer
- let active_ActionChoice = [edit != nil, fork != nil, truncate != nil, compact != nil, release != nil, transfer != nil].filter { $0 }.count
- precondition(active_ActionChoice <= 1, "oneof action contains multiple arms")
- if let choice = ActionChoice { if case .unknown = choice { precondition(active_ActionChoice == 0, "oneof action contains an unknown and known arm") }; self.ActionChoice = choice } else if active_ActionChoice == 0 { self.ActionChoice = .none } else if let value = edit { self.ActionChoice = .Edit(value) } else if let value = fork { self.ActionChoice = .Fork(value) } else if let value = truncate { self.ActionChoice = .Truncate(value) } else if let value = compact { self.ActionChoice = .Compact(value) } else if let value = release { self.ActionChoice = .Release(value) } else if let value = transfer { self.ActionChoice = .Transfer(value) } else { self.ActionChoice = .none }
+self.ActionChoice = ActionChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "source": source, "edit": edit, "fork": fork, "truncate": truncate, "compact": compact, "release": release, "transfer": transfer] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "source": source]; switch ActionChoice { case .Edit(let value): wire["edit"] = value; case .Fork(let value): wire["fork"] = value; case .Truncate(let value): wire["truncate"] = value; case .Compact(let value): wire["compact"] = value; case .Release(let value): wire["release"] = value; case .Transfer(let value): wire["transfer"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown_action"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct InferenceReleaseWarmRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
@@ -4198,26 +4268,21 @@ self.identity = identity
 self.commitment = commitment
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "commitment": commitment] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "commitment": commitment]; return wire }
 }
 public struct InferenceRenewWarmRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
 public let commitment: Sha256Digest;
 public let expires_at_ms: UnixTimestampMillis;
-public let idle_timeout_ms: UInt64?;
 public let IdleTimeoutMsChoice: InferenceCustomerRenewWarmRequestIdleTimeoutMsChoice;
- public init(identity: InferenceRequestIdentityWire?, commitment: Sha256Digest, expires_at_ms: UnixTimestampMillis, idle_timeout_ms: UInt64?, IdleTimeoutMsChoice: InferenceCustomerRenewWarmRequestIdleTimeoutMsChoice? = nil) {
- precondition([idle_timeout_ms != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(identity: InferenceRequestIdentityWire?, commitment: Sha256Digest, expires_at_ms: UnixTimestampMillis, IdleTimeoutMsChoice: InferenceCustomerRenewWarmRequestIdleTimeoutMsChoice? = nil) {
 self.identity = identity
 self.commitment = commitment
 self.expires_at_ms = expires_at_ms
-self.idle_timeout_ms = idle_timeout_ms
- let active_IdleTimeoutMsChoice = [idle_timeout_ms != nil].filter { $0 }.count
- precondition(active_IdleTimeoutMsChoice <= 1, "oneof _idle_timeout_ms contains multiple arms")
- if let choice = IdleTimeoutMsChoice { if case .unknown = choice { precondition(active_IdleTimeoutMsChoice == 0, "oneof _idle_timeout_ms contains an unknown and known arm") }; self.IdleTimeoutMsChoice = choice } else if active_IdleTimeoutMsChoice == 0 { self.IdleTimeoutMsChoice = .none } else if let value = idle_timeout_ms { self.IdleTimeoutMsChoice = .IdleTimeoutMs(value) } else { self.IdleTimeoutMsChoice = .none }
+self.IdleTimeoutMsChoice = IdleTimeoutMsChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "commitment": commitment, "expiresAtMs": expires_at_ms, "idleTimeoutMs": idle_timeout_ms] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "commitment": commitment, "expiresAtMs": expires_at_ms]; switch IdleTimeoutMsChoice { case .IdleTimeoutMs(let value): wire["idleTimeoutMs"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__idle_timeout_ms"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct InferenceRetainWarmRequest: RustWireRequest, Sendable {
 public let identity: InferenceRequestIdentityWire?;
@@ -4233,7 +4298,7 @@ self.expires_at_ms = expires_at_ms
 self.idle_kv = idle_kv
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["identity": identity, "context": context, "latencyProfile": latency_profile, "expiresAtMs": expires_at_ms, "idleKv": idle_kv] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["identity": identity, "context": context, "latencyProfile": latency_profile, "expiresAtMs": expires_at_ms, "idleKv": idle_kv]; return wire }
 }
 public struct InferenceWatchRunRequest: RustWireRequest, Sendable {
 public let run_id: RunId;
@@ -4243,7 +4308,7 @@ self.run_id = run_id
 self.from_sequence = from_sequence
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["runId": run_id, "fromSequence": from_sequence] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["runId": run_id, "fromSequence": from_sequence]; return wire }
 }
 public struct MachinesCheckpointMachineRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4255,7 +4320,7 @@ self.idempotency_key = idempotency_key
 self.machine = machine
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine]; return wire }
 }
 public struct MachinesCheckpointMutationRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4267,7 +4332,7 @@ self.idempotency_key = idempotency_key
 self.checkpoint = checkpoint
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "checkpoint": checkpoint] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "checkpoint": checkpoint]; return wire }
 }
 public struct MachinesCreateMachineRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4289,7 +4354,7 @@ self.network_policy_digest = network_policy_digest
 self.budgets = budgets
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "image": image, "compatibility": compatibility, "suspension": suspension, "expiration": expiration, "networkPolicyDigest": network_policy_digest, "budgets": budgets] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "image": image, "compatibility": compatibility, "suspension": suspension, "expiration": expiration, "networkPolicyDigest": network_policy_digest, "budgets": budgets]; return wire }
 }
 public struct MachinesEventsRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4303,7 +4368,7 @@ self.after_sequence = after_sequence
 self.limit = limit
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "machine": machine, "afterSequence": after_sequence, "limit": limit] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "machine": machine, "afterSequence": after_sequence, "limit": limit]; return wire }
 }
 public struct MachinesForkCheckpointRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4317,7 +4382,7 @@ self.checkpoint = checkpoint
 self.count = count
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "checkpoint": checkpoint, "count": count] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "checkpoint": checkpoint, "count": count]; return wire }
 }
 public struct MachinesForkMachineRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4331,7 +4396,7 @@ self.machine = machine
 self.count = count
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine, "count": count] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine, "count": count]; return wire }
 }
 public struct MachinesInspectCheckpointRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4341,7 +4406,7 @@ self.`protocol` = `protocol`
 self.checkpoint = checkpoint
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "checkpoint": checkpoint] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "checkpoint": checkpoint]; return wire }
 }
 public struct MachinesInspectMachineRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4351,7 +4416,7 @@ self.`protocol` = `protocol`
 self.machine = machine
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "machine": machine] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "machine": machine]; return wire }
 }
 public struct MachinesListMachinesRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4363,7 +4428,7 @@ self.after = after
 self.limit = limit
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "after": after, "limit": limit] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "after": after, "limit": limit]; return wire }
 }
 public struct MachinesMachineMutationRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4375,7 +4440,7 @@ self.idempotency_key = idempotency_key
 self.machine = machine
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine]; return wire }
 }
 public struct MachinesOperationRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4385,7 +4450,7 @@ self.`protocol` = `protocol`
 self.operation = operation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "operation": operation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "operation": operation]; return wire }
 }
 public struct MachinesQualifyImageRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4395,7 +4460,7 @@ self.`protocol` = `protocol`
 self.image = image
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "image": image] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "image": image]; return wire }
 }
 public struct MachinesRecoverRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4405,7 +4470,7 @@ self.`protocol` = `protocol`
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct MachinesSetSuspensionPolicyRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4419,7 +4484,7 @@ self.machine = machine
 self.policy = policy
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine, "policy": policy] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "idempotencyKey": idempotency_key, "machine": machine, "policy": policy]; return wire }
 }
 public struct MachinesUsageRequest: RustWireRequest, Sendable {
 public let `protocol`: MachinesProtocolVersionWire?;
@@ -4433,7 +4498,7 @@ self.start_unix_ms = start_unix_ms
 self.end_unix_ms = end_unix_ms
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["protocol": `protocol`, "machine": machine, "startUnixMs": start_unix_ms, "endUnixMs": end_unix_ms] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["protocol": `protocol`, "machine": machine, "startUnixMs": start_unix_ms, "endUnixMs": end_unix_ms]; return wire }
 }
 public struct ObjectsAbortMultipartRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4447,7 +4512,7 @@ self.upload_id = upload_id
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "mutation": mutation]; return wire }
 }
 public struct ObjectsCompleteMultipartRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4465,7 +4530,7 @@ self.preconditions = preconditions
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "parts": parts, "preconditions": preconditions, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "parts": parts, "preconditions": preconditions, "mutation": mutation]; return wire }
 }
 public struct ObjectsCreateBucketRequest: RustWireRequest, Sendable {
 public let name: String;
@@ -4475,7 +4540,7 @@ self.name = name
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["name": name, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["name": name, "mutation": mutation]; return wire }
 }
 public struct ObjectsCreateMultipartRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4489,7 +4554,7 @@ self.metadata = metadata
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "metadata": metadata, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "metadata": metadata, "mutation": mutation]; return wire }
 }
 public struct ObjectsDeleteBucketRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4499,7 +4564,7 @@ self.bucket = bucket
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "mutation": mutation]; return wire }
 }
 public struct ObjectsDeleteObjectRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4513,7 +4578,7 @@ self.preconditions = preconditions
 self.mutation = mutation
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "preconditions": preconditions, "mutation": mutation] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "preconditions": preconditions, "mutation": mutation]; return wire }
 }
 public struct ObjectsGetObjectRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4529,7 +4594,7 @@ self.if_match = if_match
 self.if_none_match = if_none_match
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "range": range, "ifMatch": if_match, "ifNoneMatch": if_none_match] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "range": range, "ifMatch": if_match, "ifNoneMatch": if_none_match]; return wire }
 }
 public struct ObjectsHeadBucketRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4537,7 +4602,7 @@ public let bucket: ObjectsBucketRefWire?;
 self.bucket = bucket
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket]; return wire }
 }
 public struct ObjectsHeadObjectRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4551,7 +4616,7 @@ self.if_match = if_match
 self.if_none_match = if_none_match
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "ifMatch": if_match, "ifNoneMatch": if_none_match] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "ifMatch": if_match, "ifNoneMatch": if_none_match]; return wire }
 }
 public struct ObjectsListObjectsRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4567,7 +4632,7 @@ self.page_size = page_size
 self.continuation_token = continuation_token
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "prefix": `prefix`, "delimiter": delimiter, "pageSize": page_size, "continuationToken": continuation_token] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "prefix": `prefix`, "delimiter": delimiter, "pageSize": page_size, "continuationToken": continuation_token]; return wire }
 }
 public struct ObjectsListPartsRequest: RustWireRequest, Sendable {
 public let bucket: ObjectsBucketRefWire?;
@@ -4583,128 +4648,75 @@ self.after_part_number = after_part_number
 self.page_size = page_size
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "afterPartNumber": after_part_number, "pageSize": page_size] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["bucket": bucket, "objectKey": object_key, "uploadId": upload_id, "afterPartNumber": after_part_number, "pageSize": page_size]; return wire }
 }
 public struct ObjectsPutObjectRequest: RustWireRequest, Sendable {
-public let header: ObjectsPutObjectHeaderWire?;
-public let body: Data?;
-public let complete: Bool?;
 public let FrameChoice: ObjectsPutObjectRequestFrameChoice;
- public init(header: ObjectsPutObjectHeaderWire?, body: Data?, complete: Bool?, FrameChoice: ObjectsPutObjectRequestFrameChoice? = nil) {
- precondition([header != nil, body != nil, complete != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
-self.header = header
-self.body = body
-self.complete = complete
- let active_FrameChoice = [header != nil, body != nil, complete != nil].filter { $0 }.count
- precondition(active_FrameChoice <= 1, "oneof frame contains multiple arms")
- if let choice = FrameChoice { if case .unknown = choice { precondition(active_FrameChoice == 0, "oneof frame contains an unknown and known arm") }; self.FrameChoice = choice } else if active_FrameChoice == 0 { self.FrameChoice = .none } else if let value = header { self.FrameChoice = .Header(value) } else if let value = body { self.FrameChoice = .Body(value) } else if let value = complete { self.FrameChoice = .Complete(value) } else { self.FrameChoice = .none }
+ public init(FrameChoice: ObjectsPutObjectRequestFrameChoice? = nil) {
+self.FrameChoice = FrameChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["header": header, "body": body, "complete": complete] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = [:]; switch FrameChoice { case .Header(let value): wire["header"] = value; case .Body(let value): wire["body"] = value; case .Complete(let value): wire["complete"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown_frame"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct ObjectsUploadPartRequest: RustWireRequest, Sendable {
-public let header: ObjectsUploadPartHeaderWire?;
-public let body: Data?;
-public let complete: Bool?;
 public let FrameChoice: ObjectsUploadPartRequestFrameChoice;
- public init(header: ObjectsUploadPartHeaderWire?, body: Data?, complete: Bool?, FrameChoice: ObjectsUploadPartRequestFrameChoice? = nil) {
- precondition([header != nil, body != nil, complete != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
-self.header = header
-self.body = body
-self.complete = complete
- let active_FrameChoice = [header != nil, body != nil, complete != nil].filter { $0 }.count
- precondition(active_FrameChoice <= 1, "oneof frame contains multiple arms")
- if let choice = FrameChoice { if case .unknown = choice { precondition(active_FrameChoice == 0, "oneof frame contains an unknown and known arm") }; self.FrameChoice = choice } else if active_FrameChoice == 0 { self.FrameChoice = .none } else if let value = header { self.FrameChoice = .Header(value) } else if let value = body { self.FrameChoice = .Body(value) } else if let value = complete { self.FrameChoice = .Complete(value) } else { self.FrameChoice = .none }
+ public init(FrameChoice: ObjectsUploadPartRequestFrameChoice? = nil) {
+self.FrameChoice = FrameChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["header": header, "body": body, "complete": complete] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = [:]; switch FrameChoice { case .Header(let value): wire["header"] = value; case .Body(let value): wire["body"] = value; case .Complete(let value): wire["complete"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown_frame"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamAppendRequest: RustWireRequest, Sendable {
 public let path: ResourcePath;
 public let records: [Data];
-public let if_tail: UInt64?;
-public let idempotency_key: IdempotencyKeyBytes?;
 public let IdempotencyKeyChoice: StreamAppendRequestIdempotencyKeyChoice;
 public let IfTailChoice: StreamAppendRequestIfTailChoice;
- public init(path: ResourcePath, records: [Data], if_tail: UInt64?, idempotency_key: IdempotencyKeyBytes?, IdempotencyKeyChoice: StreamAppendRequestIdempotencyKeyChoice? = nil, IfTailChoice: StreamAppendRequestIfTailChoice? = nil) {
- precondition([idempotency_key != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
- precondition([if_tail != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(path: ResourcePath, records: [Data], IdempotencyKeyChoice: StreamAppendRequestIdempotencyKeyChoice? = nil, IfTailChoice: StreamAppendRequestIfTailChoice? = nil) {
 self.path = path
 self.records = records
-self.if_tail = if_tail
-self.idempotency_key = idempotency_key
- let active_IdempotencyKeyChoice = [idempotency_key != nil].filter { $0 }.count
- precondition(active_IdempotencyKeyChoice <= 1, "oneof _idempotency_key contains multiple arms")
- if let choice = IdempotencyKeyChoice { if case .unknown = choice { precondition(active_IdempotencyKeyChoice == 0, "oneof _idempotency_key contains an unknown and known arm") }; self.IdempotencyKeyChoice = choice } else if active_IdempotencyKeyChoice == 0 { self.IdempotencyKeyChoice = .none } else if let value = idempotency_key { self.IdempotencyKeyChoice = .IdempotencyKey(value) } else { self.IdempotencyKeyChoice = .none }
- let active_IfTailChoice = [if_tail != nil].filter { $0 }.count
- precondition(active_IfTailChoice <= 1, "oneof _if_tail contains multiple arms")
- if let choice = IfTailChoice { if case .unknown = choice { precondition(active_IfTailChoice == 0, "oneof _if_tail contains an unknown and known arm") }; self.IfTailChoice = choice } else if active_IfTailChoice == 0 { self.IfTailChoice = .none } else if let value = if_tail { self.IfTailChoice = .IfTail(value) } else { self.IfTailChoice = .none }
+self.IdempotencyKeyChoice = IdempotencyKeyChoice ?? .none
+self.IfTailChoice = IfTailChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["path": path, "records": records, "ifTail": if_tail, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["path": path, "records": records]; switch IdempotencyKeyChoice { case .IdempotencyKey(let value): wire["idempotencyKey"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__idempotency_key"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; switch IfTailChoice { case .IfTail(let value): wire["ifTail"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__if_tail"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamChildrenPageRequest: RustWireRequest, Sendable {
-public let parent: String?;
-public let after: String?;
-public let hierarchy_version: RevisionDigest?;
 public let limit: StreamPageLimit;
 public let AfterChoice: StreamChildrenPageRequestAfterChoice;
 public let HierarchyVersionChoice: StreamChildrenPageRequestHierarchyVersionChoice;
 public let ParentChoice: StreamChildrenPageRequestParentChoice;
- public init(parent: String?, after: String?, hierarchy_version: RevisionDigest?, limit: StreamPageLimit, AfterChoice: StreamChildrenPageRequestAfterChoice? = nil, HierarchyVersionChoice: StreamChildrenPageRequestHierarchyVersionChoice? = nil, ParentChoice: StreamChildrenPageRequestParentChoice? = nil) {
- precondition([after != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
- precondition([hierarchy_version != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
- precondition([parent != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
-self.parent = parent
-self.after = after
-self.hierarchy_version = hierarchy_version
+ public init(limit: StreamPageLimit, AfterChoice: StreamChildrenPageRequestAfterChoice? = nil, HierarchyVersionChoice: StreamChildrenPageRequestHierarchyVersionChoice? = nil, ParentChoice: StreamChildrenPageRequestParentChoice? = nil) {
 self.limit = limit
- let active_AfterChoice = [after != nil].filter { $0 }.count
- precondition(active_AfterChoice <= 1, "oneof _after contains multiple arms")
- if let choice = AfterChoice { if case .unknown = choice { precondition(active_AfterChoice == 0, "oneof _after contains an unknown and known arm") }; self.AfterChoice = choice } else if active_AfterChoice == 0 { self.AfterChoice = .none } else if let value = after { self.AfterChoice = .After(value) } else { self.AfterChoice = .none }
- let active_HierarchyVersionChoice = [hierarchy_version != nil].filter { $0 }.count
- precondition(active_HierarchyVersionChoice <= 1, "oneof _hierarchy_version contains multiple arms")
- if let choice = HierarchyVersionChoice { if case .unknown = choice { precondition(active_HierarchyVersionChoice == 0, "oneof _hierarchy_version contains an unknown and known arm") }; self.HierarchyVersionChoice = choice } else if active_HierarchyVersionChoice == 0 { self.HierarchyVersionChoice = .none } else if let value = hierarchy_version { self.HierarchyVersionChoice = .HierarchyVersion(value) } else { self.HierarchyVersionChoice = .none }
- let active_ParentChoice = [parent != nil].filter { $0 }.count
- precondition(active_ParentChoice <= 1, "oneof _parent contains multiple arms")
- if let choice = ParentChoice { if case .unknown = choice { precondition(active_ParentChoice == 0, "oneof _parent contains an unknown and known arm") }; self.ParentChoice = choice } else if active_ParentChoice == 0 { self.ParentChoice = .none } else if let value = parent { self.ParentChoice = .Parent(value) } else { self.ParentChoice = .none }
+self.AfterChoice = AfterChoice ?? .none
+self.HierarchyVersionChoice = HierarchyVersionChoice ?? .none
+self.ParentChoice = ParentChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["parent": parent, "after": after, "hierarchyVersion": hierarchy_version, "limit": limit] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["limit": limit]; switch AfterChoice { case .After(let value): wire["after"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__after"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; switch HierarchyVersionChoice { case .HierarchyVersion(let value): wire["hierarchyVersion"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__hierarchy_version"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; switch ParentChoice { case .Parent(let value): wire["parent"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__parent"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamChildrenRequest: RustWireRequest, Sendable {
-public let parent: String?;
 public let limit: StreamPageLimit;
 public let ParentChoice: StreamChildrenRequestParentChoice;
- public init(parent: String?, limit: StreamPageLimit, ParentChoice: StreamChildrenRequestParentChoice? = nil) {
- precondition([parent != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
-self.parent = parent
+ public init(limit: StreamPageLimit, ParentChoice: StreamChildrenRequestParentChoice? = nil) {
 self.limit = limit
- let active_ParentChoice = [parent != nil].filter { $0 }.count
- precondition(active_ParentChoice <= 1, "oneof _parent contains multiple arms")
- if let choice = ParentChoice { if case .unknown = choice { precondition(active_ParentChoice == 0, "oneof _parent contains an unknown and known arm") }; self.ParentChoice = choice } else if active_ParentChoice == 0 { self.ParentChoice = .none } else if let value = parent { self.ParentChoice = .Parent(value) } else { self.ParentChoice = .none }
+self.ParentChoice = ParentChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["parent": parent, "limit": limit] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["limit": limit]; switch ParentChoice { case .Parent(let value): wire["parent"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__parent"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamCommitRequest: RustWireRequest, Sendable {
 public let conditions: [StreamCommitConditionWire];
 public let mutations: [StreamCommitMutationWire];
 public let idempotency_key: IdempotencyKeyBytes;
-public let deadline_unix_millis: UInt64?;
 public let DeadlineUnixMillisChoice: StreamCommitRequestDeadlineUnixMillisChoice;
- public init(conditions: [StreamCommitConditionWire], mutations: [StreamCommitMutationWire], idempotency_key: IdempotencyKeyBytes, deadline_unix_millis: UInt64?, DeadlineUnixMillisChoice: StreamCommitRequestDeadlineUnixMillisChoice? = nil) {
- precondition([deadline_unix_millis != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(conditions: [StreamCommitConditionWire], mutations: [StreamCommitMutationWire], idempotency_key: IdempotencyKeyBytes, DeadlineUnixMillisChoice: StreamCommitRequestDeadlineUnixMillisChoice? = nil) {
 self.conditions = conditions
 self.mutations = mutations
 self.idempotency_key = idempotency_key
-self.deadline_unix_millis = deadline_unix_millis
- let active_DeadlineUnixMillisChoice = [deadline_unix_millis != nil].filter { $0 }.count
- precondition(active_DeadlineUnixMillisChoice <= 1, "oneof _deadline_unix_millis contains multiple arms")
- if let choice = DeadlineUnixMillisChoice { if case .unknown = choice { precondition(active_DeadlineUnixMillisChoice == 0, "oneof _deadline_unix_millis contains an unknown and known arm") }; self.DeadlineUnixMillisChoice = choice } else if active_DeadlineUnixMillisChoice == 0 { self.DeadlineUnixMillisChoice = .none } else if let value = deadline_unix_millis { self.DeadlineUnixMillisChoice = .DeadlineUnixMillis(value) } else { self.DeadlineUnixMillisChoice = .none }
+self.DeadlineUnixMillisChoice = DeadlineUnixMillisChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["conditions": conditions, "mutations": mutations, "idempotencyKey": idempotency_key, "deadlineUnixMillis": deadline_unix_millis] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["conditions": conditions, "mutations": mutations, "idempotencyKey": idempotency_key]; switch DeadlineUnixMillisChoice { case .DeadlineUnixMillis(let value): wire["deadlineUnixMillis"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__deadline_unix_millis"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamFollowRequest: RustWireRequest, Sendable {
 public let path: ResourcePath;
@@ -4714,31 +4726,21 @@ self.path = path
 self.from = from
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["path": path, "from": from] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["path": path, "from": from]; return wire }
 }
 public struct StreamForkRequest: RustWireRequest, Sendable {
 public let source: SourceName;
 public let destination: DestinationName;
-public let at_tail: UInt64?;
-public let idempotency_key: IdempotencyKeyBytes?;
 public let AtTailChoice: StreamForkRequestAtTailChoice;
 public let IdempotencyKeyChoice: StreamForkRequestIdempotencyKeyChoice;
- public init(source: SourceName, destination: DestinationName, at_tail: UInt64?, idempotency_key: IdempotencyKeyBytes?, AtTailChoice: StreamForkRequestAtTailChoice? = nil, IdempotencyKeyChoice: StreamForkRequestIdempotencyKeyChoice? = nil) {
- precondition([at_tail != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
- precondition([idempotency_key != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(source: SourceName, destination: DestinationName, AtTailChoice: StreamForkRequestAtTailChoice? = nil, IdempotencyKeyChoice: StreamForkRequestIdempotencyKeyChoice? = nil) {
 self.source = source
 self.destination = destination
-self.at_tail = at_tail
-self.idempotency_key = idempotency_key
- let active_AtTailChoice = [at_tail != nil].filter { $0 }.count
- precondition(active_AtTailChoice <= 1, "oneof _at_tail contains multiple arms")
- if let choice = AtTailChoice { if case .unknown = choice { precondition(active_AtTailChoice == 0, "oneof _at_tail contains an unknown and known arm") }; self.AtTailChoice = choice } else if active_AtTailChoice == 0 { self.AtTailChoice = .none } else if let value = at_tail { self.AtTailChoice = .AtTail(value) } else { self.AtTailChoice = .none }
- let active_IdempotencyKeyChoice = [idempotency_key != nil].filter { $0 }.count
- precondition(active_IdempotencyKeyChoice <= 1, "oneof _idempotency_key contains multiple arms")
- if let choice = IdempotencyKeyChoice { if case .unknown = choice { precondition(active_IdempotencyKeyChoice == 0, "oneof _idempotency_key contains an unknown and known arm") }; self.IdempotencyKeyChoice = choice } else if active_IdempotencyKeyChoice == 0 { self.IdempotencyKeyChoice = .none } else if let value = idempotency_key { self.IdempotencyKeyChoice = .IdempotencyKey(value) } else { self.IdempotencyKeyChoice = .none }
+self.AtTailChoice = AtTailChoice ?? .none
+self.IdempotencyKeyChoice = IdempotencyKeyChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["source": source, "destination": destination, "atTail": at_tail, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["source": source, "destination": destination]; switch AtTailChoice { case .AtTail(let value): wire["atTail"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__at_tail"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; switch IdempotencyKeyChoice { case .IdempotencyKey(let value): wire["idempotencyKey"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__idempotency_key"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct StreamInspectIdempotencyRequest: RustWireRequest, Sendable {
 public let idempotency_key: IdempotencyKeyBytes;
@@ -4746,7 +4748,7 @@ public let idempotency_key: IdempotencyKeyBytes;
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["idempotencyKey": idempotency_key]; return wire }
 }
 public struct StreamReadCommitRequest: RustWireRequest, Sendable {
 public let commit_id: CommitId;
@@ -4754,7 +4756,7 @@ public let commit_id: CommitId;
 self.commit_id = commit_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["commitId": commit_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["commitId": commit_id]; return wire }
 }
 public struct StreamReadRequest: RustWireRequest, Sendable {
 public let path: ResourcePath;
@@ -4766,7 +4768,7 @@ self.from = from
 self.limit = limit
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["path": path, "from": from, "limit": limit] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["path": path, "from": from, "limit": limit]; return wire }
 }
 public struct StreamTailRequest: RustWireRequest, Sendable {
 public let path: ResourcePath;
@@ -4774,7 +4776,7 @@ public let path: ResourcePath;
 self.path = path
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["path": path] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["path": path]; return wire }
 }
 public struct WorkersCancelJobRequest: RustWireRequest, Sendable {
 public let job_id: JobId;
@@ -4784,7 +4786,7 @@ self.job_id = job_id
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["jobId": job_id, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["jobId": job_id, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct WorkersInspectJobRequest: RustWireRequest, Sendable {
 public let job_id: JobId;
@@ -4792,7 +4794,7 @@ public let job_id: JobId;
 self.job_id = job_id
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["jobId": job_id] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["jobId": job_id]; return wire }
 }
 public struct WorkersInvokeDeploymentRequest: RustWireRequest, Sendable {
 public let alias: VersionAlias;
@@ -4808,7 +4810,7 @@ self.headers = headers
 self.body = body
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["alias": alias, "method": method, "url": url, "headers": headers, "body": body] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["alias": alias, "method": method, "url": url, "headers": headers, "body": body]; return wire }
 }
 public struct WorkersInvokeVersionRequest: RustWireRequest, Sendable {
 public let version_sha256: Sha256Digest;
@@ -4824,7 +4826,7 @@ self.headers = headers
 self.body = body
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["versionSha256": version_sha256, "method": method, "url": url, "headers": headers, "body": body] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["versionSha256": version_sha256, "method": method, "url": url, "headers": headers, "body": body]; return wire }
 }
 public struct WorkersPublishVersionRequest: RustWireRequest, Sendable {
 public let javascript_module: Data;
@@ -4836,26 +4838,21 @@ self.expected_sha256 = expected_sha256
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["javascriptModule": javascript_module, "expectedSha256": expected_sha256, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["javascriptModule": javascript_module, "expectedSha256": expected_sha256, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct WorkersSelectDeploymentRequest: RustWireRequest, Sendable {
 public let alias: VersionAlias;
 public let version_sha256: Sha256Digest;
-public let expected_revision: UInt64?;
 public let idempotency_key: IdempotencyKeyText;
 public let ExpectedRevisionChoice: WorkersSelectDeploymentRequestExpectedRevisionChoice;
- public init(alias: VersionAlias, version_sha256: Sha256Digest, expected_revision: UInt64?, idempotency_key: IdempotencyKeyText, ExpectedRevisionChoice: WorkersSelectDeploymentRequestExpectedRevisionChoice? = nil) {
- precondition([expected_revision != nil].filter { $0 }.count <= 1, "oneof arms are mutually exclusive")
+ public init(alias: VersionAlias, version_sha256: Sha256Digest, idempotency_key: IdempotencyKeyText, ExpectedRevisionChoice: WorkersSelectDeploymentRequestExpectedRevisionChoice? = nil) {
 self.alias = alias
 self.version_sha256 = version_sha256
-self.expected_revision = expected_revision
 self.idempotency_key = idempotency_key
- let active_ExpectedRevisionChoice = [expected_revision != nil].filter { $0 }.count
- precondition(active_ExpectedRevisionChoice <= 1, "oneof _expected_revision contains multiple arms")
- if let choice = ExpectedRevisionChoice { if case .unknown = choice { precondition(active_ExpectedRevisionChoice == 0, "oneof _expected_revision contains an unknown and known arm") }; self.ExpectedRevisionChoice = choice } else if active_ExpectedRevisionChoice == 0 { self.ExpectedRevisionChoice = .none } else if let value = expected_revision { self.ExpectedRevisionChoice = .ExpectedRevision(value) } else { self.ExpectedRevisionChoice = .none }
+self.ExpectedRevisionChoice = ExpectedRevisionChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["alias": alias, "versionSha256": version_sha256, "expectedRevision": expected_revision, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["alias": alias, "versionSha256": version_sha256, "idempotencyKey": idempotency_key]; switch ExpectedRevisionChoice { case .ExpectedRevision(let value): wire["expectedRevision"] = value; case .none: break; case .unknown(let rawTag, let payload): wire["__unknown__expected_revision"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }; return wire }
 }
 public struct WorkersSubmitJobRequest: RustWireRequest, Sendable {
 public let target: WorkersJobTargetWire?;
@@ -4871,7 +4868,7 @@ self.retry = retry
 self.idempotency_key = idempotency_key
  }
  public typealias Wire = [String: Any]
- public func toWire() -> [String: Any] { ["target": target, "input": input, "limits": limits, "retry": retry, "idempotencyKey": idempotency_key] }
+ public func toWire() -> [String: Any] { var wire: [String: Any] = ["target": target, "input": input, "limits": limits, "retry": retry, "idempotencyKey": idempotency_key]; return wire }
 }
 public struct ActorsAddSubscriptionResponseResponse: RustWireResponse, Sendable {
 public let actor: ActorsActorObservationWire?;
@@ -4952,20 +4949,14 @@ self.operation = operation
 public struct FilesystemCredentialResponseResponse: RustWireResponse, Sendable {
 public let endpoint: OpaqueText;
 public let expires_at_unix_seconds: UnixTimestampSeconds;
-public let bearer_token: OpaqueText?;
-public let s3: FilesystemS3CredentialWire?;
 public let CredentialChoice: FilesystemCredentialResponseCredentialChoice;
- public init(endpoint: OpaqueText, expires_at_unix_seconds: UnixTimestampSeconds, bearer_token: OpaqueText?, s3: FilesystemS3CredentialWire?, CredentialChoice: FilesystemCredentialResponseCredentialChoice? = nil) throws {
+ public init(endpoint: OpaqueText, expires_at_unix_seconds: UnixTimestampSeconds, CredentialChoice: FilesystemCredentialResponseCredentialChoice? = nil) throws {
 self.endpoint = endpoint
 self.expires_at_unix_seconds = expires_at_unix_seconds
-self.bearer_token = bearer_token
-self.s3 = s3
- let active_CredentialChoice = [bearer_token != nil, bearer_token != nil, s3 != nil, s3 != nil].filter { $0 }.count
- guard active_CredentialChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof credential contains multiple arms") }
- if let choice = CredentialChoice { if case .unknown = choice { guard active_CredentialChoice == 0 else { throw RustWireDecodeError.invalidField("oneof credential contains an unknown and known arm") } }; self.CredentialChoice = choice } else if active_CredentialChoice == 0 { self.CredentialChoice = .none } else if let value = bearer_token { self.CredentialChoice = .BearerToken(value) } else if let value = bearer_token { self.CredentialChoice = .BearerToken(value) } else if let value = s3 { self.CredentialChoice = .S3(value) } else if let value = s3 { self.CredentialChoice = .S3(value) } else { self.CredentialChoice = .none }
+self.CredentialChoice = CredentialChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_endpoint = wire["endpoint"] as? String, let endpoint = OpaqueText(raw_endpoint) else { throw RustWireDecodeError.invalidField("endpoint") };guard let raw_expires_at_unix_seconds = wire["expiresAtUnixSeconds"] as? UInt64, let expires_at_unix_seconds = UnixTimestampSeconds(raw_expires_at_unix_seconds) else { throw RustWireDecodeError.invalidField("expiresAtUnixSeconds") };let bearer_token = (wire["bearerToken"] as? String).flatMap { OpaqueText($0) };let s3 = (wire["s3"] as? RustWireMessage).map { FilesystemS3CredentialWire($0) };let CredentialChoice: FilesystemCredentialResponseCredentialChoice? = (wire["__unknown_credential"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(endpoint: endpoint, expires_at_unix_seconds: expires_at_unix_seconds, bearer_token: bearer_token, s3: s3, CredentialChoice: CredentialChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_endpoint = wire["endpoint"] as? String, let endpoint = OpaqueText(raw_endpoint) else { throw RustWireDecodeError.invalidField("endpoint") };guard let raw_expires_at_unix_seconds = wire["expiresAtUnixSeconds"] as? UInt64, let expires_at_unix_seconds = UnixTimestampSeconds(raw_expires_at_unix_seconds) else { throw RustWireDecodeError.invalidField("expiresAtUnixSeconds") };var selected_credential: FilesystemCredentialResponseCredentialChoice? = nil;if let raw_bearer_token = wire["bearerToken"] as? String { guard let value_credential = OpaqueText(raw_bearer_token) else { throw RustWireDecodeError.invalidField("bearerToken") }; guard selected_credential == nil else { throw RustWireDecodeError.invalidField("oneof arm bearerToken conflicts") }; selected_credential = .BearerToken(value_credential) }if let raw_bearer_token = wire["bearerToken"] as? String { guard let value_credential = OpaqueText(raw_bearer_token) else { throw RustWireDecodeError.invalidField("bearerToken") }; guard selected_credential == nil else { throw RustWireDecodeError.invalidField("oneof arm bearerToken conflicts") }; selected_credential = .BearerToken(value_credential) }if let raw_s3 = wire["s3"] as? RustWireMessage { let value_credential = FilesystemS3CredentialWire(raw_s3); guard selected_credential == nil else { throw RustWireDecodeError.invalidField("oneof arm s3 conflicts") }; selected_credential = .S3(value_credential) }if let raw_s3 = wire["s3"] as? RustWireMessage { let value_credential = FilesystemS3CredentialWire(raw_s3); guard selected_credential == nil else { throw RustWireDecodeError.invalidField("oneof arm s3 conflicts") }; selected_credential = .S3(value_credential) }if let unknown_credential = wire["__unknown_credential"] as? RustWireUnknownOneof { guard selected_credential == nil else { throw RustWireDecodeError.invalidField("oneof credential contains known and unknown arms") }; selected_credential = .unknown(rawTag: unknown_credential.rawTag, payload: unknown_credential.payload) } let CredentialChoice: FilesystemCredentialResponseCredentialChoice = selected_credential ?? .none; return try Self(endpoint: endpoint, expires_at_unix_seconds: expires_at_unix_seconds, CredentialChoice: CredentialChoice) }
 }
 public struct FilesystemDiffResponseResponse: RustWireResponse, Sendable {
 public let from: FilesystemGenerationRefWire?;
@@ -5265,7 +5256,6 @@ self.revision = revision
 }
 public struct InferenceContextViewResponse: RustWireResponse, Sendable {
 public let revision: RevisionDigest;
-public let parent: OpaqueBytes?;
 public let lineage: OpaqueBytes;
 public let execution_profile: OpaqueBytes;
 public let content_digest: Sha256Digest;
@@ -5273,41 +5263,34 @@ public let items: [InferenceItemWire];
 public let model: OpaqueText;
 public let provenance: InferenceContextProvenanceWire?;
 public let ParentChoice: InferenceCustomerContextViewParentChoice;
- public init(revision: RevisionDigest, parent: OpaqueBytes?, lineage: OpaqueBytes, execution_profile: OpaqueBytes, content_digest: Sha256Digest, items: [InferenceItemWire], model: OpaqueText, provenance: InferenceContextProvenanceWire?, ParentChoice: InferenceCustomerContextViewParentChoice? = nil) throws {
+ public init(revision: RevisionDigest, lineage: OpaqueBytes, execution_profile: OpaqueBytes, content_digest: Sha256Digest, items: [InferenceItemWire], model: OpaqueText, provenance: InferenceContextProvenanceWire?, ParentChoice: InferenceCustomerContextViewParentChoice? = nil) throws {
 self.revision = revision
-self.parent = parent
 self.lineage = lineage
 self.execution_profile = execution_profile
 self.content_digest = content_digest
 self.items = items
 self.model = model
 self.provenance = provenance
- let active_ParentChoice = [parent != nil].filter { $0 }.count
- guard active_ParentChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _parent contains multiple arms") }
- if let choice = ParentChoice { if case .unknown = choice { guard active_ParentChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _parent contains an unknown and known arm") } }; self.ParentChoice = choice } else if active_ParentChoice == 0 { self.ParentChoice = .none } else if let value = parent { self.ParentChoice = .Parent(value) } else { self.ParentChoice = .none }
+self.ParentChoice = ParentChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_revision = wire["revision"] as? Data, let revision = RevisionDigest(raw_revision) else { throw RustWireDecodeError.invalidField("revision") };let parent = (wire["parent"] as? Data).flatMap { OpaqueBytes($0) };guard let raw_lineage = wire["lineage"] as? Data, let lineage = OpaqueBytes(raw_lineage) else { throw RustWireDecodeError.invalidField("lineage") };guard let raw_execution_profile = wire["executionProfile"] as? Data, let execution_profile = OpaqueBytes(raw_execution_profile) else { throw RustWireDecodeError.invalidField("executionProfile") };guard let raw_content_digest = wire["contentDigest"] as? Data, let content_digest = Sha256Digest(raw_content_digest) else { throw RustWireDecodeError.invalidField("contentDigest") };guard let raw_items = wire["items"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("items") }; let items = raw_items.map { InferenceItemWire($0) };guard let raw_model = wire["model"] as? String, let model = OpaqueText(raw_model) else { throw RustWireDecodeError.invalidField("model") };let provenance = (wire["provenance"] as? RustWireMessage).map { InferenceContextProvenanceWire($0) };let ParentChoice: InferenceCustomerContextViewParentChoice? = (wire["__unknown__parent"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(revision: revision, parent: parent, lineage: lineage, execution_profile: execution_profile, content_digest: content_digest, items: items, model: model, provenance: provenance, ParentChoice: ParentChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_revision = wire["revision"] as? Data, let revision = RevisionDigest(raw_revision) else { throw RustWireDecodeError.invalidField("revision") };guard let raw_lineage = wire["lineage"] as? Data, let lineage = OpaqueBytes(raw_lineage) else { throw RustWireDecodeError.invalidField("lineage") };guard let raw_execution_profile = wire["executionProfile"] as? Data, let execution_profile = OpaqueBytes(raw_execution_profile) else { throw RustWireDecodeError.invalidField("executionProfile") };guard let raw_content_digest = wire["contentDigest"] as? Data, let content_digest = Sha256Digest(raw_content_digest) else { throw RustWireDecodeError.invalidField("contentDigest") };guard let raw_items = wire["items"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("items") }; let items = raw_items.map { InferenceItemWire($0) };guard let raw_model = wire["model"] as? String, let model = OpaqueText(raw_model) else { throw RustWireDecodeError.invalidField("model") };let provenance = (wire["provenance"] as? RustWireMessage).map { InferenceContextProvenanceWire($0) };var selected__parent: InferenceCustomerContextViewParentChoice? = nil;if let raw_parent = wire["parent"] as? Data { guard let value__parent = OpaqueBytes(raw_parent) else { throw RustWireDecodeError.invalidField("parent") }; guard selected__parent == nil else { throw RustWireDecodeError.invalidField("oneof arm parent conflicts") }; selected__parent = .Parent(value__parent) }if let unknown__parent = wire["__unknown__parent"] as? RustWireUnknownOneof { guard selected__parent == nil else { throw RustWireDecodeError.invalidField("oneof _parent contains known and unknown arms") }; selected__parent = .unknown(rawTag: unknown__parent.rawTag, payload: unknown__parent.payload) } let ParentChoice: InferenceCustomerContextViewParentChoice = selected__parent ?? .none; return try Self(revision: revision, lineage: lineage, execution_profile: execution_profile, content_digest: content_digest, items: items, model: model, provenance: provenance, ParentChoice: ParentChoice) }
 }
 public struct InferenceEvaluationViewResponse: RustWireResponse, Sendable {
 public let evaluation_id: EvaluationId;
 public let spec: InferenceEvaluationSpecWire?;
 public let state: InferenceEvaluationStateWire;
-public let result: InferenceEvaluationResultWire?;
 public let sequence: SequenceNumber;
 public let ResultChoice: InferenceCustomerEvaluationViewResultChoice;
- public init(evaluation_id: EvaluationId, spec: InferenceEvaluationSpecWire?, state: InferenceEvaluationStateWire, result: InferenceEvaluationResultWire?, sequence: SequenceNumber, ResultChoice: InferenceCustomerEvaluationViewResultChoice? = nil) throws {
+ public init(evaluation_id: EvaluationId, spec: InferenceEvaluationSpecWire?, state: InferenceEvaluationStateWire, sequence: SequenceNumber, ResultChoice: InferenceCustomerEvaluationViewResultChoice? = nil) throws {
 self.evaluation_id = evaluation_id
 self.spec = spec
 self.state = state
-self.result = result
 self.sequence = sequence
- let active_ResultChoice = [result != nil, result != nil].filter { $0 }.count
- guard active_ResultChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _result contains multiple arms") }
- if let choice = ResultChoice { if case .unknown = choice { guard active_ResultChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _result contains an unknown and known arm") } }; self.ResultChoice = choice } else if active_ResultChoice == 0 { self.ResultChoice = .none } else if let value = result { self.ResultChoice = .Result(value) } else if let value = result { self.ResultChoice = .Result(value) } else { self.ResultChoice = .none }
+self.ResultChoice = ResultChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_evaluation_id = wire["evaluationId"] as? Data, let evaluation_id = EvaluationId(raw_evaluation_id) else { throw RustWireDecodeError.invalidField("evaluationId") };let spec = (wire["spec"] as? RustWireMessage).map { InferenceEvaluationSpecWire($0) };guard let raw_state = wire["state"] as? RustWireEnum else { throw RustWireDecodeError.invalidField("state") }; let state = InferenceEvaluationStateWire(raw_state);let result = (wire["result"] as? RustWireMessage).map { InferenceEvaluationResultWire($0) };guard let raw_sequence = wire["sequence"] as? UInt64, let sequence = SequenceNumber(raw_sequence) else { throw RustWireDecodeError.invalidField("sequence") };let ResultChoice: InferenceCustomerEvaluationViewResultChoice? = (wire["__unknown__result"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(evaluation_id: evaluation_id, spec: spec, state: state, result: result, sequence: sequence, ResultChoice: ResultChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_evaluation_id = wire["evaluationId"] as? Data, let evaluation_id = EvaluationId(raw_evaluation_id) else { throw RustWireDecodeError.invalidField("evaluationId") };let spec = (wire["spec"] as? RustWireMessage).map { InferenceEvaluationSpecWire($0) };guard let raw_state = wire["state"] as? RustWireEnum else { throw RustWireDecodeError.invalidField("state") }; let state = InferenceEvaluationStateWire(raw_state);guard let raw_sequence = wire["sequence"] as? UInt64, let sequence = SequenceNumber(raw_sequence) else { throw RustWireDecodeError.invalidField("sequence") };var selected__result: InferenceCustomerEvaluationViewResultChoice? = nil;if let raw_result = wire["result"] as? RustWireMessage { let value__result = InferenceEvaluationResultWire(raw_result); guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof arm result conflicts") }; selected__result = .Result(value__result) }if let raw_result = wire["result"] as? RustWireMessage { let value__result = InferenceEvaluationResultWire(raw_result); guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof arm result conflicts") }; selected__result = .Result(value__result) }if let unknown__result = wire["__unknown__result"] as? RustWireUnknownOneof { guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof _result contains known and unknown arms") }; selected__result = .unknown(rawTag: unknown__result.rawTag, payload: unknown__result.payload) } let ResultChoice: InferenceCustomerEvaluationViewResultChoice = selected__result ?? .none; return try Self(evaluation_id: evaluation_id, spec: spec, state: state, sequence: sequence, ResultChoice: ResultChoice) }
 }
 public struct InferenceGenerateRunResponseResponse: RustWireResponse, Sendable {
 public let run: InferenceRunViewWire?;
@@ -5341,23 +5324,13 @@ self.retained = retained
 }
 public struct InferenceRunEventResponse: RustWireResponse, Sendable {
 public let sequence: SequenceNumber;
-public let output: Data?;
-public let usage: InferenceLogicalUsageWire?;
-public let terminal: InferenceRunTerminalWire?;
-public let progress: InferenceRunProgressWire?;
 public let EventChoice: InferenceCustomerRunEventEventChoice;
- public init(sequence: SequenceNumber, output: Data?, usage: InferenceLogicalUsageWire?, terminal: InferenceRunTerminalWire?, progress: InferenceRunProgressWire?, EventChoice: InferenceCustomerRunEventEventChoice? = nil) throws {
+ public init(sequence: SequenceNumber, EventChoice: InferenceCustomerRunEventEventChoice? = nil) throws {
 self.sequence = sequence
-self.output = output
-self.usage = usage
-self.terminal = terminal
-self.progress = progress
- let active_EventChoice = [output != nil, usage != nil, terminal != nil, progress != nil].filter { $0 }.count
- guard active_EventChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof event contains multiple arms") }
- if let choice = EventChoice { if case .unknown = choice { guard active_EventChoice == 0 else { throw RustWireDecodeError.invalidField("oneof event contains an unknown and known arm") } }; self.EventChoice = choice } else if active_EventChoice == 0 { self.EventChoice = .none } else if let value = output { self.EventChoice = .Output(value) } else if let value = usage { self.EventChoice = .Usage(value) } else if let value = terminal { self.EventChoice = .Terminal(value) } else if let value = progress { self.EventChoice = .Progress(value) } else { self.EventChoice = .none }
+self.EventChoice = EventChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_sequence = wire["sequence"] as? UInt64, let sequence = SequenceNumber(raw_sequence) else { throw RustWireDecodeError.invalidField("sequence") };let output = wire["output"] as? Data;let usage = (wire["usage"] as? RustWireMessage).map { InferenceLogicalUsageWire($0) };let terminal = (wire["terminal"] as? RustWireEnum).map { InferenceRunTerminalWire($0) };let progress = (wire["progress"] as? RustWireMessage).map { InferenceRunProgressWire($0) };let EventChoice: InferenceCustomerRunEventEventChoice? = (wire["__unknown_event"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(sequence: sequence, output: output, usage: usage, terminal: terminal, progress: progress, EventChoice: EventChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_sequence = wire["sequence"] as? UInt64, let sequence = SequenceNumber(raw_sequence) else { throw RustWireDecodeError.invalidField("sequence") };var selected_event: InferenceCustomerRunEventEventChoice? = nil;if let raw_output = wire["output"] as? Data { let value_event: Data = raw_output; guard selected_event == nil else { throw RustWireDecodeError.invalidField("oneof arm output conflicts") }; selected_event = .Output(value_event) }if let raw_usage = wire["usage"] as? RustWireMessage { let value_event = InferenceLogicalUsageWire(raw_usage); guard selected_event == nil else { throw RustWireDecodeError.invalidField("oneof arm usage conflicts") }; selected_event = .Usage(value_event) }if let raw_terminal = wire["terminal"] as? RustWireEnum { let value_event = InferenceRunTerminalWire(raw_terminal); guard selected_event == nil else { throw RustWireDecodeError.invalidField("oneof arm terminal conflicts") }; selected_event = .Terminal(value_event) }if let raw_progress = wire["progress"] as? RustWireMessage { let value_event = InferenceRunProgressWire(raw_progress); guard selected_event == nil else { throw RustWireDecodeError.invalidField("oneof arm progress conflicts") }; selected_event = .Progress(value_event) }if let unknown_event = wire["__unknown_event"] as? RustWireUnknownOneof { guard selected_event == nil else { throw RustWireDecodeError.invalidField("oneof event contains known and unknown arms") }; selected_event = .unknown(rawTag: unknown_event.rawTag, payload: unknown_event.payload) } let EventChoice: InferenceCustomerRunEventEventChoice = selected_event ?? .none; return try Self(sequence: sequence, EventChoice: EventChoice) }
 }
 public struct InferenceRunViewResponse: RustWireResponse, Sendable {
 public let run_id: RunId;
@@ -5365,21 +5338,17 @@ public let input: Data;
 public let model: OpaqueText;
 public let last_sequence: SequenceNumber;
 public let cancellation_requested: Bool;
-public let result: InferenceRunResultWire?;
 public let ResultChoice: InferenceCustomerRunViewResultChoice;
- public init(run_id: RunId, input: Data, model: OpaqueText, last_sequence: SequenceNumber, cancellation_requested: Bool, result: InferenceRunResultWire?, ResultChoice: InferenceCustomerRunViewResultChoice? = nil) throws {
+ public init(run_id: RunId, input: Data, model: OpaqueText, last_sequence: SequenceNumber, cancellation_requested: Bool, ResultChoice: InferenceCustomerRunViewResultChoice? = nil) throws {
 self.run_id = run_id
 self.input = input
 self.model = model
 self.last_sequence = last_sequence
 self.cancellation_requested = cancellation_requested
-self.result = result
- let active_ResultChoice = [result != nil, result != nil].filter { $0 }.count
- guard active_ResultChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _result contains multiple arms") }
- if let choice = ResultChoice { if case .unknown = choice { guard active_ResultChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _result contains an unknown and known arm") } }; self.ResultChoice = choice } else if active_ResultChoice == 0 { self.ResultChoice = .none } else if let value = result { self.ResultChoice = .Result(value) } else if let value = result { self.ResultChoice = .Result(value) } else { self.ResultChoice = .none }
+self.ResultChoice = ResultChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_run_id = wire["runId"] as? Data, let run_id = RunId(raw_run_id) else { throw RustWireDecodeError.invalidField("runId") };guard let input = wire["input"] as? Data else { throw RustWireDecodeError.invalidField("input") };guard let raw_model = wire["model"] as? String, let model = OpaqueText(raw_model) else { throw RustWireDecodeError.invalidField("model") };guard let raw_last_sequence = wire["lastSequence"] as? UInt64, let last_sequence = SequenceNumber(raw_last_sequence) else { throw RustWireDecodeError.invalidField("lastSequence") };guard let cancellation_requested = wire["cancellationRequested"] as? Bool else { throw RustWireDecodeError.invalidField("cancellationRequested") };let result = (wire["result"] as? RustWireMessage).map { InferenceRunResultWire($0) };let ResultChoice: InferenceCustomerRunViewResultChoice? = (wire["__unknown__result"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(run_id: run_id, input: input, model: model, last_sequence: last_sequence, cancellation_requested: cancellation_requested, result: result, ResultChoice: ResultChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_run_id = wire["runId"] as? Data, let run_id = RunId(raw_run_id) else { throw RustWireDecodeError.invalidField("runId") };guard let input = wire["input"] as? Data else { throw RustWireDecodeError.invalidField("input") };guard let raw_model = wire["model"] as? String, let model = OpaqueText(raw_model) else { throw RustWireDecodeError.invalidField("model") };guard let raw_last_sequence = wire["lastSequence"] as? UInt64, let last_sequence = SequenceNumber(raw_last_sequence) else { throw RustWireDecodeError.invalidField("lastSequence") };guard let cancellation_requested = wire["cancellationRequested"] as? Bool else { throw RustWireDecodeError.invalidField("cancellationRequested") };var selected__result: InferenceCustomerRunViewResultChoice? = nil;if let raw_result = wire["result"] as? RustWireMessage { let value__result = InferenceRunResultWire(raw_result); guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof arm result conflicts") }; selected__result = .Result(value__result) }if let raw_result = wire["result"] as? RustWireMessage { let value__result = InferenceRunResultWire(raw_result); guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof arm result conflicts") }; selected__result = .Result(value__result) }if let unknown__result = wire["__unknown__result"] as? RustWireUnknownOneof { guard selected__result == nil else { throw RustWireDecodeError.invalidField("oneof _result contains known and unknown arms") }; selected__result = .unknown(rawTag: unknown__result.rawTag, payload: unknown__result.payload) } let ResultChoice: InferenceCustomerRunViewResultChoice = selected__result ?? .none; return try Self(run_id: run_id, input: input, model: model, last_sequence: last_sequence, cancellation_requested: cancellation_requested, ResultChoice: ResultChoice) }
 }
 public struct InferenceWarmViewResponse: RustWireResponse, Sendable {
 public let commitment: Sha256Digest;
@@ -5567,33 +5536,13 @@ self.policy = policy
 }
 public struct MachinesRecoveredAdmissionResponse: RustWireResponse, Sendable {
 public let operation: OperationId?;
-public let create: MachinesMachineAdmissionWire?;
-public let checkpoint: MachinesCheckpointAdmissionWire?;
-public let fork: MachinesForkAdmissionWire?;
-public let suspend: MachinesMutationAdmissionWire?;
-public let wake: MachinesMutationAdmissionWire?;
-public let destroy_machine: MachinesMutationAdmissionWire?;
-public let set_suspension_policy: MachinesPolicyAdmissionWire?;
-public let destroy_checkpoint: MachinesMutationAdmissionWire?;
-public let fork_machine: MachinesForkMachineAdmissionWire?;
 public let ResultChoice: MachinesRecoveredAdmissionResultChoice;
- public init(operation: OperationId?, create: MachinesMachineAdmissionWire?, checkpoint: MachinesCheckpointAdmissionWire?, fork: MachinesForkAdmissionWire?, suspend: MachinesMutationAdmissionWire?, wake: MachinesMutationAdmissionWire?, destroy_machine: MachinesMutationAdmissionWire?, set_suspension_policy: MachinesPolicyAdmissionWire?, destroy_checkpoint: MachinesMutationAdmissionWire?, fork_machine: MachinesForkMachineAdmissionWire?, ResultChoice: MachinesRecoveredAdmissionResultChoice? = nil) throws {
+ public init(operation: OperationId?, ResultChoice: MachinesRecoveredAdmissionResultChoice? = nil) throws {
 self.operation = operation
-self.create = create
-self.checkpoint = checkpoint
-self.fork = fork
-self.suspend = suspend
-self.wake = wake
-self.destroy_machine = destroy_machine
-self.set_suspension_policy = set_suspension_policy
-self.destroy_checkpoint = destroy_checkpoint
-self.fork_machine = fork_machine
- let active_ResultChoice = [create != nil, checkpoint != nil, fork != nil, suspend != nil, wake != nil, destroy_machine != nil, set_suspension_policy != nil, destroy_checkpoint != nil, fork_machine != nil].filter { $0 }.count
- guard active_ResultChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof result contains multiple arms") }
- if let choice = ResultChoice { if case .unknown = choice { guard active_ResultChoice == 0 else { throw RustWireDecodeError.invalidField("oneof result contains an unknown and known arm") } }; self.ResultChoice = choice } else if active_ResultChoice == 0 { self.ResultChoice = .none } else if let value = create { self.ResultChoice = .Create(value) } else if let value = checkpoint { self.ResultChoice = .Checkpoint(value) } else if let value = fork { self.ResultChoice = .Fork(value) } else if let value = suspend { self.ResultChoice = .Suspend(value) } else if let value = wake { self.ResultChoice = .Wake(value) } else if let value = destroy_machine { self.ResultChoice = .DestroyMachine(value) } else if let value = set_suspension_policy { self.ResultChoice = .SetSuspensionPolicy(value) } else if let value = destroy_checkpoint { self.ResultChoice = .DestroyCheckpoint(value) } else if let value = fork_machine { self.ResultChoice = .ForkMachine(value) } else { self.ResultChoice = .none }
+self.ResultChoice = ResultChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { let operation = (wire["operation"] as? Data).flatMap { OperationId($0) };let create = (wire["create"] as? RustWireMessage).map { MachinesMachineAdmissionWire($0) };let checkpoint = (wire["checkpoint"] as? RustWireMessage).map { MachinesCheckpointAdmissionWire($0) };let fork = (wire["fork"] as? RustWireMessage).map { MachinesForkAdmissionWire($0) };let suspend = (wire["suspend"] as? RustWireMessage).map { MachinesMutationAdmissionWire($0) };let wake = (wire["wake"] as? RustWireMessage).map { MachinesMutationAdmissionWire($0) };let destroy_machine = (wire["destroyMachine"] as? RustWireMessage).map { MachinesMutationAdmissionWire($0) };let set_suspension_policy = (wire["setSuspensionPolicy"] as? RustWireMessage).map { MachinesPolicyAdmissionWire($0) };let destroy_checkpoint = (wire["destroyCheckpoint"] as? RustWireMessage).map { MachinesMutationAdmissionWire($0) };let fork_machine = (wire["forkMachine"] as? RustWireMessage).map { MachinesForkMachineAdmissionWire($0) };let ResultChoice: MachinesRecoveredAdmissionResultChoice? = (wire["__unknown_result"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(operation: operation, create: create, checkpoint: checkpoint, fork: fork, suspend: suspend, wake: wake, destroy_machine: destroy_machine, set_suspension_policy: set_suspension_policy, destroy_checkpoint: destroy_checkpoint, fork_machine: fork_machine, ResultChoice: ResultChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { let operation = (wire["operation"] as? Data).flatMap { OperationId($0) };var selected_result: MachinesRecoveredAdmissionResultChoice? = nil;if let raw_create = wire["create"] as? RustWireMessage { let value_result = MachinesMachineAdmissionWire(raw_create); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm create conflicts") }; selected_result = .Create(value_result) }if let raw_checkpoint = wire["checkpoint"] as? RustWireMessage { let value_result = MachinesCheckpointAdmissionWire(raw_checkpoint); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm checkpoint conflicts") }; selected_result = .Checkpoint(value_result) }if let raw_fork = wire["fork"] as? RustWireMessage { let value_result = MachinesForkAdmissionWire(raw_fork); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm fork conflicts") }; selected_result = .Fork(value_result) }if let raw_suspend = wire["suspend"] as? RustWireMessage { let value_result = MachinesMutationAdmissionWire(raw_suspend); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm suspend conflicts") }; selected_result = .Suspend(value_result) }if let raw_wake = wire["wake"] as? RustWireMessage { let value_result = MachinesMutationAdmissionWire(raw_wake); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm wake conflicts") }; selected_result = .Wake(value_result) }if let raw_destroy_machine = wire["destroyMachine"] as? RustWireMessage { let value_result = MachinesMutationAdmissionWire(raw_destroy_machine); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm destroyMachine conflicts") }; selected_result = .DestroyMachine(value_result) }if let raw_set_suspension_policy = wire["setSuspensionPolicy"] as? RustWireMessage { let value_result = MachinesPolicyAdmissionWire(raw_set_suspension_policy); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm setSuspensionPolicy conflicts") }; selected_result = .SetSuspensionPolicy(value_result) }if let raw_destroy_checkpoint = wire["destroyCheckpoint"] as? RustWireMessage { let value_result = MachinesMutationAdmissionWire(raw_destroy_checkpoint); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm destroyCheckpoint conflicts") }; selected_result = .DestroyCheckpoint(value_result) }if let raw_fork_machine = wire["forkMachine"] as? RustWireMessage { let value_result = MachinesForkMachineAdmissionWire(raw_fork_machine); guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof arm forkMachine conflicts") }; selected_result = .ForkMachine(value_result) }if let unknown_result = wire["__unknown_result"] as? RustWireUnknownOneof { guard selected_result == nil else { throw RustWireDecodeError.invalidField("oneof result contains known and unknown arms") }; selected_result = .unknown(rawTag: unknown_result.rawTag, payload: unknown_result.payload) } let ResultChoice: MachinesRecoveredAdmissionResultChoice = selected_result ?? .none; return try Self(operation: operation, ResultChoice: ResultChoice) }
 }
 public struct MachinesUsageReceiptResponse: RustWireResponse, Sendable {
 public let machine: MachineId?;
@@ -5656,20 +5605,12 @@ self.existed = existed
  public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let existed = wire["existed"] as? Bool else { throw RustWireDecodeError.invalidField("existed") }; return try Self(existed: existed) }
 }
 public struct ObjectsGetObjectResponseResponse: RustWireResponse, Sendable {
-public let header: ObjectsGetObjectHeaderWire?;
-public let body: Data?;
-public let error: ObjectsErrorDetailWire?;
 public let FrameChoice: ObjectsGetObjectResponseFrameChoice;
- public init(header: ObjectsGetObjectHeaderWire?, body: Data?, error: ObjectsErrorDetailWire?, FrameChoice: ObjectsGetObjectResponseFrameChoice? = nil) throws {
-self.header = header
-self.body = body
-self.error = error
- let active_FrameChoice = [header != nil, body != nil, error != nil].filter { $0 }.count
- guard active_FrameChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof frame contains multiple arms") }
- if let choice = FrameChoice { if case .unknown = choice { guard active_FrameChoice == 0 else { throw RustWireDecodeError.invalidField("oneof frame contains an unknown and known arm") } }; self.FrameChoice = choice } else if active_FrameChoice == 0 { self.FrameChoice = .none } else if let value = header { self.FrameChoice = .Header(value) } else if let value = body { self.FrameChoice = .Body(value) } else if let value = error { self.FrameChoice = .Error(value) } else { self.FrameChoice = .none }
+ public init(FrameChoice: ObjectsGetObjectResponseFrameChoice? = nil) throws {
+self.FrameChoice = FrameChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { let header = (wire["header"] as? RustWireMessage).map { ObjectsGetObjectHeaderWire($0) };let body = wire["body"] as? Data;let error = (wire["error"] as? RustWireMessage).map { ObjectsErrorDetailWire($0) };let FrameChoice: ObjectsGetObjectResponseFrameChoice? = (wire["__unknown_frame"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(header: header, body: body, error: error, FrameChoice: FrameChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { var selected_frame: ObjectsGetObjectResponseFrameChoice? = nil;if let raw_header = wire["header"] as? RustWireMessage { let value_frame = ObjectsGetObjectHeaderWire(raw_header); guard selected_frame == nil else { throw RustWireDecodeError.invalidField("oneof arm header conflicts") }; selected_frame = .Header(value_frame) }if let raw_body = wire["body"] as? Data { let value_frame: Data = raw_body; guard selected_frame == nil else { throw RustWireDecodeError.invalidField("oneof arm body conflicts") }; selected_frame = .Body(value_frame) }if let raw_error = wire["error"] as? RustWireMessage { let value_frame = ObjectsErrorDetailWire(raw_error); guard selected_frame == nil else { throw RustWireDecodeError.invalidField("oneof arm error conflicts") }; selected_frame = .Error(value_frame) }if let unknown_frame = wire["__unknown_frame"] as? RustWireUnknownOneof { guard selected_frame == nil else { throw RustWireDecodeError.invalidField("oneof frame contains known and unknown arms") }; selected_frame = .unknown(rawTag: unknown_frame.rawTag, payload: unknown_frame.payload) } let FrameChoice: ObjectsGetObjectResponseFrameChoice = selected_frame ?? .none; return try Self(FrameChoice: FrameChoice) }
 }
 public struct ObjectsHeadObjectResponseResponse: RustWireResponse, Sendable {
 public let object: ObjectsObjectInfoWire?;
@@ -5740,34 +5681,24 @@ self.size = size
  public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let part_number = wire["partNumber"] as? UInt32 else { throw RustWireDecodeError.invalidField("partNumber") };guard let raw_etag = wire["etag"] as? String, let etag = OpaqueText(raw_etag) else { throw RustWireDecodeError.invalidField("etag") };guard let size = wire["size"] as? UInt64 else { throw RustWireDecodeError.invalidField("size") }; return try Self(part_number: part_number, etag: etag, size: size) }
 }
 public struct StreamAppendResponseResponse: RustWireResponse, Sendable {
-public let committed: StreamAppendReceiptWire?;
-public let conflict: StreamTailConflictWire?;
 public let OutcomeChoice: StreamAppendResponseOutcomeChoice;
- public init(committed: StreamAppendReceiptWire?, conflict: StreamTailConflictWire?, OutcomeChoice: StreamAppendResponseOutcomeChoice? = nil) throws {
-self.committed = committed
-self.conflict = conflict
- let active_OutcomeChoice = [committed != nil, conflict != nil].filter { $0 }.count
- guard active_OutcomeChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof outcome contains multiple arms") }
- if let choice = OutcomeChoice { if case .unknown = choice { guard active_OutcomeChoice == 0 else { throw RustWireDecodeError.invalidField("oneof outcome contains an unknown and known arm") } }; self.OutcomeChoice = choice } else if active_OutcomeChoice == 0 { self.OutcomeChoice = .none } else if let value = committed { self.OutcomeChoice = .Committed(value) } else if let value = conflict { self.OutcomeChoice = .Conflict(value) } else { self.OutcomeChoice = .none }
+ public init(OutcomeChoice: StreamAppendResponseOutcomeChoice? = nil) throws {
+self.OutcomeChoice = OutcomeChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { let committed = (wire["committed"] as? RustWireMessage).map { StreamAppendReceiptWire($0) };let conflict = (wire["conflict"] as? RustWireMessage).map { StreamTailConflictWire($0) };let OutcomeChoice: StreamAppendResponseOutcomeChoice? = (wire["__unknown_outcome"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(committed: committed, conflict: conflict, OutcomeChoice: OutcomeChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { var selected_outcome: StreamAppendResponseOutcomeChoice? = nil;if let raw_committed = wire["committed"] as? RustWireMessage { let value_outcome = StreamAppendReceiptWire(raw_committed); guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof arm committed conflicts") }; selected_outcome = .Committed(value_outcome) }if let raw_conflict = wire["conflict"] as? RustWireMessage { let value_outcome = StreamTailConflictWire(raw_conflict); guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof arm conflict conflicts") }; selected_outcome = .Conflict(value_outcome) }if let unknown_outcome = wire["__unknown_outcome"] as? RustWireUnknownOneof { guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof outcome contains known and unknown arms") }; selected_outcome = .unknown(rawTag: unknown_outcome.rawTag, payload: unknown_outcome.payload) } let OutcomeChoice: StreamAppendResponseOutcomeChoice = selected_outcome ?? .none; return try Self(OutcomeChoice: OutcomeChoice) }
 }
 public struct StreamChildrenPageResponseResponse: RustWireResponse, Sendable {
 public let hierarchy_version: RevisionDigest;
 public let children: [StreamChildWire];
-public let next_after: OpaqueText?;
 public let NextAfterChoice: StreamChildrenPageResponseNextAfterChoice;
- public init(hierarchy_version: RevisionDigest, children: [StreamChildWire], next_after: OpaqueText?, NextAfterChoice: StreamChildrenPageResponseNextAfterChoice? = nil) throws {
+ public init(hierarchy_version: RevisionDigest, children: [StreamChildWire], NextAfterChoice: StreamChildrenPageResponseNextAfterChoice? = nil) throws {
 self.hierarchy_version = hierarchy_version
 self.children = children
-self.next_after = next_after
- let active_NextAfterChoice = [next_after != nil].filter { $0 }.count
- guard active_NextAfterChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _next_after contains multiple arms") }
- if let choice = NextAfterChoice { if case .unknown = choice { guard active_NextAfterChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _next_after contains an unknown and known arm") } }; self.NextAfterChoice = choice } else if active_NextAfterChoice == 0 { self.NextAfterChoice = .none } else if let value = next_after { self.NextAfterChoice = .NextAfter(value) } else { self.NextAfterChoice = .none }
+self.NextAfterChoice = NextAfterChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_hierarchy_version = wire["hierarchyVersion"] as? Data, let hierarchy_version = RevisionDigest(raw_hierarchy_version) else { throw RustWireDecodeError.invalidField("hierarchyVersion") };guard let raw_children = wire["children"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("children") }; let children = raw_children.map { StreamChildWire($0) };let next_after = (wire["nextAfter"] as? String).flatMap { OpaqueText($0) };let NextAfterChoice: StreamChildrenPageResponseNextAfterChoice? = (wire["__unknown__next_after"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(hierarchy_version: hierarchy_version, children: children, next_after: next_after, NextAfterChoice: NextAfterChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_hierarchy_version = wire["hierarchyVersion"] as? Data, let hierarchy_version = RevisionDigest(raw_hierarchy_version) else { throw RustWireDecodeError.invalidField("hierarchyVersion") };guard let raw_children = wire["children"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("children") }; let children = raw_children.map { StreamChildWire($0) };var selected__next_after: StreamChildrenPageResponseNextAfterChoice? = nil;if let raw_next_after = wire["nextAfter"] as? String { guard let value__next_after = OpaqueText(raw_next_after) else { throw RustWireDecodeError.invalidField("nextAfter") }; guard selected__next_after == nil else { throw RustWireDecodeError.invalidField("oneof arm nextAfter conflicts") }; selected__next_after = .NextAfter(value__next_after) }if let unknown__next_after = wire["__unknown__next_after"] as? RustWireUnknownOneof { guard selected__next_after == nil else { throw RustWireDecodeError.invalidField("oneof _next_after contains known and unknown arms") }; selected__next_after = .unknown(rawTag: unknown__next_after.rawTag, payload: unknown__next_after.payload) } let NextAfterChoice: StreamChildrenPageResponseNextAfterChoice = selected__next_after ?? .none; return try Self(hierarchy_version: hierarchy_version, children: children, NextAfterChoice: NextAfterChoice) }
 }
 public struct StreamChildrenResponseResponse: RustWireResponse, Sendable {
 public let child: StreamChildWire?;
@@ -5778,18 +5709,12 @@ self.child = child
  public static func fromWire(_ wire: [String: Any]) throws -> Self { let child = (wire["child"] as? RustWireMessage).map { StreamChildWire($0) }; return try Self(child: child) }
 }
 public struct StreamCommitResponseResponse: RustWireResponse, Sendable {
-public let committed: StreamCommittedEnvelopeWire?;
-public let conflict: StreamCommitConflictsWire?;
 public let OutcomeChoice: StreamCommitResponseOutcomeChoice;
- public init(committed: StreamCommittedEnvelopeWire?, conflict: StreamCommitConflictsWire?, OutcomeChoice: StreamCommitResponseOutcomeChoice? = nil) throws {
-self.committed = committed
-self.conflict = conflict
- let active_OutcomeChoice = [committed != nil, conflict != nil].filter { $0 }.count
- guard active_OutcomeChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof outcome contains multiple arms") }
- if let choice = OutcomeChoice { if case .unknown = choice { guard active_OutcomeChoice == 0 else { throw RustWireDecodeError.invalidField("oneof outcome contains an unknown and known arm") } }; self.OutcomeChoice = choice } else if active_OutcomeChoice == 0 { self.OutcomeChoice = .none } else if let value = committed { self.OutcomeChoice = .Committed(value) } else if let value = conflict { self.OutcomeChoice = .Conflict(value) } else { self.OutcomeChoice = .none }
+ public init(OutcomeChoice: StreamCommitResponseOutcomeChoice? = nil) throws {
+self.OutcomeChoice = OutcomeChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { let committed = (wire["committed"] as? RustWireMessage).map { StreamCommittedEnvelopeWire($0) };let conflict = (wire["conflict"] as? RustWireMessage).map { StreamCommitConflictsWire($0) };let OutcomeChoice: StreamCommitResponseOutcomeChoice? = (wire["__unknown_outcome"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(committed: committed, conflict: conflict, OutcomeChoice: OutcomeChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { var selected_outcome: StreamCommitResponseOutcomeChoice? = nil;if let raw_committed = wire["committed"] as? RustWireMessage { let value_outcome = StreamCommittedEnvelopeWire(raw_committed); guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof arm committed conflicts") }; selected_outcome = .Committed(value_outcome) }if let raw_conflict = wire["conflict"] as? RustWireMessage { let value_outcome = StreamCommitConflictsWire(raw_conflict); guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof arm conflict conflicts") }; selected_outcome = .Conflict(value_outcome) }if let unknown_outcome = wire["__unknown_outcome"] as? RustWireUnknownOneof { guard selected_outcome == nil else { throw RustWireDecodeError.invalidField("oneof outcome contains known and unknown arms") }; selected_outcome = .unknown(rawTag: unknown_outcome.rawTag, payload: unknown_outcome.payload) } let OutcomeChoice: StreamCommitResponseOutcomeChoice = selected_outcome ?? .none; return try Self(OutcomeChoice: OutcomeChoice) }
 }
 public struct StreamCommittedEnvelopeResponse: RustWireResponse, Sendable {
 public let commit_id: CommitId;
@@ -5818,16 +5743,12 @@ self.commit_id = commit_id
  public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let raw_source = wire["source"] as? String, let source = SourceName(raw_source) else { throw RustWireDecodeError.invalidField("source") };guard let raw_destination = wire["destination"] as? String, let destination = DestinationName(raw_destination) else { throw RustWireDecodeError.invalidField("destination") };guard let raw_forked_at = wire["forkedAt"] as? UInt64, let forked_at = SequenceNumber(raw_forked_at) else { throw RustWireDecodeError.invalidField("forkedAt") };guard let raw_tail = wire["tail"] as? UInt64, let tail = SequenceNumber(raw_tail) else { throw RustWireDecodeError.invalidField("tail") };guard let raw_commit_id = wire["commitId"] as? Data, let commit_id = CommitId(raw_commit_id) else { throw RustWireDecodeError.invalidField("commitId") }; return try Self(source: source, destination: destination, forked_at: forked_at, tail: tail, commit_id: commit_id) }
 }
 public struct StreamInspectIdempotencyResponseResponse: RustWireResponse, Sendable {
-public let observation: StreamIdempotencyObservationWire?;
 public let ObservationChoice: StreamInspectIdempotencyResponseObservationChoice;
- public init(observation: StreamIdempotencyObservationWire?, ObservationChoice: StreamInspectIdempotencyResponseObservationChoice? = nil) throws {
-self.observation = observation
- let active_ObservationChoice = [observation != nil].filter { $0 }.count
- guard active_ObservationChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _observation contains multiple arms") }
- if let choice = ObservationChoice { if case .unknown = choice { guard active_ObservationChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _observation contains an unknown and known arm") } }; self.ObservationChoice = choice } else if active_ObservationChoice == 0 { self.ObservationChoice = .none } else if let value = observation { self.ObservationChoice = .Observation(value) } else { self.ObservationChoice = .none }
+ public init(ObservationChoice: StreamInspectIdempotencyResponseObservationChoice? = nil) throws {
+self.ObservationChoice = ObservationChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { let observation = (wire["observation"] as? RustWireMessage).map { StreamIdempotencyObservationWire($0) };let ObservationChoice: StreamInspectIdempotencyResponseObservationChoice? = (wire["__unknown__observation"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(observation: observation, ObservationChoice: ObservationChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { var selected__observation: StreamInspectIdempotencyResponseObservationChoice? = nil;if let raw_observation = wire["observation"] as? RustWireMessage { let value__observation = StreamIdempotencyObservationWire(raw_observation); guard selected__observation == nil else { throw RustWireDecodeError.invalidField("oneof arm observation conflicts") }; selected__observation = .Observation(value__observation) }if let unknown__observation = wire["__unknown__observation"] as? RustWireUnknownOneof { guard selected__observation == nil else { throw RustWireDecodeError.invalidField("oneof _observation contains known and unknown arms") }; selected__observation = .unknown(rawTag: unknown__observation.rawTag, payload: unknown__observation.payload) } let ObservationChoice: StreamInspectIdempotencyResponseObservationChoice = selected__observation ?? .none; return try Self(ObservationChoice: ObservationChoice) }
 }
 public struct StreamReadResponseResponse: RustWireResponse, Sendable {
 public let record: StreamRecordWire?;
@@ -5866,20 +5787,16 @@ public let status: UInt32;
 public let headers: [WorkersHeaderWire];
 public let body: Data;
 public let resolved_sha256: Sha256Digest;
-public let resolved_revision: Revision?;
 public let ResolvedRevisionChoice: WorkersInvokeResponseResolvedRevisionChoice;
- public init(status: UInt32, headers: [WorkersHeaderWire], body: Data, resolved_sha256: Sha256Digest, resolved_revision: Revision?, ResolvedRevisionChoice: WorkersInvokeResponseResolvedRevisionChoice? = nil) throws {
+ public init(status: UInt32, headers: [WorkersHeaderWire], body: Data, resolved_sha256: Sha256Digest, ResolvedRevisionChoice: WorkersInvokeResponseResolvedRevisionChoice? = nil) throws {
 self.status = status
 self.headers = headers
 self.body = body
 self.resolved_sha256 = resolved_sha256
-self.resolved_revision = resolved_revision
- let active_ResolvedRevisionChoice = [resolved_revision != nil, resolved_revision != nil].filter { $0 }.count
- guard active_ResolvedRevisionChoice <= 1 else { throw RustWireDecodeError.invalidField("oneof _resolved_revision contains multiple arms") }
- if let choice = ResolvedRevisionChoice { if case .unknown = choice { guard active_ResolvedRevisionChoice == 0 else { throw RustWireDecodeError.invalidField("oneof _resolved_revision contains an unknown and known arm") } }; self.ResolvedRevisionChoice = choice } else if active_ResolvedRevisionChoice == 0 { self.ResolvedRevisionChoice = .none } else if let value = resolved_revision { self.ResolvedRevisionChoice = .ResolvedRevision(value) } else if let value = resolved_revision { self.ResolvedRevisionChoice = .ResolvedRevision(value) } else { self.ResolvedRevisionChoice = .none }
+self.ResolvedRevisionChoice = ResolvedRevisionChoice ?? .none
  }
  public typealias Wire = [String: Any]
- public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let status = wire["status"] as? UInt32 else { throw RustWireDecodeError.invalidField("status") };guard let raw_headers = wire["headers"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("headers") }; let headers = raw_headers.map { WorkersHeaderWire($0) };guard let body = wire["body"] as? Data else { throw RustWireDecodeError.invalidField("body") };guard let raw_resolved_sha256 = wire["resolvedSha256"] as? Data, let resolved_sha256 = Sha256Digest(raw_resolved_sha256) else { throw RustWireDecodeError.invalidField("resolvedSha256") };let resolved_revision = (wire["resolvedRevision"] as? UInt64).flatMap { Revision($0) };let ResolvedRevisionChoice: WorkersInvokeResponseResolvedRevisionChoice? = (wire["__unknown__resolved_revision"] as? RustWireUnknownOneof).map { .unknown(rawTag: $0.rawTag, payload: $0.payload) }; return try Self(status: status, headers: headers, body: body, resolved_sha256: resolved_sha256, resolved_revision: resolved_revision, ResolvedRevisionChoice: ResolvedRevisionChoice) }
+ public static func fromWire(_ wire: [String: Any]) throws -> Self { guard let status = wire["status"] as? UInt32 else { throw RustWireDecodeError.invalidField("status") };guard let raw_headers = wire["headers"] as? [RustWireMessage] else { throw RustWireDecodeError.invalidField("headers") }; let headers = raw_headers.map { WorkersHeaderWire($0) };guard let body = wire["body"] as? Data else { throw RustWireDecodeError.invalidField("body") };guard let raw_resolved_sha256 = wire["resolvedSha256"] as? Data, let resolved_sha256 = Sha256Digest(raw_resolved_sha256) else { throw RustWireDecodeError.invalidField("resolvedSha256") };var selected__resolved_revision: WorkersInvokeResponseResolvedRevisionChoice? = nil;if let raw_resolved_revision = wire["resolvedRevision"] as? UInt64 { guard let value__resolved_revision = Revision(raw_resolved_revision) else { throw RustWireDecodeError.invalidField("resolvedRevision") }; guard selected__resolved_revision == nil else { throw RustWireDecodeError.invalidField("oneof arm resolvedRevision conflicts") }; selected__resolved_revision = .ResolvedRevision(value__resolved_revision) }if let raw_resolved_revision = wire["resolvedRevision"] as? UInt64 { guard let value__resolved_revision = Revision(raw_resolved_revision) else { throw RustWireDecodeError.invalidField("resolvedRevision") }; guard selected__resolved_revision == nil else { throw RustWireDecodeError.invalidField("oneof arm resolvedRevision conflicts") }; selected__resolved_revision = .ResolvedRevision(value__resolved_revision) }if let unknown__resolved_revision = wire["__unknown__resolved_revision"] as? RustWireUnknownOneof { guard selected__resolved_revision == nil else { throw RustWireDecodeError.invalidField("oneof _resolved_revision contains known and unknown arms") }; selected__resolved_revision = .unknown(rawTag: unknown__resolved_revision.rawTag, payload: unknown__resolved_revision.payload) } let ResolvedRevisionChoice: WorkersInvokeResponseResolvedRevisionChoice = selected__resolved_revision ?? .none; return try Self(status: status, headers: headers, body: body, resolved_sha256: resolved_sha256, ResolvedRevisionChoice: ResolvedRevisionChoice) }
 }
 public struct WorkersPublishVersionResponseResponse: RustWireResponse, Sendable {
 public let version: WorkersCodeVersionWire?;

@@ -604,8 +604,8 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
             }),
             "machines" => Some(RemotePolicyMetadata {
                 protocol: "https".to_owned(),
-                auth: "mtls".to_owned(),
-                credential_policy: "mtls-files".to_owned(),
+                auth: "bearer".to_owned(),
+                credential_policy: "bearer-no-crlf".to_owned(),
                 request_encoding: "protobuf".to_owned(),
                 response_encoding: "protobuf".to_owned(),
                 response_limit_policy: "bounded-cumulative-protobuf".to_owned(),
@@ -925,9 +925,10 @@ fn package_typescript(service: &ServiceMetadata, source_root: &Path) -> Result<S
 
 /// Return the Rust model as it is installable for one package output.
 ///
-/// Inference currently has no N-API companion. Its package therefore cannot
-/// truthfully advertise the model's native gRPC preference; the generated
-/// package surface is HTTP-only until a Rust-owned companion is present.
+/// A package may be emitted from a source tree before its native companion
+/// artifacts are qualified. In that case it cannot truthfully advertise the
+/// model's native gRPC preference, so the generated package surface is
+/// HTTP-only until Rust-owned companion metadata is present.
 fn package_service_for_output(
     service: &ServiceMetadata,
     native_companion_targets: &[String],
@@ -956,6 +957,17 @@ fn typescript_semantic_name(id: &str) -> String {
     format!("RustOwned{name}")
 }
 
+/// Bufbuild's TypeScript projection keeps protobuf 64-bit integers lossless as
+/// bigint.  These Rust semantic integers are all uint64 on the wire; bounded
+/// page/count values remain number because their contract limits fit safely in
+/// the JavaScript integer range.
+fn typescript_semantic_integer_is_bigint(id: &str) -> bool {
+    matches!(
+        id,
+        "revision" | "sequence" | "timestamp_millis" | "timestamp_seconds" | "uint64"
+    )
+}
+
 fn typescript_semantic_section(service: &ServiceMetadata) -> String {
     use acyclic_sdk_contract_wire::type_policy::PUBLIC_NESTED_ROUTES;
     use acyclic_sdk_contract_wire::{
@@ -971,14 +983,70 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
         .iter()
         .map(|binding| binding.semantic_type)
         .collect::<BTreeSet<_>>();
+    let mut needs_string = false;
+    let mut needs_bytes = false;
+    let mut needs_integer = false;
+    let mut needs_uint64 = false;
+    let mut needs_int64 = false;
+    let mut needs_message = false;
+    for id in &semantic_ids {
+        let item = semantic_type(id).expect("every public binding resolves to a Rust semantic type");
+        match item.wire_kind {
+            WireValueKind::String => needs_string = true,
+            WireValueKind::Bytes => needs_bytes = true,
+            WireValueKind::UnsignedInteger => {
+                if typescript_semantic_integer_is_bigint(item.id) {
+                    needs_uint64 = true;
+                } else {
+                    needs_integer = true;
+                }
+            }
+            WireValueKind::SignedInteger => {
+                if typescript_semantic_integer_is_bigint(item.id) {
+                    needs_int64 = true;
+                } else {
+                    needs_integer = true;
+                }
+            }
+            WireValueKind::Message => needs_message = true,
+            WireValueKind::Timestamp => needs_uint64 = true,
+            WireValueKind::Enum => needs_integer = true,
+            WireValueKind::Boolean | WireValueKind::Oneof => {}
+        }
+    }
+    let needs_bigint = needs_uint64 || needs_int64;
     let mut output = String::from(
         "// Rust-owned semantic projections. Generated from type_policy.rs; do not edit.\n\n",
     );
     output.push_str("declare const rustOwnedSemanticBrand: unique symbol;\n");
+    if needs_string {
+        output.push_str("function assertRustOwnedString(value: unknown): asserts value is string { if (typeof value !== \"string\") throw new TypeError(\"value must be a string\"); }\n");
+    }
+    if needs_bytes {
+        output.push_str("function assertRustOwnedUint8Array(value: unknown): asserts value is Uint8Array { if (!ArrayBuffer.isView(value) || Object.prototype.toString.call(value) !== \"[object Uint8Array]\") throw new TypeError(\"value must be a Uint8Array\"); try { Reflect.apply(Uint8Array.prototype.slice, value, [0, 0]); } catch { throw new TypeError(\"value must be a Uint8Array\"); } }\n");
+    }
+    if needs_integer {
+        output.push_str("function assertRustOwnedInteger(value: unknown): asserts value is number { if (typeof value !== \"number\" || !Number.isFinite(value) || !Number.isSafeInteger(value)) throw new TypeError(\"value must be a finite safe integer\"); }\n");
+    }
+    if needs_bigint {
+        output.push_str("function assertRustOwnedBigInt(value: unknown): asserts value is bigint { if (typeof value !== \"bigint\") throw new TypeError(\"value must be a bigint\"); }\n");
+    }
+    if needs_uint64 {
+        output.push_str("function assertRustOwnedUint64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < 0n || value > 18446744073709551615n) throw new RangeError(\"value must fit an unsigned 64-bit wire field\"); }\n");
+    }
+    if needs_int64 {
+        output.push_str("function assertRustOwnedInt64(value: unknown): asserts value is bigint { assertRustOwnedBigInt(value); if (value < -9223372036854775808n || value > 9223372036854775807n) throw new RangeError(\"value must fit a signed 64-bit wire field\"); }\n");
+    }
+    if needs_message {
+        output.push_str("function assertRustOwnedMessage(value: unknown): asserts value is object { if (value === null || typeof value !== \"object\") throw new TypeError(\"value must be an object\"); }\n");
+    }
     output.push_str("export type RustOwnedSemanticString<Name extends string> = string & { readonly [rustOwnedSemanticBrand]: Name };\n");
     output.push_str("export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonly [rustOwnedSemanticBrand]: Name };\n");
     output.push_str("export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };\n");
-    output.push_str("export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };\n\n");
+    output.push_str("export type RustOwnedSemanticBigInt<Name extends string> = bigint & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedSemanticMessage<Name extends string, Value extends object> = Value & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedOpenEnumValue<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };\n");
+    output.push_str("export type RustOwnedSemanticOneof<Name extends string, Value> = Value & { readonly [rustOwnedSemanticBrand]: Name };\n\n");
     output.push_str("export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: \"request\" | \"response\" | \"nested_message\" | \"embedded_only\"; readonly rules: readonly string[]; }\n\n");
     for id in semantic_ids {
         let item =
@@ -988,16 +1056,30 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
             WireValueKind::String => format!("RustOwnedSemanticString<{id:?}>"),
             WireValueKind::Bytes => format!("RustOwnedSemanticBytes<{id:?}>"),
             WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => {
-                format!("RustOwnedSemanticNumber<{id:?}>")
+                if typescript_semantic_integer_is_bigint(item.id) {
+                    format!("RustOwnedSemanticBigInt<{id:?}>")
+                } else {
+                    format!("RustOwnedSemanticNumber<{id:?}>")
+                }
             }
             WireValueKind::Boolean => "boolean".to_owned(),
-            WireValueKind::Message => format!("RustOwnedSemanticMessage<{id:?}>"),
-            WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => {
-                "unknown".to_owned()
-            }
+            WireValueKind::Message => format!("RustOwnedSemanticMessage<{id:?}, Value>"),
+            WireValueKind::Timestamp => format!("RustOwnedSemanticBigInt<{id:?}>"),
+            WireValueKind::Enum => format!("RustOwnedOpenEnumValue<{id:?}>"),
+            WireValueKind::Oneof => format!("RustOwnedSemanticOneof<{id:?}, RustOwnedWireChoice>"),
         };
-        output.push_str(&format!("export type {name} = {base};\n"));
+        if item.wire_kind == WireValueKind::Message {
+            output.push_str(&format!("export type {name}<Value extends object> = {base};\n"));
+        } else {
+            output.push_str(&format!("export type {name} = {base};\n"));
+        }
         let mut checks = String::new();
+        let bigint_integer = matches!(
+            item.wire_kind,
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger
+        ) && typescript_semantic_integer_is_bigint(item.id);
+        let bigint_value = bigint_integer || item.wire_kind == WireValueKind::Timestamp;
+        let zero = if bigint_value { "0n" } else { "0" };
         for rule in item.rules {
             let check = match (item.wire_kind, rule) {
                 // Message values are branded Rust-owned protobuf objects. Any
@@ -1009,14 +1091,21 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
                         .to_owned()
                 }
                 (
-                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    WireValueKind::UnsignedInteger
+                        | WireValueKind::SignedInteger
+                        | WireValueKind::Timestamp,
                     SemanticRule::NonNegative,
-                ) => "if (value < 0) throw new RangeError(\"value must be non-negative\");"
-                    .to_owned(),
+                ) => format!(
+                    "if (value < {zero}) throw new RangeError(\"value must be non-negative\");"
+                ),
                 (
-                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    WireValueKind::UnsignedInteger
+                        | WireValueKind::SignedInteger
+                        | WireValueKind::Timestamp,
                     SemanticRule::StrictlyPositive,
-                ) => "if (value <= 0) throw new RangeError(\"value must be positive\");".to_owned(),
+                ) => format!(
+                    "if (value <= {zero}) throw new RangeError(\"value must be positive\");"
+                ),
                 (WireValueKind::Bytes, SemanticRule::FixedLength(length)) => format!(
                     "if (value.byteLength !== {length}) throw new RangeError(\"value has the wrong length\");"
                 ),
@@ -1024,11 +1113,35 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
                     "if (value.byteLength > {maximum}) throw new RangeError(\"value exceeds its byte limit\");"
                 ),
                 (
-                    WireValueKind::UnsignedInteger | WireValueKind::SignedInteger,
+                    WireValueKind::UnsignedInteger
+                        | WireValueKind::SignedInteger
+                        | WireValueKind::Timestamp,
                     SemanticRule::MaxItems(maximum),
-                ) => format!(
-                    "if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"
-                ),
+                ) => {
+                    let maximum = if bigint_value {
+                        format!("{maximum}n")
+                    } else {
+                        maximum.to_string()
+                    };
+                    format!(
+                        "if (value > {maximum}) throw new RangeError(\"value exceeds its item limit\");"
+                    )
+                }
+                (
+                    WireValueKind::UnsignedInteger
+                        | WireValueKind::SignedInteger
+                        | WireValueKind::Timestamp,
+                    SemanticRule::BoundedInteger { min, max },
+                ) => {
+                    let (min, max) = if bigint_value {
+                        (format!("{min}n"), format!("{max}n"))
+                    } else {
+                        (min.to_string(), max.to_string())
+                    };
+                    format!(
+                        "if (value < {min} || value > {max}) throw new RangeError(\"value is outside its bounded integer range\");"
+                    )
+                }
                 (
                     _,
                     SemanticRule::Utf8
@@ -1051,14 +1164,43 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
             };
             checks.push_str(&check);
         }
-        let parameter = match item.wire_kind {
-            WireValueKind::Bytes => "value: Uint8Array",
-            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => "value: number",
-            WireValueKind::Boolean => "value: boolean",
-            WireValueKind::Message => "value: object",
-            _ => "value: string",
+        let (generic, parameter, result) = match item.wire_kind {
+            WireValueKind::Bytes => (String::new(), "value: Uint8Array".to_owned(), name.clone()),
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger if bigint_integer => {
+                (String::new(), "value: bigint".to_owned(), name.clone())
+            }
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => {
+                (String::new(), "value: number".to_owned(), name.clone())
+            }
+            WireValueKind::Boolean => (String::new(), "value: boolean".to_owned(), name.clone()),
+            WireValueKind::Message => (
+                "<Value extends object>".to_owned(),
+                "value: Value".to_owned(),
+                format!("{name}<Value>"),
+            ),
+            WireValueKind::Timestamp => (String::new(), "value: bigint".to_owned(), name.clone()),
+            WireValueKind::Enum => (String::new(), "value: number".to_owned(), name.clone()),
+            WireValueKind::Oneof => (String::new(), "value: RustOwnedWireChoice".to_owned(), name.clone()),
+            _ => (String::new(), "value: string".to_owned(), name.clone()),
         };
-        output.push_str(&format!("export function make{name}({parameter}): {name} {{ {checks} return value as {name}; }}\n"));
+        let type_check = match item.wire_kind {
+            WireValueKind::String => "assertRustOwnedString(value);",
+            WireValueKind::Bytes => "assertRustOwnedUint8Array(value);",
+            WireValueKind::UnsignedInteger if bigint_integer => {
+                "assertRustOwnedUint64(value);"
+            }
+            WireValueKind::SignedInteger if bigint_integer => {
+                "assertRustOwnedInt64(value);"
+            }
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger | WireValueKind::Enum => {
+                "assertRustOwnedInteger(value);"
+            }
+            WireValueKind::Message => "assertRustOwnedMessage(value);",
+            WireValueKind::Timestamp => "assertRustOwnedUint64(value);",
+            _ => "",
+        };
+        checks.insert_str(0, type_check);
+        output.push_str(&format!("export function make{name}{generic}({parameter}): {result} {{ {checks} return value as {result}; }}\n"));
     }
     output.push('\n');
     output.push_str(&format!(
@@ -1174,6 +1316,31 @@ fn typescript_semantic_section(service: &ServiceMetadata) -> String {
 /// Keeping the projection in generated-client.ts makes the public adapters
 /// consume the same source-owned types instead of maintaining a parallel
 /// TypeScript contract.
+fn public_field_is_optional(service: &ServiceMetadata, message: &str, field: &str) -> bool {
+    service
+        .methods
+        .iter()
+        .flat_map(|method| {
+            [
+                (local_type(&method.request_type), &method.request_fields),
+                (local_type(&method.response_type), &method.response_fields),
+            ]
+        })
+        .chain(service.grpc_methods.iter().flat_map(|method| {
+            [
+                (local_type(&method.request_type), &method.request_fields),
+                (local_type(&method.response_type), &method.response_fields),
+            ]
+        }))
+        .find_map(|(message_name, fields)| {
+            (message_name == message)
+                .then(|| fields.iter().find(|candidate| candidate.name == field))
+                .flatten()
+                .map(|candidate| candidate.optional)
+        })
+        .unwrap_or(false)
+}
+
 fn typescript_public_types_section(
     service: &ServiceMetadata,
     family_path: &str,
@@ -1234,29 +1401,52 @@ fn typescript_public_types_section(
                 WireValueKind::Bytes => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
                 WireValueKind::SignedInteger | WireValueKind::UnsignedInteger => format!("RustOwned{}", typescript_semantic_name(item.id).trim_start_matches("RustOwned")),
                 WireValueKind::Boolean => "boolean".to_owned(),
-                WireValueKind::Message => format!("RustOwnedSemanticMessage<\"{}\">", item.id.escape_default()),
-                WireValueKind::Timestamp | WireValueKind::Enum | WireValueKind::Oneof => "unknown".to_owned(),
+                WireValueKind::Message if item.rust_name == "Image" && family == "machines" => {
+                    "RustOwnedPublicImage".to_owned()
+                }
+                WireValueKind::Message => format!(
+                    "RustOwnedSemanticMessage<\"{}\", RustWire.{}>",
+                    item.id.escape_default(),
+                    item.rust_name
+                ),
+                WireValueKind::Timestamp => format!("RustOwnedSemanticBigInt<\"{}\">", item.id.escape_default()),
+                WireValueKind::Enum => format!("RustOwnedOpenEnumValue<\"{}\">", item.id.escape_default()),
+                WireValueKind::Oneof => format!("RustOwnedSemanticOneof<\"{}\", RustOwnedWireChoice>", item.id.escape_default()),
             };
-            fields.push((field, value));
+            fields.push((
+                field.clone(),
+                value,
+                public_field_is_optional(service, message.as_str(), binding.wire_field),
+            ));
         }
         for route in nested {
             let field = wire_field_name(route.nested_field);
-            fields.push((field, format!("RustOwnedPublic{}", route.nested_message)));
+            fields.push((field, format!("RustOwnedPublic{}", route.nested_message), false));
         }
         fields.sort_by(|left, right| left.0.cmp(&right.0));
         fields.dedup_by(|left, right| left.0 == right.0);
         let alias = format!("RustOwnedPublic{message}");
+        if family == "machines" && message == "Image" {
+            output.push_str("export type RustOwnedPublicImage = Omit<RustWire.Image, \"immutableReference\"> & {\n");
+            output.push_str("  readonly immutableReference: { readonly value: RustOwnedSha256Digest; readonly case: \"managedDigest\" } | { readonly value: RustOwnedSha256Digest; readonly case: \"customDigest\" } | { readonly value: RustWire.CheckpointId; readonly case: \"checkpoint\" } | { readonly case: undefined; readonly value?: undefined };\n");
+            output.push_str("} & { readonly [rustOwnedSemanticBrand]: \"immutable_image\" };\n");
+            continue;
+        }
         if fields.is_empty() {
             output.push_str(&format!("export type {alias} = RustWire.{message};\n"));
         } else {
             let names = fields
                 .iter()
-                .map(|(field, _)| format!("{field:?}"))
+                .map(|(field, _, _)| format!("{field:?}"))
                 .collect::<Vec<_>>()
                 .join(" | ");
             output.push_str(&format!("export type {alias} = Omit<RustWire.{message}, {names}> & {{\n"));
-            for (field, value) in fields {
-                output.push_str(&format!("  readonly {field}: {value};\n"));
+            for (field, value, optional) in fields {
+                if optional {
+                    output.push_str(&format!("  readonly {field}?: {value} | undefined;\n"));
+                } else {
+                    output.push_str(&format!("  readonly {field}: {value};\n"));
+                }
             }
             output.push_str("};\n");
         }
@@ -1337,6 +1527,30 @@ export function invokeWithAbort<Output>(operation: () => PromiseLike<Output>, si
       (value) => { cleanup(); resolve(value); },
       (error: unknown) => { cleanup(); reject(error); },
     );
+  });
+}
+
+/**
+ * Rust-owned cancellation boundary for an operation that has already started.
+ *
+ * The rejection observer is attached before checking an already-aborted signal.
+ * This preserves the caller-facing abort result while observing a late native
+ * rejection, which keeps a failed operation from becoming an unhandled promise.
+ */
+export function awaitWithAbort<Output>(operation: PromiseLike<Output>, signal?: AbortSignal): Promise<Output> {
+  if (signal === undefined) return Promise.resolve(operation);
+  const reason = () => signal.reason ?? new DOMException("The operation was aborted", "AbortError");
+  return new Promise<Output>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const resolveOnce = (value: Output) => { if (settled) return; settled = true; cleanup(); resolve(value); };
+    const rejectOnce = (error: unknown) => { if (settled) return; settled = true; cleanup(); reject(error); };
+    const onAbort = () => rejectOnce(reason());
+    // Attach this observer before the pre-abort check. The operation is already
+    // in flight, so its eventual rejection must always be observed.
+    Promise.resolve(operation).then(resolveOnce, rejectOnce);
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
   });
 }
 
@@ -1703,6 +1917,9 @@ fn type_contract_test(service: &ServiceMetadata) -> Result<String, Error> {
         service.family[..1].to_ascii_uppercase(),
         &service.family[1..]
     );
+    if service.family == "machines" {
+        return Ok("// Generated compile contract for the Rust-owned Machines semantic facade.\nimport type { RustOwnedPublicImage, RustOwnedSha256Digest } from \"./machines-metadata\";\ndeclare const image: RustOwnedPublicImage;\nif (image.immutableReference.case === \"managedDigest\") {\n  const digest: RustOwnedSha256Digest = image.immutableReference.value;\n  void digest;\n}\nif (image.immutableReference.case === \"checkpoint\") {\n  // @ts-expect-error checkpoint payloads are not SHA-256 digests.\n  const digest: RustOwnedSha256Digest = image.immutableReference.value;\n  void digest;\n}\n".to_owned());
+    }
     let first = service
         .methods
         .first()
@@ -1717,12 +1934,23 @@ fn type_contract_test(service: &ServiceMetadata) -> Result<String, Error> {
     ))
 }
 
+fn await_abort_test(service: &ServiceMetadata) -> Result<String, Error> {
+    Ok(format!(
+        "// Generated Rust-owned cancellation regression test.\nimport {{ expect, test }} from \"bun:test\";\nimport {{ awaitWithAbort }} from \"./{}-metadata\";\n\ntest(\"awaitWithAbort observes a pre-aborted operation's late rejection\", async () => {{\n  const controller = new AbortController();\n  let rejectLate: ((reason?: unknown) => void) | undefined;\n  const operation = new Promise<never>((_resolve, reject) => {{ rejectLate = reject; }});\n  const reason = new Error(\"pre-aborted\");\n  controller.abort(reason);\n  await expect(awaitWithAbort(operation, controller.signal)).rejects.toBe(reason);\n  rejectLate!(new Error(\"late native rejection\"));\n  await Promise.resolve();\n}});\n\ntest(\"awaitWithAbort isolates two waiters when one aborts\", async () => {{\n  let resolveOperation: ((value: number) => void) | undefined;\n  const operation = new Promise<number>((resolve) => {{ resolveOperation = resolve; }});\n  const first = new AbortController();\n  const second = new AbortController();\n  const firstWaiter = awaitWithAbort(operation, first.signal);\n  const secondWaiter = awaitWithAbort(operation, second.signal);\n  const reason = new Error(\"first waiter aborted\");\n  first.abort(reason);\n  await expect(firstWaiter).rejects.toBe(reason);\n  resolveOperation!(42);\n  await expect(secondWaiter).resolves.toBe(42);\n}});\n",
+        service.family
+    ))
+}
+
 fn generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> {
     let mut files = vec![("manifest.json".to_owned(), json(manifest)?)];
     for service in &manifest.services {
         files.push((
             format!("{}-metadata.ts", service.family),
             typescript(service)?,
+        ));
+        files.push((
+            format!("{}-abort.test.ts", service.family),
+            await_abort_test(service)?,
         ));
         if matches!(
             service.family.as_str(),
@@ -1734,6 +1962,11 @@ fn generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> 
             ));
             files.push((
                 format!("{}-types.test.ts", service.family),
+                type_contract_test(service)?,
+            ));
+        } else if service.family == "machines" {
+            files.push((
+                "machines-types.test.ts".to_owned(),
                 type_contract_test(service)?,
             ));
         }
@@ -3066,8 +3299,8 @@ mod tests {
             .remote_policy
             .as_ref()
             .expect("Machines native policy is emitted from the Rust model");
-        assert_eq!(machines_policy.auth, "mtls");
-        assert_eq!(machines_policy.credential_policy, "mtls-files");
+        assert_eq!(machines_policy.auth, "bearer");
+        assert_eq!(machines_policy.credential_policy, "bearer-no-crlf");
         assert_eq!(machines_policy.behavior_binding, "rust-native-grpc");
         assert_eq!(machines_policy.transport.native.len(), 1);
         assert_eq!(machines_policy.transport.native[0].kind, "grpc");
@@ -3102,6 +3335,108 @@ mod tests {
         let first = generated_files(&model().expect("model")).expect("files");
         let second = generated_files(&model().expect("model")).expect("files");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn semantic_constructors_guard_runtime_inputs() {
+        let manifest = model().expect("model");
+        let machines = manifest
+            .services
+            .iter()
+            .find(|service| service.family == "machines")
+            .expect("Machines metadata");
+        let generated = typescript_semantic_section(machines);
+        assert!(generated.contains("ArrayBuffer.isView(value)"));
+        assert!(generated.contains("Object.prototype.toString.call(value) !== \"[object Uint8Array]\""));
+        assert!(generated.contains("Reflect.apply(Uint8Array.prototype.slice, value, [0, 0])"));
+        assert!(generated.contains("Number.isFinite(value)"));
+        assert!(generated.contains("Number.isSafeInteger(value)"));
+        assert!(generated.contains("RustOwnedSemanticBigInt"));
+        assert!(generated.contains("RustOwnedOpenEnumValue"));
+        assert!(generated.contains("RustOwnedSemanticOneof"));
+        assert!(generated.contains("assertRustOwnedBigInt(value);"));
+        assert!(generated.contains("value must fit an unsigned 64-bit wire field"));
+        assert!(generated.contains("18446744073709551615n"));
+        assert!(generated.contains("value must be positive"));
+        assert!(generated.contains("value exceeds its item limit"));
+        assert!(generated.contains("typeof value !== \"object\""));
+        assert!(generated.contains("assertRustOwnedUint8Array(value);"));
+        assert!(generated.contains("assertRustOwnedInteger(value);"));
+        assert!(generated.contains(
+            "export function makeRustOwnedIdempotencyKeyMessage<Value extends object>(value: Value): RustOwnedIdempotencyKeyMessage<Value>"
+        ));
+        assert!(!generated.contains("makeRustOwnedIdempotencyKeyMessage(<Value extends object>"));
+        assert!(!generated.contains("assertRustOwnedMessage(value);assertRustOwnedMessage(value);"));
+
+        let filesystem = manifest
+            .services
+            .iter()
+            .find(|service| service.family == "filesystem")
+            .expect("Filesystem metadata");
+        let filesystem_generated = typescript_semantic_section(filesystem);
+        assert!(filesystem_generated.contains("typeof value !== \"string\""));
+        assert!(filesystem_generated.contains("assertRustOwnedString(value);"));
+        assert!(!filesystem_generated.contains("function assertRustOwnedInt64"));
+        assert!(!filesystem_generated.contains("function assertRustOwnedMessage"));
+    }
+
+    #[test]
+    fn generated_abort_helpers_observe_started_promises_before_preabort() {
+        let service = model()
+            .expect("model")
+            .services
+            .into_iter()
+            .find(|service| service.family == "actors")
+            .expect("Actors metadata");
+        let generated = typescript(&service).expect("generated Actors metadata");
+        let observer = generated
+            .find("Promise.resolve(operation).then(resolveOnce, rejectOnce);")
+            .expect("started-operation rejection observer");
+        let preabort = generated
+            .find("if (signal.aborted) onAbort();")
+            .expect("started-operation pre-abort check");
+        assert!(observer < preabort);
+        assert!(generated.contains(
+            "if (signal === undefined) return Promise.resolve().then(operation);"
+        ));
+
+        let runtime_test = await_abort_test(&service).expect("generated abort regression test");
+        assert!(runtime_test.contains("pre-aborted operation's late rejection"));
+        assert!(runtime_test.contains("rejectLate!(new Error(\"late native rejection\"))"));
+        assert!(runtime_test.contains("isolates two waiters when one aborts"));
+        assert!(runtime_test.contains("resolveOperation!(42)"));
+    }
+
+    #[test]
+    fn public_types_preserve_wire64_presence_and_machine_image_oneof() {
+        let manifest = model().expect("model");
+        let machines = manifest
+            .services
+            .iter()
+            .find(|service| service.family == "machines")
+            .expect("Machines metadata");
+        let generated = typescript_public_types_section(
+            machines,
+            "../generated/proto/machines/v1/machines_pb.js",
+        );
+        assert!(generated.contains("RustOwnedPublicImage = Omit<RustWire.Image, \"immutableReference\">"));
+        assert!(generated.contains("readonly immutableReference:"));
+        assert!(generated.contains("case: \"managedDigest\""));
+        assert!(generated.contains("case: \"customDigest\""));
+        assert!(generated.contains("case: \"checkpoint\""));
+        assert!(!generated.contains("readonly customDigest: RustOwnedSha256Digest"));
+        assert!(!generated.contains("readonly managedDigest: RustOwnedSha256Digest"));
+
+        let workers = manifest
+            .services
+            .iter()
+            .find(|service| service.family == "workers")
+            .expect("Workers metadata");
+        let workers_generated = typescript_public_types_section(
+            workers,
+            "../generated/proto/workers/v1/workers_pb.js",
+        );
+        assert!(workers_generated.contains("readonly resolvedRevision?: RustOwnedRevision | undefined;"));
     }
 
     #[test]
@@ -3248,6 +3583,72 @@ mod tests {
                 "{family} optional dependencies must be Rust-owned companion packages",
             );
         }
+    }
+
+    #[test]
+    fn inference_native_companions_drive_package_metadata_and_exports() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let targets = native_companion_targets(&repository, "inference")
+            .expect("Inference native target metadata");
+        let companions = native_companion_dependencies(&repository, "inference")
+            .expect("Inference native package metadata");
+        assert_eq!(targets.len(), 8);
+        assert!(targets.iter().any(|target| target == "linux-x64-gnu"));
+        assert!(targets.iter().any(|target| target == "linux-x64-musl"));
+        assert_eq!(companions.len(), targets.len());
+        assert!(companions.contains_key("@acyclic-labs/inference-darwin-arm64"));
+        assert!(companions
+            .values()
+            .all(|version| version.as_str() == Some("0.2.0")));
+
+        let service = model()
+            .expect("Rust model")
+            .services
+            .into_iter()
+            .find(|service| service.family == "inference")
+            .expect("Inference metadata");
+        let adjusted = package_service_for_output(&service, &targets);
+        assert!(adjusted
+            .remote_policy
+            .expect("Inference policy")
+            .transport
+            .native
+            .iter()
+            .any(|option| option.kind == "grpc"));
+
+        let generated = package_typescript(&service, &repository)
+            .expect("Rust-generated Inference package facade");
+        assert!(generated.contains("INFERENCE_NATIVE_COMPANION_TARGETS"));
+        assert!(generated.contains("@acyclic-labs/inference-linux-x64-gnu"));
+        assert!(generated.contains("@acyclic-labs/inference-win32-x64"));
+
+        let manifest = generated_package_manifest(
+            &repository.join("typescript/packages/inference/package.json"),
+            &repository,
+            &service,
+            "working-tree",
+            None,
+        )
+        .expect("Rust-generated Inference package manifest");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&manifest).expect("generated package JSON");
+        assert_eq!(
+            manifest
+                .get("optionalDependencies")
+                .and_then(serde_json::Value::as_object)
+                .map(|value| value.len()),
+            Some(8)
+        );
+        assert_eq!(
+            manifest
+                .get("exports")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|exports| exports.get("./native"))
+                .and_then(serde_json::Value::as_object)
+                .and_then(|native| native.get("default"))
+                .and_then(serde_json::Value::as_str),
+            Some("./dist/native.js")
+        );
     }
 
     #[test]

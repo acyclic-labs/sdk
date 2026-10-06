@@ -224,7 +224,7 @@ test("full hosted qualification requires release or explicit force", () => {
 });
 
 test("reusable package qualification does not duplicate central release runs", () => {
-  const names = ["additional-language-qualification.yml", "python-go-release-qualification.yml", "http-target-release-qualification.yml", "dotnet-native-rid-manual.yml", "embedded-abi-release.yml"];
+  const names = ["additional-language-qualification.yml", "python-go-release-qualification.yml", "http-target-release-qualification.yml", "dotnet-native-rid-manual.yml", "embedded-abi-release.yml", "inference-native-packages.yml"];
   for (const name of names) {
     const workflow = readFileSync(`.github/workflows/${name}`, "utf8").replaceAll("\r\n", "\n");
     assert.doesNotMatch(workflow, /^  (release|push):/m, name);

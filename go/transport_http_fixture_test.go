@@ -101,7 +101,7 @@ func TestHTTPRequestFixtureUsesDescriptorRouteMethodAndTypedErrors(t *testing.T)
 		t.Fatalf("request did not preserve Rust route contract: method=%q body=%q authorization=%q", method, body, authorization)
 	}
 
-	_, err = client.invokeHTTP(context.Background(), "actors", route.Method, "/typed-error", request, response)
+	err = client.invokeHTTP(context.Background(), "actors", route.Method, "/typed-error", request, response)
 	var typed *RustHTTPError
 	if !errors.As(err, &typed) || typed.StatusCode != http.StatusConflict || string(typed.Detail) != `{"code":"conflict"}` {
 		t.Fatalf("typed Rust HTTP error lost status or canonical payload: %#v", err)
@@ -115,8 +115,8 @@ func TestHTTPHandshakeFixtureRejectsRedirectAndWrongContentType(t *testing.T) {
 		_, _ = writer.Write(handshake)
 	}))
 	defer target.Close()
-	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		http.Redirect(writer, nil, target.URL, http.StatusTemporaryRedirect)
+	redirect := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, target.URL, http.StatusTemporaryRedirect)
 	}))
 	defer redirect.Close()
 

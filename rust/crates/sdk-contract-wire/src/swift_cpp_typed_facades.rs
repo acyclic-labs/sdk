@@ -1025,6 +1025,7 @@ fn model_oneof_groups(
     }
     for members in groups.values_mut() {
         members.sort_by_key(|field| field.number);
+        members.dedup_by(|left, right| left.field == right.field && left.number == right.number);
     }
     groups
 }
@@ -1145,14 +1146,14 @@ fn swift_oneof_choice_wire_switch(
     let mut out = format!(" switch {property} {{");
     for field in members {
         out.push_str(&format!(
-            " case .{}(let value): wire[\"{}\"] = value",
+            " case .{}(let value): wire[\"{}\"] = value;",
             camel(&field.field),
             field.json_name
         ));
     }
-    out.push_str(" case .none: break");
+    out.push_str(" case .none: break;");
     out.push_str(&format!(
-        " case .unknown(let rawTag, let payload): wire[\"__unknown_{oneof}\"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload) }}"
+        " case .unknown(let rawTag, let payload): wire[\"__unknown_{oneof}\"] = RustWireUnknownOneof(rawTag: rawTag, payload: payload); }};"
     ));
     out
 }
@@ -1169,18 +1170,20 @@ fn swift_oneof_decode_value(
     let cast = swift_field_cast(field);
     let key = &field.json_name;
     let value = format!("value_{local}");
-    let constructor = semantic_field(field, direction).is_some()
-        || descriptor_type_name(field).is_some();
-    let converted = if constructor {
+    let semantic_constructor = semantic_field(field, direction).is_some();
+    let descriptor_constructor = descriptor_type_name(field).is_some();
+    let converted = if semantic_constructor {
         format!(
             "guard let {value} = {target}({raw}) else {{ throw RustWireDecodeError.invalidField(\"{key}\") }};",
             target = target
         )
+    } else if descriptor_constructor {
+        format!("let {value} = {target}({raw});", target = target)
     } else {
         format!("let {value}: {target} = {raw};", target = target)
     };
     format!(
-        "if let {raw_name} = wire[\"{key}\"] as? {cast} {{ {converted} guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof arm {key} conflicts\") }}; selected_{local} = .{case_name}({value}) }}",
+        "if let {raw_name} = wire[\"{key}\"] as? {cast} {{ {converted} guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof arm {key} conflicts\") }}; selected_{local} = .{case_name}({value}) }};",
         raw_name = raw,
         case_name = camel(&field.field),
     )
@@ -1208,7 +1211,7 @@ fn swift_oneof_decode_block(
         ));
     }
     out.push_str(&format!(
-        "if let unknown_{local} = wire[\"__unknown_{oneof}\"] as? RustWireUnknownOneof {{ guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof {oneof} contains known and unknown arms\") }}; selected_{local} = .unknown(rawTag: unknown_{local}.rawTag, payload: unknown_{local}.payload) }} let {property}: {choice_type} = selected_{local} ?? .none;",
+        "if let unknown_{local} = wire[\"__unknown_{oneof}\"] as? RustWireUnknownOneof {{ guard selected_{local} == nil else {{ throw RustWireDecodeError.invalidField(\"oneof {oneof} contains known and unknown arms\") }}; selected_{local} = .unknown(rawTag: unknown_{local}.rawTag, payload: unknown_{local}.payload) }}; let {property}: {choice_type} = selected_{local} ?? .none;",
         local = local,
         property = property,
         choice_type = choice_type,
@@ -2121,18 +2124,24 @@ public:
                     }))
                     .collect::<Vec<_>>()
                     .join(", ");
-                let typed_assignments = nested
+                let typed_initializers = nested
                     .iter()
                     .filter(|field| field.oneof_index.is_none())
                     .map(|field| {
                         let name = cpp_field_name(&field.field);
-                        format!(" this->{name} = std::move({name});")
+                        format!("{name}(std::move({name}))")
                     })
                     .chain(oneofs.iter().map(|(oneof, _)| {
                         let name = cpp_oneof_choice_field_name(oneof);
-                        format!(" this->{name}_choice = std::move({name}_choice);")
+                        format!("{name}_choice(std::move({name}_choice))")
                     }))
-                    .collect::<String>();
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let typed_initializer_list = if typed_initializers.is_empty() {
+                    String::new()
+                } else {
+                    format!(" : {typed_initializers}")
+                };
                 let image_check = if item.rust_name == "Image" {
                     let checks = oneofs
                         .iter()
@@ -2160,7 +2169,7 @@ public:
                         )
                     })
                     .collect::<String>();
-                out.push_str(&format!("struct {} {{ private: RustWireMessage wire; explicit {}(RustWireMessage value) : wire(std::move(value)){} {{{} }} public: {} {}({}) : {} {{{}}} }};\n", item.rust_name, item.rust_name, raw_choice_assignments, cpp_message_checks(item.rules), declarations, item.rust_name, typed_params, typed_assignments, image_check));
+                out.push_str(&format!("struct {} {{ private: RustWireMessage wire; explicit {}(RustWireMessage value) : wire(std::move(value)){} {{{} }} public: {} {}({}){} {{{}}} }};\n", item.rust_name, item.rust_name, raw_choice_assignments, cpp_message_checks(item.rules), declarations, item.rust_name, typed_params, typed_initializer_list, image_check));
             }
             _ => {}
         }
@@ -2381,6 +2390,13 @@ mod tests {
         assert!(!swift.contains("executor.submit { try await self."));
         assert!(swift.contains("Choice: "));
         assert!(swift.contains("__unknown_"));
+        // Every generated block is emitted on a compact line; closing a
+        // statement without a separator makes the facade fail before any
+        // fixture can exercise its typed behavior.
+        assert!(!swift.contains("}if"));
+        assert!(!swift.contains("} let "));
+        assert!(!swift.contains("} return "));
+        assert!(!swift.contains("} switch "));
         assert!(!swift.contains("case known(tag: String"));
         assert!(!swift.contains("public enum WireChoice"));
         assert!(!swift.contains("std::shared_ptr"));
@@ -2411,6 +2427,8 @@ mod tests {
         assert!(cpp.contains("if (cancellation_.request_stop()) on_cancel();"));
         assert!(cpp.contains("virtual ~RustTypedClientStream() { cancellation_.request_stop(); }"));
         assert!(!cpp.contains("virtual void cancel() noexcept = 0"));
+        assert!(!cpp.contains(" : this->"));
+        assert!(cpp.contains("std::move(managed_digest)"));
         assert!(!cpp.contains("struct KnownOneof"));
         assert!(!cpp.contains("std::variant<std::string, std::vector<std::uint8_t>>"));
         assert!(!cpp.contains("using WireChoice"));

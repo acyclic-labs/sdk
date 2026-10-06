@@ -1,4 +1,5 @@
-import { isRustOwnedTransportUnavailable, OBJECTS_REMOTE_POLICY, selectRustOwnedTransport, type RustOwnedTransportAvailability } from "./generated-client.js";
+import { isRustOwnedTransportUnavailable, OBJECTS_REMOTE_POLICY, selectRustOwnedTransport, validateRustOwnedCredentialPolicy, type RustOwnedTransportAvailability } from "./generated-client.js";
+import { validate_objects_v2_http_endpoint } from "../generated/wasm/acyclic_objects_wasm.js";
 import { HttpObjectsV2, type ObjectsV2HttpOptions } from "./v2-http.js";
 import type { ObjectsV2Provider } from "./v2.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
@@ -23,8 +24,10 @@ export async function fromEnv(environment: ObjectsV2Environment): Promise<Object
     installed = { http: true };
   }
   let selected = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, runtime, environment.transport, installed);
+  await ensureObjectsWasm();
+  validate_objects_v2_http_endpoint(environment.endpoint);
+  validateRustOwnedCredentialPolicy(environment.token);
   if (selected === "http") {
-    await ensureObjectsWasm();
     return new HttpObjectsV2(environment);
   }
   if (selected !== "grpc" || runtime !== "native") throw new TypeError("Objects gRPC transport requires a native Node or Bun runtime");

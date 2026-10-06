@@ -3,9 +3,10 @@ import { create } from "@bufbuild/protobuf";
 import { HttpWorkersClient, InvokeVersionRequestSchema, InvokeDeploymentRequestSchema } from "../src/index.js";
 
 describe("Workers v1 generated transport", () => {
-  test("permits token-protected loopback HTTP but rejects remote plaintext", () => {
+  test("permits token-protected loopback HTTP and validates remote plaintext before dispatch", async () => {
     expect(() => new HttpWorkersClient({ endpoint: "http://127.0.0.1:8787", token: "local" })).not.toThrow();
-    expect(() => new HttpWorkersClient({ endpoint: "http://workers.example.test", token: "remote" })).toThrow(TypeError);
+    const client = new HttpWorkersClient({ endpoint: "http://workers.example.test", token: "remote", fetcher: async () => { throw new Error("unexpected fetch"); } });
+    await expect(client.invokeDeployment(create(InvokeDeploymentRequestSchema, { alias: "current", method: "GET", url: "https://example.test/" }))).rejects.toThrow(TypeError);
   });
   test("rejects path-like deployment aliases before sending a request", async () => {
     const client = new HttpWorkersClient({ endpoint: "https://workers.example.test", token: "secret", fetcher: async () => { throw new Error("unexpected fetch"); } });

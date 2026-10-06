@@ -44,7 +44,7 @@ export interface InferenceOperations {
   renewWarm(request: Parameters<import("./index.js").InferenceTransport["renewWarm"]>[0]): Promise<WarmView>;
   releaseWarm(request: Parameters<import("./index.js").InferenceTransport["releaseWarm"]>[0]): Promise<WarmView>;
   generate(request: Parameters<import("./index.js").InferenceTransport["generateRun"]>[0]): Promise<{ readonly run?: RunView }>;
-  inspectRun(runId: Uint8Array): Promise<RunView>;
+  inspectRun(runId: Uint8Array, signal?: AbortSignal): Promise<RunView>;
   watchRun(runId: Uint8Array, fromSequence?: bigint, signal?: AbortSignal): AsyncIterable<RunEvent>;
   cancelRun(runId: Uint8Array): Promise<RunView>;
 }
@@ -89,15 +89,15 @@ export class Context {
 export class Run {
   constructor(readonly inference: Inference, readonly runId: RunId) {}
   id(): RunId { return this.runId; }
-  inspect(): Promise<RunView> { return this.inference.client.inspectRun(this.runId); }
+  inspect(signal?: AbortSignal): Promise<RunView> { return this.inference.client.inspectRun(this.runId, signal); }
   events(options: { readonly from?: bigint; readonly signal?: AbortSignal } = {}): AsyncIterable<RunEvent> { return this.inference.client.watchRun(this.runId, options.from ?? 0n, options.signal); }
   async result(options: { readonly signal?: AbortSignal } = {}): Promise<RunOutcome> {
-    let view = await this.inspect();
+    let view = await this.inspect(options.signal);
     if (view.result === undefined) {
       for await (const event of this.events({ from: view.lastSequence, signal: options.signal })) {
         if (event.event.case === "terminal") break;
       }
-      view = await this.inspect();
+      view = await this.inspect(options.signal);
     }
     if (view.result === undefined) throw new InferenceProtocolError("run observation ended without a terminal result");
     return outcome(this.inference, view.result);

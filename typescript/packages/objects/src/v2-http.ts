@@ -1,7 +1,8 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { decode_objects_v2_json, encode_objects_v2_json, objects_v2_http_body_frame_bytes, objects_v2_http_error_code, objects_v2_http_json_frame_bytes, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
-import { OBJECTS_HANDSHAKE, OBJECTS_METHODS, OBJECTS_REMOTE_POLICY, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { OBJECTS_HANDSHAKE, OBJECTS_METHODS, OBJECTS_REMOTE_POLICY, awaitWithAbort, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { ensureObjectsWasm } from "./wasm-runtime.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -23,11 +24,9 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     let endpoint: URL;
     try {
       endpoint = new URL(options.endpoint);
-      validate_objects_v2_http_endpoint(options.endpoint);
     } catch {
       throw new TypeError("invalid Objects HTTP endpoint");
     }
-    validateRustOwnedCredentialPolicy(options.token);
     this.maximumResponse = options.maximumResponseBytes ?? OBJECTS_REMOTE_POLICY.maximumHttpResponseBytes;
     this.maximumRequest = options.maximumRequestBytes ?? OBJECTS_REMOTE_POLICY.maximumHttpRequestBytes;
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
@@ -36,6 +35,13 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, signal?: AbortSignal): Promise<readonly Uint8Array[]> {
+    await ensureObjectsWasm();
+    try {
+      validate_objects_v2_http_endpoint(this.options.endpoint);
+    } catch (error) {
+      throw new TypeError(error instanceof Error ? error.message : String(error));
+    }
+    validateRustOwnedCredentialPolicy(this.options.token);
     const headers = { authorization: `Bearer ${this.options.token}`, "content-type": route === "objects/put" || route === "multipart/upload-part" ? "application/x-ndjson" : "application/json" };
     await this.ensureHandshake(headers, signal);
     const method = Object.values(OBJECTS_METHODS).find(candidate => candidate.path === `v2/objects/${route}`);
@@ -164,10 +170,10 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
   }
 
   private async ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-    if (this.handshake !== undefined) return this.handshake;
-    const pending = negotiateRustOwnedEndpoint(this.fetcher, this.endpoint, headers, OBJECTS_HANDSHAKE, this.maximumResponse, signal)
+    if (this.handshake !== undefined) return awaitWithAbort(this.handshake, signal);
+    const pending = negotiateRustOwnedEndpoint(this.fetcher, this.endpoint, headers, OBJECTS_HANDSHAKE, this.maximumResponse)
       .catch(error => { this.handshake = undefined; throw error; });
     this.handshake = pending;
-    return pending;
+    return awaitWithAbort(pending, signal);
   }
 }

@@ -15,8 +15,8 @@ resolver = "2"
 path = "src/lib.rs"
 
 [[example]]
-name = "render"
-path = "examples/render.rs"
+name = "guide-projections"
+path = "examples/guide-projections.rs"
 
 [[bin]]
 name = "sdk-examples"

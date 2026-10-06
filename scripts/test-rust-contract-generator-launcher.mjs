@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   existsSync,
   mkdirSync,
+  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -41,23 +42,65 @@ function withLauncherEnvironment(callback) {
   }
 }
 
-test("contract generation retains one shared Cargo target and cleans owned output", () => {
+test("contract generation uses a source-keyed Cargo target and cleans owned output", () => {
   rmSync(buildRoot, { recursive: true, force: true });
   mkdirSync(buildRoot, { recursive: true });
   withLauncherEnvironment(() => {
-    const sharedTarget = join(buildRoot, "acyclic-sdk-contracts", "cargo-target");
-    mkdirSync(sharedTarget, { recursive: true });
-    const sentinel = join(sharedTarget, "must-survive");
-    writeFileSync(sentinel, "shared target");
-
     runRustContractGenerator(repositoryRoot, "all-write", undefined, {
       cargoProgram: process.execPath,
       cargoArgs: [fakeCargoPath()],
     });
 
-    assert.equal(existsSync(sentinel), true, "the shared target must be reusable");
+    const cacheRoot = join(buildRoot, "acyclic-sdk-contracts");
     const children = requireChildren(join(buildRoot, "acyclic-sdk-contracts"));
-    assert.deepEqual(children, ["cargo-target"], "owned output staging must be cleaned");
+    assert.equal(children.length, 1);
+    assert.match(children[0], /^[0-9a-f]{16}$/);
+    const target = join(cacheRoot, children[0], "cargo-target");
+    assert.equal(existsSync(join(target, ".acyclic-sdk-source-owner.json")), true);
+    assert.deepEqual(requireChildren(cacheRoot), children, "owned output staging must be cleaned");
+  });
+  rmSync(buildRoot, { recursive: true, force: true });
+});
+
+test("contract generation isolates default Cargo targets by source root", () => {
+  rmSync(buildRoot, { recursive: true, force: true });
+  mkdirSync(buildRoot, { recursive: true });
+  const secondSourceRoot = join(buildRoot, ".second-contract-source");
+  mkdirSync(secondSourceRoot, { recursive: true });
+  withLauncherEnvironment(() => {
+    const options = { cargoProgram: process.execPath, cargoArgs: [fakeCargoPath()] };
+    runRustContractGenerator(repositoryRoot, "all-write", undefined, options);
+    runRustContractGenerator(secondSourceRoot, "all-write", undefined, options);
+
+    const children = requireChildren(join(buildRoot, "acyclic-sdk-contracts"));
+    assert.equal(children.length, 2);
+    assert.ok(children.every((child) => /^[0-9a-f]{16}$/.test(child)));
+    assert.notEqual(children[0], children[1], "source roots must never share a final Cargo binary");
+  });
+  rmSync(buildRoot, { recursive: true, force: true });
+});
+
+test("contract generation rejects an explicit target without matching source ownership", () => {
+  rmSync(buildRoot, { recursive: true, force: true });
+  mkdirSync(buildRoot, { recursive: true });
+  const explicitTarget = join(buildRoot, "explicit-target");
+  const secondSourceRoot = join(buildRoot, ".second-contract-source");
+  mkdirSync(secondSourceRoot, { recursive: true });
+  withLauncherEnvironment(() => {
+    const options = {
+      cargoProgram: process.execPath,
+      cargoArgs: [fakeCargoPath()],
+      cargoTargetDirectory: explicitTarget,
+    };
+    runRustContractGenerator(repositoryRoot, "all-write", undefined, options);
+    assert.equal(
+      JSON.parse(readFileSync(join(explicitTarget, ".acyclic-sdk-source-owner.json"), "utf8")).canonical_source_root,
+      repositoryRoot,
+    );
+    assert.throws(
+      () => runRustContractGenerator(secondSourceRoot, "all-write", undefined, options),
+      /Cargo target directory is owned by a different Rust source/,
+    );
   });
   rmSync(buildRoot, { recursive: true, force: true });
 });

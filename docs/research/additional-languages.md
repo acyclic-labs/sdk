@@ -16,11 +16,60 @@ The target cannot become a full SDK merely because a generator emits files. It m
 
 Filesystem and Harness behavior is embedded Rust behavior. A foreign target receives it through an explicitly qualified native or WASM ABI; it does not reimplement those algorithms. JSON/OpenAPI targets therefore carry `http-projection` capability and cannot claim protobuf/gRPC parity.
 
+## Inventory audit
+
+The current `generation-targets.json` contains 34 entries: 22 entries have a
+producer recipe and 12 are inventory-only. A recipe proves that a Rust-owned
+projection can be requested; it does not prove that the generated package is
+typed, installable, source-bound, or transport-qualified.
+
+The strongest current evidence is a generated, source-bound consumer that
+compiles against the target package and exercises actual generated types. The
+ScalaPB receipt (`research/additional-languages/scala-receipt.json`) covers
+Rust Actors and Stream protobuf inputs, bearer metadata, bytes, uint64,
+optional presence, server streaming, and append/read against the Rust fixture;
+custom options, cancellation, recovery, and full conformance remain open. The
+Haskell prototype provenance (`research/additional-languages/haskell-grapesy-prototype/provenance.json`)
+records a pinned proto-lens/grapesy toolchain and a passed typed surface for
+106 RPCs across 18 services, while remote fixture qualification remains
+pending. The JVM/.NET receipt (`docs/research/jvm-dotnet-receipt.json`)
+records installed Java, Kotlin, and .NET artifacts, nine-family golden
+serialization, and bounded Actors/Stream consumers; its current renderer and
+fixture source closures differ, so current-source qualification is not claimed.
+The Julia, Bash, Perl, and PowerShell manifests provide bounded installed
+HTTP projection evidence only.
+
+The practical full-gRPC OSS set is therefore the primary Rust, TypeScript, and
+Python targets plus the generated recipes for Go, Java, C#/.NET, Swift, C++,
+Ruby, PHP, and Dart, the Kotlin and Scala JVM recipes, and the Haskell
+proto-lens/grapesy prototype. Elixir, Ballerina, and
+Objective-C have credible maintained OSS runtimes and remain achievable
+no-recipe candidates, but have no local generated-consumer receipt. Erlang,
+OCaml, and Common Lisp remain experimental until release provenance, package
+reproducibility, custom-option handling, and descriptor compatibility are
+demonstrated.
+
+Lua is explicitly excluded from full SDK coverage because the available
+`lua-protobuf` path provides serialization without a maintained generated
+gRPC runtime; its OpenAPI output is beta HTTP only. Ada, C, Clojure, Crystal,
+Elm, GDScript, Julia, Nim, Perl, PowerShell, R, and Bash remain HTTP-only
+projections. C's Rust ABI and its generated libcurl client are separate
+surfaces. Documentation, k6, JMeter, and Terraform outputs are adapter
+artifacts, not language targets.
+
+For every target, type evidence must include generated field numbers,
+proto3 presence and oneof behavior, bytes and uint64 representation, enum
+values, and the generated unary/client/server stream signatures. File
+existence, route-name checks, generic JSON tables, or nominal upstream
+support do not satisfy this gate.
+
 ## Strong additional candidates
 
 Kotlin, Scala, Elixir, Ballerina and Objective-C have maintained OSS generation/runtime paths with package ecosystems and the streaming shapes required by the active protocol surface. Kotlin uses [grpc-kotlin](https://github.com/grpc/grpc-kotlin); Scala uses [ScalaPB](https://github.com/scalapb/ScalaPB) plus `scalapb-grpc`; Elixir uses [elixir-grpc](https://github.com/elixir-grpc/grpc) and [protobuf](https://github.com/elixir-protobuf/protobuf); Ballerina uses its official [`bal grpc`](https://ballerina.io/spec/grpc/) tool; Objective-C uses the official [gRPC Objective-C plugin](https://github.com/grpc/grpc/tree/master/src/objective-c).
 
-The Scala HTTP projection is the first executable prototype. [`scala-prototype.ps1`](../../research/additional-languages/scala-prototype.ps1) runs the Rust Actors projection, OpenAPI Generator `7.25.0`, sbt `1.10.11`, compiles an independent generated consumer, performs a local HTTP loopback that checks the generated route and bearer header, then runs `package` and isolated `publishLocal`. The generated `org.openapitools:acyclic-actors_2.13:0.1.0` artifact compiled successfully and reproduced identical binary/source hashes across two runs. [`scala-prototype.md`](../../research/additional-languages/scala-prototype.md) records hashes and its fidelity boundary.
+The Scala HTTP projection is retained as bounded HTTP evidence. The current
+ScalaPB gRPC prototype and receipt are the stronger typed evidence; neither
+promotes Scala to complete SDK coverage.
 
 The independent protobuf/gRPC lane now also has a real ScalaPB build:
 [`scala-grpc-prototype.ps1`](../../research/additional-languages/scala-grpc-prototype.ps1)
@@ -35,7 +84,7 @@ binds the artifact, generated source hashes, consumer source and Rust-owned
 protobuf inputs. Full SDK qualification still requires shared conformance,
 custom-option, descriptor-digest, recovery and cancellation tests.
 
-Erlang (`grpcbox`), OCaml (`ocaml-grpc`) and Common Lisp (`ag-gRPC`) remain experimental. Their upstreams demonstrate useful generated or streaming behavior, but release cadence, package reproducibility, custom-option handling and descriptor compatibility still need evidence. Haskell and Lua remain blocked for full SDK status: the available gRPC or protobuf paths are explicitly incomplete or lack a maintained generated gRPC runtime.
+Erlang (`grpcbox`), OCaml (`ocaml-grpc`) and Common Lisp (`ag-gRPC`) remain experimental. Their upstreams demonstrate useful generated or streaming behavior, but release cadence, package reproducibility, custom-option handling and descriptor compatibility still need evidence. Haskell is a typed full-gRPC prototype with remote fixture qualification pending; Lua remains blocked because no maintained generated gRPC runtime is available.
 
 ## HTTP and tooling projections
 

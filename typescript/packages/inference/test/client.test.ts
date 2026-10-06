@@ -253,6 +253,53 @@ test("run recovery rejects substituted or malformed streams and observes an incl
   await expect(pending).rejects.toThrow("aborted");
   expect(reopened).toBeFalse();
 
+  const initialInspectController = new AbortController();
+  let initialInspectSignal: AbortSignal | undefined;
+  const initialInspect = new Inference(new InferenceClient({
+    ...transport,
+    inspectRun(_request, signal) {
+      initialInspectSignal = signal;
+      return new Promise<RunView>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    },
+  }));
+  const initialInspectPending = initialInspect.run(id).result({ signal: initialInspectController.signal });
+  await Promise.resolve();
+  expect(initialInspectSignal).toBe(initialInspectController.signal);
+  initialInspectController.abort();
+  await expect(initialInspectPending).rejects.toThrow("aborted");
+
+  const finalInspectController = new AbortController();
+  let finalInspectCount = 0;
+  let finalInspectSignal: AbortSignal | undefined;
+  let resolveFinalInspectStarted: () => void = () => {};
+  const finalInspectStarted = new Promise<void>(resolve => { resolveFinalInspectStarted = resolve; });
+  const finalInspect = new Inference(new InferenceClient({
+    ...transport,
+    inspectRun(request, signal) {
+      finalInspectCount += 1;
+      if (finalInspectCount === 3) {
+        finalInspectSignal = signal;
+        resolveFinalInspectStarted();
+        return new Promise<RunView>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+        });
+      }
+      return Promise.resolve(create(RunViewSchema, { runId: request.runId, input: revision(1), model: "model", lastSequence: 0n }));
+    },
+    async *watchRun(_request, signal) {
+      expect(signal).toBe(finalInspectController.signal);
+      yield create(RunEventSchema, { sequence: 0n, event: { case: "terminal", value: RunTerminal.COMPLETED } });
+    },
+  }));
+  const finalInspectPending = finalInspect.run(id).result({ signal: finalInspectController.signal });
+  await finalInspectStarted;
+  expect(finalInspectCount).toBe(3);
+  expect(finalInspectSignal).toBe(finalInspectController.signal);
+  finalInspectController.abort();
+  await expect(finalInspectPending).rejects.toThrow("aborted");
+
   const substituted = new InferenceClient({ ...transport, async inspectRun() { return create(RunViewSchema, { runId: runIdentity(9), input: revision(1), model: "model" }); } });
   await expect(substituted.inspectRun(id)).rejects.toThrow("identity differs");
 

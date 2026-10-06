@@ -45,7 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_REMOTE_POLICY, selectRustOwnedTransport } from "./generated-client.js";
+import { INFERENCE_REMOTE_POLICY, awaitWithAbort, selectRustOwnedTransport } from "./generated-client.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
@@ -215,30 +215,22 @@ async function tokenFromAuthorization(value: string | AuthorizationHeaders): Pro
   throw new InferenceTransportError(0, "invalid bearer credential");
 }
 
-function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal === undefined) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(new DOMException("The operation was aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
-  });
-}
-
 /** Rust-backed Inference transport. All route, handshake, encoding, limits, and streaming behavior execute in Rust. */
 export class RustInferenceTransport implements InferenceTransport {
-  readonly #client: Promise<RustInferenceClient>;
+  #client: Promise<RustInferenceClient> | undefined;
 
   constructor(
     readonly endpoint: string,
     readonly authorization: string | AuthorizationHeaders,
-    _fetcher?: typeof fetch,
+    fetcher?: typeof fetch,
     readonly maximumEventBytes = MAXIMUM_HTTP_JSON_BYTES,
   ) {
+    if (fetcher !== undefined) {
+      throw new TypeError("RustInferenceTransport does not support a custom fetcher; transport remains Rust-owned");
+    }
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
       throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
     }
-    this.#client = this.#connect();
   }
 
   get maximumMessageBytes(): number { return this.maximumEventBytes; }
@@ -251,6 +243,10 @@ export class RustInferenceTransport implements InferenceTransport {
       : module.BrowserInferenceClient.connectWithLimit(this.endpoint, token, this.maximumEventBytes);
   }
 
+  #clientPromise(): Promise<RustInferenceClient> {
+    return this.#client ??= this.#connect();
+  }
+
   async #unary<T>(
     request: object,
     requestSchema: { typeName: string },
@@ -258,8 +254,8 @@ export class RustInferenceTransport implements InferenceTransport {
     method: (client: RustInferenceClient, bytes: Uint8Array) => Promise<Uint8Array>,
     signal?: AbortSignal,
   ): Promise<T> {
-    const client = await abortable(this.#client, signal);
-    const result = await abortable(method(client, toBinary(requestSchema as never, request as never)), signal);
+    const client = await awaitWithAbort(this.#clientPromise(), signal);
+    const result = await awaitWithAbort(method(client, toBinary(requestSchema as never, request as never)), signal);
     return fromBinary(responseSchema as never, result) as T;
   }
 
@@ -294,8 +290,8 @@ export class RustInferenceTransport implements InferenceTransport {
     return this.#unary(request, InspectRunRequestSchema, RunViewSchema, (client, bytes) => client.inspectRun(bytes), signal);
   }
   async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
-    const client = await abortable(this.#client, signal);
-    const events = await abortable(client.watchRun(toBinary(WatchRunRequestSchema, request)), signal);
+    const client = await awaitWithAbort(this.#clientPromise(), signal);
+    const events = await awaitWithAbort(client.watchRun(toBinary(WatchRunRequestSchema, request)), signal);
     for (const event of events) {
       if (signal?.aborted) return;
       yield fromBinary(RunEventSchema, event);
@@ -315,6 +311,47 @@ export class RustInferenceTransport implements InferenceTransport {
 /** Backwards-compatible name; implementation is entirely Rust-backed. */
 export class HttpInferenceTransport extends RustInferenceTransport {}
 
+interface DeferredNativeInferenceOptions {
+  readonly endpoint: string;
+  readonly token: string;
+  readonly caCertificate?: string;
+  readonly maximumEventBytes?: number;
+}
+
+/**
+ * Keeps the optional N-API adapter out of browser module evaluation while
+ * retaining the synchronous fromEnv compatibility API.
+ */
+class DeferredNativeInferenceTransport implements InferenceTransport {
+  readonly #fallback: InferenceTransport | undefined;
+  #transport: Promise<InferenceTransport> | undefined;
+
+  constructor(readonly options: DeferredNativeInferenceOptions, fallback?: InferenceTransport) {
+    this.#fallback = fallback;
+  }
+
+  #load(): Promise<InferenceTransport> {
+    return this.#transport ??= import("./native.js").then(({ NativeInferenceTransport }) => new NativeInferenceTransport(this.options, this.#fallback));
+  }
+
+  listModels(): Promise<ListModelsResponse> { return this.#load().then(transport => transport.listModels()); }
+  createContext(request: CreateContextRequest): Promise<MutationReceipt> { return this.#load().then(transport => transport.createContext(request)); }
+  inspectContext(request: InspectContextRequest): Promise<ContextView> { return this.#load().then(transport => transport.inspectContext(request)); }
+  mutateContext(request: MutateContextRequest): Promise<MutationReceipt> { return this.#load().then(transport => transport.mutateContext(request)); }
+  retainWarm(request: RetainWarmRequest): Promise<WarmView> { return this.#load().then(transport => transport.retainWarm(request)); }
+  inspectWarm(request: InspectWarmRequest): Promise<WarmView> { return this.#load().then(transport => transport.inspectWarm(request)); }
+  renewWarm(request: RenewWarmRequest): Promise<WarmView> { return this.#load().then(transport => transport.renewWarm(request)); }
+  releaseWarm(request: ReleaseWarmRequest): Promise<WarmView> { return this.#load().then(transport => transport.releaseWarm(request)); }
+  generateRun(request: GenerateRunRequest): Promise<GenerateRunResponse> { return this.#load().then(transport => transport.generateRun(request)); }
+  inspectRun(request: InspectRunRequest, signal?: AbortSignal): Promise<RunView> { return this.#load().then(transport => transport.inspectRun(request, signal)); }
+  async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
+    yield* (await this.#load()).watchRun(request, signal);
+  }
+  cancelRun(request: InspectRunRequest): Promise<RunView> { return this.#load().then(transport => transport.cancelRun(request)); }
+  createEvaluation(request: CreateEvaluationRequest): Promise<EvaluationView> { return this.#load().then(transport => transport.createEvaluation(request)); }
+  inspectEvaluation(request: InspectEvaluationRequest): Promise<EvaluationView> { return this.#load().then(transport => transport.inspectEvaluation(request)); }
+}
+
 export class InferenceTransportError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -328,6 +365,9 @@ export interface InferenceEnvironment {
   readonly token: string;
   /** Deprecated compatibility field. Rust selects the best compatible transport. */
   readonly transport?: InferenceTransportKind;
+  /** Optional native trust anchor passed to the Rust N-API bridge. */
+  readonly caCertificate?: string;
+  /** Deprecated compatibility field; Rust-owned transports cannot call a JavaScript fetcher. */
   readonly fetcher?: typeof fetch;
   readonly maximumEventBytes?: number;
 }
@@ -335,24 +375,35 @@ export interface InferenceEnvironment {
 /**
  * Construct the Rust-qualified remote Inference facade.
  *
- * Rust selects the best qualified transport for the runtime. The published
- * package currently exposes the Rust/WASM HTTP projection in both runtimes;
- * an explicit transport is accepted only when it is present in that generated
- * package policy.
+ * Rust selects the best qualified transport for the runtime. Native clients
+ * use the Rust N-API companion for the policy's preferred gRPC option and
+ * fall back to the Rust/WASM HTTP projection only when that optional companion
+ * cannot be loaded. Browser clients use the browser-safe Rust/WASM HTTP path.
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
   const runtime = typeof window === "undefined" ? "native" : "browser";
-  // The generated package policy is authoritative about what this package
-  // can actually load.  Today both runtimes use the Rust/WASM HTTP client;
-  // an unavailable native companion must never be implied by the canonical
-  // Rust service policy.
-  selectRustOwnedTransport(INFERENCE_REMOTE_POLICY, runtime, environment.transport, { http: true });
-  return new InferenceClient(new RustInferenceTransport(
-    environment.endpoint,
-    environment.token,
-    environment.fetcher ?? globalThis.fetch.bind(globalThis),
-    environment.maximumEventBytes,
-  ));
+  if (environment.fetcher !== undefined) {
+    throw new TypeError("Inference Rust-owned transports do not support a custom fetcher");
+  }
+  const selected = selectRustOwnedTransport(INFERENCE_REMOTE_POLICY, runtime, environment.transport, {
+    grpc: runtime === "native",
+    http: true,
+  });
+  if (environment.caCertificate !== undefined && selected !== "grpc") {
+    throw new TypeError("caCertificate requires the native Rust transport");
+  }
+  const fallback = environment.transport === undefined && environment.caCertificate === undefined
+    ? new RustInferenceTransport(environment.endpoint, environment.token, undefined, environment.maximumEventBytes)
+    : undefined;
+  if (selected === "grpc") {
+    return new InferenceClient(new DeferredNativeInferenceTransport({
+      endpoint: environment.endpoint,
+      token: environment.token,
+      ...(environment.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate }),
+      ...(environment.maximumEventBytes === undefined ? {} : { maximumEventBytes: environment.maximumEventBytes }),
+    }, fallback));
+  }
+  return new InferenceClient(fallback ?? new RustInferenceTransport(environment.endpoint, environment.token, undefined, environment.maximumEventBytes));
 }
 
 export * from "./handles.js";

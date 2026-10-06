@@ -16,14 +16,16 @@ use sdk_machines_public as public;
 pub struct NativeMachinesOptions {
     /// HTTPS endpoint of the Machines service.
     pub endpoint: String,
+    /// Account bearer credential for the automatically selected native gRPC transport.
+    pub token: Option<String>,
     /// PEM-encoded service CA certificate.
     #[napi(js_name = "caCertificate")]
-    pub ca_certificate: String,
+    pub ca_certificate: Option<String>,
     /// PEM-encoded client certificate.
-    pub certificate: String,
+    pub certificate: Option<String>,
     /// PEM-encoded client private key.
     #[napi(js_name = "privateKey")]
-    pub private_key: String,
+    pub private_key: Option<String>,
 }
 
 fn bridge_error(error: impl std::fmt::Display) -> Error {
@@ -57,16 +59,38 @@ impl MachinesNativeClient {
     /// Connects to an HTTPS Machines endpoint using the supplied mutual-TLS identity.
     #[napi(factory)]
     pub async fn connect(options: NativeMachinesOptions) -> Result<Self> {
-        let client = Machines::connect(
-            &options.endpoint,
-            Tls {
-                ca: options.ca_certificate.as_bytes(),
-                certificate: options.certificate.as_bytes(),
-                private_key: options.private_key.as_bytes(),
-            },
-        )
-        .await
-        .map_err(provider_error)?;
+        let NativeMachinesOptions {
+            endpoint,
+            token,
+            ca_certificate,
+            certificate,
+            private_key,
+        } = options;
+        let client = match (
+            token,
+            ca_certificate,
+            certificate,
+            private_key,
+        ) {
+            (Some(token), None, None, None) => Machines::connect(&endpoint, token)
+                .await
+                .map_err(provider_error)?,
+            (None, Some(ca), Some(certificate), Some(private_key)) => Machines::connect(
+                &endpoint,
+                Tls {
+                    ca: ca.as_bytes(),
+                    certificate: certificate.as_bytes(),
+                    private_key: private_key.as_bytes(),
+                },
+            )
+            .await
+            .map_err(provider_error)?,
+            _ => {
+                return Err(bridge_error(
+                    "provide exactly one native Machines authentication mode: token or complete mutual-TLS credentials",
+                ));
+            }
+        };
         Ok(Self::from_machines(client))
     }
 
@@ -186,9 +210,10 @@ mod tests {
     async fn connection_rejects_non_https_before_network_io() {
         let options = NativeMachinesOptions {
             endpoint: "http://127.0.0.1:1".into(),
-            ca_certificate: "fixture".into(),
-            certificate: "fixture".into(),
-            private_key: "fixture".into(),
+            token: None,
+            ca_certificate: Some("fixture".into()),
+            certificate: Some("fixture".into()),
+            private_key: Some("fixture".into()),
         };
         assert!(MachinesNativeClient::connect(options).await.is_err());
     }

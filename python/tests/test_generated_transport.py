@@ -9,6 +9,7 @@ from google.protobuf import json_format
 import pytest
 
 from acyclic_sdk.generated.actors.v1 import actors_pb2, actors_pb2_grpc
+from acyclic_sdk.generated.filesystem.v2 import filesystem_pb2
 from acyclic_sdk.generated.objects.v2 import objects_pb2
 from acyclic_sdk.generated.protocol.v1 import protocol_pb2
 from acyclic_sdk.generated.stream.v2 import stream_pb2, stream_pb2_grpc
@@ -19,12 +20,14 @@ from acyclic_sdk.remote import (
     HTTP_ROUTES,
     MessageUnknown,
     RustActorsActorsCreateActorRequest,
+    RustFilesystemFilesystemGetSourceStateResponse,
     RustHttpError,
     RustObjectsObjectsPutObjectRequest,
     RustObjectsObjectsGetObjectResponse,
     RustStreamStreamFollowRequest,
     RustWorkersWorkersInvokeDeploymentRequest,
     RustWorkersWorkersInvokeVersionRequest,
+    RustWorkersWorkersSelectDeploymentRequest,
 )
 
 
@@ -66,6 +69,33 @@ def test_unknown_wire_fields_remain_message_level_opaque_data() -> None:
     assert decoded.frame is None
     assert isinstance(decoded.unknown, MessageUnknown)
     assert decoded.unknown.raw == message.SerializeToString()
+
+
+def test_python_dtos_preserve_oneof_exclusivity_presence_and_unknown_enum_values() -> None:
+    with pytest.raises(ValueError, match="at most one arm"):
+        RustObjectsObjectsPutObjectRequest(body=b"body", complete=True)
+
+    present = RustWorkersWorkersSelectDeploymentRequest.from_wire(
+        workers_pb2.SelectDeploymentRequest(
+            alias="canary",
+            version_sha256=b"\xab" * 32,
+            expected_revision=0,
+            idempotency_key="request-1",
+        )
+    )
+    absent = RustWorkersWorkersSelectDeploymentRequest.from_wire(
+        workers_pb2.SelectDeploymentRequest(
+            alias="canary", version_sha256=b"\xab" * 32, idempotency_key="request-1"
+        )
+    )
+    assert present.expected_revision == 0
+    assert absent.expected_revision is None
+
+    response = RustFilesystemFilesystemGetSourceStateResponse.from_wire(
+        filesystem_pb2.SourceResponse(state=99)
+    )
+    assert response.state.value == 99
+    assert response.state.is_unknown
 
 
 def test_client_streaming_facade_accepts_async_request_iterators() -> None:
@@ -321,19 +351,23 @@ def test_worker_http_route_templates_encode_binary_and_alias_segments() -> None:
             url=request.full_url,
         )
 
+    client._open_http = open_http
+
     async def run() -> None:
         async def ensure_transport(*_args: object, **_kwargs: object) -> str:
             return "http_json"
 
         client._ensure_transport = ensure_transport
         version_request = RustWorkersWorkersInvokeVersionRequest.from_wire(
-            workers_pb2.InvokeVersionRequest(version_sha256=b"\xab" * 32)
+            workers_pb2.InvokeVersionRequest(
+                version_sha256=b"\xab" * 32, method="GET", url="/"
+            )
         )
         version = await client.workers_Workers_InvokeVersion(version_request)
         assert version.status == 200
         assert version.body == b"ok"
         alias_request = RustWorkersWorkersInvokeDeploymentRequest.from_wire(
-            workers_pb2.InvokeDeploymentRequest(alias="canary/blue ?")
+            workers_pb2.InvokeDeploymentRequest(alias="canary/blue ?", method="GET", url="/")
         )
         deployment = await client.workers_Workers_InvokeDeployment(alias_request)
         assert deployment.status == 200
@@ -404,12 +438,8 @@ def test_http_handshake_fixture_rejects_redirect_and_wrong_content_type() -> Non
 
 def test_http_stream_fixture_closes_response_when_cancelled() -> None:
     client = _fixture_client()
-    route_name, route = next(
-        (rpc, item)
-        for family_routes in HTTP_ROUTES.values()
-        for rpc, item in family_routes.items()
-        if item["streaming"]
-    )
+    route_name = "acyclic.stream.v2.StreamService/Follow"
+    route = HTTP_ROUTES["stream"][route_name]
     family = next(family for family, routes in HTTP_ROUTES.items() if route_name in routes)
     response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
     timeouts: list[object] = []
@@ -438,12 +468,8 @@ def test_http_stream_fixture_closes_response_when_cancelled() -> None:
 
 def test_http_stream_fixture_closes_once_and_client_close_cancels_active_stream() -> None:
     client = _fixture_client()
-    route_name, route = next(
-        (rpc, item)
-        for family_routes in HTTP_ROUTES.values()
-        for rpc, item in family_routes.items()
-        if item["streaming"]
-    )
+    route_name = "acyclic.stream.v2.StreamService/Follow"
+    route = HTTP_ROUTES["stream"][route_name]
     response = _HttpFixtureResponse(b"{}\n", url=client._http_base + route["path"])
     client._open_http = lambda _request, **_kwargs: response
 
@@ -520,12 +546,8 @@ def test_http_body_read_failure_closes_response_and_http_error_body() -> None:
     asyncio.run(run_unary_failure())
     assert error_file.closed
 
-    stream_name, stream_route = next(
-        (rpc, item)
-        for family_routes in HTTP_ROUTES.values()
-        for rpc, item in family_routes.items()
-        if item["streaming"]
-    )
+    stream_name = "acyclic.stream.v2.StreamService/Follow"
+    stream_route = HTTP_ROUTES["stream"][stream_name]
     stream_response = ReadFailureResponse(
         status=503,
         url=client._http_base + stream_route["path"],

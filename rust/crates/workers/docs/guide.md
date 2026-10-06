@@ -61,3 +61,14 @@ The authoritative route list is [`acyclic_workers::HTTP_ROUTES`](/rust/crates/wo
 are not automatically retried. A successful HTTP invocation is ambiguous from
 the caller's point of view; durable job acceptance is the separate operation
 that creates a retained retry contract.
+
+<!-- acyclic-guide-scenario: workers-publish-roundtrip -->
+```rust
+// capability: supported
+use acyclic_workers::{validate_publish, wire};
+use sha2::{Digest, Sha256};
+
+let module = "export default { fetch() { return new Response('ok') } }";
+let request = wire::PublishVersionRequest { javascript_module: module.as_bytes().to_vec(), expected_sha256: Sha256::digest(module.as_bytes()).to_vec(), idempotency_key: "publish-example-v1".into() };
+validate_publish(&request)?;
+```

@@ -14,12 +14,26 @@ pub enum GuideProjectionMode {
     Remote,
 }
 
+/// Stable binding between one executable scenario and its authored guide
+/// fence. The ordinal is one-based and counts every fenced block in the
+/// Markdown file, regardless of language. The marker must appear immediately
+/// before that fence so a moved or substituted example cannot qualify by
+/// ordinal alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideFenceSpec {
+    pub guide_path: &'static str,
+    pub fence_ordinal: u32,
+    pub fence_language: &'static str,
+    pub marker: &'static str,
+}
+
 /// A Rust-owned guide scenario projected onto one generated language package.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GuideProjection {
     pub scenario_id: &'static str,
     pub family: &'static str,
     pub source: &'static str,
+    pub guide: GuideFenceSpec,
     pub operation: &'static str,
     pub language: Language,
     pub mode: GuideProjectionMode,
@@ -124,36 +138,72 @@ pub struct GuideEmbeddedScenarioSpec {
 }
 
 /// The six guide families with a generated remote or native facade.
-pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str); 6] = [
+pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str, GuideFenceSpec); 6] = [
     (
         filesystem_scenarios::SCENARIO_ID,
         "filesystem",
         filesystem_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/filesystem/docs/quickstart.md",
+            fence_ordinal: 3,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: filesystem-mounted-workspace -->",
+        },
     ),
     (
         harness_scenarios::SCENARIO_ID,
         "harness",
         harness_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/harness/docs/quickstart.md",
+            fence_ordinal: 3,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: harness-admission-recovery-cancel -->",
+        },
     ),
     (
         inference_scenarios::SCENARIO_ID,
         "inference",
         inference_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/inference/docs/guide.md",
+            fence_ordinal: 3,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: inference-run-watch-roundtrip -->",
+        },
     ),
     (
         machines_scenarios::SCENARIO_ID,
         "machines",
         machines_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/machines/docs/guide.md",
+            fence_ordinal: 3,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: machines-simulated-lifecycle -->",
+        },
     ),
     (
         objects_scenarios::SCENARIO_ID,
         "objects",
         objects_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/objects/docs/guide.md",
+            fence_ordinal: 2,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: objects-memory-put-get -->",
+        },
     ),
     (
         workers_scenarios::SCENARIO_ID,
         "workers",
         workers_scenarios::SOURCE,
+        GuideFenceSpec {
+            guide_path: "rust/crates/workers/docs/guide.md",
+            fence_ordinal: 2,
+            fence_language: "rust",
+            marker: "<!-- acyclic-guide-scenario: workers-publish-roundtrip -->",
+        },
     ),
 ];
 
@@ -449,11 +499,12 @@ fn workers_module_digest() -> String {
 /// Embedded behavior remains in the Rust projection, which calls the native
 /// provider APIs in the source scenario.
 pub fn project(scenario_id: &'static str, language: Language) -> Option<GuideProjection> {
-    let (_, family, source) = GUIDE_PROJECTION_SCENARIOS
+    let (_, family, source, guide) = GUIDE_PROJECTION_SCENARIOS
         .iter()
-        .find(|(id, _, _)| *id == scenario_id)?;
+        .find(|(id, _, _, _)| *id == scenario_id)?;
     let family = *family;
     let source = *source;
+    let guide = *guide;
     let (module, version) = package_module(family)?;
     let (service, method, request, remote_operation_name) = remote_operation(family)?;
     let operation = if family == "harness" {
@@ -1174,6 +1225,7 @@ echo $response->serializeToJsonString(), PHP_EOL;"#,
         scenario_id,
         family,
         source,
+        guide,
         operation,
         language,
         mode: if matches!(language, Language::Rust)
@@ -1194,7 +1246,7 @@ echo $response->serializeToJsonString(), PHP_EOL;"#,
 pub fn all() -> Vec<GuideProjection> {
     GUIDE_PROJECTION_SCENARIOS
         .iter()
-        .flat_map(|(scenario_id, _, _)| {
+        .flat_map(|(scenario_id, _, _, _)| {
             Language::ALL
                 .into_iter()
                 .filter_map(|language| project(scenario_id, language))
@@ -1211,6 +1263,7 @@ pub fn rendered(projection: GuideProjection) -> RenderedSnippet {
             title: projection.operation,
             language: projection.language,
             source: projection.source,
+            guide: Some(projection.guide),
             validation: ValidationReceipt {
                 level: ValidationLevel::Rendered,
                 status: ValidationStatus::NotRun,
@@ -1240,10 +1293,11 @@ mod tests {
             projections.len(),
             GUIDE_PROJECTION_SCENARIOS.len() * Language::ALL.len()
         );
-        for (scenario_id, _, source) in GUIDE_PROJECTION_SCENARIOS {
+        for (scenario_id, _, source, guide) in GUIDE_PROJECTION_SCENARIOS {
             for language in Language::ALL {
                 let projection = project(scenario_id, language).expect("guide projection");
                 assert_eq!(projection.source, source);
+                assert_eq!(projection.guide, guide);
                 assert!(!projection.package.package_name.is_empty());
                 assert!(!projection.package.artifact_path.is_empty());
                 assert!(!projection.qualification.install.is_empty());
@@ -1273,12 +1327,28 @@ mod tests {
 
     #[test]
     fn rust_projection_is_the_scenario_source() {
-        for (scenario_id, _, _) in GUIDE_PROJECTION_SCENARIOS {
+        for (scenario_id, _, _, _) in GUIDE_PROJECTION_SCENARIOS {
             let projection = project(scenario_id, Language::Rust).expect("Rust projection");
             assert_eq!(
                 projection.code,
                 rust_body(scenario_id).expect("Rust scenario body")
             );
+        }
+    }
+
+    #[test]
+    fn rust_and_typescript_pairs_share_explicit_guide_fences() {
+        assert_eq!(GUIDE_PROJECTION_SCENARIOS.len(), 6);
+        for (scenario_id, _, _, guide) in GUIDE_PROJECTION_SCENARIOS {
+            assert!(guide.guide_path.ends_with(".md"));
+            assert_eq!(guide.fence_language, "rust");
+            assert!(guide.fence_ordinal > 0);
+            assert!(guide.marker.contains(scenario_id));
+            let rust = project(scenario_id, Language::Rust).expect("Rust projection");
+            let typescript = project(scenario_id, Language::TypeScript)
+                .expect("TypeScript projection");
+            assert_eq!(rust.guide, guide);
+            assert_eq!(typescript.guide, guide);
         }
     }
 

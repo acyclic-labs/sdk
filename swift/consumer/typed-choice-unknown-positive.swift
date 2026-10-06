@@ -10,3 +10,18 @@ func checkUnknownChoice() {
     fatalError("expected unknown raw arm")
   }
 }
+
+@main
+struct TypedChoiceUnknownFixture {
+  static func main() {
+    checkUnknownChoice()
+
+    guard let digest = Sha256Digest(Data(repeating: 7, count: 32)) else {
+      fatalError("valid digest was rejected")
+    }
+    precondition(
+      Image(ImmutableReferenceChoice: .ManagedDigest(digest)) != nil
+    )
+    precondition(Image() == nil)
+  }
+}

@@ -1,20 +1,52 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
+use futures::FutureExt;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
+use std::sync::{Arc, Mutex};
+
+#[cfg(not(target_arch = "wasm32"))]
+type SharedHandshake =
+    futures::future::Shared<futures::future::BoxFuture<'static, Result<bool, Arc<Error>>>>;
+#[cfg(target_arch = "wasm32")]
+type SharedHandshake = futures::future::Shared<
+    futures::future::LocalBoxFuture<'static, Result<bool, Arc<Error>>>,
+>;
+
+#[derive(Default)]
+struct HandshakeSlot {
+    next_generation: u64,
+    current: Option<(u64, SharedHandshake)>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<Error>>> + Send + 'static,
+{
+    future.boxed().shared()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn share_handshake<F>(future: F) -> SharedHandshake
+where
+    F: std::future::Future<Output = Result<bool, Arc<Error>>> + 'static,
+{
+    future.boxed_local().shared()
+}
 
 /// Error reported by the Workers HTTP client while configuring, encoding, or
 /// sending a canonical request.
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     /// The endpoint, credential, response bound, request path, or request body is invalid.
     #[error("invalid HTTP client configuration or request")]
     InvalidArgument,
     /// Network failure.
     #[error(transparent)]
-    Transport(#[from] reqwest::Error),
+    Transport(Arc<reqwest::Error>),
     /// The response exceeded the configured byte bound before decoding.
     #[error("HTTP response exceeds configured bound")]
     ResponseTooLarge,
@@ -31,6 +63,12 @@ pub enum Error {
     },
 }
 
+impl From<reqwest::Error> for Error {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Transport(Arc::new(error))
+    }
+}
+
 /// Typed Workers v1 HTTP operations with bearer authentication and bounded responses.
 ///
 /// Requests and responses are encoded from [`crate::FILE_DESCRIPTOR_SET`], so
@@ -43,6 +81,7 @@ pub struct Client {
     token: String,
     maximum: usize,
     descriptors: DescriptorPool,
+    handshake: Arc<Mutex<HandshakeSlot>>,
 }
 
 impl Client {
@@ -88,7 +127,7 @@ impl Client {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let builder = Transport::builder();
+        let builder = Transport::builder().timeout(std::time::Duration::from_secs(30));
         #[cfg(not(target_arch = "wasm32"))]
         let builder = {
             let mut builder = builder.redirect(reqwest::redirect::Policy::none());
@@ -134,6 +173,7 @@ impl Client {
             maximum: maximum_response_bytes,
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
+            handshake: Arc::new(Mutex::new(HandshakeSlot::default())),
         })
     }
 
@@ -143,6 +183,44 @@ impl Client {
     /// the endpoint without sending an application operation. Authentication
     /// failures and identity mismatches remain terminal errors.
     pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        let (generation, shared) = {
+            let mut slot = self
+                .handshake
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some((generation, shared)) = slot.current.as_ref() {
+                (*generation, shared.clone())
+            } else {
+                let generation = slot.next_generation;
+                slot.next_generation = slot.next_generation.wrapping_add(1);
+                let client = self.clone();
+                let shared = share_handshake(async move {
+                    client.perform_handshake().await.map_err(Arc::new)
+                });
+                slot.current = Some((generation, shared.clone()));
+                (generation, shared)
+            }
+        };
+        match shared.await {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                let mut slot = self
+                    .handshake
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if slot
+                    .current
+                    .as_ref()
+                    .is_some_and(|(current, _)| *current == generation)
+                {
+                    slot.current = None;
+                }
+                Err(error.as_ref().clone())
+            }
+        }
+    }
+
+    async fn perform_handshake(&self) -> Result<bool, Error> {
         use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
         let family = BindingFamily::Workers;
         let version = control::control_protocol_version(family);

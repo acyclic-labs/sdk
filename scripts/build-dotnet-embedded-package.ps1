@@ -75,21 +75,6 @@ if (-not $PackageOnly -and -not $All) {
   }
 }
 
-# A release workflow may stage one RID per matrix job into a shared native root.
-# Reuse only a provenance manifest that is already tied to this exact Rust
-# closure; the final package path still requires all eight records.
-$existingManifest = $null
-if (-not $PackageOnly -and -not $All) {
-  $existingManifestPath = Join-Path $nativeRoot 'native-manifest.json'
-  if (Test-Path -LiteralPath $existingManifestPath -PathType Leaf) {
-    $existingManifest = Get-VerifiedEmbeddedNativeManifest `
-      -Repository $root `
-      -NativeRoot $nativeRoot `
-      -ManifestPath $existingManifestPath `
-      -AllowPartial
-  }
-}
-
 if ($PackageOnly) {
   $providedManifestPath = Join-Path $nativeRoot 'native-manifest.json'
   if (-not (Test-Path -LiteralPath $providedManifestPath -PathType Leaf)) {
@@ -112,6 +97,12 @@ if ($PackageOnly) {
   } elseif ($providedRecords.Count -ne $targets.Count) {
     throw "PackageOnly expected $($targets.Count) native provenance records, found $($providedRecords.Count)"
   }
+  # PackageOnly does not rebuild the producer assets, so carry the verified
+  # records forward into the source-only receipt and the copied native
+  # manifest. Without this assignment SourceOnly reaches its copy loop with
+  # an empty local record set and cannot prove the staged library bytes match
+  # the producer output.
+  $records = @($providedRecords)
   foreach ($targetName in $targets) {
     $spec = $targetMap[$targetName]
     $installed = Join-Path (Join-Path $nativeRoot $spec.Rid) $spec.File
@@ -265,17 +256,6 @@ if ($existingManifest) {
   )
 }
 
-if ($existingManifest) {
-  $merged = @($existingManifest.Manifest.assets) + @($records)
-  $records = @(
-    foreach ($targetName in $targetMap.Keys) {
-      $matches = @($merged | Where-Object { $_.rust_target -eq $targetName })
-      if ($matches.Count -gt 1) { $matches[-1] }
-      elseif ($matches.Count -eq 1) { $matches[0] }
-    }
-  )
-}
-
 Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
 
 $nativeManifest = [ordered]@{
@@ -326,6 +306,16 @@ if ($SourceOnly) {
     $producerHeaderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $producerHeaderPath).Hash.ToLowerInvariant()
     if ($producerHeaderHash -ne $headerHash) {
       throw 'Source-only cbindgen header differs from the native producer header'
+    }
+  }
+  if ($PackageOnly) {
+    if (-not $providedManifest.abi_header) {
+      throw 'Source-only producer native-manifest provenance is missing abi_header'
+    }
+    if ([string]$providedManifest.abi_header.path -ne 'abi/acyclic_embedded_prototype.h' -or
+        ([string]$providedManifest.abi_header.sha256).ToLowerInvariant() -ne $headerHash -or
+        [int64]$providedManifest.abi_header.bytes -ne [int64]$headerBytes) {
+      throw 'Source-only cbindgen header differs from producer native-manifest provenance'
     }
   }
 

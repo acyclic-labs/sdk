@@ -10,9 +10,10 @@ import { MACHINES_NATIVE_COMPANION_TARGETS } from "./generated-client.js";
 /** mTLS material passed to the Rust-owned native Machines bridge. */
 export interface NativeMachinesOptions {
   readonly endpoint: string;
-  readonly caCertificate: string;
-  readonly certificate: string;
-  readonly privateKey: string;
+  readonly token?: string;
+  readonly caCertificate?: string;
+  readonly certificate?: string;
+  readonly privateKey?: string;
 }
 
 interface NativeMachinesClient {

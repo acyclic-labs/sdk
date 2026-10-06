@@ -40,6 +40,7 @@
     {
       "name": "wasm-bindings",
       "packages": [
+        { "package": "acyclic-sdk", "target": "wasm32-unknown-unknown", "features": [], "default_features": true },
         { "package": "acyclic-fs-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
         { "package": "acyclic-harness", "target": "wasm32-unknown-unknown", "features": ["wasm"], "default_features": false },
         { "package": "acyclic-inference-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },

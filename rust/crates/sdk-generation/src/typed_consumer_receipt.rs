@@ -1,0 +1,340 @@
+//! Fail-closed validation for generated language typed-consumer receipts.
+//!
+//! A producer manifest proves that files came from the Rust generation run;
+//! this receipt proves that a generated typed consumer was actually executed.
+//! The two pieces are deliberately separate so a package containing only
+//! protobuf JSON tables or generated files cannot satisfy qualification.
+
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+pub const SCHEMA: &str = "acyclic.sdk.typed-consumer-receipt.v1";
+
+/// Assertions required for a target whose Rust catalog declares full gRPC
+/// output. HTTP/OpenAPI-only targets are intentionally excluded by the caller.
+pub const REQUIRED_ASSERTIONS: &[&str] = &[
+    "field-identities",
+    "presence-oneof",
+    "bytes",
+    "uint64",
+    "enums",
+    "rpc-stream-signatures",
+];
+
+/// Return whether the target needs the generated typed-consumer gate.
+///
+/// The wire kind comes from the Rust-owned language catalog. A target that is
+/// explicitly HTTP-only has no protobuf typed consumer to qualify here.
+pub fn requires_typed_consumer(wire_kind: &str, remote_level: &str) -> bool {
+    wire_kind == "protobuf-grpc" && remote_level == "full-grpc"
+}
+
+/// Validate one producer-owned typed-consumer receipt and all files it names.
+///
+/// The output root is the producer's staged output directory. The receipt must
+/// bind its generated source, command output, and authority identities to the
+/// exact output tree and generation inputs supplied by the Rust orchestrator.
+pub fn verify_file(
+    receipt_path: &Path,
+    output_root: &Path,
+    expected_target: &str,
+    expected_source_revision: &str,
+    expected_model_digest: &str,
+) -> Result<Value, String> {
+    let bytes = fs::read(receipt_path)
+        .map_err(|error| format!("read typed-consumer receipt {}: {error}", receipt_path.display()))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse typed-consumer receipt {}: {error}", receipt_path.display()))?;
+    verify_value(
+        &value,
+        output_root,
+        expected_target,
+        expected_source_revision,
+        expected_model_digest,
+    )?;
+    Ok(value)
+}
+
+pub fn verify_value(
+    receipt: &Value,
+    output_root: &Path,
+    expected_target: &str,
+    expected_source_revision: &str,
+    expected_model_digest: &str,
+) -> Result<(), String> {
+    if receipt.get("schema").and_then(Value::as_str) != Some(SCHEMA) {
+        return Err("typed-consumer receipt has an unsupported schema".into());
+    }
+    if receipt.get("target").and_then(Value::as_str) != Some(expected_target) {
+        return Err("typed-consumer receipt target differs from the producer target".into());
+    }
+    require_identity(receipt, "source_revision", expected_source_revision)?;
+    require_identity(receipt, "source_digest", expected_model_digest)?;
+    require_identity(receipt, "rust_model_digest", expected_model_digest)?;
+
+    let generated = receipt
+        .get("generated_consumer")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "typed-consumer receipt has no generated_consumer object".to_owned())?;
+    let generated_path = relative_file(generated, "path", "generated consumer")?;
+    if generated_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "json" | "yaml" | "yml")
+        })
+    {
+        return Err("generated_consumer.path points to a data projection, not typed source".into());
+    }
+    require_object_identity(generated, "source_revision", expected_source_revision)?;
+    require_object_identity(generated, "source_digest", expected_model_digest)?;
+    verify_generated_source(
+        &output_root.join(&generated_path),
+        required_sha256(generated, "sha256", "generated consumer")?,
+    )?;
+
+    let command = receipt
+        .get("command")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "typed-consumer receipt has no command object".to_owned())?;
+    if command.get("executed").and_then(Value::as_bool) != Some(true)
+        || command.get("exit_code").and_then(Value::as_i64) != Some(0)
+    {
+        return Err("typed-consumer command did not execute successfully".into());
+    }
+    let argv = command
+        .get("argv")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "typed-consumer command has no argv".to_owned())?;
+    if argv.is_empty() || argv.iter().any(|part| part.as_str().is_none_or(str::is_empty)) {
+        return Err("typed-consumer command argv is empty or contains a non-string".into());
+    }
+    require_object_identity(command, "source_revision", expected_source_revision)?;
+    require_object_identity(command, "source_digest", expected_model_digest)?;
+    let stdout_path = relative_file(command, "stdout_path", "typed-consumer stdout")?;
+    let stderr_path = relative_file(command, "stderr_path", "typed-consumer stderr")?;
+    let stdout_hash = required_sha256(command, "stdout_sha256", "typed-consumer stdout")?;
+    let stderr_hash = required_sha256(command, "stderr_sha256", "typed-consumer stderr")?;
+    verify_file_hash(&output_root.join(&stdout_path), stdout_hash, "typed-consumer stdout")?;
+    verify_file_hash(&output_root.join(&stderr_path), stderr_hash, "typed-consumer stderr")?;
+
+    let assertions = receipt
+        .get("assertions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "typed-consumer receipt has no assertions array".to_owned())?;
+    let mut observed = BTreeSet::new();
+    for assertion in assertions {
+        let object = assertion
+            .as_object()
+            .ok_or_else(|| "typed-consumer assertion is not an object".to_owned())?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "typed-consumer assertion has no id".to_owned())?;
+        if !REQUIRED_ASSERTIONS.contains(&id) || !observed.insert(id) {
+            return Err(format!("typed-consumer assertion is unknown or duplicated: {id}"));
+        }
+        if object.get("status").and_then(Value::as_str) != Some("passed")
+            || object.get("executed").and_then(Value::as_bool) != Some(true)
+            || object.get("source_bound").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(format!("typed-consumer assertion did not pass: {id}"));
+        }
+        let evidence = object
+            .get("evidence")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("typed-consumer assertion has no evidence: {id}"))?;
+        if evidence.get("runtime").and_then(Value::as_bool) != Some(true) {
+            return Err(format!("typed-consumer assertion lacks runtime evidence: {id}"));
+        }
+        let evidence_generated_path = relative_file(
+            evidence,
+            "generated_consumer_path",
+            "typed-consumer assertion evidence",
+        )?;
+        let evidence_stdout_path = relative_file(
+            evidence,
+            "stdout_path",
+            "typed-consumer assertion evidence",
+        )?;
+        let evidence_stderr_path = relative_file(
+            evidence,
+            "stderr_path",
+            "typed-consumer assertion evidence",
+        )?;
+        if evidence_generated_path != generated_path
+            || evidence_stdout_path != stdout_path
+            || evidence_stderr_path != stderr_path
+        {
+            return Err(format!(
+                "typed-consumer assertion evidence is detached from generated source and command output: {id}"
+            ));
+        }
+    }
+    let missing = REQUIRED_ASSERTIONS
+        .iter()
+        .copied()
+        .filter(|id| !observed.contains(id))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(format!("typed-consumer assertions are missing: {}", missing.join(", ")));
+    }
+    Ok(())
+}
+
+fn require_identity(value: &Value, key: &str, expected: &str) -> Result<(), String> {
+    if value.get(key).and_then(Value::as_str) != Some(expected) {
+        return Err(format!("typed-consumer receipt {key} is not bound to the Rust generation"));
+    }
+    Ok(())
+}
+
+fn require_object_identity(
+    value: &serde_json::Map<String, Value>,
+    key: &str,
+    expected: &str,
+) -> Result<(), String> {
+    if value.get(key).and_then(Value::as_str) != Some(expected) {
+        return Err(format!("typed-consumer receipt {key} is not bound to the Rust generation"));
+    }
+    Ok(())
+}
+
+fn relative_file(
+    value: &serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<PathBuf, String> {
+    let text = value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| format!("{label} has no {key}"))?;
+    let path = Path::new(text);
+    if path.is_absolute()
+        || text.starts_with('/')
+        || text.starts_with('\\')
+        || text.contains(':')
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(format!("{label} path is not a safe relative file: {text}"));
+    }
+    Ok(path.to_owned())
+}
+
+fn required_sha256<'a>(
+    value: &'a serde_json::Map<String, Value>,
+    key: &str,
+    label: &str,
+) -> Result<&'a str, String> {
+    let digest = value
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} has no {key}"))?;
+    if !is_sha256(digest) {
+        return Err(format!("{label} {key} is not a SHA-256 digest"));
+    }
+    Ok(digest)
+}
+
+fn verify_file_hash(path: &Path, expected: &str, label: &str) -> Result<(), String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("read {label} {}: {error}", path.display()))?;
+    let actual = format!("sha256:{:x}", Sha256::digest(bytes));
+    if actual != expected {
+        return Err(format!(
+            "{label} hash differs: expected {expected}, got {actual}"
+        ));
+    }
+    Ok(())
+}
+
+fn verify_generated_source(path: &Path, expected: &str) -> Result<(), String> {
+    let bytes = fs::read(path)
+        .map_err(|error| format!("read generated consumer {}: {error}", path.display()))?;
+    let actual = format!("sha256:{:x}", Sha256::digest(&bytes));
+    if actual != expected {
+        return Err(format!(
+            "generated consumer hash differs: expected {expected}, got {actual}"
+        ));
+    }
+    let source = std::str::from_utf8(&bytes)
+        .map_err(|_| "generated consumer is not UTF-8 source".to_owned())?;
+    if source.trim().is_empty() {
+        return Err("generated consumer source is empty".into());
+    }
+    if serde_json::from_str::<Value>(source).is_ok() {
+        return Err("generated consumer is a JSON document, not typed source".into());
+    }
+    Ok(())
+}
+
+fn is_sha256(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return false;
+    };
+    hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn http_targets_do_not_require_grpc_typed_consumers() {
+        assert!(!requires_typed_consumer("json-http", "http-projection"));
+        assert!(!requires_typed_consumer("none", "none"));
+        assert!(requires_typed_consumer("protobuf-grpc", "full-grpc"));
+    }
+
+    #[test]
+    fn required_assertions_are_unique_and_cover_the_gate() {
+        let unique = REQUIRED_ASSERTIONS.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(unique.len(), REQUIRED_ASSERTIONS.len());
+        for required in [
+            "field-identities",
+            "presence-oneof",
+            "bytes",
+            "uint64",
+            "enums",
+            "rpc-stream-signatures",
+        ] {
+            assert!(unique.contains(required));
+        }
+    }
+
+    #[test]
+    fn json_only_generated_consumer_is_rejected() {
+        let receipt = json!({
+            "schema": SCHEMA,
+            "target": "fixture",
+            "source_revision": "a".repeat(40),
+            "source_digest": "b".repeat(64),
+            "rust_model_digest": "b".repeat(64),
+            "generated_consumer": {
+                "path": "package.json",
+                "sha256": "sha256:".to_owned() + &"c".repeat(64),
+                "source_revision": "a".repeat(40),
+                "source_digest": "b".repeat(64)
+            }
+        });
+        let error = verify_value(
+            &receipt,
+            Path::new("."),
+            "fixture",
+            &"a".repeat(40),
+            &"b".repeat(64),
+        )
+        .expect_err("JSON projections must not qualify as typed consumers");
+        assert!(error.contains("data projection"));
+    }
+}

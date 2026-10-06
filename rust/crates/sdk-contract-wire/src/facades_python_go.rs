@@ -976,6 +976,56 @@ fn go_rpc_oneof_arm_name(response_name: &str, oneof: &str, field: &str) -> Strin
     )
 }
 
+fn go_request_oneof_choice_name(request_name: &str, oneof: &str) -> String {
+    format!("{}{}Choice", request_name, pascal_case(oneof))
+}
+
+fn go_request_oneof_arm_name(request_name: &str, oneof: &str, field: &str) -> String {
+    format!(
+        "{}{}{}Choice",
+        request_name,
+        pascal_case(oneof),
+        pascal_case(field)
+    )
+}
+
+fn go_request_oneof_payload_type(field: &ResolvedRequestField) -> String {
+    // Request fields use a pointer to represent oneof presence.  The choice
+    // itself carries the selected value, so remove exactly that presence
+    // pointer from the public request field type.
+    let field_type = go_rpc_field_type(field);
+    field_type
+        .strip_prefix('*')
+        .unwrap_or(field_type.as_str())
+        .to_owned()
+}
+
+fn go_request_oneof_definitions(
+    request_name: &str,
+    groups: &std::collections::BTreeMap<String, Vec<&ResolvedRequestField>>,
+) -> String {
+    let mut output = String::new();
+    for (oneof, members) in groups {
+        let choice = go_request_oneof_choice_name(request_name, oneof);
+        output.push_str(&format!(
+            "type {choice} interface {{\n\tis{choice}()\n\tTag() string\n}}\n\n",
+            choice = choice,
+        ));
+        for field in members {
+            let arm = go_request_oneof_arm_name(request_name, oneof, &field.field);
+            let payload = go_request_oneof_payload_type(field);
+            output.push_str(&format!(
+                "type {arm} struct {{ Value {payload} }}\n\nfunc (*{arm}) is{choice}() {{}}\nfunc (*{arm}) Tag() string {{ return {tag:?} }}\n\n",
+                arm = arm,
+                choice = choice,
+                payload = payload,
+                tag = field.json_name,
+            ));
+        }
+    }
+    output
+}
+
 fn go_oneof_payload_type_for_response(field: &ResolvedRequestField) -> String {
     go_response_field_type(field)
 }
@@ -992,7 +1042,7 @@ fn go_rpc_oneof_definitions(
             choice = choice,
         ));
         for field in members {
-            let arm = go_rpc_oneof_arm_name(response_name, oneof, &field.json_name);
+            let arm = go_rpc_oneof_arm_name(response_name, oneof, &field.field);
             let payload = go_oneof_payload_type_for_response(field);
             output.push_str(&format!(
                 "type {arm} struct {{ Value {payload} }}\n\nfunc (*{arm}) is{choice}() {{}}\nfunc (*{arm}) Tag() string {{ return {tag:?} }}\n\n",
@@ -2605,7 +2655,31 @@ fn python_all_rpc_models() -> String {
                 python_descriptor_field_type(field)
             ));
         }
-        output.push_str("\n    @classmethod\n    def from_wire(cls, message):\n        if message is None:\n            raise ValueError(\"request must be present\")\n        value = cls()\n        object.__setattr__(value, \"_wire\", message)\n        return value\n\n    def to_wire(self):\n        if self._wire is not None:\n            return self._wire\n");
+        let oneof_groups = python_request_oneof_groups(&fields);
+        if !oneof_groups.is_empty() {
+            output.push_str("\n    def __post_init__(self):\n");
+            for (oneof, members) in &oneof_groups {
+                let values = members
+                    .iter()
+                    .map(|member| format!("self.{member}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                output.push_str(&format!(
+                    "        if sum(value is not None for value in ({values},)) > 1:\n            raise ValueError({message:?})\n",
+                    values = values,
+                    message = format!("request oneof {oneof} accepts at most one arm"),
+                ));
+            }
+        }
+        output.push_str("\n    @classmethod\n    def from_wire(cls, message):\n        if message is None:\n            raise ValueError(\"request must be present\")\n        value = cls(\n");
+        for field in &fields {
+            output.push_str(&format!(
+                "            {name}={expression},\n",
+                name = python_safe_identifier(&field.field),
+                expression = python_request_from_wire_expression(field),
+            ));
+        }
+        output.push_str("        )\n        object.__setattr__(value, \"_wire\", message)\n        return value\n\n    def to_wire(self):\n        if self._wire is not None:\n            return self._wire\n");
         output.push_str(&format!(
             "        wire = {}.{}()\n",
             python_module_for_family(&method.family),
@@ -3022,7 +3096,14 @@ fn python_request_assignment(field: &ResolvedRequestField) -> String {
     };
     let semantic = field.semantic_type.as_deref().and_then(semantic_type);
     let expression = semantic
-        .map(|item| format!("{}({source})", snake_case(item.id)))
+        .map(|item| {
+            let function = snake_case(item.id);
+            if field.label == Some(FieldLabel::Repeated as i32) {
+                format!("[{function}(item) for item in {source}]")
+            } else {
+                format!("{function}({source})")
+            }
+        })
         .unwrap_or_else(|| {
             if matches!(kind, FieldType::Enum) {
                 if field.label == Some(FieldLabel::Repeated as i32) {
@@ -3065,6 +3146,69 @@ fn python_request_assignment(field: &ResolvedRequestField) -> String {
             python_proto_scalar_assignment("wire", name, &expression)
         )
     }
+}
+
+fn python_request_from_wire_expression(field: &ResolvedRequestField) -> String {
+    let wire = python_proto_field_expression("message", &field.field);
+    let Some(kind) = field
+        .wire_type
+        .and_then(|kind| FieldType::try_from(kind).ok())
+    else {
+        return "None".to_owned();
+    };
+    let semantic = field.semantic_type.as_deref().and_then(semantic_type);
+    let expression = if let Some(item) = semantic {
+        let function = snake_case(item.id);
+        if field.label == Some(FieldLabel::Repeated as i32) {
+            format!("tuple({function}(item) for item in {wire})")
+        } else {
+            format!("{function}({wire})")
+        }
+    } else if matches!(kind, FieldType::Enum) {
+        let enum_type = python_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned());
+        if field.label == Some(FieldLabel::Repeated as i32) {
+            format!("tuple({enum_type}.from_wire(item) for item in {wire})")
+        } else {
+            format!("{enum_type}.from_wire({wire})")
+        }
+    } else if field.map_entry {
+        format!("dict({wire})")
+    } else if field.label == Some(FieldLabel::Repeated as i32) {
+        format!("tuple({wire})")
+    } else {
+        wire
+    };
+    if let Some(oneof) = field.oneof_name.as_deref().filter(|_| !field.proto3_optional) {
+        format!(
+            "{expression} if message.WhichOneof({oneof:?}) == {field:?} else None",
+            expression = expression,
+            oneof = oneof,
+            field = field.field,
+        )
+    } else if descriptor_has_presence(field) {
+        format!(
+            "{expression} if message.HasField({field:?}) else None",
+            expression = expression,
+            field = field.field,
+        )
+    } else {
+        expression
+    }
+}
+
+fn python_request_oneof_groups(
+    fields: &[&ResolvedRequestField],
+) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut groups = std::collections::BTreeMap::new();
+    for field in fields {
+        if let Some(oneof) = field.oneof_name.as_deref().filter(|_| !field.proto3_optional) {
+            groups
+                .entry(oneof.to_owned())
+                .or_insert_with(Vec::new)
+                .push(python_safe_identifier(&field.field));
+        }
+    }
+    groups
 }
 
 fn python_public_nested_route_models() -> String {
@@ -4135,7 +4279,9 @@ fn go_all_rpc_models() -> String {
         let output_wire = go_message_wire_type(&method.family, &method.output_message);
         let request_fields = go_root_fields(&requests, method, &method.input_message);
         let response_fields = go_root_fields(&responses, method, &method.output_message);
+        let request_oneof_groups = response_oneof_groups(request_fields.iter().copied());
         let oneof_groups = response_oneof_groups(response_fields.iter().copied());
+        output.push_str(&go_request_oneof_definitions(&request_name, &request_oneof_groups));
         output.push_str(&go_rpc_oneof_definitions(&response_name, &oneof_groups));
         output.push_str(&format!(
             "type {request_name} struct {{\n",
@@ -4150,19 +4296,49 @@ fn go_all_rpc_models() -> String {
             output.push_str(&input);
             output.push('\n');
             for field in &request_fields {
+                if field.oneof_index.is_some() && !field.proto3_optional {
+                    continue;
+                }
                 output.push_str(&format!(
                     "\t{} {}\n",
                     go_rpc_field_identifier(field),
                     go_rpc_field_type(field)
                 ));
             }
+            for oneof in request_oneof_groups.keys() {
+                output.push_str(&format!(
+                    "\t{} {}\n",
+                    pascal_case(oneof),
+                    go_request_oneof_choice_name(&request_name, oneof)
+                ));
+            }
+            if !request_oneof_groups.is_empty() {
+                output.push_str("\tunknown_fields []byte\n");
+            }
         }
         output.push_str("}\n\n");
-        output.push_str(&format!(
-            "func {request_name}FromWire(message {input}) ({request_name}, error) {{\n\tif message == nil {{ return {request_name}{{}}, fmt.Errorf(\"request must be present\") }}\n\treturn {request_name}{{wire: message}}, nil\n}}\n\n",
-            request_name = request_name,
-            input = input,
-        ));
+        if request_oneof_groups.is_empty() {
+            output.push_str(&format!(
+                "func {request_name}FromWire(message {input}) ({request_name}, error) {{\n\tif message == nil {{ return {request_name}{{}}, fmt.Errorf(\"request must be present\") }}\n\treturn {request_name}{{wire: message}}, nil\n}}\n\n",
+                request_name = request_name,
+                input = input,
+            ));
+        } else {
+            output.push_str(&format!(
+                "func {request_name}FromWire(message {input}) ({request_name}, error) {{\n\tif message == nil {{ return {request_name}{{}}, fmt.Errorf(\"request must be present\") }}\n\tresult := {request_name}{{wire: message, unknown_fields: append([]byte(nil), message.ProtoReflect().GetUnknown()...)}}\n",
+                request_name = request_name,
+                input = input,
+            ));
+            for (oneof, members) in &request_oneof_groups {
+                output.push_str(&go_request_oneof_from_wire(
+                    &request_name,
+                    method,
+                    oneof,
+                    members,
+                ));
+            }
+            output.push_str("\treturn result, nil\n}\n\n");
+        }
         output.push_str(&format!(
             "func (request {request_name}) ToWire() ({input}, error) {{\n",
             request_name = request_name,
@@ -4181,11 +4357,27 @@ fn go_all_rpc_models() -> String {
                 input_trim = input.trim_start_matches('*')
             ));
             for field in &request_fields {
+                if field.oneof_index.is_some() && !field.proto3_optional {
+                    continue;
+                }
                 output.push_str(&go_rpc_assignment(field));
+            }
+            for (oneof, members) in &request_oneof_groups {
+                output.push_str(&go_request_oneof_assignment(
+                    &request_name,
+                    oneof,
+                    members,
+                ));
             }
             output.push_str("\treturn wire, nil\n");
         }
         output.push_str("}\n\n");
+        if !request_oneof_groups.is_empty() {
+            output.push_str(&format!(
+                "func (request {request_name}) UnknownFields() []byte {{ return append([]byte(nil), request.unknown_fields...) }}\n\n",
+                request_name = request_name
+            ));
+        }
         if oneof_groups.is_empty() {
             output.push_str(&format!(
                 "type {response_name} struct {{ wire {output_wire} }}\n\n",
@@ -4224,7 +4416,7 @@ fn go_all_rpc_models() -> String {
                         "\t{response_name}{oneof}{field} {variant} = {value:?}\n",
                         response_name = response_name,
                         oneof = pascal_case(oneof),
-                        field = pascal_case(&field.json_name),
+                        field = pascal_case(&field.field),
                         variant = variant,
                         value = field.json_name,
                     ));
@@ -4241,17 +4433,17 @@ fn go_all_rpc_models() -> String {
                         "{}.{}_{}",
                         go_module_for_family(&method.family),
                         method.output_message.rsplit('.').next().unwrap_or(&method.output_message),
-                        go_proto_field_identifier(&field.json_name),
+                        go_proto_field_identifier(&field.field),
                     );
                     let expression = go_response_field_expression(field, "message");
-                    let arm = go_rpc_oneof_arm_name(&response_name, oneof, &field.json_name);
+                    let arm = go_rpc_oneof_arm_name(&response_name, oneof, &field.field);
                     output.push_str(&format!(
                         "\tcase *{wrapper}:\n\t\tresult.{storage_oneof} = {response_name}{constant_oneof}{field}\n\t\tresult.{storage} = {expression}\n\t\tresult.{storage_oneof}_choice = &{arm}{{Value: {expression}}}\n",
                         wrapper = wrapper,
                         storage_oneof = snake_case(oneof),
                         constant_oneof = pascal_case(oneof),
                         response_name = response_name,
-                        field = pascal_case(&field.json_name),
+                        field = pascal_case(&field.field),
                         storage = go_oneof_storage_name(field),
                         expression = expression,
                         arm = arm,
@@ -4393,7 +4585,7 @@ fn go_message_wire_type(family: &str, message: &str) -> String {
 }
 
 fn go_rpc_field_identifier(field: &ResolvedRequestField) -> String {
-    go_proto_field_identifier(&field.json_name)
+    go_proto_field_identifier(&field.field)
 }
 
 fn go_rpc_field_type(field: &ResolvedRequestField) -> String {
@@ -4563,6 +4755,171 @@ fn go_deref_if_pointer(field: &ResolvedRequestField, source: &str) -> String {
     } else {
         source.to_owned()
     }
+}
+
+fn go_request_oneof_value_expression(field: &ResolvedRequestField, source: &str) -> String {
+    let Some(kind) = field
+        .wire_type
+        .and_then(|kind| FieldType::try_from(kind).ok())
+    else {
+        return source.to_owned();
+    };
+    if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        return match item.id {
+            "machine_id" => format!("&machinesv1.MachineId{{Value: {}[:]}}", source),
+            "checkpoint_id" => format!("&machinesv1.CheckpointId{{Value: {}[:]}}", source),
+            "operation_id" => format!("&machinesv1.OperationId{{Value: {}[:]}}", source),
+            _ if item.wire_kind == WireValueKind::String => format!("string({source})"),
+            _ if item.wire_kind == WireValueKind::Bytes => {
+                if item
+                    .rules
+                    .iter()
+                    .any(|rule| matches!(rule, SemanticRule::FixedLength(_)))
+                {
+                    format!("{source}[:]")
+                } else {
+                    source.to_owned()
+                }
+            }
+            _ if item.wire_kind == WireValueKind::UnsignedInteger
+                && matches!(kind, FieldType::Uint32 | FieldType::Fixed32) =>
+            {
+                format!("uint32({source})")
+            }
+            _ if item.wire_kind == WireValueKind::UnsignedInteger
+                && matches!(kind, FieldType::Uint64 | FieldType::Fixed64) =>
+            {
+                format!("uint64({source})")
+            }
+            _ => source.to_owned(),
+        };
+    }
+    if matches!(kind, FieldType::Enum) {
+        return format!("{}({source}.Value)", go_proto_enum_type(field));
+    }
+    source.to_owned()
+}
+
+fn go_request_oneof_assignment(
+    request_name: &str,
+    oneof: &str,
+    members: &[&ResolvedRequestField],
+) -> String {
+    let oneof_pascal = pascal_case(oneof);
+    let mut output = format!(
+        "\tif request.{oneof_pascal} != nil {{\n\t\tswitch choice := request.{oneof_pascal}.(type) {{\n",
+        oneof_pascal = oneof_pascal,
+    );
+    for field in members {
+        let arm = go_request_oneof_arm_name(request_name, oneof, &field.field);
+        let module = go_module_for_family(&field.family);
+        let root = field
+            .root_message
+            .rsplit('.')
+            .next()
+            .unwrap_or(&field.root_message);
+        let wrapper = format!(
+            "{module}.{root}_{}",
+            go_rpc_field_identifier(field)
+        );
+        let expression = go_request_oneof_value_expression(field, "choice.Value");
+        output.push_str(&format!(
+            "\t\tcase *{arm}:\n\t\t\tif choice == nil {{ return nil, fmt.Errorf(\"{oneof} choice must be present\") }}\n\t\t\twire.{oneof_pascal} = &{wrapper}{{{field}: {expression}}}\n",
+            arm = arm,
+            oneof = oneof,
+            wrapper = wrapper,
+            field = go_rpc_field_identifier(field),
+            expression = expression,
+            oneof_pascal = oneof_pascal,
+        ));
+    }
+    output.push_str(&format!(
+        "\t\tdefault:\n\t\t\treturn nil, fmt.Errorf(\"{oneof} has an unsupported choice of type %T\", request.{oneof_pascal})\n\t\t}}\n\t}}\n",
+        oneof = oneof,
+        oneof_pascal = oneof_pascal,
+    ));
+    output
+}
+
+fn go_request_oneof_from_wire_value_expression(
+    field: &ResolvedRequestField,
+    source: &str,
+) -> String {
+    if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
+        if matches!(item.id, "machine_id" | "checkpoint_id" | "operation_id") {
+            let alias = go_type_name(item.rust_name);
+            return format!(
+                "func() {alias} {{ var result {alias}; copy(result[:], {source}.GetValue()); return result }}()",
+                alias = alias,
+                source = source,
+            );
+        }
+        if item.wire_kind == WireValueKind::Bytes
+            && item
+                .rules
+                .iter()
+                .any(|rule| matches!(rule, SemanticRule::FixedLength(_)))
+        {
+            let alias = go_type_name(item.rust_name);
+            return format!(
+                "func() {alias} {{ var result {alias}; copy(result[:], {source}); return result }}()",
+                alias = alias,
+                source = source,
+            );
+        }
+        if item.wire_kind != WireValueKind::Message {
+            return format!("{}({source})", go_type_name(item.rust_name));
+        }
+        return source.to_owned();
+    }
+    if matches!(
+        field
+            .wire_type
+            .and_then(|kind| FieldType::try_from(kind).ok()),
+        Some(FieldType::Enum)
+    ) {
+        let enum_type = go_enum_type(field).unwrap_or_else(|| "OpenEnumValue".to_owned());
+        return format!("{enum_type}{{Value: int32({source})}}");
+    }
+    source.to_owned()
+}
+
+fn go_request_oneof_from_wire(
+    request_name: &str,
+    method: &ResolvedRpcMethod,
+    oneof: &str,
+    members: &[&ResolvedRequestField],
+) -> String {
+    let oneof_field = pascal_case(oneof);
+    let mut output = format!(
+        "\tswitch message.Get{oneof_field}().(type) {{\n",
+        oneof_field = oneof_field,
+    );
+    for field in members {
+        let wrapper = format!(
+            "{}.{}_{}",
+            go_module_for_family(&method.family),
+            method.input_message.rsplit('.').next().unwrap_or(&method.input_message),
+            go_rpc_field_identifier(field),
+        );
+        let arm = go_request_oneof_arm_name(request_name, oneof, &field.field);
+        let raw_value = format!(
+            "message.Get{oneof_field}().(*{wrapper}).{field}",
+            oneof_field = oneof_field,
+            wrapper = wrapper,
+            field = go_rpc_field_identifier(field),
+        );
+        let value = go_request_oneof_from_wire_value_expression(field, &raw_value);
+        output.push_str(&format!(
+            "\tcase *{wrapper}:\n\t\tresult.{oneof_field} = &{arm}{{Value: {value}}}\n",
+            wrapper = wrapper,
+            oneof_field = oneof_field,
+            arm = arm,
+            value = value,
+        ));
+    }
+    output.push_str("\tdefault:\n\t}\n");
+    output
 }
 
 fn go_proto_enum_type(field: &ResolvedRequestField) -> String {
@@ -4924,7 +5281,7 @@ fn go_response_field_type(field: &ResolvedRequestField) -> String {
 }
 
 fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
-    let getter = format!("{receiver}.Get{}()", pascal_case(&field.json_name));
+    let getter = format!("{receiver}.Get{}()", pascal_case(&field.field));
     if field.map_entry {
         return getter;
     }
@@ -5035,7 +5392,7 @@ fn go_response_field_expression(field: &ResolvedRequestField, receiver: &str) ->
 }
 
 fn go_response_field_method(field: &ResolvedRequestField) -> String {
-    let name = pascal_case(&field.json_name);
+    let name = pascal_case(&field.field);
     let ty = go_response_field_type(field);
     let expression = go_response_field_expression(field, "value.wire");
     format!(
@@ -5047,11 +5404,11 @@ fn go_response_field_method(field: &ResolvedRequestField) -> String {
 }
 
 fn go_oneof_storage_name(field: &ResolvedRequestField) -> String {
-    format!("oneof_{}", snake_case(&field.json_name))
+    format!("oneof_{}", snake_case(&field.field))
 }
 
 fn go_oneof_response_field_method(field: &ResolvedRequestField, model: &str) -> String {
-    let name = pascal_case(&field.json_name);
+    let name = pascal_case(&field.field);
     let ty = go_response_field_type(field);
     let storage = go_oneof_storage_name(field);
     format!(
@@ -5302,6 +5659,7 @@ pub(super) fn render_go_type_policy_test() -> String {
 package acyclicsdk
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -5360,6 +5718,31 @@ func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
 	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
 	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil { t.Fatal("unknown oneof discriminant accepted") }
 	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
+}
+
+func TestRustOwnedRequestOneofChoiceRoundTrip(t *testing.T) {
+	request := RustObjectsObjectsPutObjectRequest{
+		Frame: &RustObjectsObjectsPutObjectRequestFrameBodyChoice{Value: []byte("payload")},
+	}
+	wire, err := request.ToWire()
+	if err != nil { t.Fatal(err) }
+	if frame, ok := wire.GetFrame().(*objectsv2.PutObjectRequest_Body); !ok || string(frame.Body) != "payload" {
+		t.Fatal("typed request oneof did not select the body arm")
+	}
+	empty, err := (RustObjectsObjectsPutObjectRequest{}).ToWire()
+	if err != nil || empty.GetFrame() != nil { t.Fatalf("absent request oneof was rejected or populated: %v", err) }
+	encoded, err := proto.Marshal(wire)
+	if err != nil { t.Fatal(err) }
+	encoded = append(encoded, []byte{0xc2, 0x3e, 0x01, 'z'}...)
+	wireWithUnknown := &objectsv2.PutObjectRequest{}
+	if err := proto.Unmarshal(encoded, wireWithUnknown); err != nil { t.Fatal(err) }
+	decoded, err := RustObjectsObjectsPutObjectRequestFromWire(wireWithUnknown)
+	if err != nil { t.Fatal(err) }
+	if !bytes.Equal(decoded.UnknownFields(), wireWithUnknown.ProtoReflect().GetUnknown()) { t.Fatal("request unknown fields were not captured") }
+	roundTrip, err := decoded.ToWire()
+	if err != nil || !bytes.Equal(roundTrip.ProtoReflect().GetUnknown(), wireWithUnknown.ProtoReflect().GetUnknown()) {
+		t.Fatal("request unknown fields were not preserved")
+	}
 }
 
 func TestRustOwnedProductionClientRoutesRejectInvalidRequests(t *testing.T) {
@@ -5821,4 +6204,40 @@ fn go_strings(values: &[&str]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!("[]string{{{}}}", values)
+}
+
+#[cfg(test)]
+mod go_projection_tests {
+    use super::*;
+
+    #[test]
+    fn protobuf_go_identifiers_use_descriptor_names_when_json_name_differs() {
+        let field = ResolvedRequestField {
+            family: "objects".into(),
+            rpc: "acyclic.objects.v2.ObjectsService/GetObject".into(),
+            root_message: "acyclic.objects.v2.GetObjectRequest".into(),
+            message_path: "acyclic.objects.v2.GetObjectRequest".into(),
+            field: "wire_name".into(),
+            number: 1,
+            json_name: "wireAlias".into(),
+            type_name: None,
+            map_entry: false,
+            wire_type: Some(FieldType::String as i32),
+            label: None,
+            oneof_index: Some(0),
+            oneof_name: Some("frame".into()),
+            proto3_optional: false,
+            semantic_type: None,
+            validation_rules: Vec::new(),
+            validation_constraints: Vec::new(),
+        };
+
+        assert_eq!(go_rpc_field_identifier(&field), "WireName");
+        assert_eq!(go_proto_field_identifier(&field.field), "WireName");
+        assert!(go_response_field_expression(&field, "message").contains("GetWireName()"));
+        assert_eq!(
+            go_request_oneof_arm_name("Request", "frame", &field.field),
+            "RequestFrameWireNameChoice"
+        );
+    }
 }

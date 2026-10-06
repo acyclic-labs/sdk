@@ -72,7 +72,7 @@ pub(crate) fn emit(source_root: &Path) -> Result<String, Error> {
         "import type { JoinOptions, JoinResult, JoinStatus, MergeConflict, MergePreparationResult, WorkCounters,\n  WorkspaceCommit, WorkspaceDeleteStatus, WorkspaceRebaseOptions, WorkspaceRebaseResult, WorkspaceRebaseStatus, WasmRawMergeConflict,\n} from \"./contracts.js\";\n\n",
     );
     output.push_str(&format!(
-        "const JOIN_STATUSES: readonly JoinStatus[] = [{}];\nconst REBASE_STATUSES: readonly WorkspaceRebaseStatus[] = [{}];\nconst COMMIT_STATUSES: readonly WorkspaceCommit[\"status\"][] = [{}];\nconst DELETE_STATUSES: readonly WorkspaceDeleteStatus[] = [{}];\nconst MERGE_PREPARATION_STATUSES: readonly string[] = [{}];\nconst GENERATION_LIMIT_FIELDS: readonly string[] = [{}];\n\n",
+        "const JOIN_STATUSES: readonly JoinStatus[] = [{}];\nconst REBASE_STATUSES: readonly WorkspaceRebaseStatus[] = [{}];\nconst COMMIT_STATUSES: readonly WorkspaceCommit[\"status\"][] = [{}];\nconst DELETE_STATUSES: readonly WorkspaceDeleteStatus[] = [{}];\nconst MERGE_PREPARATION_STATUSES: readonly string[] = [{}];\ntype GenerationLimitOptions = Pick<JoinOptions, \"maximumGenerations\" | \"maximumChanges\" | \"maximumConflicts\">;\nconst GENERATION_LIMIT_FIELDS: readonly (keyof GenerationLimitOptions)[] = [{}];\n\n",
         join, rebase, committed, delete, merge, generation_limit_fields
     ));
     output.push_str(
@@ -143,13 +143,13 @@ function positive(value: number, label: string): void {
 }
 
 function validateOptions(
-  options: JoinOptions | WorkspaceRebaseOptions,
-  fields: readonly string[],
+  options: GenerationLimitOptions,
+  fields: readonly (keyof GenerationLimitOptions)[],
   operation: string,
   validatePositive: (value: number, label: string) => void = positive,
 ): void {
-    for (const field of fields) {
-    const value = (options as unknown as Record<string, number>)[field];
+  for (const field of fields) {
+    const value = options[field];
     validatePositive(value, `maximum ${operation} ${field.replace("maximum", "").toLowerCase()}`);
   }
 }

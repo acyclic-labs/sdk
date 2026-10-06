@@ -187,10 +187,10 @@ export interface RustOwnedMethodMetadata {
 export type RustOwnedTransportKind = "grpc" | "grpc-web" | "http";
 export type RustOwnedRuntime = "native" | "browser";
 export interface RustOwnedTransportOption { readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }
-export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
+export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "bearer"; readonly credentialPolicy: "bearer-no-crlf"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly maximumMessageBytes: number; readonly maximumHttpRequestBytes: number; readonly maximumHttpResponseBytes: number; readonly requestTimeoutMillis: number; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
 export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;
 
-export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 67108864, maximumHttpRequestBytes: 67108864, maximumHttpResponseBytes: 67108864, requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
+export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", maximumMessageBytes: 67108864, maximumHttpRequestBytes: 67108864, maximumHttpResponseBytes: 67108864, requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [{ kind: "grpc-web", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
 /** Rust-owned native companion targets present in the generated package. */
 export const MACHINES_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-x64-gnu", "win32-arm64", "win32-x64"] as const;
@@ -393,9 +393,11 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
-export const RUST_OWNED_CREDENTIAL_POLICY = "mtls-files" as const;
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
 
-export function validateRustOwnedCredentialPolicy(_token: string): void {}
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (typeof token !== "string" || token.trim().length === 0 || /[\r\n]/.test(token)) throw new TypeError("invalid bearer credential");
+}
 
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
   if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) validateRustOwnedCredentialPolicy(token);

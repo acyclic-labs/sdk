@@ -11,8 +11,12 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 use acyclic_sdk_contract_wire::{
-    EmbeddedCapability as RustEmbeddedCapability, EmbeddedLanguage, embedded_capabilities,
+    EmbeddedCapability as RustEmbeddedCapability, EmbeddedLanguage, TypePolicyLanguage,
+    embedded_capabilities,
 };
+
+#[path = "typed_consumer_receipt.rs"]
+pub mod typed_consumer_receipt;
 
 pub const COMPILED_SOURCE: &str = include_str!("language_catalog.rs");
 pub const LANGUAGE_GUIDE: &str = include_str!("../guides/language-generation.md");
@@ -266,6 +270,7 @@ const CATALOG: Catalog = Catalog {
         "Verify metadata, TLS, deadlines, cancellation, retry/recovery and idempotency behavior against the Rust conformance server.",
         "Report remote-client and embedded capability separately; Filesystem and Harness embedded behavior stays in Rust native/WASM bindings.",
         "Reject a target as full SDK coverage when it only consumes the derived JSON/OpenAPI projection.",
+        "Require an acyclic.sdk.typed-consumer-receipt.v1 receipt whose executed source-bound generated typed consumer asserts field numbers, presence/oneof, bytes, uint64, enums and RPC stream signatures; generated-file existence or generic JSON-table checks alone do not count.",
     ],
     targets: &[
         Target {
@@ -2233,6 +2238,30 @@ const CATALOG: Catalog = Catalog {
     catalogued_at: "2026-10-03",
 };
 
+/// Keep the generated-language inventory tied to the Rust-owned type policy.
+///
+/// The catalog also contains one documentation/tooling target, while Bash is
+/// intentionally classified as tooling.  The policy inventory is therefore
+/// matched by its Rust-owned language id rather than by `TargetKind`.  A
+/// mismatch is a source error: adding a language to the JSON projection or to
+/// one registry without the other must fail before a catalog can be emitted.
+fn assert_language_inventory_matches_type_policy() {
+    let catalog_languages = CATALOG
+        .targets
+        .iter()
+        .filter(|target| target.id != "docs-and-execution-targets")
+        .map(|target| target.id)
+        .collect::<Vec<_>>();
+    let policy_languages = TypePolicyLanguage::ALL
+        .iter()
+        .map(|language| language.id())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        catalog_languages, policy_languages,
+        "language catalog and Rust type-policy inventories must match"
+    );
+}
+
 fn embedded_language_for_target(target_id: &str) -> Option<EmbeddedLanguage> {
     match target_id {
         "rust" => Some(EmbeddedLanguage::Rust),
@@ -2298,6 +2327,7 @@ fn embedded_projection(target_id: &str) -> Value {
 }
 
 pub fn catalog() -> serde_json::Value {
+    assert_language_inventory_matches_type_policy();
     let mut value = serde_json::to_value(&CATALOG).expect("static Rust target catalog is serializable");
     let targets = value["targets"]
         .as_array_mut()
@@ -2307,6 +2337,21 @@ pub fn catalog() -> serde_json::Value {
         target["embedded"] = embedded_projection(target_id);
     }
     value
+}
+
+/// Return the typed-consumer requirement from the Rust-owned target metadata.
+/// HTTP/OpenAPI-only targets deliberately do not enter the protobuf receipt
+/// gate, while every full-gRPC target does.
+pub fn target_requires_typed_consumer(target_id: &str) -> bool {
+    assert_language_inventory_matches_type_policy();
+    CATALOG
+        .targets
+        .iter()
+        .find(|target| target.id == target_id)
+        .is_some_and(|target| {
+            target.remote.wire == WireKind::ProtobufGrpc
+                && target.remote.level == RemoteLevel::FullGrpc
+        })
 }
 
 /// Compatibility projection for consumers of the former package inventory.
@@ -2432,6 +2477,19 @@ mod tests {
             assert!(!target.package.ecosystem.is_empty());
             assert!(!target.package.artifact.is_empty());
         }
+    }
+
+    #[test]
+    fn language_catalog_is_bound_to_rust_type_policy_inventory() {
+        assert_language_inventory_matches_type_policy();
+    }
+
+    #[test]
+    fn typed_consumer_gate_follows_rust_target_wire_capability() {
+        assert!(target_requires_typed_consumer("ruby"));
+        assert!(target_requires_typed_consumer("cpp"));
+        assert!(!target_requires_typed_consumer("bash"));
+        assert!(!target_requires_typed_consumer("unknown-target"));
     }
 
     #[test]

@@ -240,6 +240,8 @@ pub struct ScenarioMetadata {
     pub language: Language,
     /// Rust source path for the typed scenario.
     pub source: &'static str,
+    /// Optional authored guide fence bound to this projection.
+    pub guide: Option<guide_projections::GuideFenceSpec>,
     /// Validation receipt for this projection.
     pub validation: ValidationReceipt,
 }
@@ -541,6 +543,7 @@ impl ScenarioSpec {
                 title: self.title,
                 language,
                 source: SOURCE,
+                guide: None,
                 validation: ValidationReceipt {
                     level,
                     status,

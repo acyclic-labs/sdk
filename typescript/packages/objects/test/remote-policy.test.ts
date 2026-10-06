@@ -13,7 +13,7 @@ test("Objects remote policy is Rust-owned and keeps complex behavior native/WASM
   expect(OBJECTS_ROUTES.getObject.serverStreaming).toBeTrue();
 });
 
-test("Objects HTTP endpoint policy is shared with the Rust/WASM boundary", () => {
+test("Objects HTTP endpoint policy is shared with the Rust/WASM boundary and admitted asynchronously", async () => {
   expect(() => new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture" })).not.toThrow();
   expect(() => new HttpObjectsV2({ endpoint: "http://127.0.0.1:8080", token: "fixture" })).not.toThrow();
   for (const endpoint of [
@@ -22,7 +22,8 @@ test("Objects HTTP endpoint policy is shared with the Rust/WASM boundary", () =>
     "https://objects.example/?query=1",
     "https://objects.example/#fragment",
   ]) {
-    expect(() => new HttpObjectsV2({ endpoint, token: "fixture" })).toThrow("invalid Objects HTTP endpoint");
+    const client = new HttpObjectsV2({ endpoint, token: "fixture", fetch: async () => { throw new Error("unexpected fetch"); } });
+    await expect(client.createBucket(create(wire.CreateBucketRequestSchema, { name: "customer.inputs" }))).rejects.toThrow();
   }
 });
 

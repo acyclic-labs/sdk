@@ -907,40 +907,53 @@
     {
       "id": "haskell",
       "kind": "language",
-      "status": "not-qualifiable",
+      "status": "candidate",
       "language_family": "Haskell",
       "remote": {
-        "level": "none",
-        "streaming": [],
-        "wire": "none",
-        "notes": "grpc-haskell is explicitly experimental/client-only and does not provide a complete generated production path."
+        "level": "full-grpc",
+        "streaming": [
+          "unary",
+          "client",
+          "server",
+          "bidi"
+        ],
+        "wire": "protobuf-grpc",
+        "notes": "The pinned proto-lens-protoc and grapesy prototype compiles Rust-generated protobuf services and typed semantic wrappers; remote fixture conformance remains pending."
       },
       "embedded": {
         "level": "none",
         "notes": "Rust FFI remains the only embedded path."
       },
-      "maturity": "experimental",
+      "maturity": "stable",
       "generator": {
-        "name": "grpc-haskell",
-        "version": "experimental",
-        "source": "https://github.com/grpc/grpc-haskell",
-        "license": "Apache-2.0",
-        "pin": "Do not pin for release until upstream production status changes."
+        "name": "proto-lens-protoc + grapesy",
+        "version": "0.9.0.1 + 1.2.1",
+        "source": "https://hackage.haskell.org/package/proto-lens-protoc-0.9.0.1",
+        "license": "BSD-3-Clause",
+        "pin": "GHC 9.2.8; Cabal 3.10.2.1; proto-lens-protoc 0.9.0.1 and grapesy 1.2.1 hashes are recorded in research/additional-languages/haskell-grapesy-prototype/provenance.json."
       },
       "package": {
         "ecosystem": "Hackage",
-        "artifact": "acyclic-sdk",
-        "installable": false,
-        "notes": "Inventory only; OpenAPI Haskell output may serve HTTP snippets separately."
+        "artifact": "acyclic-sdk-haskell",
+        "installable": true,
+        "notes": "The Rust-owned producer emits an installable Cabal package with generated proto-lens bindings and descriptor-specific semantic types; the grapesy transport facade remains thin."
       },
       "evidence": [
         {
-          "url": "https://github.com/grpc/grpc-haskell",
-          "claim": "Upstream describes the implementation as experimental and incomplete for production generation."
+          "url": "https://github.com/google/proto-lens",
+          "claim": "Maintained Haskell protobuf generator pinned at proto-lens-protoc 0.9.0.1."
+        },
+        {
+          "url": "https://github.com/well-typed/grapesy",
+          "claim": "Maintained HTTP/2 gRPC client/server with unary and streaming support."
+        },
+        {
+          "url": "research/additional-languages/haskell-grapesy-prototype/provenance.json",
+          "claim": "Pinned toolchain and Rust-generated typed surface are recorded; remote fixture qualification is explicitly pending."
         }
       ],
       "outstanding": [
-        "Monitor upstream; require generated protobuf/service code, TLS, streaming and recovery before reconsideration."
+        "Complete source-bound installed conformance, streaming, cancellation, recovery and TLS qualification against the Rust fixture before promotion."
       ]
     },
     {
@@ -1028,4 +1041,3 @@
   ],
   "catalogued_at": "2026-10-03"
 }
-

@@ -9,7 +9,8 @@ const REBASE_STATUSES: readonly WorkspaceRebaseStatus[] = ["rebased", "already-r
 const COMMIT_STATUSES: readonly WorkspaceCommit["status"][] = ["committed", "already-committed", "conflict", "fenced", "idempotency-conflict"];
 const DELETE_STATUSES: readonly WorkspaceDeleteStatus[] = ["deleted", "already-deleted", "conflict", "idempotency-conflict"];
 const MERGE_PREPARATION_STATUSES: readonly string[] = ["prepared", "conflicted"];
-const GENERATION_LIMIT_FIELDS: readonly string[] = ["maximumGenerations", "maximumChanges", "maximumConflicts"];
+type GenerationLimitOptions = Pick<JoinOptions, "maximumGenerations" | "maximumChanges" | "maximumConflicts">;
+const GENERATION_LIMIT_FIELDS: readonly (keyof GenerationLimitOptions)[] = ["maximumGenerations", "maximumChanges", "maximumConflicts"];
 
 export function decodeMergeConflict(raw: unknown, origin: string): MergeConflict {
   if (typeof raw !== "object" || raw === null) throw new Error(`${origin} returned a malformed conflict`);
@@ -78,13 +79,13 @@ function positive(value: number, label: string): void {
 }
 
 function validateOptions(
-  options: JoinOptions | WorkspaceRebaseOptions,
-  fields: readonly string[],
+  options: GenerationLimitOptions,
+  fields: readonly (keyof GenerationLimitOptions)[],
   operation: string,
   validatePositive: (value: number, label: string) => void = positive,
 ): void {
   for (const field of fields) {
-    const value = (options as unknown as Record<string, number>)[field];
+    const value = options[field];
     validatePositive(value, `maximum ${operation} ${field.replace("maximum", "").toLowerCase()}`);
   }
 }

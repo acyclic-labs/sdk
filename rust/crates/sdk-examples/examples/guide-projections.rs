@@ -12,6 +12,12 @@ fn main() {
                 "language": projection.language.as_str(),
                 "mode": format!("{:?}", projection.mode).to_ascii_lowercase(),
                 "source": projection.source,
+                "guide": {
+                    "path": projection.guide.guide_path,
+                    "fence_ordinal": projection.guide.fence_ordinal,
+                    "fence_language": projection.guide.fence_language,
+                    "marker": projection.guide.marker,
+                },
                 // Keep the standalone projection stream bound to the same
                 // Rust source closure as the sdk-examples bundle. The
                 // qualification harness carries this through every package

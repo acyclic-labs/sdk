@@ -28,6 +28,21 @@ public:
 class RustCancellationSource {
   std::shared_ptr<std::atomic_bool> flag_ = std::make_shared<std::atomic_bool>(false);
 public:
+  RustCancellationSource() = default;
+  RustCancellationSource(const RustCancellationSource&) = delete;
+  RustCancellationSource& operator=(const RustCancellationSource&) = delete;
+  RustCancellationSource(RustCancellationSource&& other) noexcept : flag_(std::move(other.flag_)) {
+    if (!flag_) flag_ = std::make_shared<std::atomic_bool>(false);
+    other.flag_ = std::make_shared<std::atomic_bool>(false);
+  }
+  RustCancellationSource& operator=(RustCancellationSource&& other) noexcept {
+    if (this != &other) {
+      flag_ = std::move(other.flag_);
+      if (!flag_) flag_ = std::make_shared<std::atomic_bool>(false);
+      other.flag_ = std::make_shared<std::atomic_bool>(false);
+    }
+    return *this;
+  }
   RustCancellationToken get_token() const noexcept { return RustCancellationToken(flag_); }
   bool request_stop() noexcept {
     bool expected = false;
@@ -35,30 +50,65 @@ public:
   }
 };
 
+// Stream handles own cancellation.  A dropped handle requests stop through the
+// shared token, while an explicit cancel calls the transport hook once.
 template<class Element>
 class RustTypedStream {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
 public:
-  virtual ~RustTypedStream() = default;
+  RustTypedStream() = default;
+  RustTypedStream(const RustTypedStream&) = delete;
+  RustTypedStream& operator=(const RustTypedStream&) = delete;
+  RustTypedStream(RustTypedStream&&) noexcept = default;
+  RustTypedStream& operator=(RustTypedStream&&) noexcept = default;
+  virtual ~RustTypedStream() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
   virtual std::optional<Element> next() = 0;
-  virtual void cancel() noexcept = 0;
 };
 
 template<class Request>
 class RustTypedRequestSequence {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
 public:
-  virtual ~RustTypedRequestSequence() = default;
+  RustTypedRequestSequence() = default;
+  RustTypedRequestSequence(const RustTypedRequestSequence&) = delete;
+  RustTypedRequestSequence& operator=(const RustTypedRequestSequence&) = delete;
+  RustTypedRequestSequence(RustTypedRequestSequence&&) noexcept = default;
+  RustTypedRequestSequence& operator=(RustTypedRequestSequence&&) noexcept = default;
+  virtual ~RustTypedRequestSequence() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
   virtual std::optional<Request> next() = 0;
-  virtual void cancel() noexcept = 0;
 };
 
 template<class Request, class Response>
 class RustTypedClientStream {
+  RustCancellationSource cancellation_;
+protected:
+  virtual void on_cancel() noexcept {}
 public:
-  virtual ~RustTypedClientStream() = default;
+  RustTypedClientStream() = default;
+  RustTypedClientStream(const RustTypedClientStream&) = delete;
+  RustTypedClientStream& operator=(const RustTypedClientStream&) = delete;
+  RustTypedClientStream(RustTypedClientStream&&) noexcept = default;
+  RustTypedClientStream& operator=(RustTypedClientStream&&) noexcept = default;
+  virtual ~RustTypedClientStream() { cancellation_.request_stop(); }
+  RustCancellationToken cancellation_token() const noexcept { return cancellation_.get_token(); }
+  void cancel() noexcept {
+    if (cancellation_.request_stop()) on_cancel();
+  }
   virtual void send(const Request& request) = 0;
   virtual Response finish() = 0;
   virtual std::optional<Response> next() = 0;
-  virtual void cancel() noexcept = 0;
 };
 
 struct IdempotencyKey;
@@ -1448,13 +1498,11 @@ struct InferenceCustomerTruncateThroughChoiceUnknown { std::int32_t raw_tag; std
 struct InferenceCustomerTruncateThroughChoiceNone {};
 using InferenceCustomerTruncateThroughChoiceValue = std::variant<InferenceCustomerTruncateThroughChoiceThrough, InferenceCustomerTruncateThroughChoiceUnknown, InferenceCustomerTruncateThroughChoiceNone>;
 
-struct IdempotencyKey { private: RustWireMessage wire; explicit IdempotencyKey(RustWireMessage value) { if (value.wire.empty()) throw std::invalid_argument("value must be non-empty"); if (value.wire.size() != 16) throw std::invalid_argument("invalid fixed wire length"); wire = std::move(value); } public: std::optional<std::vector<std::uint8_t>> value;
- IdempotencyKey(std::optional<std::vector<std::uint8_t>> value = std::nullopt) :  value = std::move(value); {} };
-struct Image { private: RustWireMessage wire; explicit Image(RustWireMessage value) { wire = std::move(value); } public: std::optional<MachinesImageKindWire> kind;
-std::optional<Sha256Digest> managed_digest;
-std::optional<Sha256Digest> custom_digest;
-std::optional<CheckpointId> checkpoint;
- Image(std::optional<MachinesImageKindWire> kind = std::nullopt, std::optional<Sha256Digest> managed_digest = std::nullopt, std::optional<Sha256Digest> custom_digest = std::nullopt, std::optional<CheckpointId> checkpoint = std::nullopt) :  kind = std::move(kind); managed_digest = std::move(managed_digest); custom_digest = std::move(custom_digest); checkpoint = std::move(checkpoint); { if (std::size_t{managed_digest.has_value() + custom_digest.has_value() + checkpoint.has_value()} != 1) throw std::invalid_argument("Image requires exactly one immutable reference");} };
+struct IdempotencyKey { private: RustWireMessage wire; explicit IdempotencyKey(RustWireMessage value) : wire(std::move(value)) { if (value.wire.empty()) throw std::invalid_argument("value must be non-empty"); if (value.wire.size() != 16) throw std::invalid_argument("invalid fixed wire length"); } public: std::optional<std::vector<std::uint8_t>> value;
+ IdempotencyKey(std::optional<std::vector<std::uint8_t>> value = std::nullopt) : value(std::move(value)) {} };
+struct Image { private: RustWireMessage wire; explicit Image(RustWireMessage value) : wire(std::move(value)), ImmutableReferenceChoice_choice(MachinesImageImmutableReferenceChoiceNone{}) { } public: std::optional<MachinesImageKindWire> kind;
+MachinesImageImmutableReferenceChoiceValue ImmutableReferenceChoice_choice = MachinesImageImmutableReferenceChoiceNone{};
+ Image(std::optional<MachinesImageKindWire> kind = std::nullopt, MachinesImageImmutableReferenceChoiceValue ImmutableReferenceChoice_choice = MachinesImageImmutableReferenceChoiceNone{}) : kind(std::move(kind)), ImmutableReferenceChoice_choice(std::move(ImmutableReferenceChoice_choice)) { if (std::holds_alternative<MachinesImageImmutableReferenceChoiceNone>(ImmutableReferenceChoice_choice)) throw std::invalid_argument("Image requires exactly one immutable reference");} };
 namespace detail { struct UnknownOneof { std::int32_t raw_tag; std::vector<std::uint8_t> payload; }; }
 
 struct ActorsAddSubscriptionRequest { ActorId actor_id;std::optional<std::shared_ptr<ActorsSubscriptionSpecWire>> subscription;std::string idempotency_key; };
@@ -1480,7 +1528,7 @@ struct FilesystemHandshakeRequest { std::optional<std::shared_ptr<FilesystemHand
 struct FilesystemImportChunkRequest { std::optional<std::shared_ptr<FilesystemWorkspaceRefWire>> workspace;std::vector<std::uint8_t> operation_id;OpaqueBytes cursor;OpaqueBytes object_id;std::vector<std::uint8_t> contents;bool terminal; };
 struct FilesystemListDirectoryRequest { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> generation;ResourcePath path;std::optional<std::shared_ptr<FilesystemPageOptionsWire>> page; };
 struct FilesystemObserveRequest { std::optional<std::shared_ptr<FilesystemWorkspaceRefWire>> workspace;std::vector<std::uint8_t> operation_id; };
-struct FilesystemOpenWorkspaceRequest { std::optional<std::shared_ptr<FilesystemWorkspaceRefWire>> workspace;std::optional<std::string> name; };
+struct FilesystemOpenWorkspaceRequest {  FilesystemOpenWorkspaceRequestSelectorChoiceValue SelectorChoice_choice = FilesystemOpenWorkspaceRequestSelectorChoiceNone{}; };
 struct FilesystemPlanExtentsRequest { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> generation;ResourcePath path;std::optional<std::shared_ptr<FilesystemByteRangeWire>> range;std::uint32_t maximum_extents; };
 struct FilesystemPlanJoinRequest { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> source;std::optional<std::shared_ptr<FilesystemGenerationRefWire>> target;NonNegativeCount maximum_changes;NonNegativeCount maximum_conflicts;NonNegativeCount maximum_generations;FilesystemJoinHistoryWire history; };
 struct FilesystemReadLinkRequest { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> generation;ResourcePath path;std::uint64_t maximum_bytes; };
@@ -1498,15 +1546,15 @@ struct HarnessObserveRequest { std::string operation_id;std::optional<std::share
 struct HarnessResumeRequest { std::optional<std::shared_ptr<HarnessProtocolIdentityWire>> protocol;std::vector<std::shared_ptr<HarnessReplayCursorWire>> cursors; };
 struct InferenceCreateContextRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;OpaqueText model;std::vector<std::shared_ptr<InferenceItemWire>> items; };
 struct InferenceCreateEvaluationRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;std::optional<std::shared_ptr<InferenceEvaluationSpecWire>> spec; };
-struct InferenceGenerateRunRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest context;std::optional<std::shared_ptr<InferenceItemWire>> input;std::uint64_t maximum_output;std::optional<std::uint64_t> seed; };
+struct InferenceGenerateRunRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest context;std::optional<std::shared_ptr<InferenceItemWire>> input;std::uint64_t maximum_output; InferenceCustomerGenerateRunRequestSeedChoiceValue SeedChoice_choice = InferenceCustomerGenerateRunRequestSeedChoiceNone{}; };
 struct InferenceInspectContextRequest { RevisionDigest revision; };
 struct InferenceInspectEvaluationRequest { EvaluationId evaluation_id; };
 struct InferenceInspectRunRequest { RunId run_id; };
 struct InferenceInspectWarmRequest { Sha256Digest commitment; };
 struct InferenceListModelsRequest {  };
-struct InferenceMutateContextRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;std::vector<std::uint8_t> source;std::optional<std::shared_ptr<InferenceEditsWire>> edit;std::optional<std::shared_ptr<InferenceEmptyWire>> fork;std::optional<std::shared_ptr<InferenceTruncateWire>> truncate;std::optional<std::shared_ptr<InferenceCompactWire>> compact;std::optional<std::shared_ptr<InferenceEmptyWire>> release;std::optional<std::shared_ptr<InferenceTransferWire>> transfer; };
+struct InferenceMutateContextRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;std::vector<std::uint8_t> source; InferenceCustomerMutateContextRequestActionChoiceValue ActionChoice_choice = InferenceCustomerMutateContextRequestActionChoiceNone{}; };
 struct InferenceReleaseWarmRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest commitment; };
-struct InferenceRenewWarmRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest commitment;UnixTimestampMillis expires_at_ms;std::optional<std::uint64_t> idle_timeout_ms; };
+struct InferenceRenewWarmRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest commitment;UnixTimestampMillis expires_at_ms; InferenceCustomerRenewWarmRequestIdleTimeoutMsChoiceValue IdleTimeoutMsChoice_choice = InferenceCustomerRenewWarmRequestIdleTimeoutMsChoiceNone{}; };
 struct InferenceRetainWarmRequest { std::optional<std::shared_ptr<InferenceRequestIdentityWire>> identity;Sha256Digest context;std::vector<std::uint8_t> latency_profile;UnixTimestampMillis expires_at_ms;std::optional<std::shared_ptr<InferenceIdleKvPolicyWire>> idle_kv; };
 struct InferenceWatchRunRequest { RunId run_id;std::uint64_t from_sequence; };
 struct MachinesCheckpointMachineRequest { std::optional<std::shared_ptr<MachinesProtocolVersionWire>> protocol;std::optional<std::shared_ptr<IdempotencyKey>> idempotency_key;std::optional<MachineId> machine; };
@@ -1535,14 +1583,14 @@ struct ObjectsHeadBucketRequest { std::optional<std::shared_ptr<ObjectsBucketRef
 struct ObjectsHeadObjectRequest { std::optional<std::shared_ptr<ObjectsBucketRefWire>> bucket;ObjectKey object_key;std::string if_match;std::string if_none_match; };
 struct ObjectsListObjectsRequest { std::optional<std::shared_ptr<ObjectsBucketRefWire>> bucket;std::string prefix;std::string delimiter;PageLimit page_size;OpaqueText continuation_token; };
 struct ObjectsListPartsRequest { std::optional<std::shared_ptr<ObjectsBucketRefWire>> bucket;ObjectKey object_key;UploadId upload_id;std::uint32_t after_part_number;PageLimit page_size; };
-struct ObjectsPutObjectRequest { std::optional<std::shared_ptr<ObjectsPutObjectHeaderWire>> header;std::optional<std::vector<std::uint8_t>> body;std::optional<bool> complete; };
-struct ObjectsUploadPartRequest { std::optional<std::shared_ptr<ObjectsUploadPartHeaderWire>> header;std::optional<std::vector<std::uint8_t>> body;std::optional<bool> complete; };
-struct StreamAppendRequest { ResourcePath path;std::vector<std::vector<std::uint8_t>> records;std::optional<std::uint64_t> if_tail;std::optional<IdempotencyKeyBytes> idempotency_key; };
-struct StreamChildrenPageRequest { std::optional<std::string> parent;std::optional<std::string> after;std::optional<RevisionDigest> hierarchy_version;StreamPageLimit limit; };
-struct StreamChildrenRequest { std::optional<std::string> parent;StreamPageLimit limit; };
-struct StreamCommitRequest { std::vector<std::shared_ptr<StreamCommitConditionWire>> conditions;std::vector<std::shared_ptr<StreamCommitMutationWire>> mutations;IdempotencyKeyBytes idempotency_key;std::optional<std::uint64_t> deadline_unix_millis; };
+struct ObjectsPutObjectRequest {  ObjectsPutObjectRequestFrameChoiceValue FrameChoice_choice = ObjectsPutObjectRequestFrameChoiceNone{}; };
+struct ObjectsUploadPartRequest {  ObjectsUploadPartRequestFrameChoiceValue FrameChoice_choice = ObjectsUploadPartRequestFrameChoiceNone{}; };
+struct StreamAppendRequest { ResourcePath path;std::vector<std::vector<std::uint8_t>> records; StreamAppendRequestIdempotencyKeyChoiceValue IdempotencyKeyChoice_choice = StreamAppendRequestIdempotencyKeyChoiceNone{}; StreamAppendRequestIfTailChoiceValue IfTailChoice_choice = StreamAppendRequestIfTailChoiceNone{}; };
+struct StreamChildrenPageRequest { StreamPageLimit limit; StreamChildrenPageRequestAfterChoiceValue AfterChoice_choice = StreamChildrenPageRequestAfterChoiceNone{}; StreamChildrenPageRequestHierarchyVersionChoiceValue HierarchyVersionChoice_choice = StreamChildrenPageRequestHierarchyVersionChoiceNone{}; StreamChildrenPageRequestParentChoiceValue ParentChoice_choice = StreamChildrenPageRequestParentChoiceNone{}; };
+struct StreamChildrenRequest { StreamPageLimit limit; StreamChildrenRequestParentChoiceValue ParentChoice_choice = StreamChildrenRequestParentChoiceNone{}; };
+struct StreamCommitRequest { std::vector<std::shared_ptr<StreamCommitConditionWire>> conditions;std::vector<std::shared_ptr<StreamCommitMutationWire>> mutations;IdempotencyKeyBytes idempotency_key; StreamCommitRequestDeadlineUnixMillisChoiceValue DeadlineUnixMillisChoice_choice = StreamCommitRequestDeadlineUnixMillisChoiceNone{}; };
 struct StreamFollowRequest { ResourcePath path;std::uint64_t from; };
-struct StreamForkRequest { SourceName source;DestinationName destination;std::optional<std::uint64_t> at_tail;std::optional<IdempotencyKeyBytes> idempotency_key; };
+struct StreamForkRequest { SourceName source;DestinationName destination; StreamForkRequestAtTailChoiceValue AtTailChoice_choice = StreamForkRequestAtTailChoiceNone{}; StreamForkRequestIdempotencyKeyChoiceValue IdempotencyKeyChoice_choice = StreamForkRequestIdempotencyKeyChoiceNone{}; };
 struct StreamInspectIdempotencyRequest { IdempotencyKeyBytes idempotency_key; };
 struct StreamReadCommitRequest { CommitId commit_id; };
 struct StreamReadRequest { ResourcePath path;std::uint64_t from;StreamPageLimit limit; };
@@ -1552,7 +1600,7 @@ struct WorkersInspectJobRequest { JobId job_id; };
 struct WorkersInvokeDeploymentRequest { VersionAlias alias;MethodName method;std::string url;std::vector<std::shared_ptr<WorkersHeaderWire>> headers;std::vector<std::uint8_t> body; };
 struct WorkersInvokeVersionRequest { Sha256Digest version_sha256;MethodName method;std::string url;std::vector<std::shared_ptr<WorkersHeaderWire>> headers;std::vector<std::uint8_t> body; };
 struct WorkersPublishVersionRequest { std::vector<std::uint8_t> javascript_module;std::vector<std::uint8_t> expected_sha256;IdempotencyKeyText idempotency_key; };
-struct WorkersSelectDeploymentRequest { VersionAlias alias;Sha256Digest version_sha256;std::optional<std::uint64_t> expected_revision;IdempotencyKeyText idempotency_key; };
+struct WorkersSelectDeploymentRequest { VersionAlias alias;Sha256Digest version_sha256;IdempotencyKeyText idempotency_key; WorkersSelectDeploymentRequestExpectedRevisionChoiceValue ExpectedRevisionChoice_choice = WorkersSelectDeploymentRequestExpectedRevisionChoiceNone{}; };
 struct WorkersSubmitJobRequest { std::optional<std::shared_ptr<WorkersJobTargetWire>> target;std::optional<std::shared_ptr<WorkersPayloadWire>> input;std::optional<std::shared_ptr<WorkersJobLimitsWire>> limits;std::optional<std::shared_ptr<WorkersRetryPolicyWire>> retry;IdempotencyKeyText idempotency_key; };
 struct ActorsAddSubscriptionResponseResponse { std::optional<std::shared_ptr<ActorsActorObservationWire>> actor; };
 struct ActorsCheckpointActorResponseResponse { std::optional<std::shared_ptr<ActorsActorObservationWire>> actor; };
@@ -1563,7 +1611,7 @@ struct ActorsRemoveSubscriptionResponseResponse { std::optional<std::shared_ptr<
 struct ActorsResumeSubscriptionResponseResponse { std::optional<std::shared_ptr<ActorsActorObservationWire>> actor; };
 struct ActorsUpdateActorResponseResponse { std::optional<std::shared_ptr<ActorsActorObservationWire>> actor; };
 struct FilesystemCancelResponseResponse { std::optional<std::shared_ptr<FilesystemObserveResponseWire>> operation; };
-struct FilesystemCredentialResponseResponse { OpaqueText endpoint;UnixTimestampSeconds expires_at_unix_seconds;std::optional<OpaqueText> bearer_token;std::optional<std::shared_ptr<FilesystemS3CredentialWire>> s3;FilesystemCredentialResponseCredentialChoiceValue credentialChoice_choice; };
+struct FilesystemCredentialResponseResponse { OpaqueText endpoint;UnixTimestampSeconds expires_at_unix_seconds;FilesystemCredentialResponseCredentialChoiceValue CredentialChoice_choice = FilesystemCredentialResponseCredentialChoiceNone{}; };
 struct FilesystemDiffResponseResponse { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> from;std::optional<std::shared_ptr<FilesystemGenerationRefWire>> to;std::vector<std::shared_ptr<FilesystemFileRecordChangeWire>> files;std::vector<std::shared_ptr<FilesystemDirectoryBindingChangeWire>> bindings;bool truncated;std::optional<std::shared_ptr<FilesystemWorkCountersWire>> work; };
 struct FilesystemExportChunkResponse { OpaqueBytes cursor;OpaqueBytes object_id;std::vector<std::uint8_t> contents;bool terminal; };
 struct FilesystemGenerationResponseResponse { std::optional<std::shared_ptr<FilesystemGenerationRefWire>> generation;std::vector<std::shared_ptr<FilesystemGenerationRefWire>> parents; };
@@ -1587,13 +1635,13 @@ struct HarnessCancelResponseResponse { std::optional<std::shared_ptr<HarnessOper
 struct HarnessDeliveryResponse { std::optional<std::shared_ptr<HarnessAuthorityWire>> authority;OpaqueText generation;Revision from_revision;Revision through_revision;std::vector<std::shared_ptr<HarnessEventEnvelopeWire>> events;bool live; };
 struct HarnessHandshakeResponseResponse { std::optional<std::shared_ptr<HarnessProtocolIdentityWire>> protocol;std::optional<std::shared_ptr<HarnessCapabilitySetWire>> supported; };
 struct HarnessOperationStatusResponse { std::optional<std::shared_ptr<HarnessOperationIdentityWire>> operation;HarnessCompletionStateWire state;std::optional<std::shared_ptr<HarnessErrorWire>> error;std::optional<std::shared_ptr<HarnessProtocolIdentityWire>> protocol;std::optional<std::shared_ptr<HarnessAuthorityWire>> owner;bool cancellation_requested;Revision revision; };
-struct InferenceContextViewResponse { RevisionDigest revision;std::optional<OpaqueBytes> parent;OpaqueBytes lineage;OpaqueBytes execution_profile;Sha256Digest content_digest;std::vector<std::shared_ptr<InferenceItemWire>> items;OpaqueText model;std::optional<std::shared_ptr<InferenceContextProvenanceWire>> provenance;InferenceCustomerContextViewParentChoiceValue _parentChoice_choice; };
-struct InferenceEvaluationViewResponse { EvaluationId evaluation_id;std::optional<std::shared_ptr<InferenceEvaluationSpecWire>> spec;InferenceEvaluationStateWire state;std::optional<std::shared_ptr<InferenceEvaluationResultWire>> result;SequenceNumber sequence;InferenceCustomerEvaluationViewResultChoiceValue _resultChoice_choice; };
+struct InferenceContextViewResponse { RevisionDigest revision;OpaqueBytes lineage;OpaqueBytes execution_profile;Sha256Digest content_digest;std::vector<std::shared_ptr<InferenceItemWire>> items;OpaqueText model;std::optional<std::shared_ptr<InferenceContextProvenanceWire>> provenance;InferenceCustomerContextViewParentChoiceValue ParentChoice_choice = InferenceCustomerContextViewParentChoiceNone{}; };
+struct InferenceEvaluationViewResponse { EvaluationId evaluation_id;std::optional<std::shared_ptr<InferenceEvaluationSpecWire>> spec;InferenceEvaluationStateWire state;SequenceNumber sequence;InferenceCustomerEvaluationViewResultChoiceValue ResultChoice_choice = InferenceCustomerEvaluationViewResultChoiceNone{}; };
 struct InferenceGenerateRunResponseResponse { std::optional<std::shared_ptr<InferenceRunViewWire>> run; };
 struct InferenceListModelsResponseResponse { std::vector<std::shared_ptr<InferenceModelCapabilityWire>> models; };
 struct InferenceMutationReceiptResponse { RevisionDigest revision;Sha256Digest command_digest;SequenceNumber sequence;bool retained; };
-struct InferenceRunEventResponse { SequenceNumber sequence;std::optional<std::vector<std::uint8_t>> output;std::optional<std::shared_ptr<InferenceLogicalUsageWire>> usage;std::optional<InferenceRunTerminalWire> terminal;std::optional<std::shared_ptr<InferenceRunProgressWire>> progress;InferenceCustomerRunEventEventChoiceValue eventChoice_choice; };
-struct InferenceRunViewResponse { RunId run_id;std::vector<std::uint8_t> input;OpaqueText model;SequenceNumber last_sequence;bool cancellation_requested;std::optional<std::shared_ptr<InferenceRunResultWire>> result;InferenceCustomerRunViewResultChoiceValue _resultChoice_choice; };
+struct InferenceRunEventResponse { SequenceNumber sequence;InferenceCustomerRunEventEventChoiceValue EventChoice_choice = InferenceCustomerRunEventEventChoiceNone{}; };
+struct InferenceRunViewResponse { RunId run_id;std::vector<std::uint8_t> input;OpaqueText model;SequenceNumber last_sequence;bool cancellation_requested;InferenceCustomerRunViewResultChoiceValue ResultChoice_choice = InferenceCustomerRunViewResultChoiceNone{}; };
 struct InferenceWarmViewResponse { Sha256Digest commitment;Sha256Digest context;Sha256Digest model_profile;std::vector<std::uint8_t> latency_profile;UnixTimestampMillis expires_at_ms;InferenceWarmStateWire state;Sha256Digest evidence_digest;OpaqueBytes admission_receipt_id;SequenceNumber sequence;std::optional<std::shared_ptr<InferenceIdleKvRetentionWire>> idle_kv; };
 struct MachinesCheckpointAdmissionResponse { std::optional<CheckpointId> checkpoint;std::optional<std::shared_ptr<MachinesMachineIdWire>> source;std::optional<OperationId> operation;std::optional<std::shared_ptr<MachinesMachineContractWire>> contract; };
 struct MachinesCheckpointStateResponse { std::optional<CheckpointId> checkpoint;std::optional<std::shared_ptr<MachinesMachineIdWire>> source;std::optional<std::shared_ptr<MachinesMachineContractWire>> contract;bool forkable;UnixTimestampMillis created_at_unix_ms; };
@@ -1607,31 +1655,31 @@ struct MachinesMachineStateResponse { std::optional<MachineId> machine;MachinesM
 struct MachinesMutationAdmissionResponse { std::optional<OperationId> operation;std::optional<MachineId> machine;std::optional<CheckpointId> checkpoint; };
 struct MachinesOperationStateResponse { std::optional<OperationId> operation;MachinesOperationStatusWire status; };
 struct MachinesPolicyAdmissionResponse { std::optional<MachineId> machine;std::optional<OperationId> operation;std::optional<std::shared_ptr<MachinesSuspensionPolicyWire>> policy; };
-struct MachinesRecoveredAdmissionResponse { std::optional<OperationId> operation;std::optional<std::shared_ptr<MachinesMachineAdmissionWire>> create;std::optional<std::shared_ptr<MachinesCheckpointAdmissionWire>> checkpoint;std::optional<std::shared_ptr<MachinesForkAdmissionWire>> fork;std::optional<std::shared_ptr<MachinesMutationAdmissionWire>> suspend;std::optional<std::shared_ptr<MachinesMutationAdmissionWire>> wake;std::optional<std::shared_ptr<MachinesMutationAdmissionWire>> destroy_machine;std::optional<std::shared_ptr<MachinesPolicyAdmissionWire>> set_suspension_policy;std::optional<std::shared_ptr<MachinesMutationAdmissionWire>> destroy_checkpoint;std::optional<std::shared_ptr<MachinesForkMachineAdmissionWire>> fork_machine;MachinesRecoveredAdmissionResultChoiceValue resultChoice_choice; };
+struct MachinesRecoveredAdmissionResponse { std::optional<OperationId> operation;MachinesRecoveredAdmissionResultChoiceValue ResultChoice_choice = MachinesRecoveredAdmissionResultChoiceNone{}; };
 struct MachinesUsageReceiptResponse { std::optional<MachineId> machine;UnixTimestampMillis start_unix_ms;UnixTimestampMillis end_unix_ms;std::uint64_t elastic_cpu_ns;std::uint64_t dedicated_cpu_ns;std::uint64_t private_resident_byte_seconds;std::uint64_t durable_private_bytes;std::uint64_t egress_bytes;OpaqueBytes receipt;Sha256Digest lineage_receipt_sha256; };
 struct ObjectsAbortMultipartResponseResponse { bool existed; };
 struct ObjectsBucketResponse { std::optional<std::shared_ptr<ObjectsBucketRefWire>> bucket;std::optional<std::shared_ptr<ObjectsTimestampWire>> created_at; };
 struct ObjectsDeleteBucketResponseResponse { bool existed; };
 struct ObjectsDeleteObjectResponseResponse { bool existed; };
-struct ObjectsGetObjectResponseResponse { std::optional<std::shared_ptr<ObjectsGetObjectHeaderWire>> header;std::optional<std::vector<std::uint8_t>> body;std::optional<std::shared_ptr<ObjectsErrorDetailWire>> error;ObjectsGetObjectResponseFrameChoiceValue frameChoice_choice; };
+struct ObjectsGetObjectResponseResponse { ObjectsGetObjectResponseFrameChoiceValue FrameChoice_choice = ObjectsGetObjectResponseFrameChoiceNone{}; };
 struct ObjectsHeadObjectResponseResponse { std::optional<std::shared_ptr<ObjectsObjectInfoWire>> object; };
 struct ObjectsListObjectsResponseResponse { std::vector<std::shared_ptr<ObjectsListEntryWire>> entries;std::vector<std::string> common_prefixes;OpaqueText continuation_token;bool is_truncated; };
 struct ObjectsListPartsResponseResponse { std::vector<std::shared_ptr<ObjectsUploadedPartWire>> parts;PositiveCount next_part_number;bool is_truncated; };
 struct ObjectsMultipartUploadResponse { UploadId upload_id; };
 struct ObjectsObjectInfoResponse { OpaqueText etag;std::uint64_t size;std::optional<std::shared_ptr<ObjectsObjectMetadataWire>> metadata;std::optional<std::shared_ptr<ObjectsTimestampWire>> last_modified; };
 struct ObjectsUploadedPartResponse { std::uint32_t part_number;OpaqueText etag;std::uint64_t size; };
-struct StreamAppendResponseResponse { std::optional<std::shared_ptr<StreamAppendReceiptWire>> committed;std::optional<std::shared_ptr<StreamTailConflictWire>> conflict;StreamAppendResponseOutcomeChoiceValue outcomeChoice_choice; };
-struct StreamChildrenPageResponseResponse { RevisionDigest hierarchy_version;std::vector<std::shared_ptr<StreamChildWire>> children;std::optional<OpaqueText> next_after;StreamChildrenPageResponseNextAfterChoiceValue _next_afterChoice_choice; };
+struct StreamAppendResponseResponse { StreamAppendResponseOutcomeChoiceValue OutcomeChoice_choice = StreamAppendResponseOutcomeChoiceNone{}; };
+struct StreamChildrenPageResponseResponse { RevisionDigest hierarchy_version;std::vector<std::shared_ptr<StreamChildWire>> children;StreamChildrenPageResponseNextAfterChoiceValue NextAfterChoice_choice = StreamChildrenPageResponseNextAfterChoiceNone{}; };
 struct StreamChildrenResponseResponse { std::optional<std::shared_ptr<StreamChildWire>> child; };
-struct StreamCommitResponseResponse { std::optional<std::shared_ptr<StreamCommittedEnvelopeWire>> committed;std::optional<std::shared_ptr<StreamCommitConflictsWire>> conflict;StreamCommitResponseOutcomeChoiceValue outcomeChoice_choice; };
+struct StreamCommitResponseResponse { StreamCommitResponseOutcomeChoiceValue OutcomeChoice_choice = StreamCommitResponseOutcomeChoiceNone{}; };
 struct StreamCommittedEnvelopeResponse { CommitId commit_id;std::vector<std::shared_ptr<StreamCommittedMutationWire>> mutations; };
 struct StreamForkReceiptResponse { SourceName source;DestinationName destination;SequenceNumber forked_at;SequenceNumber tail;CommitId commit_id; };
-struct StreamInspectIdempotencyResponseResponse { std::optional<std::shared_ptr<StreamIdempotencyObservationWire>> observation;StreamInspectIdempotencyResponseObservationChoiceValue _observationChoice_choice; };
+struct StreamInspectIdempotencyResponseResponse { StreamInspectIdempotencyResponseObservationChoiceValue ObservationChoice_choice = StreamInspectIdempotencyResponseObservationChoiceNone{}; };
 struct StreamReadResponseResponse { std::optional<std::shared_ptr<StreamRecordWire>> record; };
 struct StreamTailResponseResponse { SequenceNumber tail; };
 struct WorkersCancelJobResponseResponse { std::optional<std::shared_ptr<WorkersJobObservationWire>> job; };
 struct WorkersInspectJobResponseResponse { std::optional<std::shared_ptr<WorkersJobObservationWire>> job; };
-struct WorkersInvokeResponseResponse { std::uint32_t status;std::vector<std::shared_ptr<WorkersHeaderWire>> headers;std::vector<std::uint8_t> body;Sha256Digest resolved_sha256;std::optional<Revision> resolved_revision;WorkersInvokeResponseResolvedRevisionChoiceValue _resolved_revisionChoice_choice; };
+struct WorkersInvokeResponseResponse { std::uint32_t status;std::vector<std::shared_ptr<WorkersHeaderWire>> headers;std::vector<std::uint8_t> body;Sha256Digest resolved_sha256;WorkersInvokeResponseResolvedRevisionChoiceValue ResolvedRevisionChoice_choice = WorkersInvokeResponseResolvedRevisionChoiceNone{}; };
 struct WorkersPublishVersionResponseResponse { std::optional<std::shared_ptr<WorkersCodeVersionWire>> version; };
 struct WorkersSelectDeploymentResponseResponse { std::optional<std::shared_ptr<WorkersDeploymentWire>> deployment; };
 struct WorkersSubmitJobResponseResponse { std::optional<std::shared_ptr<WorkersJobObservationWire>> job; };

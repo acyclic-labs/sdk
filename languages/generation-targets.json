@@ -7,7 +7,8 @@
     "Exercise all active RPC shapes: unary, client streaming and server streaming; retain bidi support where the runtime provides it.",
     "Verify metadata, TLS, deadlines, cancellation, retry/recovery and idempotency behavior against the Rust conformance server.",
     "Report remote-client and embedded capability separately; Filesystem and Harness embedded behavior stays in Rust native/WASM bindings.",
-    "Reject a target as full SDK coverage when it only consumes the derived JSON/OpenAPI projection."
+    "Reject a target as full SDK coverage when it only consumes the derived JSON/OpenAPI projection.",
+    "Require an acyclic.sdk.typed-consumer-receipt.v1 receipt whose executed source-bound generated typed consumer asserts field numbers, presence/oneof, bytes, uint64, enums and RPC stream signatures; generated-file existence or generic JSON-table checks alone do not count."
   ],
   "schema_version": 1,
   "source_of_truth": {

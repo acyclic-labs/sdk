@@ -2,6 +2,7 @@
 package acyclicsdk
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -60,6 +61,31 @@ func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
 	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
 	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil { t.Fatal("unknown oneof discriminant accepted") }
 	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
+}
+
+func TestRustOwnedRequestOneofChoiceRoundTrip(t *testing.T) {
+	request := RustObjectsObjectsPutObjectRequest{
+		Frame: &RustObjectsObjectsPutObjectRequestFrameBodyChoice{Value: []byte("payload")},
+	}
+	wire, err := request.ToWire()
+	if err != nil { t.Fatal(err) }
+	if frame, ok := wire.GetFrame().(*objectsv2.PutObjectRequest_Body); !ok || string(frame.Body) != "payload" {
+		t.Fatal("typed request oneof did not select the body arm")
+	}
+	empty, err := (RustObjectsObjectsPutObjectRequest{}).ToWire()
+	if err != nil || empty.GetFrame() != nil { t.Fatalf("absent request oneof was rejected or populated: %v", err) }
+	encoded, err := proto.Marshal(wire)
+	if err != nil { t.Fatal(err) }
+	encoded = append(encoded, []byte{0xc2, 0x3e, 0x01, 'z'}...)
+	wireWithUnknown := &objectsv2.PutObjectRequest{}
+	if err := proto.Unmarshal(encoded, wireWithUnknown); err != nil { t.Fatal(err) }
+	decoded, err := RustObjectsObjectsPutObjectRequestFromWire(wireWithUnknown)
+	if err != nil { t.Fatal(err) }
+	if !bytes.Equal(decoded.UnknownFields(), wireWithUnknown.ProtoReflect().GetUnknown()) { t.Fatal("request unknown fields were not captured") }
+	roundTrip, err := decoded.ToWire()
+	if err != nil || !bytes.Equal(roundTrip.ProtoReflect().GetUnknown(), wireWithUnknown.ProtoReflect().GetUnknown()) {
+		t.Fatal("request unknown fields were not preserved")
+	}
 }
 
 func TestRustOwnedProductionClientRoutesRejectInvalidRequests(t *testing.T) {

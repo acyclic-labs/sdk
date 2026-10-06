@@ -28,6 +28,13 @@ export class RemoteMachines implements MachinesProvider {
     this.#inner = ensureMachinesWasm().then(() => WasmRemoteMachines.connect(endpoint, token));
   }
 
+  /** Connects only after Rust/WASM has admitted the endpoint and credential. */
+  static async connect(endpoint: string, token: string): Promise<RemoteMachines> {
+    const provider = new RemoteMachines(endpoint, token);
+    await provider.#inner;
+    return provider;
+  }
+
   async #call<Output>(operation: string, payload: unknown, signal?: AbortSignal): Promise<Output> {
     const authored = structuredClone(payload);
     // WasmRemoteMachines does not expose a cancellation hook; abort stops

@@ -150,3 +150,21 @@ The generated `FILE_DESCRIPTOR_SET` and `wire` module describe the protocol;
 Machines exposes its gRPC transport through the client API. Process-local
 simulation and provider implementations use the same contract types.
 
+<!-- acyclic-guide-scenario: machines-simulated-lifecycle -->
+```rust
+// capability: supported; scope: rust-process-local-simulation
+use acyclic_machines::{CreateMachine, IdempotencyKey, Image, MachineState, Machines, SimulatedMachines};
+use std::{num::NonZeroU32, sync::Arc};
+
+let machines = Machines::new(Arc::new(SimulatedMachines::default()));
+assert_eq!(machines.assurance(), acyclic_machines::ProviderAssurance::ProcessLocalSimulation);
+let machine = machines.create(CreateMachine::new(
+    IdempotencyKey::new(),
+    Image::custom([7; 32])?,
+    [8; 32],
+)).await?;
+assert_eq!(machine.inspect().await?.state, MachineState::Running);
+let checkpoint = machine.checkpoint(IdempotencyKey::new()).await?;
+let children = checkpoint.fork(NonZeroU32::new(1).unwrap(), IdempotencyKey::new()).await?;
+assert_eq!(children.len(), 1);
+```

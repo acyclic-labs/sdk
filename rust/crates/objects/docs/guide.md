@@ -100,3 +100,23 @@ The legacy guide topics map to the current source as follows:
 The published v1 descriptor and vectors remain immutable compatibility history.
 They are not active v2 APIs and do not add version or snapshot semantics to the
 current logical contract.
+
+<!-- acyclic-guide-scenario: objects-memory-put-get -->
+```rust
+// capability: supported
+use acyclic_objects::{wire, MemoryObjects, ObjectsProvider};
+use bytes::Bytes;
+
+let (provider, bucket) = MemoryObjects::with_default_bucket();
+provider.put(wire::PutObjectHeader {
+    bucket: Some(bucket.clone()),
+    object_key: "hello.txt".into(),
+    ..Default::default()
+}, Bytes::from_static(b"hello")).await?;
+let object = provider.get(wire::GetObjectRequest {
+    bucket: Some(bucket),
+    object_key: "hello.txt".into(),
+    ..Default::default()
+}, 1024).await?;
+assert_eq!(object.body, Bytes::from_static(b"hello"));
+```
