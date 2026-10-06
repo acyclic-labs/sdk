@@ -10,25 +10,30 @@ export class InferenceProtocolError extends Error {}
 
 export type { RunTerminalKind, RunTerminalMetadata };
 
-let binding: Promise<InferenceWasm> | undefined;
 const empty = new Uint8Array();
 
-async function loadBinding(): Promise<InferenceWasm> {
-  binding ??= (async () => {
-    // This path is emitted by the inference WASM build and shipped beside dist.
-    const module = await import("../generated/wasm/acyclic_inference_wasm.js");
-    const nodeVersion = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
-    if (typeof nodeVersion !== "string") {
-      await module.default();
-    } else {
-      const fsModule: string = "node:fs/promises";
-      const { readFile } = await import(fsModule) as { readFile(url: URL): Promise<Uint8Array> };
-      await module.default({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_inference_wasm_bg.wasm", import.meta.url)) });
-    }
-    return module;
-  })();
-  return binding;
+/** Share one in-flight load, but forget a rejected one so the next call retries. */
+export function retryableOnce<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => pending ??= load().catch((error: unknown) => {
+    pending = undefined;
+    throw error;
+  });
 }
+
+const loadBinding = retryableOnce(async (): Promise<InferenceWasm> => {
+  // This path is emitted by the inference WASM build and shipped beside dist.
+  const module = await import("../generated/wasm/acyclic_inference_wasm.js");
+  const nodeVersion = (globalThis as { process?: { versions?: { node?: string } } }).process?.versions?.node;
+  if (typeof nodeVersion !== "string") {
+    await module.default();
+  } else {
+    const fsModule: string = "node:fs/promises";
+    const { readFile } = await import(fsModule) as { readFile(url: URL): Promise<Uint8Array> };
+    await module.default({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_inference_wasm_bg.wasm", import.meta.url)) });
+  }
+  return module;
+});
 
 /** Validate generated protobuf bytes without JSON or safe-integer conversion. */
 export async function validateContract<Schema extends DescMessage>(
@@ -61,13 +66,8 @@ export async function validateRuntimeShape<Schema extends DescMessage>(
   }
 }
 
-let terminalMetadataBinding: Promise<readonly RunTerminalMetadata[]> | undefined;
-
 /** Read terminal names and partial outcome policy from the Rust descriptor. */
-export function runTerminalMetadata(): Promise<readonly RunTerminalMetadata[]> {
-  terminalMetadataBinding ??= loadTerminalMetadata();
-  return terminalMetadataBinding;
-}
+export const runTerminalMetadata: () => Promise<readonly RunTerminalMetadata[]> = retryableOnce(loadTerminalMetadata);
 
 async function loadTerminalMetadata(): Promise<readonly RunTerminalMetadata[]> {
   const module = await loadBinding();
