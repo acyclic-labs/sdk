@@ -49,6 +49,7 @@ import { INFERENCE_REMOTE_POLICY } from "./generated-client.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
+export * from "./generated-client.js";
 export { InferenceProtocolError } from "./contract.js";
 
 /** Complete transport-neutral customer lifecycle contract. */
