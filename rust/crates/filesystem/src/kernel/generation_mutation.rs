@@ -14,7 +14,7 @@ use super::{
 };
 use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
 use crate::cancellation::CancellationToken;
-use crate::foundation::{FileId, GenerationId};
+use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::heap_future::in_heap;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -491,11 +491,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
     // `dedup` examines every sorted identity once. Keep that deterministic
     // linear pass visible in the exact-work receipt instead of hiding it in
     // standard-library collection maintenance.
-    charge_items(
-        work,
-        crate::foundation::usize_to_u64(identity_ids.len()),
-        context.budget,
-    )?;
+    charge_items(work, usize_to_u64(identity_ids.len()), context.budget)?;
     identity_ids.dedup();
     let identity_id_bytes = logical_vec_bytes(&identity_ids)?;
     let identities = if identity_ids.is_empty() {
@@ -1600,7 +1596,7 @@ impl TransactionState {
             .split_last()
             .map(|(_, name)| name)
             .ok_or_else(|| failed(GenerationMutationError::InconsistentState, self.work))?;
-        let bytes = u64::try_from(name.as_bytes().len()).unwrap_or(u64::MAX);
+        let bytes = usize_to_u64(name.as_bytes().len());
         self.allocations
             .claim_bytes(bytes, 1, &mut self.work, self.budget)
             .map_err(|error| allocation_failure(error, self.work))?;
@@ -1830,7 +1826,7 @@ impl TransactionState {
         charge_items(&mut self.work, comparisons.get(), self.budget)?;
         charge_items(
             &mut self.work,
-            u64::try_from(self.removed_directories.len().saturating_sub(1)).unwrap_or(u64::MAX),
+            usize_to_u64(self.removed_directories.len().saturating_sub(1)),
             self.budget,
         )?;
         self.removed_directories.dedup();
@@ -1908,7 +1904,7 @@ impl TransactionState {
                 .count();
             charge_items(
                 &mut self.work,
-                u64::try_from(self.records.len()).unwrap_or(u64::MAX),
+                usize_to_u64(self.records.len()),
                 self.budget,
             )?;
             if mutation_count == 0 {
@@ -2132,7 +2128,7 @@ fn reserve_exact<T>(
 ) -> Result<Vec<T>, GenerationMutationFailure> {
     let bytes = count
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
     allocations
         .claim_bytes(bytes, u64::from(count != 0), work, budget)
@@ -2152,7 +2148,7 @@ fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, GenerationMutationFailur
     values
         .capacity()
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| {
             OperationFailure::before_work(GenerationMutationError::Work(WorkError::Overflow))
         })

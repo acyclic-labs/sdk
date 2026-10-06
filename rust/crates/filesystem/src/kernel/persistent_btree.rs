@@ -6,6 +6,7 @@ use super::persistent_io::{self, OwnedPage};
 use super::search::counted_binary_search;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
@@ -317,7 +318,7 @@ where
     if count < 2 {
         return Ok(());
     }
-    let scan_bound = crate::foundation::usize_to_u64(count - 1);
+    let scan_bound = usize_to_u64(count - 1);
     work.checked_add(WorkCounters {
         items_examined: scan_bound,
         ..WorkCounters::default()
@@ -343,9 +344,8 @@ where
     }
 
     let levels = usize::BITS - count.leading_zeros();
-    let maximum_comparisons = u64::try_from(count)
-        .ok()
-        .and_then(|value| value.checked_mul(u64::from(levels)))
+    let maximum_comparisons = usize_to_u64(count)
+        .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(WorkError::Overflow)?;
     work.checked_add(WorkCounters {
@@ -935,7 +935,7 @@ where
 
     async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, Error<M::Error>> {
         let encoded_length = F::page_encoded_length(page, self.limits.maximum_page_items)?;
-        let encoded_bytes = crate::foundation::usize_to_u64(encoded_length);
+        let encoded_bytes = usize_to_u64(encoded_length);
         if encoded_bytes > self.limits.maximum_page_object_bytes() {
             return Err(Error::PageItemTooLarge);
         }
@@ -1080,7 +1080,7 @@ where
                 maximum_bytes: usize::try_from(limits.maximum_page_bytes)
                     .map_err(|_| Error::InvalidLimits)?,
             },
-            crate::foundation::usize_to_u64(items.len()),
+            usize_to_u64(items.len()),
         ))
     }
 
@@ -1118,7 +1118,7 @@ where
             .ok_or(Error::PageItemTooLarge)?;
         self.start += count;
         self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
-        Ok(Some((page, crate::foundation::usize_to_u64(count))))
+        Ok(Some((page, usize_to_u64(count))))
     }
 }
 

@@ -12,6 +12,7 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::model::VolumeConfig;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -91,7 +92,7 @@ impl RegularStorage {
 
     fn logical_bytes(self) -> u64 {
         match self {
-            Self::Inline(data) => u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX),
+            Self::Inline(data) => usize_to_u64(data.as_bytes().len()),
             Self::Sparse { logical_bytes, .. } => logical_bytes,
         }
     }
@@ -259,7 +260,7 @@ pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
     if let (RegularStorage::Inline(source_data), RegularStorage::Inline(destination_data)) =
         (source, destination)
         && destination_offset <= destination_bytes
-        && destination_end <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+        && destination_end <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
     {
         let source_start = usize::try_from(source_offset)
             .map_err(|_| OperationFailure::before_work(RegularMutationError::RangeOverflow))?;
@@ -355,7 +356,7 @@ pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
     .await
     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
     work = add(work, receipt.work)?;
-    if receipt.logical_bytes <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX) {
+    if receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) {
         let attempt = try_demote_sparse_async(
             store,
             receipt.root,
@@ -386,9 +387,7 @@ pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
 
 fn regular_logical_bytes(payload: FilePayload) -> Result<u64, RegularMutationFailure> {
     match payload {
-        FilePayload::InlineRegular(data) => {
-            Ok(crate::foundation::usize_to_u64(data.as_bytes().len()))
-        }
+        FilePayload::InlineRegular(data) => Ok(usize_to_u64(data.as_bytes().len())),
         FilePayload::Regular { logical_bytes, .. } => Ok(logical_bytes),
         FilePayload::Directory { .. }
         | FilePayload::SymbolicLink { .. }
@@ -447,7 +446,7 @@ async fn try_inline<S: AsyncObjectStore>(
     in_heap(move || async move {
     match mutation {
         RegularMutation::Resize { logical_bytes } => {
-            let current = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+            let current = usize_to_u64(data.as_bytes().len());
             if logical_bytes > current {
                 return Ok(None);
             }
@@ -467,7 +466,7 @@ async fn try_inline<S: AsyncObjectStore>(
             allocated,
             extend,
         } => {
-            let current = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+            let current = usize_to_u64(data.as_bytes().len());
             let requested_end = offset.checked_add(length).ok_or_else(|| {
                 OperationFailure::before_work(RegularMutationError::RangeOverflow)
             })?;
@@ -488,7 +487,7 @@ async fn try_inline<S: AsyncObjectStore>(
             } else {
                 current
             };
-            if logical_bytes > u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX) {
+            if logical_bytes > usize_to_u64(MAXIMUM_INLINE_FILE_BYTES) {
                 return Ok(None);
             }
             let end = requested_end.min(logical_bytes);
@@ -534,7 +533,7 @@ async fn try_inline<S: AsyncObjectStore>(
             length,
             keep_size,
         } => {
-            let current = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+            let current = usize_to_u64(data.as_bytes().len());
             let end = offset.checked_add(length).ok_or_else(|| {
                 OperationFailure::before_work(RegularMutationError::RangeOverflow)
             })?;
@@ -557,12 +556,12 @@ async fn try_inline<S: AsyncObjectStore>(
             content,
             content_offset,
         } => {
-            let current = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+            let current = usize_to_u64(data.as_bytes().len());
             let end = offset.checked_add(length).ok_or_else(|| {
                 OperationFailure::before_work(RegularMutationError::RangeOverflow)
             })?;
             if offset > current
-                || end > u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+                || end > usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
             {
                 return Ok(None);
             }
@@ -617,7 +616,7 @@ async fn promote_inline<S: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<PromotedRegularReceipt, RegularMutationFailure> {
     in_heap(move || async move {
-        let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+        let logical_bytes = usize_to_u64(data.as_bytes().len());
         let mut allocations = AllocationLedger::default();
         let (extents, mut work, extent_bytes) = if logical_bytes == 0 {
             (Vec::new(), WorkCounters::default(), 0)
@@ -730,7 +729,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
         if let RegularMutation::Resize {
             logical_bytes: target,
         } = mutation
-            && target <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+            && target <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
             && target <= logical_bytes
         {
             let attempt = try_demote_sparse_async(
@@ -825,7 +824,7 @@ async fn apply_sparse<S: AsyncObjectStore>(
         .map_err(|failure| failure.map_with_prior_work(prior, Into::into))?;
         let work = add(prior, receipt.work)?;
         if !demotion_known_impossible
-            && receipt.logical_bytes <= u64::try_from(MAXIMUM_INLINE_FILE_BYTES).unwrap_or(u64::MAX)
+            && receipt.logical_bytes <= usize_to_u64(MAXIMUM_INLINE_FILE_BYTES)
         {
             let attempt = try_demote_sparse_async(
                 store,
@@ -996,7 +995,7 @@ async fn plan_sparse_preallocation<S: AsyncObjectStore>(
         (plan.spans, plan.retained_allocation_bytes, work)
     };
     let scan = WorkCounters {
-        items_examined: u64::try_from(spans.len()).unwrap_or(u64::MAX),
+        items_examined: usize_to_u64(spans.len()),
         ..WorkCounters::default()
     };
     let scanned = work
@@ -1037,7 +1036,7 @@ async fn plan_sparse_preallocation<S: AsyncObjectStore>(
     }
     let mutation_bytes = mutation_count
         .checked_mul(size_of::<ExtentMutation>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| OperationFailure::new(RegularMutationError::RangeOverflow, work))?;
     let simultaneous_bytes = retained
         .checked_add(mutation_bytes)
@@ -1211,7 +1210,7 @@ async fn put_extent_page_async<S: AsyncObjectStore>(
 ) -> Result<ExtentPageWrite, RegularMutationFailure> {
     let encoded_length = extent_page_encoded_length(page, limits.maximum_page_items)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let encoded_bytes = crate::foundation::usize_to_u64(encoded_length);
+    let encoded_bytes = usize_to_u64(encoded_length);
     if encoded_bytes > limits.maximum_page_object_bytes() {
         return Err(OperationFailure::before_work(
             CanonicalDecodeError::ObjectTooLarge {
@@ -1230,7 +1229,7 @@ async fn put_extent_page_async<S: AsyncObjectStore>(
         .map_err(|error| OperationFailure::before_work(error.into()))?;
     let encoded = encode_extent_page(page, limits.maximum_page_items)
         .map_err(|error| OperationFailure::new(error.into(), work))?;
-    if u64::try_from(encoded.capacity()).unwrap_or(u64::MAX) != encoded_bytes {
+    if usize_to_u64(encoded.capacity()) != encoded_bytes {
         return Err(OperationFailure::new(
             RegularMutationError::AllocationFailed,
             work,

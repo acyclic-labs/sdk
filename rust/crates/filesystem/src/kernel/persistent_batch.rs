@@ -7,6 +7,7 @@ use super::search::{counted_binary_search, counted_partition_point};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use std::marker::PhantomData;
@@ -549,7 +550,7 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 
     fn finish(mut self) -> Result<Receipt<F::Value>, Failure> {
-        self.work.items_returned = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+        self.work.items_returned = usize_to_u64(self.values.len());
         self.work
             .verify(self.budget)
             .map_err(|error| failed(error.into(), self.work))?;
@@ -583,7 +584,7 @@ fn sort_indexed<K: Ord>(
     if count < 2 {
         return Ok(());
     }
-    let scan_bound = crate::foundation::usize_to_u64(count - 1);
+    let scan_bound = usize_to_u64(count - 1);
     work.checked_add(WorkCounters {
         items_examined: scan_bound,
         ..WorkCounters::default()
@@ -645,9 +646,8 @@ fn next_index(index: usize) -> Result<usize, Error> {
 
 fn sort_admission_bound(count: usize) -> Result<u64, Error> {
     let levels = usize::BITS - count.leading_zeros();
-    u64::try_from(count)
-        .ok()
-        .and_then(|value| value.checked_mul(u64::from(levels)))
+    usize_to_u64(count)
+        .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(Error::Work(WorkError::Overflow))
 }

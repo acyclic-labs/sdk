@@ -7,6 +7,7 @@ use super::search::counted_partition_point;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectReadRequest, ObjectStoreError};
 use std::marker::PhantomData;
@@ -234,18 +235,14 @@ impl<'a, F: Format> Machine<'a, F> {
             .and_then(|value| value.checked_mul(usize::from(limits.maximum_page_height)))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?
             .min(configured_maximum);
-        let maximum_nested = u64::try_from(target)
-            .ok()
-            .and_then(|count| count.checked_mul(u64::from(limits.maximum_name_bytes)))
+        let maximum_nested = usize_to_u64(target)
+            .checked_mul(u64::from(limits.maximum_name_bytes))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?;
-        let maximum_container = u64::try_from(target)
-            .ok()
-            .and_then(|count| {
-                count.checked_mul(u64::try_from(size_of::<F::Value>()).unwrap_or(u64::MAX))
-            })
+        let maximum_container = usize_to_u64(target)
+            .checked_mul(usize_to_u64(size_of::<F::Value>()))
             .ok_or_else(|| OperationFailure::before_work(Error::LimitOverflow))?;
         WorkCounters {
-            items_returned: u64::try_from(maximum_values).unwrap_or(u64::MAX),
+            items_returned: usize_to_u64(maximum_values),
             peak_allocation_bytes: maximum_container.saturating_add(maximum_nested),
             ..WorkCounters::default()
         }
@@ -659,7 +656,7 @@ impl<'a, F: Format> Machine<'a, F> {
                 .release(bytes)
                 .map_err(|error| failed(map_allocation(error), self.work))?;
         }
-        self.work.items_returned = u64::try_from(self.values.len()).unwrap_or(u64::MAX);
+        self.work.items_returned = usize_to_u64(self.values.len());
         self.work
             .verify(self.budget)
             .map_err(|error| failed(error.into(), self.work))?;

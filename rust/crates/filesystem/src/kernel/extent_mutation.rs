@@ -9,6 +9,7 @@ use super::{
     decode_extent_page, encode_extent_page,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
@@ -419,7 +420,7 @@ fn reserve_compile_scratch(
 fn bytes_for<T>(count: usize, work: WorkCounters) -> Result<u64, ExtentMutationFailure> {
     count
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| OperationFailure::new(ExtentMutationError::RangeOverflow, work))
 }
 
@@ -515,18 +516,10 @@ fn normalize_raw_patches(
     deduplicate_coordinates(&mut coordinates, work, budget)?;
     let interval_count = coordinates.len().saturating_sub(1);
     let mut assignments = allocate_vec::<Option<usize>>(interval_count, work, budget, live_bytes)?;
-    charge_items(
-        work,
-        budget,
-        u64::try_from(interval_count).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(interval_count))?;
     assignments.resize(interval_count, None);
     let mut parents = allocate_vec::<usize>(interval_count + 1, work, budget, live_bytes)?;
-    charge_items(
-        work,
-        budget,
-        u64::try_from(interval_count + 1).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(interval_count + 1))?;
     parents.extend(0..=interval_count);
     for (patch_index, patch) in raw.iter().enumerate().rev() {
         charge_items(work, budget, 1)?;
@@ -598,13 +591,7 @@ fn radix_sort(
 ) -> Result<(), ExtentMutationFailure> {
     scratch.resize(values.len(), 0);
     for byte in 0..8_u32 {
-        charge_items(
-            work,
-            budget,
-            u64::try_from(values.len())
-                .unwrap_or(u64::MAX)
-                .saturating_mul(2),
-        )?;
+        charge_items(work, budget, usize_to_u64(values.len()).saturating_mul(2))?;
         charge_copied_bytes(work, budget, bytes_for::<u64>(values.len(), *work)?)?;
         let shift = byte * 8;
         let mut counts = [0_usize; 256];
@@ -646,11 +633,7 @@ fn deduplicate_coordinates(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(), ExtentMutationFailure> {
-    charge_items(
-        work,
-        budget,
-        u64::try_from(values.len()).unwrap_or(u64::MAX),
-    )?;
+    charge_items(work, budget, usize_to_u64(values.len()))?;
     let mut write = 1_usize;
     #[allow(
         clippy::indexing_slicing,
@@ -1170,7 +1153,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         self.allocations
             .claim_bytes(retained_bytes, 0, &mut self.work, self.budget)?;
         let shape = extent_page_decode_shape(&receipt.value, self.limits)?;
-        self.charge_items(u64::try_from(shape.items).unwrap_or(u64::MAX))?;
+        self.charge_items(usize_to_u64(shape.items))?;
         let item_bytes = match shape.kind {
             DecodedPageKind::Leaf => size_of::<Extent>(),
             DecodedPageKind::Internal => size_of::<ExtentChild>(),
@@ -1178,7 +1161,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
         let logical_bytes = shape
             .items
             .checked_mul(item_bytes)
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or(ExtentMutationError::AllocationFailed)?;
         self.allocations.claim_bytes(
             logical_bytes,
@@ -1206,7 +1189,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
 
     async fn write_page(&mut self, page: &ExtentPage) -> Result<ObjectId, ExtentMutationError> {
         let encoded_length = extent_page_encoded_length(page, self.limits.maximum_page_items)?;
-        let encoded_bytes = crate::foundation::usize_to_u64(encoded_length);
+        let encoded_bytes = usize_to_u64(encoded_length);
         let maximum_page_bytes = self.limits.maximum_page_object_bytes();
         if encoded_bytes > maximum_page_bytes {
             return Err(ExtentMutationError::Decode(
@@ -1229,7 +1212,7 @@ impl<S: crate::AsyncObjectStore> Context<'_, S> {
             self.budget,
         )?;
         let encoded = encode_extent_page(page, self.limits.maximum_page_items)?;
-        if u64::try_from(encoded.capacity()).unwrap_or(u64::MAX) != encoded_bytes {
+        if usize_to_u64(encoded.capacity()) != encoded_bytes {
             return Err(ExtentMutationError::AllocationFailed);
         }
         self.work = self.work.checked_add(WorkCounters {

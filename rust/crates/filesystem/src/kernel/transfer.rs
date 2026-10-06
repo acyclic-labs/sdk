@@ -6,7 +6,7 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
-use crate::foundation::VolumeId;
+use crate::foundation::{VolumeId, usize_to_u64};
 use crate::model::VolumeConfig;
 use crate::performance::{
     MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError,
@@ -217,7 +217,7 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
             GenerationTransferError::EmptyBatch,
         ));
     }
-    let object_count = u64::try_from(manifest.objects.len()).unwrap_or(u64::MAX);
+    let object_count = usize_to_u64(manifest.objects.len());
     if cursor.0 > object_count {
         return Err(OperationFailure::before_work(
             GenerationTransferError::InvalidCursor,
@@ -240,7 +240,7 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     let count_usize = usize::try_from(count)
         .map_err(|_| OperationFailure::before_work(GenerationTransferError::TooManyObjects))?;
     let request_bytes = count
-        .checked_mul(u64::try_from(size_of::<ObjectReadRequest>()).unwrap_or(u64::MAX))
+        .checked_mul(usize_to_u64(size_of::<ObjectReadRequest>()))
         .ok_or_else(|| {
             OperationFailure::before_work(GenerationTransferError::Work(WorkError::Overflow))
         })?;
@@ -332,8 +332,8 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
             GenerationTransferError::EmptyBatch,
         ));
     }
-    let object_count = u64::try_from(manifest.objects.len()).unwrap_or(u64::MAX);
-    let body_count = u64::try_from(bodies.len()).unwrap_or(u64::MAX);
+    let object_count = usize_to_u64(manifest.objects.len());
+    let body_count = usize_to_u64(bodies.len());
     if cursor.0 > object_count {
         return Err(OperationFailure::before_work(
             GenerationTransferError::InvalidCursor,

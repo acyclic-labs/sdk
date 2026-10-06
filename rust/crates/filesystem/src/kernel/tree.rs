@@ -6,7 +6,7 @@ use super::types::{
     FileKind, LogicalName, NameEncoding, TreeChild, TreeEntry, TreePage, TreePageError,
     digest_object,
 };
-use crate::foundation::FileId;
+use crate::foundation::{FileId, usize_to_u64};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 
 const DOMAIN: &[u8; 8] = b"ACYFSTRE";
@@ -128,7 +128,7 @@ pub(crate) fn tree_page_decode_shape(
                 decoder.u8()?;
                 let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
                 nested_bytes = nested_bytes
-                    .checked_add(u64::try_from(name_bytes).unwrap_or(u64::MAX))
+                    .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
                 let _: [u8; 16] = decoder.fixed()?;
                 decoder.u8()?;
@@ -140,7 +140,7 @@ pub(crate) fn tree_page_decode_shape(
                 decoder.u8()?;
                 let name_bytes = decoder.skip_bounded_bytes(limits.maximum_name_bytes)?;
                 nested_bytes = nested_bytes
-                    .checked_add(u64::try_from(name_bytes).unwrap_or(u64::MAX))
+                    .checked_add(usize_to_u64(name_bytes))
                     .ok_or(CanonicalDecodeError::LengthOverflow)?;
                 let _: [u8; 32] = decoder.fixed()?;
             }

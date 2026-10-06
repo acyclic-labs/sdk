@@ -10,6 +10,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
@@ -552,7 +553,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
                     work = build_add(
                         work,
                         WorkCounters {
-                            source_bytes_read: u64::try_from(count).unwrap_or(u64::MAX),
+                            source_bytes_read: usize_to_u64(count),
                             ..WorkCounters::default()
                         },
                     )?;
@@ -599,7 +600,7 @@ async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
         if chunk.len() > allocation {
             return Err(build_failed(BlobBuildError::TooLarge, work));
         }
-        let retained_capacity = chunk.len() as u64;
+        let retained_capacity = usize_to_u64(chunk.len());
         let prospective = build_add(
             work,
             WorkCounters {
@@ -719,9 +720,8 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
     fn new(inner: &'a S, budget: WorkBudget) -> Result<(Self, WorkCounters), BlobBuildFailure> {
         let minimum = WorkCounters {
             allocation_operations: 1,
-            peak_allocation_bytes: u64::try_from(BLOB_BATCH_OBJECTS)
-                .unwrap_or(u64::MAX)
-                .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX)),
+            peak_allocation_bytes: usize_to_u64(BLOB_BATCH_OBJECTS)
+                .saturating_mul(usize_to_u64(size_of::<HashedObject>())),
             ..WorkCounters::default()
         };
         minimum
@@ -731,9 +731,8 @@ impl<'a, S: AsyncObjectStore> BlobBatchStore<'a, S> {
         writes
             .try_reserve_exact(BLOB_BATCH_OBJECTS)
             .map_err(|_| build_failed(BlobBuildError::AllocationFailed, WorkCounters::default()))?;
-        let vector_bytes = u64::try_from(writes.capacity())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(u64::try_from(size_of::<HashedObject>()).unwrap_or(u64::MAX));
+        let vector_bytes =
+            usize_to_u64(writes.capacity()).saturating_mul(usize_to_u64(size_of::<HashedObject>()));
         let admitted = WorkCounters {
             allocation_operations: 1,
             peak_allocation_bytes: vector_bytes,
@@ -828,7 +827,7 @@ fn allocate_chunk_buffer(
     work: WorkCounters,
     budget: WorkBudget,
 ) -> Result<(Vec<u8>, WorkCounters, u64, u64), BlobBuildFailure> {
-    let allocation_bytes = u64::try_from(allocation).unwrap_or(u64::MAX);
+    let allocation_bytes = usize_to_u64(allocation);
     let simultaneous = index_live_bytes
         .checked_add(allocation_bytes)
         .and_then(|bytes| bytes.checked_add(retained_batch_bytes))
@@ -847,7 +846,7 @@ fn allocate_chunk_buffer(
         return Err(build_failed(BlobBuildError::AllocationFailed, work));
     }
     bytes.resize(allocation, 0);
-    let retained_capacity = u64::try_from(bytes.capacity()).unwrap_or(u64::MAX);
+    let retained_capacity = usize_to_u64(bytes.capacity());
     let actual_simultaneous = index_live_bytes
         .checked_add(retained_capacity)
         .and_then(|value| value.checked_add(retained_batch_bytes))
@@ -1042,7 +1041,7 @@ impl BlobIndexBuilder {
         budget: WorkBudget,
     ) -> Result<(), BlobBuildFailure> {
         while self.levels.len() <= level {
-            let bytes = u64::try_from(size_of::<Vec<BlobChild>>()).unwrap_or(u64::MAX);
+            let bytes = usize_to_u64(size_of::<Vec<BlobChild>>());
             let next_live = self
                 .live_allocation_bytes
                 .checked_add(bytes)
@@ -1143,7 +1142,7 @@ fn reserve_page_items<T>(
     }
     let bytes = width
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| build_failed(BlobBuildError::TooLarge, *work))?;
     let next_live = live_allocation_bytes
         .checked_add(bytes)
@@ -1179,13 +1178,13 @@ async fn put_blob_page<S: AsyncObjectStore>(
     if encoded.len() > usize::try_from(options.page_bytes).unwrap_or(usize::MAX) {
         return Err(build_failed(
             BlobBuildError::PageTooLarge {
-                observed: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+                observed: usize_to_u64(encoded.len()),
                 maximum: u64::from(options.page_bytes),
             },
             *work,
         ));
     }
-    let encoded_bytes = u64::try_from(encoded.capacity()).unwrap_or(u64::MAX);
+    let encoded_bytes = usize_to_u64(encoded.capacity());
     let simultaneous = live_allocation_bytes
         .checked_add(encoded_bytes)
         .and_then(|bytes| bytes.checked_add(retained))
@@ -1194,7 +1193,7 @@ async fn put_blob_page<S: AsyncObjectStore>(
         *work,
         WorkCounters {
             page_writes: 1,
-            bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
+            bytes_encoded: usize_to_u64(encoded.len()),
             allocation_operations: 1,
             ..WorkCounters::default()
         },
@@ -1580,12 +1579,10 @@ impl BlobRangeMachine {
         if chunk_count < 2 {
             return Ok(None);
         }
-        let scratch_bytes = u64::try_from(chunk_count)
-            .unwrap_or(u64::MAX)
-            .checked_mul(
-                u64::try_from(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>())
-                    .unwrap_or(u64::MAX),
-            )
+        let scratch_bytes = usize_to_u64(chunk_count)
+            .checked_mul(usize_to_u64(
+                size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>(),
+            ))
             .ok_or_else(|| failed(BlobReadError::Work(WorkError::Overflow), self.work))?;
         let live_bytes = self
             .allocations
@@ -1806,7 +1803,7 @@ impl BlobRangeMachine {
             .map_err(|error| failed(error.into(), self.work))?;
         let shape = blob_page_decode_shape(&receipt.value, self.limits)
             .map_err(|error| failed(error.into(), self.work))?;
-        self.add_items(u64::try_from(shape.items).unwrap_or(u64::MAX))?;
+        self.add_items(usize_to_u64(shape.items))?;
         let item_bytes = match shape.kind {
             DecodedPageKind::Leaf => size_of::<BlobChunkRef>(),
             DecodedPageKind::Internal => size_of::<BlobChild>(),
@@ -1814,7 +1811,7 @@ impl BlobRangeMachine {
         let decoded_bytes = shape
             .items
             .checked_mul(item_bytes)
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or_else(|| failed(BlobReadError::AllocationFailed, self.work))?;
         self.allocations
             .claim_bytes(
@@ -2037,7 +2034,7 @@ impl BlobRangeMachine {
             .claim_bytes(retained_bytes, 0, &mut self.work, self.budget)
             .map_err(|error| failed(error.into(), self.work))?;
         let chunk_length = chunk.end_offset - chunk.first_offset;
-        if u64::try_from(receipt.value.len()).unwrap_or(u64::MAX) != chunk_length {
+        if usize_to_u64(receipt.value.len()) != chunk_length {
             return Err(failed(BlobReadError::ChunkLengthMismatch, self.work));
         }
         let start = self.range.offset.max(chunk.first_offset) - chunk.first_offset;
@@ -2063,8 +2060,8 @@ impl BlobRangeMachine {
         self.work = add_work(
             self.work,
             WorkCounters {
-                bytes_copied: u64::try_from(end - start).unwrap_or(u64::MAX),
-                output_bytes: u64::try_from(end - start).unwrap_or(u64::MAX),
+                bytes_copied: usize_to_u64(end - start),
+                output_bytes: usize_to_u64(end - start),
                 items_returned: 1,
                 ..WorkCounters::default()
             },

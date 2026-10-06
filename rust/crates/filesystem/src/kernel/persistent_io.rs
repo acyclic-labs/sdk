@@ -8,6 +8,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
@@ -434,7 +435,7 @@ where
             .try_reserve_exact(count)
             .map_err(|_| Error::AllocationFailed)?;
         let prospective = work.checked_add(WorkCounters {
-            page_reads: u64::try_from(count).unwrap_or(u64::MAX),
+            page_reads: usize_to_u64(count),
             ..WorkCounters::default()
         })?;
         prospective.verify(budget)?;
@@ -503,7 +504,7 @@ fn batch_retained_bytes(reads: &[ObjectRead], source_bytes: u64) -> Result<(u64,
     let result_container_bytes = reads
         .len()
         .checked_mul(size_of::<ObjectRead>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or(Error::AllocationFailed)?;
     let container_bytes = source_bytes
         .checked_add(result_container_bytes)
@@ -628,7 +629,7 @@ fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
         DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<F::Value>()),
         DecodedPageKind::Internal => shape.items.checked_mul(size_of::<Child<F::Key>>()),
     }
-    .map(crate::foundation::usize_to_u64)?;
+    .map(usize_to_u64)?;
     container_bytes.checked_add(shape.nested_bytes)
 }
 
@@ -654,7 +655,7 @@ fn decode_read<F: Format>(
 ) -> Result<OwnedPage<F>, Error> {
     let prepared = (|| -> Result<_, Error> {
         let shape = F::decode_shape(read, limits)?;
-        work.charge_items(u64::try_from(shape.items).unwrap_or(u64::MAX), &budget)?;
+        work.charge_items(usize_to_u64(shape.items), &budget)?;
         let logical_bytes = logical_page_bytes::<F>(shape).ok_or(Error::AllocationFailed)?;
         Ok((shape, logical_bytes))
     })();

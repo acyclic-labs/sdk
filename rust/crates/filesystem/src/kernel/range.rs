@@ -10,6 +10,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
@@ -504,7 +505,7 @@ impl RangeMachine {
         let shape = extent_page_decode_shape(&receipt.value, self.limits)
             .map_err(|error| failed(error.into(), self.work))?;
         self.add_work(WorkCounters {
-            items_examined: u64::try_from(shape.items).unwrap_or(u64::MAX),
+            items_examined: usize_to_u64(shape.items),
             ..WorkCounters::default()
         })?;
         let item_bytes = match shape.kind {
@@ -514,7 +515,7 @@ impl RangeMachine {
         let decoded_bytes = shape
             .items
             .checked_mul(item_bytes)
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or_else(|| failed(ExtentReadError::AllocationFailed, self.work))?;
         self.allocations
             .claim_bytes(

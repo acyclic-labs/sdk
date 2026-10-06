@@ -10,6 +10,7 @@ use super::{
 };
 use crate::async_storage::{self, AsyncObjectStore};
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::heap_future::in_heap;
 use crate::model::{FilesystemProfile, VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -64,9 +65,8 @@ impl<'a, S> OperationReadCache<'a, S> {
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
-        let table = u64::try_from(slot_count)
-            .unwrap_or(u64::MAX)
-            .checked_mul(u64::try_from(size_of::<Option<CachedObject>>()).unwrap_or(u64::MAX))
+        let table = usize_to_u64(slot_count)
+            .checked_mul(usize_to_u64(size_of::<Option<CachedObject>>()))
             .ok_or_else(|| {
                 OperationFailure::before_work(PathLookupError::Work(WorkError::Overflow))
             })?;
@@ -346,7 +346,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             ..WorkCounters::default()
         };
         if let Some(value) = hit {
-            let observed = u64::try_from(value.bytes.len()).unwrap_or(u64::MAX);
+            let observed = usize_to_u64(value.bytes.len());
             if observed > maximum_bytes {
                 return Err(ObjectFailure::new(
                     ObjectStoreError::TooLarge {
@@ -1497,9 +1497,8 @@ async fn lookup_path_queries_async<S: AsyncObjectStore>(
     if done.contains(&0) {
         return Err(OperationFailure::new(PathLookupError::KindMismatch, work));
     }
-    let retained_allocation_bytes = u64::try_from(entries.capacity())
-        .unwrap_or(u64::MAX)
-        .checked_mul(u64::try_from(size_of::<PathBatchEntry>()).unwrap_or(u64::MAX))
+    let retained_allocation_bytes = usize_to_u64(entries.capacity())
+        .checked_mul(usize_to_u64(size_of::<PathBatchEntry>()))
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;
     Ok(ObservedPathBatch {
         lookup: PathBatchLookup {
@@ -1596,7 +1595,7 @@ fn copy_batch_name(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<(LogicalName, u64), PathLookupFailure> {
-    let bytes = crate::foundation::usize_to_u64(source.as_bytes().len());
+    let bytes = usize_to_u64(source.as_bytes().len());
     let attempted = work
         .checked_add(WorkCounters {
             allocation_operations: 1,
@@ -1645,7 +1644,7 @@ fn copy_observation_name<S>(
     work: WorkCounters,
     budget: WorkBudget,
 ) -> Result<CopiedObservationName, PathLookupFailure> {
-    let bytes = crate::foundation::usize_to_u64(source.as_bytes().len());
+    let bytes = usize_to_u64(source.as_bytes().len());
     let next_external = external_resident_bytes
         .checked_add(bytes)
         .ok_or_else(|| OperationFailure::new(PathLookupError::Work(WorkError::Overflow), work))?;

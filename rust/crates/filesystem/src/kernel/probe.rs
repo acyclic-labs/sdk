@@ -11,7 +11,7 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::foundation::{Digest, FileId, GenerationId};
+use crate::foundation::{Digest, FileId, GenerationId, usize_to_u64};
 use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ByteRange, ObjectId, ObjectKind, ObjectStoreError};
@@ -51,7 +51,7 @@ pub fn capture_content_range_bytes(
             WorkCounters::default(),
         ));
     }
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > maximum_bytes {
+    if usize_to_u64(bytes.len()) > maximum_bytes {
         return Err(failed(
             AuthenticatedProbeError::ContentRangeTooLarge,
             WorkCounters::default(),
@@ -259,13 +259,12 @@ pub(crate) fn capture_file_record_state(
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
     work = work
         .checked_add(WorkCounters {
-            bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-            bytes_hashed: u64::try_from(encoded.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+            bytes_encoded: usize_to_u64(encoded.len()),
+            bytes_hashed: usize_to_u64(encoded.len())
+                .saturating_add(usize_to_u64(domain.len()))
                 .saturating_add(8),
             allocation_operations: 1,
-            peak_allocation_bytes: u64::try_from(encoded.capacity()).unwrap_or(u64::MAX),
+            peak_allocation_bytes: usize_to_u64(encoded.capacity()),
             ..WorkCounters::default()
         })
         .map_err(|error| failed(error.into(), work))?;
@@ -293,10 +292,9 @@ pub(crate) fn capture_sparse_seek_state(
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
     work = work
         .checked_add(WorkCounters {
-            bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-            bytes_hashed: u64::try_from(encoded.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+            bytes_encoded: usize_to_u64(encoded.len()),
+            bytes_hashed: usize_to_u64(encoded.len())
+                .saturating_add(usize_to_u64(domain.len()))
                 .saturating_add(8),
             ..WorkCounters::default()
         })
@@ -312,9 +310,7 @@ fn capture_file_length_state(
     mut work: WorkCounters,
 ) -> Result<ProbeReceipt, ProbeFailure> {
     let logical_bytes = match record.payload {
-        FilePayload::InlineRegular(data) => {
-            u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX)
-        }
+        FilePayload::InlineRegular(data) => usize_to_u64(data.as_bytes().len()),
         FilePayload::Regular { logical_bytes, .. } => logical_bytes,
         FilePayload::Directory { .. }
         | FilePayload::SymbolicLink { .. }
@@ -329,10 +325,9 @@ fn capture_file_length_state(
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
     work = work
         .checked_add(WorkCounters {
-            bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-            bytes_hashed: u64::try_from(encoded.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+            bytes_encoded: usize_to_u64(encoded.len()),
+            bytes_hashed: usize_to_u64(encoded.len())
+                .saturating_add(usize_to_u64(domain.len()))
                 .saturating_add(8),
             ..WorkCounters::default()
         })
@@ -353,13 +348,12 @@ pub(crate) fn capture_directory_name_state(
     let value = DependencyState::Present(semantic_digest(domain, &encoded));
     work = work
         .checked_add(WorkCounters {
-            bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-            bytes_hashed: u64::try_from(encoded.len())
-                .unwrap_or(u64::MAX)
-                .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+            bytes_encoded: usize_to_u64(encoded.len()),
+            bytes_hashed: usize_to_u64(encoded.len())
+                .saturating_add(usize_to_u64(domain.len()))
                 .saturating_add(8),
             allocation_operations: 1,
-            peak_allocation_bytes: u64::try_from(encoded.capacity()).unwrap_or(u64::MAX),
+            peak_allocation_bytes: usize_to_u64(encoded.capacity()),
             ..WorkCounters::default()
         })
         .map_err(|error| failed(error.into(), work))?;
@@ -389,8 +383,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
         };
         let range = ByteRange { offset, length };
         let hash_work = WorkCounters {
-            bytes_hashed: u64::try_from(CONTENT_RANGE_DOMAIN.len())
-                .unwrap_or(u64::MAX)
+            bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len())
                 .saturating_add(8)
                 .saturating_add(length),
             ..WorkCounters::default()
@@ -483,7 +476,7 @@ impl<S> AuthenticatedGenerationProbe<'_, S> {
             )
         })?;
         let bytes = data.as_bytes();
-        if end > u64::try_from(bytes.len()).unwrap_or(u64::MAX) {
+        if end > usize_to_u64(bytes.len()) {
             return Err(failed(
                 AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange),
                 work,
@@ -530,8 +523,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
                     let mut remaining_zeroes = span.length;
                     while remaining_zeroes != 0 {
                         let count = usize::try_from(
-                            remaining_zeroes
-                                .min(u64::try_from(ZERO_HASH_BLOCK.len()).unwrap_or(u64::MAX)),
+                            remaining_zeroes.min(usize_to_u64(ZERO_HASH_BLOCK.len())),
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
                         // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
@@ -543,7 +535,7 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
                             reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
                         )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
-                        remaining_zeroes -= u64::try_from(count).unwrap_or(0);
+                        remaining_zeroes -= usize_to_u64(count);
                     }
                 }
                 ExtentKind::Content {
@@ -618,13 +610,12 @@ impl<S: crate::ImmediateObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let digest = semantic_digest(domain, &encoded);
         work = work
             .checked_add(WorkCounters {
-                bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-                bytes_hashed: u64::try_from(encoded.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+                bytes_encoded: usize_to_u64(encoded.len()),
+                bytes_hashed: usize_to_u64(encoded.len())
+                    .saturating_add(usize_to_u64(domain.len()))
                     .saturating_add(8),
                 allocation_operations: 1,
-                peak_allocation_bytes: u64::try_from(encoded.capacity()).unwrap_or(u64::MAX),
+                peak_allocation_bytes: usize_to_u64(encoded.capacity()),
                 ..WorkCounters::default()
             })
             .map_err(|error| failed(error.into(), work))?;
@@ -876,8 +867,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
             };
             let range = ByteRange { offset, length };
             let hash_work = WorkCounters {
-                bytes_hashed: u64::try_from(CONTENT_RANGE_DOMAIN.len())
-                    .unwrap_or(u64::MAX)
+                bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len())
                     .saturating_add(8)
                     .saturating_add(length),
                 ..WorkCounters::default()
@@ -986,8 +976,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                             .check()
                             .map_err(|_| failed(AuthenticatedProbeError::Cancelled, work))?;
                         let count = usize::try_from(
-                            remaining_zeroes
-                                .min(u64::try_from(ZERO_HASH_BLOCK.len()).unwrap_or(u64::MAX)),
+                            remaining_zeroes.min(usize_to_u64(ZERO_HASH_BLOCK.len())),
                         )
                         .unwrap_or(ZERO_HASH_BLOCK.len());
                         // `count = min(remaining_zeroes, ZERO_HASH_BLOCK.len())`
@@ -999,7 +988,7 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
                             reason = "count <= ZERO_HASH_BLOCK.len() by construction above (min() and its unwrap_or branch are both bounded by ZERO_HASH_BLOCK.len())"
                         )]
                         hasher.update(&ZERO_HASH_BLOCK[..count]);
-                        remaining_zeroes -= u64::try_from(count).unwrap_or(0);
+                        remaining_zeroes -= usize_to_u64(count);
                     }
                 }
                 ExtentKind::Content {
@@ -1079,13 +1068,12 @@ impl<S: AsyncObjectStore> AuthenticatedGenerationProbe<'_, S> {
         let digest = semantic_digest(domain, &encoded);
         work = work
             .checked_add(WorkCounters {
-                bytes_encoded: u64::try_from(encoded.len()).unwrap_or(u64::MAX),
-                bytes_hashed: u64::try_from(encoded.len())
-                    .unwrap_or(u64::MAX)
-                    .saturating_add(u64::try_from(domain.len()).unwrap_or(u64::MAX))
+                bytes_encoded: usize_to_u64(encoded.len()),
+                bytes_hashed: usize_to_u64(encoded.len())
+                    .saturating_add(usize_to_u64(domain.len()))
                     .saturating_add(8),
                 allocation_operations: 1,
-                peak_allocation_bytes: u64::try_from(encoded.capacity()).unwrap_or(u64::MAX),
+                peak_allocation_bytes: usize_to_u64(encoded.capacity()),
                 ..WorkCounters::default()
             })
             .map_err(|error| failed(error.into(), work))?;
@@ -1349,7 +1337,7 @@ fn inline_seek_result(
     offset: u64,
     target: ExtentSeekTarget,
 ) -> Option<u64> {
-    let logical_bytes = u64::try_from(data.as_bytes().len()).unwrap_or(u64::MAX);
+    let logical_bytes = usize_to_u64(data.as_bytes().len());
     if offset > logical_bytes {
         return None;
     }
@@ -1365,10 +1353,9 @@ fn hash_content_range(
     work: WorkCounters,
 ) -> Result<ProbeReceipt, ProbeFailure> {
     let hash_work = WorkCounters {
-        bytes_hashed: u64::try_from(CONTENT_RANGE_DOMAIN.len())
-            .unwrap_or(u64::MAX)
+        bytes_hashed: usize_to_u64(CONTENT_RANGE_DOMAIN.len())
             .saturating_add(8)
-            .saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
+            .saturating_add(usize_to_u64(bytes.len())),
         ..WorkCounters::default()
     };
     let next = work
@@ -1385,7 +1372,7 @@ fn hash_content_range(
 fn semantic_digest(domain: &[u8], bytes: &[u8]) -> Digest {
     let mut hasher = blake3::Hasher::new();
     hasher.update(domain);
-    hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(&usize_to_u64(bytes.len()).to_le_bytes());
     hasher.update(bytes);
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
@@ -1419,7 +1406,7 @@ fn allocate_capture_output<T>(
     let input_bytes = input
         .capacity()
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| {
             failed(
                 AuthenticatedProbeError::AllocationFailed,
@@ -1436,7 +1423,7 @@ fn allocate_capture_output<T>(
     let output_bytes = captured
         .capacity()
         .checked_mul(size_of::<Dependency>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| {
             failed(
                 AuthenticatedProbeError::AllocationFailed,

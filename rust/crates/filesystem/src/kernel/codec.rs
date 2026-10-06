@@ -1,5 +1,6 @@
 //! Small fail-closed codec used by every hash-bearing filesystem object.
 
+use crate::foundation::usize_to_u64;
 use crate::model::VolumeConfig;
 use thiserror::Error;
 
@@ -152,7 +153,7 @@ impl<'a> Decoder<'a> {
         expected_version: u16,
         maximum_object_bytes: u64,
     ) -> Result<Self, CanonicalDecodeError> {
-        let observed = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let observed = usize_to_u64(bytes.len());
         if observed > maximum_object_bytes {
             return Err(CanonicalDecodeError::ObjectTooLarge {
                 observed,

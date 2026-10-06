@@ -1,5 +1,6 @@
 //! Deterministic logical allocation accounting for bounded kernel work.
 
+use crate::foundation::usize_to_u64;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::ObjectId;
 use std::mem::size_of;
@@ -73,7 +74,7 @@ impl AllocationLedger {
     ) -> Result<u64, AllocationError> {
         let bytes = count
             .checked_mul(size_of::<T>())
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or(AllocationError::Overflow)?;
         self.claim_bytes(bytes, u64::from(count != 0), work, budget)?;
         Ok(bytes)
@@ -274,8 +275,7 @@ impl VisitedObjectSet {
     fn charge_copied(work: &mut WorkCounters, budget: &WorkBudget) -> Result<(), AllocationError> {
         work.charge(
             &WorkCounters {
-                bytes_copied: u64::try_from(size_of::<ObjectId>())
-                    .map_err(|_| AllocationError::Overflow)?,
+                bytes_copied: usize_to_u64(size_of::<ObjectId>()),
                 ..WorkCounters::UNCHARGED
             },
             budget,

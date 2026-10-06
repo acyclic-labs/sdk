@@ -13,6 +13,7 @@ use super::{
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectReadRetention, ObjectStoreError};
 use std::mem::size_of;
@@ -317,9 +318,7 @@ fn advance_internal(
 }
 
 fn nested_name_bytes(name: Option<&AttributeName>) -> u64 {
-    name.map_or(0, |bound| {
-        u64::try_from(bound.as_bytes().len()).unwrap_or(u64::MAX)
-    })
+    name.map_or(0, |bound| usize_to_u64(bound.as_bytes().len()))
 }
 
 struct DecodedAttributePage {
@@ -378,7 +377,7 @@ async fn read_page<S: AsyncObjectStore>(
         .map_err(|error| failed(map_allocation(error), *work))?;
     let shape = attribute_page_decode_shape(&receipt.value, limits)
         .map_err(|error| failed(error.into(), *work))?;
-    charge_items(work, u64::try_from(shape.items).unwrap_or(u64::MAX), budget)?;
+    charge_items(work, usize_to_u64(shape.items), budget)?;
     let decoded_work = work
         .checked_add(WorkCounters {
             bytes_copied: shape.nested_bytes,
@@ -393,7 +392,7 @@ async fn read_page<S: AsyncObjectStore>(
         DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<AttributeEntry>()),
         DecodedPageKind::Internal => shape.items.checked_mul(size_of::<AttributeChild>()),
     }
-    .map(crate::foundation::usize_to_u64)
+    .map(usize_to_u64)
     .ok_or_else(|| failed(AttributeLookupError::AllocationFailed, *work))?;
     let logical_bytes = container_bytes
         .checked_add(shape.nested_bytes)
