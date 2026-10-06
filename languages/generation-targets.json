@@ -271,10 +271,10 @@
         "Qualify custom options, presence, streaming and Rust facade generation."
       ],
       "package": {
-        "artifact": "dev.acyclic:sdk-java",
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
         "ecosystem": "Maven Central",
         "installable": true,
-        "notes": "Java transport package; Kotlin is tracked separately for idiomatic APIs."
+        "notes": "Unified JVM transport artifact with generated Java, Kotlin and Scala facades."
       },
       "producer": {
         "args": [
@@ -763,10 +763,10 @@
         "Run Actors plus Stream and Objects vectors with proto3 presence and custom options."
       ],
       "package": {
-        "artifact": "com.acyclic:sdk-kotlin",
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
         "ecosystem": "Maven Central",
         "installable": true,
-        "notes": "Maven/Gradle; coroutine facade remains generated from Rust operation metadata."
+        "notes": "Unified JVM transport artifact; the Kotlin facade is generated from Rust operation metadata."
       },
       "producer": {
         "args": [
@@ -844,10 +844,10 @@
         "Verify custom validation options, descriptor digest handshake, metadata, cancellation and recovery before promotion."
       ],
       "package": {
-        "artifact": "dev.acyclic:sdk-scala_2.13",
+        "artifact": "dev.acyclic:acyclic-sdk-jvm-transport",
         "ecosystem": "Maven Central/SBT",
         "installable": true,
-        "notes": "The ScalaPB artifact dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0 compiles, publishes and is consumed from an isolated Ivy resolver with sbt 1.10.11; receipt: research/additional-languages/scala-receipt.json."
+        "notes": "Unified JVM transport artifact with generated Scala sources; the separately pinned ScalaPB prototype is retained as research evidence."
       },
       "remote": {
         "level": "full-grpc",

@@ -525,10 +525,10 @@ const CATALOG: Catalog = Catalog {
             }),
             package: Package {
                 ecosystem: "Maven Central",
-                artifact: "dev.acyclic:sdk-java",
+                artifact: "dev.acyclic:acyclic-sdk-jvm-transport",
                 installable: true,
                 notes: Some(
-                    "Java transport package; Kotlin is tracked separately for idiomatic APIs.",
+                    "Unified JVM transport artifact with generated Java, Kotlin and Scala facades.",
                 ),
             },
             evidence: &[Evidence {
@@ -1005,10 +1005,10 @@ const CATALOG: Catalog = Catalog {
             }),
             package: Package {
                 ecosystem: "Maven Central",
-                artifact: "com.acyclic:sdk-kotlin",
+                artifact: "dev.acyclic:acyclic-sdk-jvm-transport",
                 installable: true,
                 notes: Some(
-                    "Maven/Gradle; coroutine facade remains generated from Rust operation metadata.",
+                    "Unified JVM transport artifact; the Kotlin facade is generated from Rust operation metadata.",
                 ),
             },
             evidence: &[
@@ -1061,10 +1061,10 @@ const CATALOG: Catalog = Catalog {
             producer: None,
             package: Package {
                 ecosystem: "Maven Central/SBT",
-                artifact: "dev.acyclic:sdk-scala_2.13",
+                artifact: "dev.acyclic:acyclic-sdk-jvm-transport",
                 installable: true,
                 notes: Some(
-                    "The ScalaPB artifact dev.acyclic:acyclic-sdk-scala-grpc-prototype_2.13:0.1.0 compiles, publishes and is consumed from an isolated Ivy resolver with sbt 1.10.11; receipt: research/additional-languages/scala-receipt.json.",
+                    "Unified JVM transport artifact with generated Scala sources; the separately pinned ScalaPB prototype is retained as research evidence.",
                 ),
             },
             evidence: &[

@@ -89,7 +89,7 @@
     "java": {
       "implemented": true,
       "registry": "Maven Central",
-      "umbrella": "dev.acyclic:sdk-java"
+      "umbrella": "dev.acyclic:acyclic-sdk-jvm-transport"
     },
     "julia": {
       "implemented": true,
@@ -99,7 +99,7 @@
     "kotlin": {
       "implemented": true,
       "registry": "Maven Central",
-      "umbrella": "com.acyclic:sdk-kotlin"
+      "umbrella": "dev.acyclic:acyclic-sdk-jvm-transport"
     },
     "lua": {
       "implemented": false,
@@ -159,7 +159,7 @@
     "scala": {
       "implemented": false,
       "registry": "Maven Central/SBT",
-      "umbrella": "dev.acyclic:sdk-scala_2.13"
+      "umbrella": "dev.acyclic:acyclic-sdk-jvm-transport"
     },
     "swift": {
       "implemented": true,
