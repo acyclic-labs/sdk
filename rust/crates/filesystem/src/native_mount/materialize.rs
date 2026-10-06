@@ -141,6 +141,41 @@ pub enum HostPathRestore {
     Removed,
 }
 
+/// The physical entry a conditional host replacement is allowed to displace.
+///
+/// This is deliberately smaller than a host metadata record. Regular files
+/// carry a content digest; other entries carry their kind. The replacement
+/// boundary compares the displaced entry after the kernel publication, so a
+/// user edit racing the publication is rolled back instead of overwritten.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostPathExpectation {
+    present: bool,
+    kind: Option<FileKind>,
+    content_digest: Option<[u8; 32]>,
+}
+
+impl HostPathExpectation {
+    /// An absent entry is the expected pre-publication state.
+    #[must_use]
+    pub const fn absent() -> Self {
+        Self {
+            present: false,
+            kind: None,
+            content_digest: None,
+        }
+    }
+
+    /// A present entry with an optional authenticated content digest.
+    #[must_use]
+    pub fn present(kind: FileKind, content: Option<&[u8]>) -> Self {
+        Self {
+            present: true,
+            kind: Some(kind),
+            content_digest: content.map(|bytes| *blake3::hash(bytes).as_bytes()),
+        }
+    }
+}
+
 /// Fail-closed explicit materialization errors.
 #[derive(Debug, Error)]
 pub enum MaterializeError {
@@ -168,6 +203,9 @@ pub enum MaterializeError {
     /// Selected paths overlap, so pathwise staging would be order-dependent.
     #[error("materialization paths must be unique and non-overlapping")]
     OverlappingPaths,
+    /// The host entry changed while a conditional replacement was publishing.
+    #[error("host path changed during conditional restore")]
+    ConcurrentHostEdit,
     /// Canonical engine operation failed.
     #[error("filesystem engine failed: {0}")]
     Engine(String),
@@ -526,6 +564,40 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    restore_checkout_host_path_if_unchanged(
+        checkout,
+        relative,
+        replacement,
+        options,
+        None,
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Restores one path while conditionally displacing only the supplied host
+/// entry. Atomic replacement exchanges the target and staged entries first,
+/// compares the displaced entry, and exchanges back on a mismatch. This uses
+/// the native exchange/recovery boundary rather than a second publication
+/// engine, so a caller can safely reconcile an interrupted operation.
+pub async fn restore_checkout_host_path_if_unchanged<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+    expected: Option<&HostPathExpectation>,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    if expected.is_some() && replacement != HostPathReplacement::Atomic {
+        return Err(OperationFailure::before_work(
+            MaterializeError::InvalidOptions,
+        ));
+    }
     validate_host_relative(relative).map_err(OperationFailure::before_work)?;
     validate_bounds(options).map_err(OperationFailure::before_work)?;
     if cancellation.is_cancelled() {
@@ -533,6 +605,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             "materialization cancelled".into(),
         )));
     }
+    let expected = expected.cloned();
     let destination_root = options.destination.clone();
     let relative = relative.to_path_buf();
     let (destination, stage_root, _restore_lock) = tokio::task::spawn_blocking({
@@ -569,13 +642,19 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
                     .file_name()
                     .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
                 remove_any(&stage_root)?;
-                remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
+                remove_restored_path_if_unchanged(
+                    &parent,
+                    Path::new(name),
+                    &destination_root,
+                    &relative,
+                    expected.as_ref(),
+                )
             })
             .await
             .map_err(|error| {
                 OperationFailure::new(MaterializeError::Engine(error.to_string()), work)
             })?
-            .map_err(|error| OperationFailure::new(MaterializeError::Io(error), work))?;
+            .map_err(|error| OperationFailure::new(error, work))?;
             return Ok(OperationReceipt {
                 value: HostPathRestore::Removed,
                 work,
@@ -586,7 +665,8 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             return Err(failure);
         }
     };
-    tokio::task::spawn_blocking(move || {
+    let cleanup_stage = stage_root.clone();
+    let publication = tokio::task::spawn_blocking(move || {
         publish_restore(
             &destination_root,
             &relative,
@@ -594,13 +674,24 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             &staged,
             &stage_root,
             replacement,
+            expected.as_ref(),
         )
     })
-    .await
-    .map_err(|error| {
-        OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
-    })?
-    .map_err(|error| OperationFailure::new(error, receipt.work))?;
+    .await;
+    match publication {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            let _ = tokio::task::spawn_blocking(move || remove_any(&cleanup_stage)).await;
+            return Err(OperationFailure::new(error, receipt.work));
+        }
+        Err(error) => {
+            let _ = tokio::task::spawn_blocking(move || remove_any(&cleanup_stage)).await;
+            return Err(OperationFailure::new(
+                MaterializeError::Engine(error.to_string()),
+                receipt.work,
+            ));
+        }
+    }
     Ok(OperationReceipt {
         value: HostPathRestore::Restored,
         work: receipt.work,
@@ -660,6 +751,7 @@ fn publish_restore(
     staged: &Path,
     stage_root: &Path,
     replacement: HostPathReplacement,
+    expected: Option<&HostPathExpectation>,
 ) -> Result<(), MaterializeError> {
     let destination_parent = held_parent(destination_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
@@ -680,15 +772,38 @@ fn publish_restore(
             )?,
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            stage_parent.rename_to(
-                Path::new(staged_name),
-                &destination_parent,
-                Path::new(destination_name),
-            )?;
+            if expected.is_some_and(|expected| expected.present) {
+                return Err(MaterializeError::ConcurrentHostEdit);
+            }
+            stage_parent
+                .rename_to(
+                    Path::new(staged_name),
+                    &destination_parent,
+                    Path::new(destination_name),
+                )
+                .map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::AlreadyExists {
+                        MaterializeError::ConcurrentHostEdit
+                    } else {
+                        MaterializeError::Io(error)
+                    }
+                })?;
             sync_restore_parent(destination)?;
             sync_restore_parent(staged)?;
         }
         Err(error) => return Err(error.into()),
+    }
+    if let Some(expected) = expected {
+        if !host_path_matches(staged, expected)? {
+            if replacement == HostPathReplacement::Atomic {
+                crate::exchange_native_entries(destination, staged)
+                    .map_err(|error| MaterializeError::Engine(error.to_string()))?;
+            }
+            stage_parent.close();
+            drop(destination_parent);
+            remove_any(stage_root)?;
+            return Err(MaterializeError::ConcurrentHostEdit);
+        }
     }
     stage_parent.close();
     drop(destination_parent);
@@ -785,6 +900,50 @@ fn sync_restore_parent(destination: &Path) -> Result<(), MaterializeError> {
         .map_err(Into::into)
 }
 
+fn host_path_matches(
+    path: &Path,
+    expected: &HostPathExpectation,
+) -> Result<bool, MaterializeError> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(!expected.present);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if !expected.present {
+        return Ok(false);
+    }
+    let kind = if metadata.file_type().is_file() {
+        FileKind::Regular
+    } else if metadata.file_type().is_dir() {
+        FileKind::Directory
+    } else if metadata.file_type().is_symlink() {
+        FileKind::SymbolicLink
+    } else {
+        return Ok(false);
+    };
+    if expected.kind != Some(kind) {
+        return Ok(false);
+    }
+    match expected.content_digest {
+        Some(expected) => {
+            let bytes = std::fs::read(path)?;
+            Ok(*blake3::hash(&bytes).as_bytes() == expected)
+        }
+        None => Ok(true),
+    }
+}
+
+pub(crate) fn host_path_matches_expectation(
+    destination_root: &Path,
+    relative: &Path,
+    expected: &HostPathExpectation,
+) -> Result<bool, MaterializeError> {
+    validate_host_relative(relative)?;
+    host_path_matches(&destination_root.join(relative), expected)
+}
+
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
@@ -869,6 +1028,23 @@ fn remove_restored_path(
     destination_root: &Path,
     relative: &Path,
 ) -> std::io::Result<()> {
+    remove_restored_path_if_unchanged(
+        destination_parent,
+        destination_name,
+        destination_root,
+        relative,
+        None,
+    )
+    .map_err(materialize_io_error)
+}
+
+fn remove_restored_path_if_unchanged(
+    destination_parent: &HostDirectory,
+    destination_name: &Path,
+    destination_root: &Path,
+    relative: &Path,
+    expected: Option<&HostPathExpectation>,
+) -> Result<(), MaterializeError> {
     let destination = destination_root.join(relative);
     let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
     let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, &destination);
@@ -882,6 +1058,18 @@ fn remove_restored_path(
                 })?,
                 acyclic_native_runtime::Durability::Full,
             )?;
+            if let Some(expected) = expected {
+                let removed_path = destination
+                    .parent()
+                    .ok_or(MaterializeError::InvalidPath)?
+                    .join(&removed);
+                if !host_path_matches(&removed_path, expected)? {
+                    destination_parent.rename_to(&removed, destination_parent, destination_name)?;
+                    sync_restore_parent(&destination)?;
+                    remove_restore_witness(&witness)?;
+                    return Err(MaterializeError::ConcurrentHostEdit);
+                }
+            }
             destination_parent.remove(&removed)?;
             acyclic_native_runtime::sync_parent(
                 destination.parent().ok_or_else(|| {
@@ -889,12 +1077,12 @@ fn remove_restored_path(
                 })?,
                 acyclic_native_runtime::Durability::Full,
             )?;
-            remove_restore_witness(&witness)
+            remove_restore_witness(&witness).map_err(Into::into)
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_restore_witness(&witness)
+            remove_restore_witness(&witness).map_err(Into::into)
         }
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -2031,6 +2219,38 @@ fn create_symlink(
 #[cfg(test)]
 mod restore_recovery_tests {
     use super::*;
+
+    #[test]
+    fn conditional_atomic_publication_rolls_back_a_racing_user_edit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let relative = Path::new("tracked.txt");
+        let destination = root.path().join(relative);
+        std::fs::write(&destination, b"approved")?;
+        let expected = HostPathExpectation::present(FileKind::Regular, Some(b"approved"));
+        let stage_root = create_restore_stage(root.path().parent().unwrap())?;
+        std::fs::create_dir_all(stage_root.join(relative).parent().unwrap())?;
+        let staged = stage_root.join(relative);
+        std::fs::write(&staged, b"agent")?;
+
+        // This edit occurs after the caller's approved snapshot and immediately
+        // before the exchange. The displaced entry must be compared and put
+        // back, leaving the user-owned bytes in place.
+        std::fs::write(&destination, b"user-edit")?;
+        let result = publish_restore(
+            root.path(),
+            relative,
+            &destination,
+            &staged,
+            &stage_root,
+            HostPathReplacement::Atomic,
+            Some(&expected),
+        );
+        assert!(matches!(result, Err(MaterializeError::ConcurrentHostEdit)));
+        assert_eq!(std::fs::read(&destination)?, b"user-edit");
+        assert!(!stage_root.exists());
+        Ok(())
+    }
 
     /// A file created through a Linux mount records "no flags" (and its own
     /// birth and change times); materializing it must not refuse any of

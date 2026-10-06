@@ -5037,6 +5037,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        self.restore_host_path_if_unchanged(
+            relative,
+            replacement,
+            options,
+            None,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
+    /// Restores one path only if the host entry still matches the supplied
+    /// expectation. The conditional exchange is performed by the native
+    /// materializer so a racing edit is rolled back at the publication
+    /// boundary.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path_if_unchanged(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        expected: Option<&crate::HostPathExpectation>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
         let checkout = self
             .workspace
             .engine_checkout_measured(
@@ -5047,11 +5072,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             )
             .await?;
         let mut value = checkout.value;
-        let receipt = crate::restore_checkout_host_path(
+        let receipt = crate::restore_checkout_host_path_if_unchanged(
             &mut value,
             relative,
             replacement,
             options,
+            expected,
             checkout
                 .work
                 .remaining(budget)

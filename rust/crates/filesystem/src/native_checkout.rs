@@ -8,7 +8,8 @@
 //! immediately before an approved host mutation.
 
 use crate::native_mount::{
-    HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeOptions,
+    HostPathExpectation, HostPathReplacement, HostPathRestore, MaterializationReceipt,
+    MaterializeOptions,
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, Generation, GenerationId,
@@ -48,6 +49,12 @@ pub enum HostCheckoutError {
     /// The materialization destination was not the exact attached checkout.
     #[error("materialization destination is not the attached checkout root")]
     DestinationMismatch,
+    /// A host entry changed at the conditional publication boundary.
+    #[error("host path changed during conditional restore")]
+    ConcurrentHostEdit,
+    /// Root writeback uses only the sealed atomic native policy.
+    #[error("native root writeback policy is not the sealed atomic policy")]
+    InvalidRestorePolicy,
 }
 
 /// Exact result of a bounded sequence of host-path replacements.
@@ -241,6 +248,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<HostCheckoutRestore, HostCheckoutError> {
+        if replacement != HostPathReplacement::Atomic
+            || *options != MaterializeOptions::native(expected.source_root.clone())
+        {
+            return Err(HostCheckoutError::InvalidRestorePolicy);
+        }
+        if generation.workspace_id() != expected.workspace_id {
+            return Err(HostCheckoutError::GenerationMismatch);
+        }
         let actual = self.revalidate_with_key(reconciliation_key).await?;
         if actual != *expected {
             // A source generation can advance for an unrelated user edit.
@@ -260,24 +275,103 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                 }
             }
         }
-        let restored = self
-            .restore_paths(
-                generation,
-                &actual,
-                paths,
-                replacement,
-                options,
-                budget,
-                cancellation,
+        let mut work = WorkCounters::default();
+        let mut outcomes = Vec::with_capacity(paths.len());
+        for (index, path) in paths.iter().enumerate() {
+            cancellation
+                .check()
+                .map_err(|error| HostCheckoutError::Workspace(WorkspaceError::from(error)))?;
+            let before = self
+                .revalidate_with_key(path_reconciliation_key(
+                    reconciliation_key,
+                    index,
+                    path,
+                    b"before",
+                ))
+                .await?;
+            if before.workspace_id != expected.workspace_id
+                || before.root_identity != expected.root_identity
+                || before.source_root != expected.source_root
+            {
+                return Err(HostCheckoutError::Source(SourceError::BindingMismatch));
+            }
+            let current = self.workspace.generation(before.generation_id).await?;
+            let target_state = Self::path_state(generation, path).await?;
+            let current_state = Self::path_state(&current, path).await?;
+            let target_expectation = host_path_expectation(target_state.as_ref());
+            let target_on_host = crate::native_mount::host_path_matches_expectation(
+                &options.destination,
+                path,
+                &target_expectation,
             )
-            .await?;
-        // A successful host mutation is not complete until the source has
-        // durably observed its post-mutation state. Use a deterministic
-        // follow-up identity so a lost acknowledgement can be reconciled
-        // without replaying the publication itself.
-        self.revalidate_with_key(post_reconciliation_key(reconciliation_key))
-            .await?;
-        Ok(restored)
+            .map_err(|error| HostCheckoutError::Workspace(WorkspaceError::engine(error)))?;
+            if current_state == target_state && target_on_host {
+                outcomes.push(match target_state {
+                    Some(_) => HostPathRestore::Restored,
+                    None => HostPathRestore::Removed,
+                });
+                continue;
+            }
+            if current_state == target_state {
+                return Err(HostCheckoutError::ConcurrentHostEdit);
+            }
+            if target_on_host {
+                let observed = self
+                    .revalidate_with_key(path_reconciliation_key(
+                        reconciliation_key,
+                        index,
+                        path,
+                        b"already-published",
+                    ))
+                    .await?;
+                let observed_generation = self.workspace.generation(observed.generation_id).await?;
+                if Self::path_state(&observed_generation, path).await? == target_state {
+                    outcomes.push(match target_state {
+                        Some(_) => HostPathRestore::Restored,
+                        None => HostPathRestore::Removed,
+                    });
+                    continue;
+                }
+                return Err(HostCheckoutError::ConcurrentHostEdit);
+            }
+            let expectation = host_path_expectation(current_state.as_ref());
+            self.prepare_publish(&before).await?;
+            let receipt = generation
+                .restore_host_path_if_unchanged(
+                    path,
+                    replacement,
+                    options,
+                    Some(&expectation),
+                    budget.remaining(work)?,
+                    cancellation,
+                )
+                .await
+                .map_err(|error| {
+                    if matches!(error, WorkspaceError::Engine(ref message)
+                        if message.contains("host path changed during conditional restore"))
+                    {
+                        HostCheckoutError::ConcurrentHostEdit
+                    } else {
+                        HostCheckoutError::Workspace(error)
+                    }
+                })?;
+            work = work.checked_add(receipt.work)?;
+            let after = self
+                .revalidate_with_key(path_reconciliation_key(
+                    reconciliation_key,
+                    index,
+                    path,
+                    b"after",
+                ))
+                .await?;
+            let after_generation = self.workspace.generation(after.generation_id).await?;
+            if Self::path_state(&after_generation, path).await? != target_state {
+                return Err(HostCheckoutError::ConcurrentHostEdit);
+            }
+            outcomes.push(receipt.value);
+        }
+        self.source.verify_root(&expected.source_root).await?;
+        Ok(HostCheckoutRestore { outcomes, work })
     }
 
     async fn path_state(
@@ -300,6 +394,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         };
         Ok(Some((stat, bytes)))
     }
+}
+
+fn host_path_expectation(
+    state: Option<&(crate::WorkspaceStat, Option<Vec<u8>>)>,
+) -> HostPathExpectation {
+    match state {
+        Some((stat, bytes)) => HostPathExpectation::present(stat.kind, bytes.as_deref()),
+        None => HostPathExpectation::absent(),
+    }
+}
+
+fn path_reconciliation_key(
+    key: IdempotencyKey,
+    index: usize,
+    path: &Path,
+    phase: &[u8],
+) -> IdempotencyKey {
+    let mut input = Vec::with_capacity(96);
+    input.extend_from_slice(b"acyclic.native-checkout.path-reconcile.v1\0");
+    input.extend_from_slice(&key.into_bytes());
+    input.extend_from_slice(&(index as u64).to_le_bytes());
+    input.extend_from_slice(phase);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        input.extend_from_slice(path.as_os_str().as_bytes());
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        for unit in path.as_os_str().encode_wide() {
+            input.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    input.extend_from_slice(path.to_string_lossy().as_bytes());
+    let digest = blake3::hash(&input);
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    IdempotencyKey::from_bytes(bytes)
 }
 
 fn post_reconciliation_key(key: IdempotencyKey) -> IdempotencyKey {
