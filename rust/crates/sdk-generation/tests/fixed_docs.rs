@@ -16,6 +16,19 @@ fn temp(name: &str) -> PathBuf {
         .join(format!("{name}-{nonce}"))
 }
 
+fn copy_compiled_actors_typescript_sources(root: &Path) {
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../actors");
+    for relative in [
+        "src/codegen.rs",
+        "src/contract.rs",
+        "src/domain.rs",
+        "src/wire.rs",
+    ] {
+        let destination = root.join("rust/crates/actors").join(relative);
+        fs::copy(source_root.join(relative), destination).unwrap();
+    }
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -140,6 +153,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "tracked guide discovered from the source closure\n",
     )
     .unwrap();
+    copy_compiled_actors_typescript_sources(&root);
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
@@ -318,17 +332,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         serde_json::to_vec(&fixture).unwrap(),
     )
     .unwrap();
-    fs::write(root.join("rust/crates/actors/src/lib.rs"), "tampered\n").unwrap();
+    let domain_path = root.join("rust/crates/actors/src/domain.rs");
+    let domain_bytes = fs::read(&domain_path).unwrap();
+    fs::write(&domain_path, "tampered\n").unwrap();
     assert!(
         !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
             .status
             .success()
     );
-    fs::write(
-        root.join("rust/crates/actors/src/lib.rs"),
-        "rust-owned source\n",
-    )
-    .unwrap();
+    fs::write(domain_path, domain_bytes).unwrap();
     fs::write(rustdoc.join("actors.json"), b"tampered\n").unwrap();
     assert!(
         !run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
@@ -417,6 +429,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     ] {
         fs::write(root.join(path), contents).unwrap();
     }
+    copy_compiled_actors_typescript_sources(&root);
     let lock = Command::new("cargo")
         .args([
             "+1.98.1",

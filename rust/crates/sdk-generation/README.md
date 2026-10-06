@@ -18,7 +18,11 @@ launcher resolves the Git revision itself, hashes that source closure and the
 external rustdoc JSON, calls the existing `sdk-docs` library, and writes a
 versioned manifest. The same run calls the Actors crate's `domain::export_typescript`
 stage, so `generated/typescript/actors` is emitted from the Rust-owned semantic
-types and included in the artifact digest. Release
+types and included in the artifact digest. Before either operation, the
+launcher compares the configured checkout's hashed TypeScript source inputs
+(`actors/src/codegen.rs`, `contract.rs`, `domain.rs`, and `wire.rs`) with the
+inputs compiled into this binary, so a bundle cannot combine a rustdoc checkout
+with a TypeScript exporter from another checkout. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
 the supplied JSON input. Release Rustdoc also emits its exact dep-info file;

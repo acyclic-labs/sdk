@@ -7,6 +7,9 @@ publish = false
 description = "Fixed Rust-owned SDK documentation generation and drift entrypoint"
 default-run = "sdk-generation"
 
+[build-dependencies]
+sha2 = "=0.10.9"
+
 [workspace]
 
 [dependencies]

@@ -61,6 +61,8 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
     ACTORS_PACKAGE::get_package().render_files(root)
 }
 
+// Protify 0.1.x also emits public schema impls without Rustdoc. Keep this
+// allowance on each expansion so authored contract items remain checked.
 #[allow(missing_docs)]
 #[proto_message]
 /// A named capability binding made available to an actor.
@@ -462,6 +464,7 @@ pub struct InvokeActorResponse {
     pub headers: Vec<Header>,
 }
 
+#[allow(missing_docs)]
 #[proto_enum]
 /// Error classifications returned by the actor service.
 pub enum ErrorCode {
@@ -489,6 +492,7 @@ pub enum ErrorCode {
     DependencyUnavailable = 10,
 }
 
+#[allow(missing_docs)]
 #[proto_message]
 /// Structured error returned by the actor service.
 pub struct Error {
@@ -500,6 +504,7 @@ pub struct Error {
     pub message: String,
 }
 
+#[allow(missing_docs)]
 #[proto_service]
 /// Operations exposed by the Actors service.
 pub enum ActorsService {

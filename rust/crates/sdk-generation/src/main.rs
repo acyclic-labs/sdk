@@ -95,6 +95,43 @@ struct RustdocInput {
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
+const ACTORS_TYPESCRIPT_SOURCE: &[&str] = &[
+    "src/codegen.rs",
+    "src/contract.rs",
+    "src/domain.rs",
+    "src/wire.rs",
+];
+
+fn actors_typescript_source_digest(root: &Path) -> io::Result<String> {
+    let mut hasher = Sha256::new();
+    for relative in ACTORS_TYPESCRIPT_SOURCE {
+        let path = root.join("rust/crates/actors").join(relative);
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        let mut file = File::open(&path)?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+        }
+        hasher.update([0]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+fn verify_compiled_actors_source(root: &Path) -> io::Result<()> {
+    let configured = actors_typescript_source_digest(root)?;
+    let compiled = env!("SDK_GENERATION_ACTORS_SOURCE_SHA256");
+    if configured != compiled {
+        return Err(io::Error::other(format!(
+            "configured Actors TypeScript source digest {configured} does not match the compiled dependency {compiled}"
+        )));
+    }
+    Ok(())
+}
 
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_GENERATED_ROOT);
@@ -886,6 +923,7 @@ fn generate(config: &Config) -> io::Result<()> {
     }
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
+    verify_compiled_actors_source(&config.root)?;
     let source_extras_before = baseline_source_extras(&config.root)?;
     let source_before_stage = collect_sources(&config.root, &source_extras_before)?;
     generate_actors_contract_artifacts(config)?;
@@ -968,6 +1006,7 @@ fn generate(config: &Config) -> io::Result<()> {
 }
 
 fn drift(config: &Config) -> io::Result<()> {
+    verify_compiled_actors_source(&config.root)?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(config.output.join(MANIFEST))?)
         .map_err(io::Error::other)?;
     let revision = git_revision(&config.root)?;

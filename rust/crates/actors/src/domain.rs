@@ -914,16 +914,22 @@ impl CreateActorRequest {
         })
     }
 
+    /// Returns the code digest.
     #[must_use]
     pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    /// Returns the home region.
     #[must_use]
     pub fn home_region(&self) -> &str { &self.home_region }
+    /// Returns bindings in their request order.
     #[must_use]
     pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    /// Returns the validated resource limits.
     #[must_use]
     pub fn limits(&self) -> &ActorLimits { &self.limits }
+    /// Returns subscriptions in their request order.
     #[must_use]
     pub fn subscriptions(&self) -> &[SubscriptionSpec] { &self.subscriptions }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -998,18 +1004,24 @@ impl UpdateActorRequest {
         })
     }
 
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the code digest.
     #[must_use]
     pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    /// Returns bindings in their request order.
     #[must_use]
     pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    /// Returns the validated resource limits.
     #[must_use]
     pub fn limits(&self) -> &ActorLimits { &self.limits }
+    /// Returns the expected compare-and-replace revision.
     #[must_use]
     pub fn expected_configuration_revision(&self) -> u64 {
         self.expected_configuration_revision
     }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -1056,8 +1068,10 @@ pub struct InspectActorRequest {
 }
 
 impl InspectActorRequest {
+    /// Creates an inspect request for a validated Actor identity.
     #[must_use]
     pub fn new(actor_id: ActorId) -> Self { Self { actor_id } }
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
 }
@@ -1103,10 +1117,13 @@ impl AddSubscriptionRequest {
         })
     }
 
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the validated subscription.
     #[must_use]
     pub fn subscription(&self) -> &SubscriptionSpec { &self.subscription }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -1147,6 +1164,7 @@ pub struct RemoveSubscriptionRequest {
 }
 
 impl RemoveSubscriptionRequest {
+    /// Creates a removal request; no additional canonical validator exists yet.
     #[must_use]
     pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
         Self {
@@ -1155,10 +1173,13 @@ impl RemoveSubscriptionRequest {
             idempotency_key,
         }
     }
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the subscription identifier.
     #[must_use]
     pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -1195,6 +1216,7 @@ pub struct ResumeSubscriptionRequest {
 }
 
 impl ResumeSubscriptionRequest {
+    /// Creates a resume request; no additional canonical validator exists yet.
     #[must_use]
     pub fn new(actor_id: ActorId, subscription_id: String, idempotency_key: String) -> Self {
         Self {
@@ -1203,10 +1225,13 @@ impl ResumeSubscriptionRequest {
             idempotency_key,
         }
     }
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the subscription identifier.
     #[must_use]
     pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -1243,6 +1268,7 @@ pub struct CheckpointActorRequest {
 }
 
 impl CheckpointActorRequest {
+    /// Creates a checkpoint request for a validated Actor identity.
     #[must_use]
     pub fn new(actor_id: ActorId, idempotency_key: String) -> Self {
         Self {
@@ -1250,8 +1276,10 @@ impl CheckpointActorRequest {
             idempotency_key,
         }
     }
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the idempotency key.
     #[must_use]
     pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
 }
@@ -1291,6 +1319,7 @@ pub struct InvokeActorRequest {
 }
 
 impl InvokeActorRequest {
+    /// Creates an invocation request while preserving bytes and header order.
     #[must_use]
     pub fn new(
         actor_id: ActorId,
@@ -1307,14 +1336,19 @@ impl InvokeActorRequest {
             headers,
         }
     }
+    /// Returns the Actor identity.
     #[must_use]
     pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    /// Returns the invocation method.
     #[must_use]
     pub fn method(&self) -> &str { &self.method }
+    /// Returns the invocation URL.
     #[must_use]
     pub fn url(&self) -> &str { &self.url }
+    /// Returns the invocation body bytes.
     #[must_use]
     pub fn body(&self) -> &[u8] { &self.body }
+    /// Returns headers in their original order.
     #[must_use]
     pub fn headers(&self) -> &[Header] { &self.headers }
 }
@@ -1357,10 +1391,13 @@ pub struct InvokeActorResponse {
 }
 
 impl InvokeActorResponse {
+    /// Returns the HTTP-like status code.
     #[must_use]
     pub fn status(&self) -> u32 { self.status }
+    /// Returns the response body bytes.
     #[must_use]
     pub fn body(&self) -> &[u8] { &self.body }
+    /// Returns headers in their original order.
     #[must_use]
     pub fn headers(&self) -> &[Header] { &self.headers }
 }

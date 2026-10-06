@@ -3,8 +3,9 @@
 All release tags must be annotated tags at the same qualified commit on `main`.
 There is no staging registry or `next` promotion step.
 
-1. Merge the release commit and wait for its **SDK Qualification** workflow run
-   to succeed (every job, not only the required check).
+1. Merge the release commit, manually dispatch **SDK Qualification** for that
+   exact commit, and wait for the full run to succeed (every job, not only the
+   required check).
 2. Push `acyclic-v<VERSION>`. **Release Acyclic** builds and certifies every
    platform binary, assembles the universal plugin, and creates the GitHub
    release.
