@@ -569,6 +569,67 @@ mod tests {
     }
 
     #[test]
+    fn source_binding_accepts_a_matching_generated_cohort() {
+        let root = env::temp_dir().join(format!(
+            "acyclic-source-binding-match-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("sdk-qualification-receipt.json"),
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision":"1111111111111111111111111111111111111111"}"#,
+        )
+        .unwrap();
+        let hashes = artifact_hashes(&root).unwrap();
+        let (report, error) = source_binding_report(
+            &root,
+            &hashes,
+            Some("1111111111111111111111111111111111111111"),
+        );
+        assert_eq!(report["status"], "passed");
+        assert!(error.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_binding_rejects_mixed_generated_revisions() {
+        let root = env::temp_dir().join(format!(
+            "acyclic-source-binding-mixed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("sdk-qualification-receipt.json"),
+            r#"{"source_revision":"1111111111111111111111111111111111111111"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("docs.json"),
+            r#"{"source_revision":"2222222222222222222222222222222222222222"}"#,
+        )
+        .unwrap();
+        let hashes = artifact_hashes(&root).unwrap();
+        let (report, error) = source_binding_report(
+            &root,
+            &hashes,
+            Some("1111111111111111111111111111111111111111"),
+        );
+        assert_eq!(report["status"], "mismatch");
+        assert!(error
+            .unwrap()
+            .contains("does not match expected Rust revision"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn language_registry_exposes_non_core_generated_surfaces() {
         let root = env::temp_dir().join(format!(
             "acyclic-language-registry-audit-{}-{}",
