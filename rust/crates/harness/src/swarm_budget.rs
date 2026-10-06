@@ -1860,9 +1860,10 @@ impl SwarmBudget {
         let key = (operation_id, dispatch_id.clone(), effect_id.clone());
         match state.harness_effects.get(&key) {
             Some(existing) if *existing == elapsed_ms => Ok(false),
-            Some(_) => Err(Error::Conflict(
-                "Harness effect measurement changed during retry".into(),
-            )),
+            // The first durable event is authoritative when a caller retries
+            // after losing its acknowledgement. Keep that original measured
+            // value instead of charging or replacing it with a new sample.
+            Some(_) => Ok(false),
             None => {
                 let next = state
                     .usage
@@ -1884,6 +1885,7 @@ impl SwarmBudget {
             }
         }
     }
+
 
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
     pub fn cancel(

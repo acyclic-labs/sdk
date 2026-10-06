@@ -42,9 +42,9 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        SwarmAdmissionReceipt, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkReservation,
-        SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource, VerifiedForkPublication,
-        SwarmUsage,
+        SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetLimits, SwarmDispatchToken,
+        SwarmForkReservation, SwarmOwnerFence, SwarmResourceRequest, SwarmUsageSource,
+        VerifiedForkPublication, SwarmUsage,
     },
     swarm_budget_journal::SwarmBudgetJournal,
     tool::{
@@ -106,6 +106,7 @@ const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 /// effects or across a crash.
 struct LocalHarnessEffectRecorder {
     journal: Arc<Mutex<SwarmBudgetJournal<LocalStream>>>,
+    projection: SwarmBudget,
     owner: SwarmOwnerFence,
     global_root: bool,
 }
@@ -136,10 +137,16 @@ impl HarnessEffectRecorder for LocalHarnessEffectRecorder {
         if !self.global_root {
             return None;
         }
-        self.journal
-            .try_lock()
-            .ok()
-            .and_then(|journal| journal.root_remaining_execution_time_ms().ok())
+        // The journal owns this authenticated projection and `SwarmBudget`
+        // shares its state atomically. Read it directly rather than trying to
+        // take the async journal mutex from a synchronous admission hook.
+        // Any poisoned/invalid projection fails closed at the provider gate.
+        Some(
+            self.projection
+                .root_usage_limiter()
+                .map(|limiter| limiter.remaining_execution_time_ms())
+                .unwrap_or_default(),
+        )
     }
 }
 
@@ -2053,10 +2060,17 @@ impl LocalModelForkPublisher {
             let source = swarm.bindings.budget_usage_source.clone().ok_or_else(|| {
                 Error::Unauthorized("provider usage source is required before child dispatch".into())
             })?;
-            let context = swarm.budget_journal.lock().await.usage_context(&budget_token, source)?;
+            let (context, projection) = {
+                let journal = swarm.budget_journal.lock().await;
+                (
+                    journal.usage_context(&budget_token, source)?,
+                    journal.live_projection(),
+                )
+            };
             let mut budget = SwarmProviderBoundary::new(context);
             budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
                 journal: swarm.budget_journal.clone(),
+                projection,
                 owner: swarm.config.budget.owner.clone(),
                 global_root: false,
             }));
@@ -5429,14 +5443,17 @@ impl PersistentLocalSwarm {
         let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
             Error::Unauthorized("provider usage source is required before root dispatch".into())
         })?;
-        let context = self
-            .budget_journal
-            .lock()
-            .await
-            .root_usage_context(source.clone())?;
+        let (context, projection) = {
+            let journal = self.budget_journal.lock().await;
+            (
+                journal.root_usage_context(source.clone())?,
+                journal.live_projection(),
+            )
+        };
         let mut provider_budget = SwarmRootProviderBoundary::new(context);
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
+            projection,
             owner: self.config.budget.owner.clone(),
             global_root: true,
         }));
@@ -6344,14 +6361,17 @@ impl PersistentLocalSwarm {
         let source = self.bindings.budget_usage_source.clone().ok_or_else(|| {
             Error::Unauthorized("provider usage source is required before child dispatch".into())
         })?;
-        let context = self
-            .budget_journal
-            .lock()
-            .await
-            .usage_context(&budget_token, source)?;
+        let (context, projection) = {
+            let journal = self.budget_journal.lock().await;
+            (
+                journal.usage_context(&budget_token, source)?,
+                journal.live_projection(),
+            )
+        };
         let mut provider_budget = SwarmProviderBoundary::new(context);
         provider_budget.set_harness_effect_recorder(Arc::new(LocalHarnessEffectRecorder {
             journal: self.budget_journal.clone(),
+            projection,
             owner: self.config.budget.owner.clone(),
             global_root: false,
         }));

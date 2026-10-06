@@ -779,10 +779,12 @@ impl<S: SwarmUsageSource> SwarmRootProviderBoundary<S> {
     #[must_use]
     pub fn remaining_execution_time_ms(&self) -> u64 {
         let local = self.context.remaining_execution_time_ms();
-        self.effect_recorder
-            .as_ref()
-            .and_then(|recorder| recorder.remaining_execution_time_ms())
-            .map_or(local, |global| local.min(global))
+        match self.effect_recorder.as_ref() {
+            Some(recorder) => recorder
+                .remaining_execution_time_ms()
+                .map_or(0, |global| local.min(global)),
+            None => local,
+        }
     }
 
     /// Issues the next provider-authenticated cumulative root usage receipt.
@@ -2330,7 +2332,9 @@ impl StockExecutor {
                 match effect_deadline {
                     Some(deadline) => match tokio::time::timeout_at(deadline, reconciliation).await
                     {
-                        Ok(result) => result,
+                        Ok(result) => result.and_then(|result| {
+                            result.ok_or_else(|| Error::Indeterminate(operation_id))
+                        }),
                         Err(_) => Err(Error::Indeterminate(operation_id)),
                     },
                     None => reconciliation.await.and_then(|result| {
@@ -5700,6 +5704,7 @@ mod tests {
             None,
         )?;
         let operation_id = OperationId::from_bytes([0xE1; 16]);
+        let effects = Arc::new(Mutex::new(Vec::new()));
         let input = TurnInput {
             operation_id,
             input: ModelContent::Text("hang".into()),
@@ -5707,7 +5712,10 @@ mod tests {
             max_steps: 2,
         };
         let journal = Journal::default();
-        let mut budget = DeadlineBudget { operation_id };
+        let mut budget = DeadlineBudget {
+            operation_id,
+            effects: effects.clone(),
+        };
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             executor.execute_with_provider_budget(input, &journal, &mut budget),
@@ -5725,6 +5733,7 @@ mod tests {
             ExecutionEvent::ToolCompleted { step: 0, .. }
                 | ExecutionEvent::ToolFailed { step: 0, .. }
         )));
+        assert_eq!(effects.lock().unwrap().len(), 1);
         Ok(())
     }
 
@@ -7702,6 +7711,7 @@ mod tests {
 
     struct DeadlineBudget {
         operation_id: OperationId,
+        effects: Arc<Mutex<Vec<(IdempotencyKey, u64)>>>,
     }
 
     impl SwarmProviderAdmission for DeadlineBudget {
@@ -7719,6 +7729,21 @@ mod tests {
 
         fn admit_execution_time_ms(&mut self, _: u64) -> Result<SwarmUsage> {
             Ok(SwarmUsage::default())
+        }
+
+        fn record_harness_effect_async<'a>(
+            &'a mut self,
+            effect_id: IdempotencyKey,
+            elapsed_ms: u64,
+        ) -> BoxFuture<'a, Result<()>> {
+            let effects = self.effects.clone();
+            Box::pin(async move {
+                effects
+                    .lock()
+                    .map_err(|_| Error::Storage("deadline effect recorder poisoned".into()))?
+                    .push((effect_id, elapsed_ms));
+                Ok(())
+            })
         }
 
         fn remaining_execution_time_ms(&self) -> Option<u64> {
@@ -7761,7 +7786,10 @@ mod tests {
             max_steps: 1,
         };
         let journal = Journal::default();
-        let mut first_budget = DeadlineBudget { operation_id };
+        let mut first_budget = DeadlineBudget {
+            operation_id,
+            effects: Arc::new(Mutex::new(Vec::new())),
+        };
         let first = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             executor.execute_with_provider_budget(input.clone(), &journal, &mut first_budget),
@@ -7780,7 +7808,10 @@ mod tests {
             .iter()
             .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. })));
 
-        let mut retry_budget = DeadlineBudget { operation_id };
+        let mut retry_budget = DeadlineBudget {
+            operation_id,
+            effects: Arc::new(Mutex::new(Vec::new())),
+        };
         let retry = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             executor.execute_with_provider_budget(input, &journal, &mut retry_budget),

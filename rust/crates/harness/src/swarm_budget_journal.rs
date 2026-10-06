@@ -201,6 +201,14 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(self.budget.root_usage_limiter()?.remaining_execution_time_ms())
     }
 
+    /// Returns a handle to the authenticated live projection used by this
+    /// journal. `SwarmBudget` is internally reference counted, so a boundary
+    /// can read the current session remainder without trying to lock the
+    /// async journal mutex while another durable append is in flight.
+    pub fn live_projection(&self) -> SwarmBudget {
+        self.budget.clone()
+    }
+
     /// Creates the provider guard that root model work must use before it
     /// consumes another session resource slice.
     pub fn root_usage_limiter(
@@ -1289,7 +1297,7 @@ mod tests {
                 &owner,
                 IdempotencyKey::new("effect-root-dispatch")?,
                 IdempotencyKey::new("tool:0:approved-shell")?,
-                37,
+                99,
             )
             .await?;
         assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
