@@ -65,7 +65,7 @@ impl ProcessTree {
         // destructor, so a failed tree signal could leak a process. Keep the
         // tree error for the caller (the descendant outcome is then unknown),
         // but still make a best-effort direct-child kill and wait.
-        let tree_error = self.terminate_descendants().err();
+        let tree_error = self.guard.signal_terminate().err();
         let child_error = if let Some(mut child) = self.child.take() {
             if tree_error.is_some() {
                 let _ = child.kill();
@@ -79,10 +79,15 @@ impl ProcessTree {
         } else {
             None
         };
-        match (tree_error, child_error) {
-            (Some(error), _) => Err(error),
-            (None, Some(error)) => Err(error),
-            (None, None) => Ok(()),
+        let reconcile_error = if tree_error.is_none() {
+            self.guard.reconcile().err()
+        } else {
+            None
+        };
+        match (tree_error, child_error, reconcile_error) {
+            (Some(error), _, _) | (None, _, Some(error)) => Err(error),
+            (None, Some(error), None) => Err(error),
+            (None, None, None) => Ok(()),
         }
     }
 
@@ -104,6 +109,8 @@ mod platform {
     use std::io;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     pub(super) struct Guard {
         process_group: libc::pid_t,
@@ -126,22 +133,58 @@ mod platform {
 
     impl Guard {
         pub(super) fn terminate(&mut self) -> io::Result<()> {
+            self.signal_terminate()?;
+            self.reconcile()
+        }
+
+        pub(super) fn signal_terminate(&mut self) -> io::Result<()> {
             if !self.active {
                 return Ok(());
             }
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
-            if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } == 0 {
-                self.active = false;
+            if unsafe { libc::kill(-self.process_group, libc::SIGKILL) } != 0 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    return Err(error);
+                }
+            }
+            Ok(())
+        }
+
+        pub(super) fn reconcile(&mut self) -> io::Result<()> {
+            if !self.active {
                 return Ok(());
             }
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
-                self.active = false;
-                Ok(())
-            } else {
-                Err(error)
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                match process_group_exists(self.process_group)? {
+                    false => {
+                        self.active = false;
+                        return Ok(());
+                    }
+                    true if Instant::now() >= deadline => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "owned process group did not reconcile after termination",
+                        ));
+                    }
+                    true => thread::sleep(Duration::from_millis(10)),
+                }
             }
+        }
+    }
+
+    fn process_group_exists(process_group: libc::pid_t) -> io::Result<bool> {
+        // SAFETY: signal zero probes only the owned process-group identity.
+        if unsafe { libc::kill(-process_group, 0) } == 0 {
+            return Ok(true);
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::ESRCH) => Ok(false),
+            Some(libc::EPERM) => Ok(true),
+            _ => Err(error),
         }
     }
 }
@@ -277,6 +320,34 @@ mod tests {
         assert!(!temporary.path().join("escaped").exists());
     }
 
+    #[test]
+    fn terminate_descendants_reconciles_after_direct_child_exit() {
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = helper_command("parent-exits", temporary.path());
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn process tree");
+        wait_for_tree_ready(&mut tree, temporary.path());
+        let grandchild_pid = read_pid(temporary.path());
+        assert!(
+            process_is_alive(grandchild_pid).expect("query grandchild liveness"),
+            "grandchild exited before parent"
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut exited = false;
+        while Instant::now() < deadline {
+            if tree.try_wait().expect("poll process tree").is_some() {
+                exited = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(exited, "direct child did not exit before reconciliation");
+
+        tree.terminate_descendants()
+            .expect("terminate and reconcile process tree");
+        wait_for_process_exit(grandchild_pid);
+        assert!(!temporary.path().join("escaped").exists());
+    }
+
     fn read_pid(root: &Path) -> u32 {
         fs::read_to_string(root.join("grandchild-pid"))
             .expect("grandchild pid marker")
@@ -389,14 +460,17 @@ mod platform {
     use std::os::windows::io::AsRawHandle as _;
     use std::os::windows::process::CommandExt as _;
     use std::process::{Child, Command};
+    use std::thread;
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation,
+        QueryInformationJobObject, SetInformationJobObject, TerminateJobObject,
     };
     use windows_sys::Win32::System::Threading::{
         CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, OpenThread, ResumeThread,
@@ -465,6 +539,11 @@ mod platform {
         }
 
         pub(super) fn terminate(&mut self) -> io::Result<()> {
+            self.signal_terminate()?;
+            self.reconcile()
+        }
+
+        pub(super) fn signal_terminate(&mut self) -> io::Result<()> {
             if !self.active {
                 return Ok(());
             }
@@ -472,9 +551,50 @@ mod platform {
             if unsafe { TerminateJobObject(self.job, 1) } == 0 {
                 Err(io::Error::last_os_error())
             } else {
-                self.active = false;
                 Ok(())
             }
+        }
+
+        pub(super) fn reconcile(&mut self) -> io::Result<()> {
+            if !self.active {
+                return Ok(());
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if self.active_processes()? == 0 {
+                    self.active = false;
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "owned Windows job did not reconcile after termination",
+                    ));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn active_processes(&self) -> io::Result<u32> {
+            let mut accounting = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            let length = u32::try_from(std::mem::size_of_val(&accounting))
+                .map_err(|_| io::Error::other("job accounting structure is too large"))?;
+            let mut returned = 0_u32;
+            // SAFETY: the accounting buffer and returned length are live for
+            // the duration of this query and their exact sizes are supplied.
+            if unsafe {
+                QueryInformationJobObject(
+                    self.job,
+                    JobObjectBasicAccountingInformation,
+                    (&raw mut accounting).cast(),
+                    length,
+                    &mut returned,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(accounting.ActiveProcesses)
         }
     }
 

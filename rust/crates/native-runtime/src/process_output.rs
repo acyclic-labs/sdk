@@ -159,9 +159,11 @@ where
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 mod unix {
     use super::OutputReader;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::FromRawFd;
     use std::{
         io::{self, Read},
-        os::fd::{AsRawFd, FromRawFd, OwnedFd},
+        os::fd::{AsRawFd, OwnedFd},
         sync::mpsc,
         thread,
     };
@@ -287,30 +289,13 @@ mod unix {
 
     #[cfg(target_vendor = "apple")]
     fn make_cancel_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        let mut descriptors = [0; 2];
-        if unsafe { libc::pipe(descriptors.as_mut_ptr()) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        for descriptor in descriptors {
-            let flags = unsafe { libc::fcntl(descriptor, libc::F_GETFD) };
-            if flags < 0
-                || unsafe { libc::fcntl(descriptor, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0
-            {
-                unsafe {
-                    libc::close(descriptors[0]);
-                    libc::close(descriptors[1]);
-                }
-                return Err(io::Error::last_os_error());
-            }
-        }
-        // SAFETY: pipe initialized both descriptors and ownership is
-        // transferred exactly once to these values.
-        Ok(unsafe {
-            (
-                OwnedFd::from_raw_fd(descriptors[0]),
-                OwnedFd::from_raw_fd(descriptors[1]),
-            )
-        })
+        // Apple has no atomic CLOEXEC pipe primitive exposed by the current
+        // SDK dependency. Refuse this execution capability rather than using
+        // a racy `pipe` followed by `fcntl(FD_CLOEXEC)` sequence.
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "interruptible native output readers require an atomic CLOEXEC pipe on Apple",
+        ))
     }
 }
 
