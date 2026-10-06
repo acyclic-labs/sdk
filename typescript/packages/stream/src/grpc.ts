@@ -5,7 +5,7 @@ import * as wire from "../generated/proto/stream/v2/stream_pb.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, commitId } from "./types.js";
+import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
@@ -134,19 +134,20 @@ function checkedRecord(record: wire.Record | undefined, expected: bigint): Encod
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
-  let code = "unavailable";
+  const reason = error.rawMessage;
+  let code: StreamFailureCode = "unavailable";
   switch (error.code) {
-    case Code.InvalidArgument: code = ["invalid_path", "limit_exceeded"].includes(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
+    case Code.InvalidArgument: code = reason === "invalid_path" || reason === "limit_exceeded" ? reason : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.FailedPrecondition:
-      if (["hierarchy_changed", "idempotency_mismatch", "prefix_not_retained", "deadline_elapsed"].includes(error.rawMessage)) code = error.rawMessage;
+      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
       break;
-    case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
+    case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
-  return new StreamError(code, error.rawMessage);
+  return new StreamError(code, reason);
 }

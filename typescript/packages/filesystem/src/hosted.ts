@@ -91,8 +91,15 @@ import { secureServiceEndpoint } from "./endpoint.js";
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
 
+/** Local client failures plus the gRPC status names a hosted service can report. */
+export type HostedFsErrorCode =
+  | "closed" | "invalid_response" | "limit" | "protocol" | "response_too_large" | "unsupported"
+  | "cancelled" | "invalid_argument" | "deadline_exceeded" | "not_found" | "already_exists"
+  | "permission_denied" | "resource_exhausted" | "failed_precondition" | "aborted" | "out_of_range"
+  | "internal" | "unavailable" | "data_loss" | "unauthenticated" | "unknown";
+
 export class HostedFsError extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: HostedFsErrorCode, message: string) {
     super(message);
     this.name = "HostedFsError";
   }
@@ -1085,7 +1092,7 @@ async function call<T>(request: Promise<T>): Promise<T> {
   catch (error) {
     if (error instanceof HostedFsError) throw error;
     if (error instanceof ConnectError) {
-      const codes: Record<Code, string | undefined> = {
+      const codes: Record<Code, HostedFsErrorCode | undefined> = {
         [Code.Canceled]: "cancelled",
         [Code.Unknown]: undefined,
         [Code.InvalidArgument]: "invalid_argument",

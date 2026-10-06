@@ -17,6 +17,7 @@ import type {
 } from "../generated/proto/stream/v2/stream_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
+import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export { TOKEN_OPERATIONS } from "./token-operations.js";
 export type { TokenOperation } from "./token-operations.js";
 
@@ -132,6 +133,15 @@ export interface StreamProvider {
 }
 
 export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
+/**
+ * Every code a StreamError carries: the Rust-owned base codes, the public
+ * aliases hosted and gRPC providers project onto, and failures the client
+ * detects itself.
+ */
+export type StreamFailureCode = RustStreamErrorCode
+  | "stream_not_found" | "commit_not_found" | "destination_exists" | "capacity_exhausted"
+  | "configuration" | "invalid_cursor" | "invalid_page" | "invalid_response"
+  | "provider_mismatch" | "response_too_large" | "transport";
 export class StreamError extends Error {
-  constructor(readonly code: string, message: string, readonly status?: number) { super(message); }
+  constructor(readonly code: StreamFailureCode, message: string, readonly status?: number) { super(message); }
 }
