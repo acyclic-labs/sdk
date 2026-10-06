@@ -485,13 +485,13 @@ impl TryFrom<wire::ActorObservation> for ActorObservation {
     fn try_from(value: wire::ActorObservation) -> Result<Self, Self::Error> {
         Ok(Self {
             actor_id: value.actor_id.try_into()?,
-            code_sha256: CodeSha256::from_validated(value.code_sha256.to_vec())?,
+            code_sha256: value.code_sha256.to_vec().try_into()?,
             home_region: value.home_region,
             state: value.state.try_into()?,
             subscriptions: value
                 .subscriptions
                 .into_iter()
-                .map(|binding| Ok(Binding::from_validated(binding)))
+                .map(TryInto::try_into)
                 .collect::<Result<_, _>>()?,
             checkpoint_unix_millis: value.checkpoint_unix_millis,
             checkpoint_epoch: value.checkpoint_epoch,
@@ -550,7 +550,7 @@ impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
     fn try_from(value: wire::CreateActorRequest) -> Result<Self, Self::Error> {
         crate::validate_create(&value)?;
         Ok(Self {
-            code_sha256: value.code_sha256.to_vec().try_into()?,
+            code_sha256: CodeSha256::from_validated(value.code_sha256.to_vec())?,
             home_region: value.home_region,
             bindings: value
                 .bindings
@@ -927,6 +927,24 @@ mod tests {
         assert_eq!(
             ErrorCode::try_from(99),
             Err(DomainError::UnknownErrorCode(99))
+        );
+    }
+
+    #[test]
+    fn response_digest_keeps_the_nonzero_admission_rule() {
+        let observation = wire::ActorObservation {
+            actor_id: "actor-1".into(),
+            code_sha256: vec![0; 32],
+            home_region: "eu".into(),
+            state: 1,
+            subscriptions: Vec::new(),
+            checkpoint_unix_millis: None,
+            checkpoint_epoch: 0,
+            configuration_revision: 0,
+        };
+        assert_eq!(
+            ActorObservation::try_from(observation),
+            Err(DomainError::InvalidCodeSha256)
         );
     }
 

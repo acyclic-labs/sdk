@@ -43,6 +43,15 @@ define_proto_file!(
     services = [ActorsService],
 );
 
+/// Renders the canonical Actors protobuf input for the maintained prost/tonic
+/// build. The rendered file is an intermediate artifact; these Rust
+/// declarations remain the contract authority.
+pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+    let root = root.as_ref();
+    std::fs::create_dir_all(root.join("actors/v1"))?;
+    ACTORS_PACKAGE::get_package().render_files(root)
+}
+
 #[proto_message]
 pub struct Binding {
     #[proto(tag = 1)]

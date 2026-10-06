@@ -293,7 +293,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         navigation,
         families,
     };
-    validate_source_info(&data.source)?;
+    validate_source_info(&data.source, &input.channel)?;
     Ok(data)
 }
 
@@ -310,7 +310,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     if mark_latest && data.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
-    validate_source_info(&data.source)?;
+    validate_source_info(&data.source, &data.channel)?;
     reject_reparse_ancestors(output_dir)?;
     fs::create_dir_all(output_dir)?;
     let channel_dir = match data.channel {
@@ -545,7 +545,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             reexport_target,
         });
     }
-    items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
+    deduplicate_items(&mut items);
     let guides = guides_from_rustdoc(krate, &crate_name, &public_items)?;
     Ok(Family {
         slug,
@@ -554,6 +554,18 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         items,
         guides,
     })
+}
+
+fn deduplicate_items(items: &mut Vec<ApiItem>) {
+    items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
+    items.dedup_by(|left, right| {
+        left.id == right.id
+            && left.path == right.path
+            && left.signature == right.signature
+            && left.source == right.source
+            && left.reexport == right.reexport
+            && left.reexport_target == right.reexport_target
+    });
 }
 
 fn public_use_occurrences(
@@ -819,7 +831,7 @@ fn validate_source_digest(value: &str) -> Result<(), Error> {
     Ok(())
 }
 
-fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
+fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Result<(), Error> {
     if source.revision.len() < 40
         || source.revision.len() > 64
         || !source.revision.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -833,6 +845,11 @@ fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
         "captured-snapshot" | "working-tree" | "release-tag"
     ) {
         return Err(Error::Invalid("unsupported source state".into()));
+    }
+    if matches!(channel, Channel::Release) && source.source_state == "working-tree" {
+        return Err(Error::Invalid(
+            "release data requires captured-snapshot or release-tag source state".into(),
+        ));
     }
     if let Some(source_sha256) = &source.source_sha256 {
         validate_source_digest(source_sha256)?;
@@ -849,6 +866,11 @@ fn validate_source_info(source: &SourceInfo) -> Result<(), Error> {
     {
         return Err(Error::Invalid(
             "rustdoc input digest must be 64 hexadecimal characters".into(),
+        ));
+    }
+    if source.rustdoc_format_versions.is_empty() {
+        return Err(Error::Invalid(
+            "rustdoc format metadata must contain at least one version".into(),
         ));
     }
     if source
@@ -918,6 +940,82 @@ mod tests {
     fn slug_and_title_are_deterministic() {
         assert_eq!(slugify("sdk_stream"), "sdk-stream");
         assert_eq!(titleize("sdk-stream"), "Sdk Stream");
+    }
+
+    #[test]
+    fn duplicate_public_occurrences_collapse_without_losing_aliases() {
+        let item = ApiItem {
+            id: "1".into(),
+            name: "Thing".into(),
+            kind: "struct".into(),
+            path: "demo::Thing".into(),
+            signature: "pub struct Thing".into(),
+            docs: Some("A thing".into()),
+            source: None,
+            reexport: None,
+            reexport_target: None,
+        };
+        let alias = ApiItem {
+            id: "2".into(),
+            name: "Alias".into(),
+            kind: "use".into(),
+            path: "demo::Alias".into(),
+            signature: "pub use demo::Thing as Alias".into(),
+            docs: Some("An alias".into()),
+            source: None,
+            reexport: Some("demo::Thing".into()),
+            reexport_target: Some("demo::Thing".into()),
+        };
+        let mut items = vec![item.clone(), alias.clone(), item];
+        deduplicate_items(&mut items);
+        assert_eq!(items, vec![alias, ApiItem {
+            id: "1".into(),
+            name: "Thing".into(),
+            kind: "struct".into(),
+            path: "demo::Thing".into(),
+            signature: "pub struct Thing".into(),
+            docs: Some("A thing".into()),
+            source: None,
+            reexport: None,
+            reexport_target: None,
+        }]);
+    }
+
+    #[test]
+    fn release_publication_rejects_unbound_source_before_creating_output() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-provenance-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let mut data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "working-tree".into(),
+                source_sha256: None,
+                input_sha256: "b".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let error = write_bundle(&data, &output, true)
+            .expect_err("a release cannot publish an unbound working tree");
+        assert!(error.to_string().contains("requires captured-snapshot"));
+        assert!(!output.exists());
+
+        data.source.source_state = "captured-snapshot".into();
+        data.source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
+        data.source.rustdoc_format_versions.clear();
+        let error = write_bundle(&data, &output, true)
+            .expect_err("publication must include Rustdoc format metadata");
+        assert!(error.to_string().contains("format metadata"));
+        assert!(!output.exists());
     }
 
     #[test]

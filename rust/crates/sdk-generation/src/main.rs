@@ -13,6 +13,7 @@ use std::{
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTORS_CRATE: &str = "acyclic_actors";
+const ACTORS_PACKAGE: &str = "acyclic-actors";
 const SOURCE_PATHS: &[&str] = &[
     "Cargo.toml",
     "docs/objects-v2-http.md",
@@ -423,26 +424,11 @@ fn generate_rustdoc(config: &Config) -> io::Result<PathBuf> {
     let manifest = config.root.join("Cargo.toml");
     let status = Command::new("cargo")
         .arg("+1.98.1")
-        .args([
-            "rustdoc",
-            "--locked",
-            "--manifest-path",
-        ])
+        .args(["rustdoc", "--locked", "--manifest-path"])
         .arg(&manifest)
-        .args([
-            "--package",
-            ACTORS_CRATE,
-            "--lib",
-            "--target-dir",
-        ])
+        .args(["--package", ACTORS_PACKAGE, "--lib", "--target-dir"])
         .arg(&target)
-        .args([
-            "--",
-            "-Z",
-            "unstable-options",
-            "--output-format",
-            "json",
-        ])
+        .args(["--", "-Z", "unstable-options", "--output-format", "json"])
         .env("RUSTC_BOOTSTRAP", "1")
         .status()
         .map_err(|error| io::Error::other(format!("failed to run pinned rustdoc: {error}")))?;
@@ -566,8 +552,7 @@ fn generate(config: &Config) -> io::Result<()> {
             "rustdoc input changed during documentation generation",
         ));
     }
-    write_bundle(&data, &config.output, config.channel == "release")
-        .map_err(io::Error::other)?;
+    write_bundle(&data, &config.output, config.channel == "release").map_err(io::Error::other)?;
     let artifacts = collect_outputs(&config.output)?;
     let manifest = Manifest {
         schema: "acyclic.sdk.generation.v1".into(),
