@@ -75,7 +75,7 @@ function writeReceipt(receipt) {
   writeFileSync(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
 }
 
-async function freePort() {
+async function freePort(excluded = new Set()) {
   const server = createServer();
   await new Promise((resolvePort, reject) => {
     server.once("error", reject);
@@ -83,6 +83,7 @@ async function freePort() {
   });
   const port = server.address().port;
   await new Promise((resolveClose, reject) => server.close((error) => (error ? reject(error) : resolveClose())));
+  if (excluded.has(port)) return freePort(excluded);
   return port;
 }
 
@@ -160,7 +161,7 @@ process.once("SIGTERM", () => {
 
 try {
   const httpPort = Number(options.get("port") ?? await freePort());
-  const grpcPort = Number(options.get("grpc-port") ?? await freePort());
+  const grpcPort = Number(options.get("grpc-port") ?? await freePort(new Set([httpPort])));
   if (!Number.isInteger(httpPort) || httpPort < 1 || httpPort > 65535) usage("--port must be a valid TCP port");
   if (!Number.isInteger(grpcPort) || grpcPort < 1 || grpcPort > 65535) usage("--grpc-port must be a valid TCP port");
   fixture = spawn(fixturePath, ["--bind-address", "127.0.0.1", "--port", String(httpPort), "--grpc-port", String(grpcPort), "--max-requests", maxRequests], {
