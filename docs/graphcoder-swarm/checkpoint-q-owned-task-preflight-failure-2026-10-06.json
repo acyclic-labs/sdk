@@ -1,0 +1,44 @@
+{
+  "source": "af3945f43b1f5e5585e8cb76cd72074044d15499",
+  "qualification": "No recursive case passed. This failure receipt does not qualify any full matrix gate.",
+  "result": "failed",
+  "exit_code": 101,
+  "artifacts": [
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af3945f43-runtime-rerun\\source.tar",
+      "sha256": "8efe7f60c69f22be853e7216dd2c45656de1540386510d97908fb7fc82c90d37"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af3945f43-runtime-rerun\\native.log",
+      "sha256": "92c503ac7999c1bb371eb9ea3149cf4a2a58ba0dfc88d8aa76964f02f9ca5ac2"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af3945f43-runtime-rerun\\exit-code",
+      "sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af3945f43-runtime-rerun\\local_model_swarm.exe",
+      "sha256": "838bd0f5947b642473dc44806baa7d3709354492fda954ff3595014e8701cb6b"
+    },
+    {
+      "path": "Q:\\worktrees\\graphcoder-swarm-root\\target\\graphcoder-qualification\\af3945f43-runtime-rerun\\unified_runtime_swarm.exe",
+      "sha256": "2d2d6ef5463d6724000f5c7ca13122c6847027b8e4539ed8302282e0f49c67fd"
+    }
+  ],
+  "command": "cargo test -p acyclic-harness --features test-support,native-process-tree --test local_model_swarm --test unified_runtime_swarm --no-fail-fast -j1 default_local_ -- --nocapture",
+  "platform": "Windows native",
+  "protocol": "acyclic.graphcoder.checkpoint.v1",
+  "stack_override": false,
+  "cases": [
+    {
+      "result": "failed",
+      "name": "default_local_composition_runs_recursive_models_and_reopens_without_dispatch",
+      "reason": "STATUS_STACK_OVERFLOW during fresh-child future poll after postauthority allocation"
+    },
+    {
+      "result": "failed",
+      "name": "default_local_runtime_executes_two_children_grandchild_and_communication",
+      "reason": "STATUS_STACK_OVERFLOW after second provider dispatch; first workspace read completed"
+    }
+  ]
+}
