@@ -84,6 +84,15 @@ fn semantic_inventory() -> Vec<&'static SemanticType> {
         if let Some(id) = field.semantic_type {
             ids.insert(id);
         }
+        if field
+            .wire_type
+            .and_then(|value| FieldType::try_from(value).ok())
+            == Some(FieldType::Enum)
+        {
+            // Open enum values are a Rust-owned wire projection even when a
+            // field has no narrower semantic binding in the policy table.
+            ids.insert("enum_value".to_owned());
+        }
     }
     let mut emitted_names = BTreeSet::new();
     let mut output = SEMANTIC_TYPES
