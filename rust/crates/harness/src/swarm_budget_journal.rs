@@ -1297,16 +1297,38 @@ mod tests {
                 &owner,
                 IdempotencyKey::new("effect-root-dispatch")?,
                 IdempotencyKey::new("tool:0:approved-shell")?,
-                99,
+                37,
             )
             .await?;
         assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
+        assert!(matches!(
+            reopened
+                .record_harness_effect_time_ms(
+                    session_id,
+                    &owner,
+                    IdempotencyKey::new("effect-root-dispatch")?,
+                    IdempotencyKey::new("tool:0:approved-shell")?,
+                    99,
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        reopened
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                IdempotencyKey::new("effect-root-dispatch")?,
+                IdempotencyKey::new("tool:0:approved-shell:retry")?,
+                11,
+            )
+            .await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 48);
         let mut context = reopened.root_usage_context(FixedSource(SwarmUsage::default()))?;
         let receipt = context.issue_usage_receipt()?;
         reopened
             .report_root_usage_with_receipt(&owner, receipt)
             .await?;
-        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 37);
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 48);
         Ok(())
     }
 

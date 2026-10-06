@@ -29,7 +29,11 @@ use acyclic_stream::{SystemUnixMillisClock, UnixMillisClock};
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    future::Future,
+    sync::Arc,
+};
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1785,26 +1789,25 @@ impl StockExecutor {
                     return Err(Error::Indeterminate(publication.operation_id));
                 }
                 crate::stack_diagnostics::marker("fork-publication-enter-retry");
-                let publish_started = self.execution_clock.now_unix_millis();
                 let publish = publisher.publish(publication.clone());
                 crate::stack_diagnostics::future_size("fork-publication-handle-retry", &publish);
                 crate::stack_diagnostics::future_size(
                     "fork-publication-inner-retry",
                     &*publish,
                 );
-                let publish_result = publish.await;
-                // The publication retry is a claimed Harness effect. Persist
-                // its measured elapsed time before exposing either success or
-                // a provider error to the model loop.
-                admit_effect_elapsed(
+                // A retry is a new physical publication attempt because
+                // reconciliation did not prove that the first attempt was
+                // observed. Keep its charge identity distinct from the
+                // initial attempt; same-identity retries are reserved for a
+                // durable replay of one already-recorded physical effect.
+                run_timed_harness_effect(
+                    publish,
                     &mut budget,
                     self.execution_clock.as_ref(),
-                    publish_started,
                     operation,
-                    IdempotencyKey::new(format!("model:{step}:publication"))?,
+                    IdempotencyKey::new(format!("model:{step}:publication:retry"))?,
                 )
                 .await?;
-                publish_result?;
                 crate::stack_diagnostics::marker("fork-publication-complete-retry");
             }
         } else {
@@ -1826,22 +1829,21 @@ impl StockExecutor {
                 return Err(Error::Indeterminate(publication.operation_id));
             }
             crate::stack_diagnostics::marker("fork-publication-enter");
-            let publish_started = self.execution_clock.now_unix_millis();
             let publish = publisher.publish(publication.clone());
             crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
             crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
-            let publish_result = publish.await;
             // Persist the publication cost before the terminal completion
-            // event or the next provider request can become visible.
-            admit_effect_elapsed(
+            // event or the next provider request can become visible. The
+            // helper also cancels a publisher that exceeds the live session
+            // ceiling and records that indeterminate outcome first.
+            run_timed_harness_effect(
+                publish,
                 &mut budget,
                 self.execution_clock.as_ref(),
-                publish_started,
                 operation,
-                IdempotencyKey::new(format!("model:{step}:publication"))?,
+                IdempotencyKey::new(format!("model:{step}:publication:initial"))?,
             )
             .await?;
-            publish_result?;
             crate::stack_diagnostics::marker("fork-publication-complete");
         }
         if publisher.identity() != publication.publisher
@@ -3895,6 +3897,53 @@ async fn admit_effect_elapsed(
     Ok(())
 }
 
+/// Runs one host effect under the current authenticated execution remainder.
+/// The future is cancelled at the journal-issued deadline, then its measured
+/// elapsed time is durably admitted before either success or failure escapes
+/// to the model loop. This keeps a timed-out publication from exposing a
+/// partial child batch or silently losing its resource charge.
+async fn run_timed_harness_effect<'a, T, F>(
+    effect: F,
+    budget: &mut Option<&mut dyn SwarmProviderAdmission>,
+    clock: &dyn UnixMillisClock,
+    operation_id: OperationId,
+    effect_id: IdempotencyKey,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>> + 'a,
+    T: 'a,
+{
+    let started_at_ms = clock.now_unix_millis();
+    let deadline = budget
+        .as_deref()
+        .and_then(|budget| budget.remaining_execution_time_ms())
+        .map(|remaining_ms| {
+            if remaining_ms == 0 {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            tokio::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(remaining_ms))
+                .ok_or(Error::Indeterminate(operation_id))
+        })
+        .transpose()?;
+    let result = match deadline {
+        Some(deadline) => match tokio::time::timeout_at(deadline, effect).await {
+            Ok(result) => result,
+            Err(_) => Err(Error::Indeterminate(operation_id)),
+        },
+        None => effect.await,
+    };
+    admit_effect_elapsed(
+        budget,
+        clock,
+        started_at_ms,
+        operation_id,
+        effect_id,
+    )
+    .await?;
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5487,6 +5536,91 @@ mod tests {
             }
             .boxed()
         }
+    }
+
+    struct HangingPublisher {
+        dispatches: AtomicUsize,
+    }
+
+    impl ModelBatchPublisher for HangingPublisher {
+        fn identity(&self) -> ComponentIdentity {
+            ComponentIdentity {
+                name: "test.hanging-publication".into(),
+                version: "1".into(),
+                digest: [28; 32],
+            }
+        }
+
+        fn guarantee(&self) -> EffectGuarantee {
+            EffectGuarantee::IdempotentRetry
+        }
+
+        fn publish<'a>(&'a self, _: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
+            self.dispatches.fetch_add(1, Ordering::SeqCst);
+            futures::future::pending::<Result<()>>().boxed()
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<Option<()>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_publication_deadline_records_timeout_before_return() -> Result<()> {
+        let publisher = Arc::new(HangingPublisher {
+            dispatches: AtomicUsize::new(0),
+        });
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(FakeModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_batch_publisher(Some(publisher.clone()))?;
+        let journal = Journal::default();
+        let operation = OperationId::new();
+        let request = stage_json(&journal, operation, "request", &json!({"request": 1})).await?;
+        let boundary =
+            stage_json(&journal, operation, "boundary", &json!({"boundary": 1})).await?;
+        let effects = Arc::new(Mutex::new(Vec::new()));
+        let mut budget = DeadlineBudget {
+            operation_id: operation,
+            effects: effects.clone(),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.publish_completed_batch(
+                &journal,
+                operation,
+                0,
+                request,
+                boundary,
+                Some(&mut budget),
+            ),
+        )
+        .await
+        .map_err(|_| Error::Conflict("publication deadline did not fire".into()))?;
+        assert!(matches!(result, Err(Error::Indeterminate(observed)) if observed == operation));
+        assert_eq!(publisher.dispatches.load(Ordering::SeqCst), 1);
+        let effects = effects.lock().unwrap();
+        assert_eq!(effects.len(), 1);
+        assert!(effects[0].1 > 0);
+        let records = journal.replay(operation).await?;
+        assert!(records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::BatchPublicationStarted { step: 0, .. }
+        )));
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::BatchPublicationCompleted { step: 0, .. }
+        )));
+        Ok(())
     }
 
     #[tokio::test]
