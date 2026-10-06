@@ -1,4 +1,4 @@
-//! Private native file primitives shared by durable local providers.
+//! Native file and owned-process primitives shared by SDK host consumers.
 
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
@@ -842,6 +842,33 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 /// so independently durable services require their own lifecycle ownership.
 pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
     ProcessTree::spawn(command)
+}
+
+/// Runs a trusted host command with closed stdin and bounded captured output.
+/// Environment and authority policy remain the command builder's responsibility.
+/// Cleanup failure takes precedence; timeout never implies effects rolled back.
+pub fn process_output(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+    max_bytes: usize,
+) -> io::Result<std::process::Output> {
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    spawn_process_tree(command)?.wait_with_output(timeout, max_bytes)
+}
+
+/// Runs a trusted host command with its configured streams and a bounded wait.
+/// Cleanup errors take precedence over exit observation errors.
+pub fn process_status(
+    command: &mut std::process::Command,
+    timeout: std::time::Duration,
+) -> io::Result<std::process::ExitStatus> {
+    let mut tree = spawn_process_tree(command)?;
+    let result = tree.wait(timeout);
+    tree.terminate()?;
+    result
 }
 
 /// Runtime-independent completion of an owned native-file operation.
@@ -2313,12 +2340,15 @@ mod tests {
             });
             return Err(io::Error::other("missing terminal callback was accepted"));
         }
-        let output = std::process::Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("tests::accepted_callback_cannot_disappear_without_terminal_completion")
-            .arg("--nocapture")
-            .env(MARKER, "1")
-            .output()?;
+        let output = crate::process_output(
+            std::process::Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("tests::accepted_callback_cannot_disappear_without_terminal_completion")
+                .arg("--nocapture")
+                .env(MARKER, "1"),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(!output.status.success());
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("dropping accepted native callback")
@@ -2346,12 +2376,15 @@ mod tests {
                 "native worker unwind returned to observer",
             ));
         }
-        let output = std::process::Command::new(std::env::current_exe()?)
-            .arg("--exact")
-            .arg("tests::native_file_worker_unwind_is_fail_stop")
-            .arg("--nocapture")
-            .env(CHILD_MARKER, "1")
-            .output()?;
+        let output = crate::process_output(
+            std::process::Command::new(std::env::current_exe()?)
+                .arg("--exact")
+                .arg("tests::native_file_worker_unwind_is_fail_stop")
+                .arg("--nocapture")
+                .env(CHILD_MARKER, "1"),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(
             !output.status.success(),
             "native worker unwind escaped fail-stop"

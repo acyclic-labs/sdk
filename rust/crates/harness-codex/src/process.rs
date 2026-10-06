@@ -8,13 +8,13 @@ use acyclic_harness::{Error, Result};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
-    process::{ExitStatus, Stdio},
+    process::{Command, ExitStatus, Stdio},
     sync::{Arc, Mutex, PoisonError},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader, Lines},
-    process::{Child, ChildStdout, Command},
+    io::{AsyncBufReadExt as _, AsyncReadExt as _, BufReader},
+    process::{ChildStderr, ChildStdout},
     task::JoinHandle,
     time::Instant,
 };
@@ -27,6 +27,9 @@ const STDERR_GRACE: Duration = Duration::from_secs(2);
 
 /// How much of stderr is kept for error messages.
 const STDERR_TAIL: usize = 64 * 1024;
+
+/// Maximum bytes in one JSON event, independently of transcript policy.
+const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Environment variables passed through from the parent when set.
 const INHERITED: [&str; 6] = [
@@ -51,12 +54,15 @@ pub(crate) enum Next {
     Line(String),
     Eof,
     Deadline,
+    Failed(std::io::Error),
 }
 
 /// A running `codex exec`.
 pub(crate) struct CodexProcess {
-    child: Child,
-    lines: Lines<BufReader<ChildStdout>>,
+    child: Option<acyclic_native_runtime::ProcessTree>,
+    status: Option<ExitStatus>,
+    stdout: BufReader<ChildStdout>,
+    line: Vec<u8>,
     stderr: JoinHandle<()>,
     stderr_tail: Arc<Mutex<Vec<u8>>>,
 }
@@ -70,9 +76,7 @@ impl CodexProcess {
             .env_clear()
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .process_group(0)
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
         for name in INHERITED {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -82,17 +86,23 @@ impl CodexProcess {
             command.env("PATH", "/usr/local/bin:/usr/bin:/bin");
         }
         command.envs(launch.env);
-        let mut child = command.spawn().map_err(|error| {
-            Error::Unsupported(format!(
-                "cannot start codex at {}: {error}",
-                launch.binary.display()
-            ))
-        })?;
+        let mut child =
+            acyclic_native_runtime::spawn_process_tree(&mut command).map_err(|error| {
+                Error::Unsupported(format!(
+                    "cannot start codex at {}: {error}",
+                    launch.binary.display()
+                ))
+            })?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| Error::Storage("codex stdout was not captured".into()))?;
-        let stderr = child.stderr.take();
+        let stdout =
+            ChildStdout::from_std(stdout).map_err(|error| Error::Storage(error.to_string()))?;
+        let stderr = child
+            .take_stderr()
+            .map(ChildStderr::from_std)
+            .transpose()
+            .map_err(|error| Error::Storage(error.to_string()))?;
         let stderr_tail = Arc::new(Mutex::new(Vec::new()));
         let tail = stderr_tail.clone();
         let stderr = tokio::spawn(async move {
@@ -111,8 +121,10 @@ impl CodexProcess {
             }
         });
         Ok(Self {
-            child,
-            lines: BufReader::new(stdout).lines(),
+            child: Some(child),
+            status: None,
+            stdout: BufReader::new(stdout),
+            line: Vec::new(),
             stderr,
             stderr_tail,
         })
@@ -120,7 +132,9 @@ impl CodexProcess {
 
     /// Waits for the next stdout line, end of output, or the deadline.
     pub(crate) async fn next(&mut self, deadline: Option<Instant>) -> Next {
-        let line = self.lines.next_line();
+        self.line.clear();
+        let mut reader = (&mut self.stdout).take((MAX_EVENT_BYTES + 1) as u64);
+        let line = reader.read_until(b'\n', &mut self.line);
         let result = match deadline {
             Some(deadline) => match tokio::time::timeout_at(deadline, line).await {
                 Ok(result) => result,
@@ -129,32 +143,80 @@ impl CodexProcess {
             None => line.await,
         };
         match result {
-            Ok(Some(line)) => Next::Line(line),
-            Ok(None) | Err(_) => Next::Eof,
+            Err(error) => Next::Failed(error),
+            Ok(_) if self.line.len() > MAX_EVENT_BYTES => Next::Failed(std::io::Error::new(
+                std::io::ErrorKind::FileTooLarge,
+                "codex event exceeded its byte limit",
+            )),
+            Ok(0) => Next::Eof,
+            Ok(_) => {
+                if self.line.last() == Some(&b'\n') {
+                    self.line.pop();
+                    if self.line.last() == Some(&b'\r') {
+                        self.line.pop();
+                    }
+                }
+                match std::str::from_utf8(&self.line) {
+                    Ok(line) => Next::Line(line.to_owned()),
+                    Err(error) => {
+                        Next::Failed(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+                    }
+                }
+            }
         }
     }
 
-    /// Waits for exit after stdout closed, within the deadline.
-    pub(crate) async fn wait(&mut self, deadline: Option<Instant>) -> Option<ExitStatus> {
-        match deadline {
-            Some(deadline) => tokio::time::timeout_at(deadline, self.child.wait())
+    /// Observes exit and cleans containment; only an elapsed deadline returns None.
+    pub(crate) async fn wait(&mut self, deadline: Option<Instant>) -> Result<Option<ExitStatus>> {
+        if self.status.is_some() {
+            return Ok(self.status);
+        }
+        loop {
+            let tree = self
+                .child
+                .as_mut()
+                .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
+            if let Some(status) = tree
+                .try_wait()
+                .map_err(|error| Error::Storage(error.to_string()))?
+            {
+                let mut tree = self
+                    .child
+                    .take()
+                    .ok_or_else(|| Error::Storage("codex process ownership absent".into()))?;
+                let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
+                    let result = tree.terminate();
+                    (tree, result)
+                })
                 .await
-                .ok()
-                .and_then(std::result::Result::ok),
-            None => self.child.wait().await.ok(),
+                .map_err(|error| Error::Storage(error.to_string()))?;
+                self.child = Some(tree);
+                result.map_err(|error| Error::Storage(error.to_string()))?;
+                self.status = Some(status);
+                return Ok(self.status);
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     }
 
-    /// SIGTERM to the whole process group, then SIGKILL after [`GRACE`].
-    pub(crate) async fn terminate(&mut self) {
-        signal_group(&self.child, rustix::process::Signal::TERM);
-        if tokio::time::timeout(GRACE, self.child.wait())
-            .await
-            .is_err()
-        {
-            signal_group(&self.child, rustix::process::Signal::KILL);
-            let _ = self.child.wait().await;
-        }
+    /// Requests graceful exit, then cleans the owned tree even if its leader
+    /// exits before descendants. The existing native pool owns admitted cleanup.
+    pub(crate) async fn terminate(&mut self) -> Result<()> {
+        let Some(mut tree) = self.child.take() else {
+            return Ok(());
+        };
+        let (tree, result) = acyclic_native_runtime::run_blocking_io(move || {
+            let result = tree.terminate_after(GRACE);
+            (tree, result)
+        })
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        self.child = Some(tree);
+        self.status = Some(result.map_err(|error| Error::Storage(error.to_string()))?);
+        Ok(())
     }
 
     /// The last 64 KB of stderr, once the process is gone. A command Codex
@@ -176,30 +238,27 @@ impl CodexProcess {
     }
 }
 
-fn signal_group(child: &Child, signal: rustix::process::Signal) {
-    let pid = child
-        .id()
-        .and_then(|id| i32::try_from(id).ok())
-        .and_then(rustix::process::Pid::from_raw);
-    if let Some(pid) = pid {
-        let _ = rustix::process::kill_process_group(pid, signal);
+impl Drop for CodexProcess {
+    fn drop(&mut self) {
+        self.stderr.abort();
     }
 }
 
 /// Runs `<binary> --version` and checks it is the pinned release.
 pub(crate) async fn check_version(binary: &Path) -> Result<()> {
-    let output = Command::new(binary)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .kill_on_drop(true)
-        .output()
-        .await
-        .map_err(|error| {
-            Error::Unsupported(format!(
-                "cannot run {} --version: {error}",
-                binary.display()
-            ))
-        })?;
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    let output = acyclic_native_runtime::run_blocking_io(move || {
+        acyclic_native_runtime::process_output(&mut command, Duration::from_secs(30), STDERR_TAIL)
+    })
+    .await
+    .map_err(|error| Error::Storage(error.to_string()))?
+    .map_err(|error| {
+        Error::Unsupported(format!(
+            "cannot run {} --version: {error}",
+            binary.display(),
+        ))
+    })?;
     let version = String::from_utf8_lossy(&output.stdout);
     if version
         .split_whitespace()
@@ -235,5 +294,56 @@ impl Dirs {
             })?;
         }
         Ok(dirs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn streaming_rejects_oversized_and_invalid_records() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        for script in ["head -c 8388609 /dev/zero", "printf '\\377\\n'"] {
+            let mut process = CodexProcess::spawn(Launch {
+                binary: Path::new("/bin/sh"),
+                args: vec!["-c".into(), script.into()],
+                env: Vec::new(),
+                workspace: directory.path(),
+            })?;
+            let next = process
+                .next(Some(Instant::now() + Duration::from_secs(10)))
+                .await;
+            assert!(matches!(next, Next::Failed(_)));
+            process.terminate().await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn observed_exit_cleans_background_descendants_before_success() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let marker = directory.path().join("escaped");
+        let mut process = CodexProcess::spawn(Launch {
+            binary: Path::new("/bin/sh"),
+            args: vec![
+                "-c".into(),
+                "(sleep 1; touch \"$1\") >/dev/null 2>&1 & exit 7".into(),
+                "fixture".into(),
+                marker.as_os_str().into(),
+            ],
+            env: Vec::new(),
+            workspace: directory.path(),
+        })?;
+        assert_eq!(
+            process
+                .wait(Some(Instant::now() + Duration::from_secs(10)))
+                .await?
+                .and_then(|status| status.code()),
+            Some(7)
+        );
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert!(!marker.exists());
+        Ok(())
     }
 }

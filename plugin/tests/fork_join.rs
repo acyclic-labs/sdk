@@ -55,11 +55,13 @@ impl Session {
         fs::create_dir_all(repo.join("pkg")).expect("repository");
         fs::write(repo.join("README.md"), "base\n").expect("readme");
         fs::write(repo.join("pkg/shared.rs"), "VALUE = 1\n").expect("shared");
-        let initialized = std::process::Command::new("git")
-            .args(["init", "-q"])
-            .current_dir(&repo)
-            .status()
-            .expect("git init");
+        let initialized = acyclic_native_runtime::process_status(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&repo),
+            std::time::Duration::from_secs(120),
+        )
+        .expect("git init");
         assert!(initialized.success());
         let service = ServiceGuard::new(home.path());
         let session = Self {
@@ -570,10 +572,12 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
     let fork = session.spawn(&session.root(), "meta");
     let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
-    let set = std::process::Command::new("setfattr")
-        .args(["-n", "user.acyclic.test", "-v", "1"])
-        .arg(&tagged)
-        .status();
+    let set = acyclic_native_runtime::process_status(
+        std::process::Command::new("setfattr")
+            .args(["-n", "user.acyclic.test", "-v", "1"])
+            .arg(&tagged),
+        std::time::Duration::from_secs(120),
+    );
     let attribute_set = set.is_ok_and(|status| status.success());
     // Read-only, which denies setting attributes once the mode is applied.
     make_read_only(&tagged);
@@ -581,11 +585,14 @@ fn extended_attributes_set_in_a_fork_reach_the_parent() {
     assert!(session.files().contains(&"tagged.rs".to_owned()));
     assert!(read_only(&session.repo.join("tagged.rs")));
     if attribute_set {
-        let read = std::process::Command::new("getfattr")
-            .args(["--only-values", "-n", "user.acyclic.test"])
-            .arg(session.repo.join("tagged.rs"))
-            .output()
-            .expect("getfattr");
+        let read = acyclic_native_runtime::process_output(
+            std::process::Command::new("getfattr")
+                .args(["--only-values", "-n", "user.acyclic.test"])
+                .arg(session.repo.join("tagged.rs")),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )
+        .expect("getfattr");
         assert_eq!(read.stdout, b"1");
     }
 }
@@ -610,11 +617,13 @@ fn no_host_metadata_files_are_merged() {
     let fork = session.spawn(&session.root(), "meta");
     let tagged = fork.path.join("tagged.rs");
     fs::write(&tagged, "x\n").expect("write");
-    let attribute_set = std::process::Command::new("xattr")
-        .args(["-w", "com.acyclic.test", "1"])
-        .arg(&tagged)
-        .status()
-        .is_ok_and(|status| status.success());
+    let attribute_set = acyclic_native_runtime::process_status(
+        std::process::Command::new("xattr")
+            .args(["-w", "com.acyclic.test", "1"])
+            .arg(&tagged),
+        std::time::Duration::from_secs(120),
+    )
+    .is_ok_and(|status| status.success());
     // Read-only, which denies setting attributes once the mode is applied.
     make_read_only(&tagged);
     session.merge(&fork).expect("merge");
@@ -626,11 +635,14 @@ fn no_host_metadata_files_are_merged() {
     );
     assert!(read_only(&session.repo.join("tagged.rs")));
     if attribute_set {
-        let read = std::process::Command::new("xattr")
-            .args(["-p", "com.acyclic.test"])
-            .arg(session.repo.join("tagged.rs"))
-            .output()
-            .expect("xattr");
+        let read = acyclic_native_runtime::process_output(
+            std::process::Command::new("xattr")
+                .args(["-p", "com.acyclic.test"])
+                .arg(session.repo.join("tagged.rs")),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )
+        .expect("xattr");
         assert_eq!(String::from_utf8_lossy(&read.stdout).trim(), "1");
     }
 }

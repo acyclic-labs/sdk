@@ -50,11 +50,14 @@ fn run_workflow(
     args: &[&str],
 ) -> Result<u128, Box<dyn std::error::Error>> {
     let started = Instant::now();
-    let output = Command::new(program)
-        .args(args)
-        .current_dir(root)
-        .env_remove("CARGO_TARGET_DIR")
-        .output()?;
+    let output = acyclic_native_runtime::process_output(
+        Command::new(program)
+            .args(args)
+            .current_dir(root)
+            .env_remove("CARGO_TARGET_DIR"),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )?;
     let elapsed_ms = started.elapsed().as_millis();
     if !output.status.success() {
         return Err(format!(
@@ -811,11 +814,13 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
     let native_scan_us = started.elapsed().as_micros();
     let copied = tempfile::tempdir()?;
     let started = Instant::now();
-    let status = std::process::Command::new("cp")
-        .arg("-a")
-        .arg(source.path().join("hot"))
-        .arg(copied.path())
-        .status()?;
+    let status = acyclic_native_runtime::process_status(
+        std::process::Command::new("cp")
+            .arg("-a")
+            .arg(source.path().join("hot"))
+            .arg(copied.path()),
+        std::time::Duration::from_secs(120),
+    )?;
     assert!(status.success());
     let native_copy_us = started.elapsed().as_micros();
     for directory in 0..10 {
@@ -1079,11 +1084,13 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
 
         let native_destination = tempfile::tempdir()?;
         let started = Instant::now();
-        let status = std::process::Command::new("cp")
-            .arg("-a")
-            .arg(source.path().join("hot"))
-            .arg(native_destination.path())
-            .status()?;
+        let status = acyclic_native_runtime::process_status(
+            std::process::Command::new("cp")
+                .arg("-a")
+                .arg(source.path().join("hot"))
+                .arg(native_destination.path()),
+            std::time::Duration::from_secs(120),
+        )?;
         assert!(status.success());
         native_copy_us.push(u64::try_from(started.elapsed().as_micros())?);
         let copied = native_destination.path().join("hot");

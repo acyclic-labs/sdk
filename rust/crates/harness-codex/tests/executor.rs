@@ -519,25 +519,32 @@ fn the_fake_codex_replays_its_fixture_and_rejects_an_open_stdin() {
         ..FakeCodex::default()
     }
     .install(dir.path());
-    let output = std::process::Command::new(&fake)
-        .args(["exec", "--json", "-C", "/tmp", "task"])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .expect("run fake");
+    let output = acyclic_native_runtime::process_output(
+        std::process::Command::new(&fake)
+            .args(["exec", "--json", "-C", "/tmp", "task"])
+            .stdin(std::process::Stdio::null()),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("run fake");
     assert_eq!(output.status.code(), Some(3));
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         read(&support::fixture_dir().join("shell.stdout.jsonl"))
     );
-    let mut child = std::process::Command::new(&fake)
-        .arg("exec")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn fake");
-    let _held = child.stdin.take();
+    let mut child = acyclic_native_runtime::spawn_process_tree(
+        std::process::Command::new(&fake)
+            .arg("exec")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null()),
+    )
+    .expect("spawn fake");
+    let _held = child.take_stdin();
     assert_eq!(
-        child.wait().expect("wait").code(),
+        child
+            .wait(std::time::Duration::from_secs(5))
+            .expect("wait")
+            .code(),
         Some(97),
         "an open stdin is caught"
     );

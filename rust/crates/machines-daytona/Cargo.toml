@@ -24,6 +24,7 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 acyclic-conformance = { path = "../conformance" }
 
 [lints]

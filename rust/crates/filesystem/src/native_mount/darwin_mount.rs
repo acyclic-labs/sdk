@@ -1618,23 +1618,23 @@ fn bounded_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
     if bounded_direct_unmount(destination, &parent)? {
         return Ok(UnmountEvidence::Detached);
     }
-    let mut child = Command::new("/usr/sbin/diskutil")
-        .arg("unmount")
-        .arg("force")
-        .arg(destination)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+    let mut child = acyclic_native_runtime::spawn_process_tree(
+        Command::new("/usr/sbin/diskutil")
+            .arg("unmount")
+            .arg("force")
+            .arg(destination)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|error| error.to_string())?;
     let deadline = Instant::now() + DISKUTIL_UNMOUNT_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
             break status;
         }
         if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.terminate().map_err(|error| error.to_string())?;
             if !is_mounted(destination, &parent)? {
                 return Ok(UnmountEvidence::Detached);
             }
@@ -1645,6 +1645,7 @@ fn bounded_unmount(destination: &Path) -> Result<UnmountEvidence, String> {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    child.terminate().map_err(|error| error.to_string())?;
     if !is_mounted(destination, &parent)? {
         return Ok(UnmountEvidence::Detached);
     }
@@ -3555,13 +3556,12 @@ mod tests {
         std::fs::write(&path, b"")?;
         // The NFS client keys locks by process, so another process contends.
         let contender = |operation: &str| {
-            Command::new("/usr/bin/perl")
+            acyclic_native_runtime::process_status(Command::new("/usr/bin/perl")
                 .arg("-e")
                 .arg(format!(
                     "use Fcntl qw(:flock :DEFAULT); open(F, '+<', $ARGV[0]) or die;                      exit({operation} ? 0 : 1)"
                 ))
-                .arg(&path)
-                .status()
+                .arg(&path), std::time::Duration::from_secs(120))
                 .map(|status| status.success())
         };
         let flock = "flock(F, LOCK_EX | LOCK_NB)";
@@ -3620,15 +3620,23 @@ mod tests {
         std::fs::write(&script, b"#!/bin/sh\nexit 0\n")?;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644))?;
         assert_eq!(
-            Command::new(&script)
-                .status()
-                .err()
-                .map(|error| error.kind()),
+            acyclic_native_runtime::process_status(
+                &mut Command::new(&script),
+                std::time::Duration::from_secs(120)
+            )
+            .err()
+            .map(|error| error.kind()),
             Some(std::io::ErrorKind::PermissionDenied),
             "a file without an execute bit does not run"
         );
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))?;
-        assert!(Command::new(&script).status()?.success());
+        assert!(
+            acyclic_native_runtime::process_status(
+                &mut Command::new(&script),
+                std::time::Duration::from_secs(120)
+            )?
+            .success()
+        );
         assert_eq!(std::fs::read(&path)?, b"kept");
         assert!(mount.stop()?);
         Ok(())

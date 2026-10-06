@@ -2555,20 +2555,22 @@ mod tests {
         let tar = dir.join("out.tar");
         let script =
             quiescent_archive_script(workspace.to_str().unwrap(), tar.to_str().unwrap(), 2);
-        let status = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(&script)
-            .status()
-            .unwrap();
+        let status = acyclic_native_runtime::process_status(
+            std::process::Command::new("sh").arg("-c").arg(&script),
+            std::time::Duration::from_secs(120),
+        )
+        .unwrap();
         assert!(status.success());
         assert!(dir.join("out.tar.gz").exists());
 
         // Shadow `tar` so the workspace changes, or a read reports a change, deterministically
         // between the two reads of every attempt instead of racing a writer thread.
-        let real_tar = std::process::Command::new("sh")
-            .args(["-c", "command -v tar"])
-            .output()
-            .unwrap();
+        let real_tar = acyclic_native_runtime::process_output(
+            std::process::Command::new("sh").args(["-c", "command -v tar"]),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )
+        .unwrap();
         let real_tar = String::from_utf8(real_tar.stdout).unwrap();
         let bin = dir.join("bin");
         std::fs::create_dir_all(&bin).unwrap();
@@ -2586,12 +2588,14 @@ mod tests {
             std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755)).unwrap();
             let _ = std::fs::remove_file(dir.join("out.tar.gz"));
             let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
-            let status = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(&script)
-                .env("PATH", path)
-                .status()
-                .unwrap();
+            let status = acyclic_native_runtime::process_status(
+                std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&script)
+                    .env("PATH", path),
+                std::time::Duration::from_secs(120),
+            )
+            .unwrap();
             assert_eq!(status.code(), Some(i32::try_from(NOT_QUIESCENT).unwrap()));
             assert!(!dir.join("out.tar.gz").exists() && !tar.exists());
         };

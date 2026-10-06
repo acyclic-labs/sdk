@@ -24,6 +24,36 @@ impl ProcessTree {
         })
     }
 
+    /// Transfers the input pipe to a host-owned streaming protocol.
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.child.as_mut()?.stdin.take()
+    }
+
+    /// Transfers stdout to a host-owned reader, which owns its output bounds.
+    pub fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        self.child.as_mut()?.stdout.take()
+    }
+
+    /// Transfers stderr to a host-owned reader, which owns its output bounds.
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.child.as_mut()?.stderr.take()
+    }
+
+    /// Reads owned stdout without waiting for data. `None` means not ready;
+    /// `Some(0)` means EOF or no owned pipe. The host owns framing and bounds.
+    pub fn read_stdout(&mut self, buffer: &mut [u8]) -> io::Result<Option<usize>> {
+        if buffer.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "empty process read buffer",
+            ));
+        }
+        let Some(pipe) = self.child.as_mut().and_then(|child| child.stdout.as_mut()) else {
+            return Ok(Some(0));
+        };
+        platform::read_pipe(pipe, buffer)
+    }
+
     /// Polls the direct child without releasing ownership of its descendants.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
         let child = self
@@ -142,6 +172,30 @@ impl ProcessTree {
         Ok(())
     }
 
+    /// Requests graceful Unix group termination, then performs mandatory tree
+    /// cleanup after direct-child exit or `grace`. Windows has no group-wide
+    /// graceful signal and uses Job termination immediately.
+    pub fn terminate_after(&mut self, grace: Duration) -> io::Result<ExitStatus> {
+        #[cfg(unix)]
+        self.guard.request_termination()?;
+        #[cfg(windows)]
+        self.terminate_descendants()?;
+        let observed = self.wait(grace);
+        let status = match observed {
+            Ok(status) => status,
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                self.terminate_descendants()?;
+                self.wait(Duration::from_secs(5))?
+            }
+            Err(error) => {
+                self.terminate()?;
+                return Err(error);
+            }
+        };
+        self.terminate()?;
+        Ok(status)
+    }
+
     /// Signals termination to the entire tree while retaining the direct child
     /// so its captured output can still be collected.
     pub fn terminate_descendants(&mut self) -> io::Result<()> {
@@ -196,13 +250,17 @@ mod platform {
     use std::process::{Child, Command, ExitStatus};
 
     pub(super) fn observe_exit(child: &Child) -> io::Result<Option<ExitStatus>> {
+        observe_exit_id(child.id())
+    }
+
+    fn observe_exit_id(id: libc::id_t) -> io::Result<Option<ExitStatus>> {
         let flags = libc::WEXITED | libc::WNOWAIT | libc::WNOHANG;
         loop {
             // SAFETY: initialized OS output storage and the exclusively owned
             // child's ID. WNOWAIT retains the leader until group termination,
             // preventing its PID/PGID from being reused for an unrelated group.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-            if unsafe { libc::waitid(libc::P_PID, child.id(), &raw mut info, flags) } != 0 {
+            if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } != 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
                     continue;
@@ -270,6 +328,33 @@ mod platform {
     }
 
     impl Guard {
+        fn group_gone(&self, error: &io::Error) -> io::Result<bool> {
+            if error.raw_os_error() == Some(libc::ESRCH) {
+                return Ok(true);
+            }
+            #[cfg(target_vendor = "apple")]
+            if error.raw_os_error() == Some(libc::EPERM) {
+                return group_has_no_live_members(self.process_group);
+            }
+            Ok(false)
+        }
+
+        pub(super) fn request_termination(&mut self) -> io::Result<()> {
+            if !self.active {
+                return Ok(());
+            }
+            // SAFETY: the unreaped owned leader reserves this process group.
+            if unsafe { libc::kill(-self.process_group, libc::SIGTERM) } == 0 {
+                return Ok(());
+            }
+            let error = io::Error::last_os_error();
+            if self.group_gone(&error)? {
+                Ok(())
+            } else {
+                Err(error)
+            }
+        }
+
         pub(super) fn terminate(&mut self) -> io::Result<()> {
             if !self.active {
                 return Ok(());
@@ -281,13 +366,47 @@ mod platform {
                 return Ok(());
             }
             let error = io::Error::last_os_error();
-            if error.raw_os_error() == Some(libc::ESRCH) {
+            if self.group_gone(&error)? {
                 self.active = false;
                 Ok(())
             } else {
                 Err(error)
             }
         }
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn group_has_no_live_members(group: libc::pid_t) -> io::Result<bool> {
+        // XNU skips zombies in killpg1 and reports EPERM when none are signalled.
+        // Accept only an empty group or a snapshot containing exactly the owned,
+        // independently observed exited leader. Other members (even zombies)
+        // retain the error: no authority or descendant-completion claim is made.
+        // proc_listpids(PROC_PGRP_ONLY = 2) snapshots live and zombie membership
+        // under the kernel process-list lock. Two slots distinguish a sole
+        // leader from a larger, possibly truncated group without allocation.
+        let mut members = [0_i32; 2];
+        let bytes = i32::try_from(std::mem::size_of_val(&members)).map_err(io::Error::other)?;
+        let id = u32::try_from(group).map_err(io::Error::other)?;
+        // SAFETY: thread-local errno and a writable, correctly sized PID array.
+        // libproc returns zero both for an empty list and for an errno failure.
+        let read = unsafe {
+            *libc::__error() = 0;
+            libc::proc_listpids(2, id, members.as_mut_ptr().cast(), bytes)
+        };
+        if read <= 0 {
+            let error = io::Error::last_os_error();
+            return if read == 0 && error.raw_os_error() == Some(0) {
+                Ok(true)
+            } else {
+                Err(error)
+            };
+        }
+        if read == i32::try_from(std::mem::size_of::<libc::pid_t>()).map_err(io::Error::other)?
+            && members.first() == Some(&group)
+        {
+            return Ok(observe_exit_id(id)?.is_some());
+        }
+        Ok(false)
     }
 }
 
@@ -411,6 +530,56 @@ mod tests {
                 assert!(tree.child.is_none());
             }
             drop(tree);
+            thread::sleep(Duration::from_secs(1));
+            assert!(!temporary.path().join("escaped").exists());
+        }
+    }
+
+    #[test]
+    fn owned_streaming_stdout_rejects_empty_reads_and_reaches_eof() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let mut command = command("output", temporary.path());
+        command.env("EXPLICIT_PROCESS_INPUT", "allowed");
+        let mut tree = ProcessTree::spawn(&mut command).expect("spawn streaming tree");
+        assert_eq!(
+            tree.read_stdout(&mut []).expect_err("empty read").kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut bytes = Vec::new();
+        loop {
+            let mut buffer = [0; 128];
+            match tree.read_stdout(&mut buffer).expect("read owned stdout") {
+                Some(0) => break,
+                Some(read) => bytes.extend_from_slice(&buffer[..read]),
+                None => thread::sleep(Duration::from_millis(1)),
+            }
+            assert!(Instant::now() < deadline, "streaming output deadline");
+        }
+        tree.terminate().expect("clean streaming tree");
+        assert!(bytes.ends_with(b"stdout-marker"));
+    }
+
+    #[test]
+    fn graceful_cleanup_handles_an_exited_leader_and_its_descendants() {
+        for mode in ["exit-code", "exit-parent", "child"] {
+            let temporary = tempfile::tempdir().expect("temporary directory");
+            let mut tree =
+                ProcessTree::spawn(&mut command(mode, temporary.path())).expect("spawn tree");
+            if mode != "exit-code" {
+                ready(temporary.path(), "tree-ready");
+            }
+            if mode != "child" {
+                tree.wait(Duration::from_secs(5))
+                    .expect("observe leader exit");
+            }
+            let status = tree
+                .terminate_after(Duration::from_secs(1))
+                .expect("graceful tree cleanup");
+            if mode == "exit-code" {
+                assert_eq!(status.code(), Some(7));
+            }
+            assert!(tree.child.is_none());
             thread::sleep(Duration::from_secs(1));
             assert!(!temporary.path().join("escaped").exists());
         }
@@ -630,18 +799,45 @@ mod platform {
         // has been assigned to the kill-on-close Job.
         if unsafe { AssignProcessToJobObject(guard.job, child.as_raw_handle().cast()) } == 0 {
             let error = io::Error::last_os_error();
-            let _ = guard.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
+            return Err(failed_admission(&mut child, &mut guard, error));
         }
         if let Err(error) = resume_process(child.id()) {
-            let _ = guard.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
+            return Err(failed_admission(&mut child, &mut guard, error));
         }
         Ok((child, guard))
+    }
+
+    fn failed_admission(child: &mut Child, guard: &mut Guard, admission: io::Error) -> io::Error {
+        // An assignment failure leaves a suspended child outside the Job.
+        // Attempt both owners' cleanup and bound direct-exit observation; never
+        // hide failed cleanup behind the original admission error.
+        let job = guard.terminate();
+        let killed = child.kill();
+        let cleanup = (|| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if child.try_wait()?.is_some() {
+                    return job;
+                }
+                if let Err(error) = &killed {
+                    return Err(io::Error::new(error.kind(), error.to_string()));
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "unadmitted child termination is unresolved",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        })();
+        match cleanup {
+            Ok(()) => admission,
+            Err(error) => io::Error::new(
+                error.kind(),
+                format!("process admission failed ({admission}); cleanup unresolved ({error})"),
+            ),
+        }
     }
 
     impl Guard {

@@ -184,9 +184,9 @@ impl CodexTransport {
 
 /// A running `acyclic __mcp`, started from the plugin root as Codex starts it.
 struct CodexHookServer {
-    child: std::process::Child,
+    process_tree: acyclic_native_runtime::ProcessTree,
     input: std::process::ChildStdin,
-    output: std::io::BufReader<std::process::ChildStdout>,
+    output: Vec<u8>,
     next_id: u64,
 }
 
@@ -199,11 +199,12 @@ impl CodexHookServer {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped());
         isolated_state(&mut server, root);
-        let mut child = server.spawn().expect("start the hook MCP server");
+        let mut child = acyclic_native_runtime::spawn_process_tree(&mut server)
+            .expect("start the hook MCP server");
         let mut server = Self {
-            input: child.stdin.take().expect("server input"),
-            output: std::io::BufReader::new(child.stdout.take().expect("server output")),
-            child,
+            input: child.take_stdin().expect("server input"),
+            output: Vec::new(),
+            process_tree: child,
             next_id: 0,
         };
         let initialized = server.request(
@@ -230,27 +231,45 @@ impl CodexHookServer {
     }
 
     fn request(&mut self, method: &str, params: &Value) -> Value {
-        use std::io::BufRead as _;
         self.next_id += 1;
         let id = self.next_id;
         self.send(
             &serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
         );
-        let mut line = String::new();
-        self.output.read_line(&mut line).expect("read response");
-        let response: Value = serde_json::from_str(&line).expect("response");
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let response = loop {
+            if let Some(end) = self.output.iter().position(|byte| *byte == b'\n') {
+                let response: Value =
+                    serde_json::from_slice(&self.output[..end]).expect("response");
+                self.output.drain(..=end);
+                break response;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "MCP response deadline exceeded"
+            );
+            let mut chunk = [0_u8; 4096];
+            match self
+                .process_tree
+                .read_stdout(&mut chunk)
+                .expect("read MCP output")
+            {
+                Some(0) => panic!("MCP server closed its output before a response"),
+                Some(read) => {
+                    assert!(
+                        self.output.len() + read <= 1024 * 1024,
+                        "MCP response byte limit exceeded"
+                    );
+                    self.output.extend_from_slice(&chunk[..read]);
+                }
+                None => std::thread::sleep(Duration::from_millis(1)),
+            }
+        };
         assert_eq!(response["id"], id);
         response
             .get("result")
             .cloned()
             .unwrap_or_else(|| panic!("{method} failed: {response}"))
-    }
-}
-
-impl Drop for CodexHookServer {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 
@@ -1120,7 +1139,12 @@ fn install_codex_plugin(codex: &Path, home: &Path, plugin: &Path) {
         .arg(plugin)
         .arg("--json");
     isolated_codex_state(&mut marketplace, home);
-    let output = marketplace.output().expect("add local plugin marketplace");
+    let output = acyclic_native_runtime::process_output(
+        &mut marketplace,
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("add local plugin marketplace");
     assert!(
         output.status.success(),
         "marketplace installation failed: {}",
@@ -1130,7 +1154,12 @@ fn install_codex_plugin(codex: &Path, home: &Path, plugin: &Path) {
     let mut install = command(codex);
     install.args(["plugin", "add", "acyclic@acyclic", "--json"]);
     isolated_codex_state(&mut install, home);
-    let output = install.output().expect("install local Acyclic plugin");
+    let output = acyclic_native_runtime::process_output(
+        &mut install,
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("install local Acyclic plugin");
     assert!(
         output.status.success(),
         "plugin installation failed: {}",
@@ -1575,7 +1604,12 @@ fn install_host(
     if host == "codex" {
         preserve_windows_profile_identity(&mut install);
     }
-    let output = install.output().expect("install host integration");
+    let output = acyclic_native_runtime::process_output(
+        &mut install,
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    )
+    .expect("install host integration");
     assert!(
         output.status.success(),
         "stdout:\n{}\nstderr:\n{}",

@@ -1,6 +1,6 @@
 # `acyclic-native-runtime`
 
-Small, platform-specific file primitives shared by Acyclic's local storage providers.
+Small, platform-specific file and process primitives shared by Acyclic host consumers.
 
 Most applications should depend on a higher-level crate such as
 [`acyclic-fs`](https://docs.rs/acyclic-fs) instead. This crate is public so the
@@ -69,6 +69,33 @@ scratch buffer; allocator bookkeeping and OS pipe buffers are outside it.
 Existing temporary-file capture consumers retain their separate file-size
 polling policy, which is not a hard disk-usage limit.
 
+Process ownership stays in `process_tree.rs` inside this existing crate. File
+backends remain separate modules. `process_output(command, timeout, max_bytes)`
+provides bounded short-command capture; `process_status(command, timeout)`
+preserves configured streams. Streaming hosts take pipes from `ProcessTree`
+and enforce their protocol bounds. `terminate_after(grace)` requests Unix
+SIGTERM before mandatory cleanup; an exited leader never excuses surviving
+descendants. Async callers use the existing `run_blocking_io` pool, whose
+admitted operations retain ownership when observers are dropped. Its queue and
+OS scheduling are outside the command's exit/capture observation window.
+
+SDK Rust runtime, tests and qualification callers use these primitives,
+including mount recovery, Codex streaming, compiler/tool checks and parallel
+qualification writers. The remaining direct process launches are platform
+admission internals, independently durable service bootstrap, and descendant
+fixtures that deliberately inherit their parent's containment. JavaScript and
+shell build/release or external CI orchestrators remain outside this Rust SDK
+ownership boundary; no command-execution binding or new crate is introduced.
+
+On Darwin, group signalling returns EPERM for a zombie-only group. Cleanup
+accepts that case only when a kernel membership snapshot is empty or contains
+exactly the owned, independently observed exited leader. Additional members or
+denied snapshot authority retain the error. Windows admission failures attempt
+both Job and direct-child cleanup with bounded observation, and report
+unresolved cleanup explicitly; failed admission is not a rollback guarantee.
+Drop is best-effort and cannot report cleanup failure. Successful explicit
+cleanup is required wherever a caller claims observed completion.
+
 | Invariant | Production mechanism | Assumptions | Verification / evidence |
 | --- | --- | --- | --- |
 | Windows successful cleanup leaves no executing owned descendant | Suspended spawn, non-breakaway kill-on-close Job, termination followed by `ActiveProcesses == 0` | Trusted OS Job semantics; no transfer of Job authority | Real child/grandchild termination, drop and exited-parent tests; Windows lane |
@@ -78,6 +105,8 @@ polling policy, which is not a hard disk-usage limit.
 | Captured payload never exceeds the shared byte budget; overflow is an error | Checked subtraction before append; fallible exact reservation | Exclusive pipe readers; allocator/OS calls progress | Real two-stream fixture and flood rejection |
 | Deadline expires without detached readers or successful rollback claims | Nonblocking Unix reads / Windows pipe peek; separate five-second cleanup observation windows; errors retain child ownership | OS calls and scheduling progress; no hard real-time return guarantee | Real timeout and descendant-held-pipe fixtures; Windows reduced-rights Job test establishes cleanup-error precedence and retained ownership |
 | Host-configured environment is preserved | Command builder owns `env_clear` and explicit `env` policy; containment does not add environment entries | Trusted host builder applies the required policy | Cleared-environment real fixture with explicit input and closed stdin; generic primitive provides no default credential policy |
+| Graceful cleanup still ends descendants after early leader exit | Unix SIGTERM request, retained leader observation, then mandatory SIGKILL/Job cleanup | Same containment and exclusive-reaping assumptions; OS progress | Real exited-leader and grandchild fixture on Windows/Linux/macOS; Codex background-descendant regression |
+| Streaming Codex records cannot grow without a per-record bound or hide read errors as EOF | Eight-MiB record reader; explicit failure variant; reader abort on owner drop | Tokio runtime progresses; transcript limits remain host policy | Real oversized/invalid UTF-8 child streams; executor acceptance suite |
 
 These are implementation checks and test evidence, not machine-checked or
 unrestricted correctness proofs. Reproduce with `cargo test -p

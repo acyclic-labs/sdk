@@ -5667,22 +5667,21 @@ mod tests {
         let first_name = "written-α.bin";
         let second_name = "renamed-β.bin";
         let linked_name = "linked-γ.bin";
-        let write_status = std::process::Command::new("powershell.exe")
+        let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
                 "[IO.File]::WriteAllBytes($env:ACYCLIC_FS_TEST_PATH, [Text.Encoding]::UTF8.GetBytes('projected'))",
             ])
-            .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name))
-            .status()?;
+            .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name)), std::time::Duration::from_secs(120))?;
         assert!(write_status.success());
         // Captures of external operations are deferred until callbacks flush.
         session.flush_callbacks()?;
         let first = windows_path(first_name);
         assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
-        let rename_status = std::process::Command::new("powershell.exe")
+        let rename_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -5690,15 +5689,14 @@ mod tests {
                 "[IO.File]::Move($env:ACYCLIC_FS_TEST_SOURCE, $env:ACYCLIC_FS_TEST_DESTINATION)",
             ])
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(first_name))
-            .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name))
-            .status()?;
+            .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(second_name)), std::time::Duration::from_secs(120))?;
         assert!(rename_status.success());
         session.flush_callbacks()?;
         let second = windows_path(second_name);
         assert_eq!(source.lookup(&first)?, None);
         assert!(source.lookup(&second)?.is_some());
 
-        let link_status = std::process::Command::new("powershell.exe")
+        let link_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -5706,8 +5704,7 @@ mod tests {
                 "New-Item -ItemType HardLink -Path $env:ACYCLIC_FS_TEST_DESTINATION -Target $env:ACYCLIC_FS_TEST_SOURCE | Out-Null",
             ])
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(second_name))
-            .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name))
-            .status()?;
+            .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name)), std::time::Duration::from_secs(120))?;
         assert!(link_status.success());
         session.flush_callbacks()?;
         let linked = windows_path(linked_name);
@@ -5725,15 +5722,17 @@ mod tests {
             second_id
         );
 
-        let delete_status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "[IO.File]::Delete($env:ACYCLIC_FS_TEST_PATH)",
-            ])
-            .env("ACYCLIC_FS_TEST_PATH", destination.join(second_name))
-            .status()?;
+        let delete_status = acyclic_native_runtime::process_status(
+            std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[IO.File]::Delete($env:ACYCLIC_FS_TEST_PATH)",
+                ])
+                .env("ACYCLIC_FS_TEST_PATH", destination.join(second_name)),
+            std::time::Duration::from_secs(120),
+        )?;
         assert!(delete_status.success());
         session.flush_callbacks()?;
         assert_eq!(source.lookup(&second)?, None);
@@ -6191,10 +6190,13 @@ mod tests {
         )?;
 
         std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
-        let output = std::process::Command::new("rustc")
-            .current_dir(temporary.path())
-            .args(["--edition", "2021", "main.rs", "-o", "main"])
-            .output()?;
+        let output = acyclic_native_runtime::process_output(
+            std::process::Command::new("rustc")
+                .current_dir(temporary.path())
+                .args(["--edition", "2021", "main.rs", "-o", "main"]),
+            std::time::Duration::from_secs(120),
+            8 * 1024 * 1024,
+        )?;
         assert!(
             output.status.success(),
             "rustc failed\nstdout:\n{}\nstderr:\n{}",
@@ -6203,9 +6205,11 @@ mod tests {
         );
         assert!(temporary.path().join("main").is_file());
         assert!(
-            std::process::Command::new(temporary.path().join("main"))
-                .status()?
-                .success(),
+            acyclic_native_runtime::process_status(
+                &mut std::process::Command::new(temporary.path().join("main")),
+                std::time::Duration::from_secs(120)
+            )?
+            .success(),
             "compiled executable did not run from the mount"
         );
 
@@ -6319,20 +6323,22 @@ mod tests {
         let executable = std::env::current_exe()?;
         let worker =
             "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-        let mut child_a = std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_a)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "a")
-            .spawn()?;
-        let mut child_b = std::process::Command::new(&executable)
-            .args(["--ignored", "--exact", worker, "--test-threads=1"])
-            .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_b)
-            .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
-            .env("ACYCLIC_FS_UNIX_CHILD_ID", "b")
-            .spawn()?;
+        let mut child_a = acyclic_native_runtime::spawn_process_tree(
+            std::process::Command::new(&executable)
+                .args(["--ignored", "--exact", worker, "--test-threads=1"])
+                .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
+                .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_a)
+                .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+                .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
+        )?;
+        let mut child_b = acyclic_native_runtime::spawn_process_tree(
+            std::process::Command::new(&executable)
+                .args(["--ignored", "--exact", worker, "--test-threads=1"])
+                .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)
+                .env("ACYCLIC_FS_UNIX_CHILD_READY", &ready_b)
+                .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
+                .env("ACYCLIC_FS_UNIX_CHILD_ID", "b"),
+        )?;
 
         let validation = (|| -> Result<(), Box<dyn std::error::Error>> {
             wait_for_path(&ready_a, std::time::Duration::from_secs(10))?;
@@ -6372,21 +6378,12 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn wait_for_child(
-        child: &mut std::process::Child,
+        child: &mut acyclic_native_runtime::ProcessTree,
         timeout: std::time::Duration,
     ) -> Result<std::process::ExitStatus, Box<dyn std::error::Error>> {
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            if std::time::Instant::now() >= deadline {
-                child.kill()?;
-                let _ = child.wait();
-                return Err("mount child did not terminate within the bounded deadline".into());
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        let result = child.wait(timeout);
+        child.terminate()?;
+        Ok(result?)
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

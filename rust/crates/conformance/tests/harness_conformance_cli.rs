@@ -65,16 +65,16 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
     let valid_report = report()?;
     let expected_cases = u64::try_from(valid_report.cases.len())?;
     let bytes = serde_json::to_vec(&valid_report)?;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .ok_or("conformance child has no stdin")?
-        .write_all(&bytes)?;
-    let output = child.wait_with_output()?;
+    use std::io::{Seek as _, SeekFrom};
+    let mut input = tempfile::tempfile()?;
+    input.write_all(&bytes)?;
+    input.seek(SeekFrom::Start(0))?;
+    let mut child = acyclic_native_runtime::spawn_process_tree(
+        Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
+            .stdin(Stdio::from(input))
+            .stdout(Stdio::piped()),
+    )?;
+    let output = child.wait_with_output(std::time::Duration::from_secs(30), 1024 * 1024)?;
     if !output.status.success() {
         return Err("valid stdin report did not qualify".into());
     }
@@ -99,9 +99,11 @@ fn cli_accepts_stdin_and_rejects_a_failed_report_from_a_path()
         std::process::id()
     ));
     fs::write(&path, serde_json::to_vec(&failed)?)?;
-    let failed_output = Command::new(env!("CARGO_BIN_EXE_harness-conformance"))
-        .arg(&path)
-        .output();
+    let failed_output = acyclic_native_runtime::process_output(
+        Command::new(env!("CARGO_BIN_EXE_harness-conformance")).arg(&path),
+        std::time::Duration::from_secs(120),
+        8 * 1024 * 1024,
+    );
     let remove = fs::remove_file(&path);
     let failed_output = failed_output?;
     remove?;

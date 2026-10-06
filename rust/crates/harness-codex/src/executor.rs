@@ -353,17 +353,20 @@ impl CodexExecutor {
                     turn.record(&event, &line).await?;
                 }
                 Next::Eof => break,
+                Next::Failed(error) => {
+                    return Err(Error::Storage(format!("codex output failed: {error}")));
+                }
                 Next::Deadline => {
                     deadline_hit = true;
                     break;
                 }
             }
         }
-        if deadline_hit || process.wait(deadline).await.is_none() {
-            process.terminate().await;
+        if deadline_hit || process.wait(deadline).await?.is_none() {
+            process.terminate().await?;
             deadline_hit = true;
         }
-        let status = process.wait(None).await;
+        let status = process.wait(None).await?;
         let stderr = process.stderr_tail().await;
         turn.drain_calls().await?;
         Ok(Ended {
