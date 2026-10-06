@@ -1,0 +1,64 @@
+{
+  "Format": "graphcoder.scoped-checkpoint.v1",
+  "Notes": [
+    "Native recursive test still overflows after parent authority; no stack override.",
+    "Unified test compiled; support test passed, main test failed at first read ToolStarted with no ToolCompleted. One provider request, no children activated.",
+    "Shared diagnostic helper now retains failure journal in worktree. These failures do not qualify any required gate."
+  ],
+  "Cases": [
+    {
+      "Evidence": "target/graphcoder-qualification/9638a5b64-recursive-diagnostic",
+      "Files": [
+        {
+          "Sha256": "1602ccf83366de7ed9e8f4ee1d96e439341193541b6918982146baf7b227655d",
+          "Name": "exit-code.txt"
+        },
+        {
+          "Sha256": "c4b865232bc6f3eba989479acc32368cc688295f87b3a4d06112b7dc47df9528",
+          "Name": "local_model_swarm-29a60d7efa158de8.exe"
+        },
+        {
+          "Sha256": "99de194c6ae722006f9539bab97668322c6d59c044aa75445af783940895d9cb",
+          "Name": "native.log"
+        },
+        {
+          "Sha256": "8ee4c0da92ade275a9bd58a22c08e4cb979a8b5ff195e082481371901b81427a",
+          "Name": "source.tar"
+        }
+      ],
+      "Source": "9638a5b64c5ab36bb99ea634a14925be63e267f7",
+      "Exit": -1073741571,
+      "Outcome": "failed"
+    },
+    {
+      "Evidence": "target/graphcoder-qualification/631513ea3-unified-swarm",
+      "Files": [
+        {
+          "Sha256": "bdc830287616dae1818ced3e7c186e1387155900ad30d5983ec02da1519c4a95",
+          "Name": "exit-code.txt"
+        },
+        {
+          "Sha256": "04ddda09246632ebe7fba71d38c8dc35720d616a95bb99aab2b22d3bc15a8c13",
+          "Name": "failure-journal.json"
+        },
+        {
+          "Sha256": "ae5f993097f9678619ab817c1eab397a34b58812e124a3cd0c4a41bd874f6242",
+          "Name": "native.log"
+        },
+        {
+          "Sha256": "ef3650cb9912e56a84174b53ece2b0e688f23f5b5d414842c7a7f86d97f191dc",
+          "Name": "source.tar"
+        },
+        {
+          "Sha256": "d375c00fa69aad97ba44a0e032a540840e10977e357d5ff0e3489dbe0172c0ee",
+          "Name": "unified_runtime_swarm-5d1656eff1e4c518.exe"
+        }
+      ],
+      "Source": "631513ea3f1dc0b53d66f87ece0784925f05062c",
+      "Exit": 101,
+      "Outcome": "failed"
+    }
+  ],
+  "Status": "incomplete",
+  "Date": "2026-10-06"
+}
