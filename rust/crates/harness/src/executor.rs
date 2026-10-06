@@ -2110,7 +2110,9 @@ mod tests {
                     .lock()
                     .map_err(|_| Error::Storage("journal lock poisoned".into()))?
                     .iter()
-                    .filter(|record| !matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+                    .take_while(|record| {
+                        !matches!(record.event, ExecutionEvent::ToolCompleted { .. })
+                    })
                     .cloned()
                     .collect(),
             ),
@@ -2127,6 +2129,31 @@ mod tests {
                 .completed_tool_prefix(&incomplete, &input, 0, "call-1")
                 .await,
             Err(Error::Indeterminate(_))
+        ));
+        let gapped = Journal(
+            Mutex::new(
+                incomplete
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .iter()
+                    .filter(|record| record.sequence != 2)
+                    .cloned()
+                    .collect(),
+            ),
+            Mutex::new(
+                incomplete
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&gapped, &input, 0, "call-1")
+                .await,
+            Err(Error::Conflict(_))
         ));
         let request_key = format!("{}:model:0:request", input.operation_id);
         reopened
