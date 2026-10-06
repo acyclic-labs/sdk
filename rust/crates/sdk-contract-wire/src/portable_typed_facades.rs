@@ -392,7 +392,7 @@ fn ruby_message(name: &str, fields: &[ResolvedRequestField]) -> String {
 
 fn ruby_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) -> String {
     let base = oneof_class(message, oneof);
-    let mut out = format!("        class {base}\n          attr_reader :tag, :value\n          def initialize(tag:, value:)\n            @tag = String(tag).freeze\n            @value = value\n            freeze\n          end\n          def self.unknown(tag:, payload:) = new(tag: \"unknown:#{{tag}}\", value: payload.freeze)\n");
+    let mut out = format!("        class {base}\n          attr_reader :tag, :value\n          def initialize(tag:, value:)\n            @tag = String(tag).freeze\n            @value = value\n            freeze\n          end\n          def self.unknown(tag:, payload:) = Unknown.new(tag: tag, payload: payload)\n          class Unknown < {base}\n            attr_reader :unknown_tag, :payload\n            def initialize(tag:, payload:)\n              @unknown_tag = Integer(tag)\n              @payload = payload.freeze\n              super(tag: \"unknown:#{{tag}}\", value: @payload)\n            end\n          end\n");
     for member in members {
         let variant = oneof_variant(member);
         out.push_str(&format!("          class {variant} < {base}\n            def initialize(value) = super(tag: \"{}\", value: value)\n          end\n", member.field.field));
@@ -428,8 +428,9 @@ fn render_rbs() -> String {
     for semantic in semantic_inventory() { let name = camel(semantic.rust_name); out.push_str(&format!("    class Rust{name} < Object\n      attr_reader value: {}\n      def initialize: ({}) -> void\n      def to_wire: () -> {}\n    end\n", semantic_value_type(semantic.id), semantic_value_type(semantic.id), semantic_value_type(semantic.id))); }
     for (message, oneof, members) in oneof_groups() {
         let base = oneof_class(&message, &oneof);
-        out.push_str(&format!("    class {base} < Object\n      attr_reader tag: String\n      attr_reader value: untyped\n      def initialize: (tag: String, value: untyped) -> void\n      def self.unknown: (tag: Integer, payload: String) -> {base}\n"));
+        out.push_str(&format!("    class {base} < Object\n      attr_reader tag: String\n      attr_reader value: untyped\n      def initialize: (tag: String, value: untyped) -> void\n      def self.unknown: (tag: Integer, payload: String) -> {base}::Unknown\n"));
         for member in members { out.push_str(&format!("      class {} < {base}\n        def initialize: (untyped) -> void\n      end\n", oneof_variant(&member))); }
+        out.push_str(&format!("      class Unknown < {base}\n        attr_reader unknown_tag: Integer\n        attr_reader payload: String\n        def initialize: (tag: Integer, payload: String) -> void\n      end\n"));
         out.push_str("    end\n");
     }
     for (message, fields) in all_messages() {
@@ -458,6 +459,7 @@ fn render_sorbet() -> String {
         let base = oneof_class(&message, &oneof);
         out.push_str(&format!("    class {base} < T::Struct\n      const :tag, String\n      const :value, T.untyped\n      sig {{ params(tag: String, value: T.untyped).void }}\n      def initialize(tag:, value:); super; end\n    end\n"));
         for member in members { out.push_str(&format!("    class {base}{} < {base}\n      const :value, {}\n    end\n", oneof_variant(&member), match oneof_ruby_payload(&member).as_str() { "bool" => "T::Boolean", "Float" => "Float", "Integer" => "Integer", "String" => "String", _ => "T.untyped" })); }
+        out.push_str(&format!("    class {base}Unknown < {base}\n      const :unknown_tag, Integer\n      const :payload, String\n    end\n"));
     }
     for (message, fields) in all_messages() {
         let name = message_class(&message);
