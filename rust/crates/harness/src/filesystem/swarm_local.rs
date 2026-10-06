@@ -1057,9 +1057,10 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 )?;
                 let mut original_request = report.request.clone();
                 original_request.parent_revision = report.captured_history_revision()?;
-                let rebind_proof = preparer
-                    .authenticate_rebind_records(&original_request)
-                    .await?;
+                let rebind_proof = Box::pin(
+                    preparer.authenticate_rebind_records(&original_request),
+                )
+                .await?;
                 report.validate_with_rebind_proof(&rebind_proof)?;
                 let seed = report.clone().into_seed_with_rebind_proof(&rebind_proof)?;
                 if seed.operation_id != intent.fork_operation
@@ -1088,9 +1089,10 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     parent: intent.parent,
                     publication_operation: publication.operation_id,
                     request,
-                    resources: swarm
-                        .persisted_child_budget_resources(intent.child_operation)
-                        .await?,
+                    resources: Box::pin(
+                        swarm.persisted_child_budget_resources(intent.child_operation),
+                    )
+                    .await?,
                     report,
                     rebind_proof: Some(rebind_proof),
                     declaration,
@@ -1151,7 +1153,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 source_project.provider().clone(),
                 &source_project.storage_name()?,
             )?;
-            let project_head = self.host.resolve(&project_ref).await?;
+            let project_head = Box::pin(self.host.resolve(&project_ref)).await?;
             let source_generation = project_head.generation;
             let child_project = workspace_tools::child_project_volume(
                 &source_project,
@@ -1209,15 +1211,14 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             // workspace. The scheduler reserves the returned admission before
             // invoking this resolver; the exact prompt, parent, model,
             // grants, and limits are persisted in the owner registry first.
-            let child_admission = swarm
-                .admit_local_child_turn(
-                    child_task,
-                    intent.child_operation,
-                    &intent.prompt,
-                    intent.parent,
-                    &parent_harness,
-                )
-                .await?;
+            let child_admission = Box::pin(swarm.admit_local_child_turn(
+                child_task,
+                intent.child_operation,
+                &intent.prompt,
+                intent.parent,
+                &parent_harness,
+            ))
+            .await?;
             let _ = child_admission;
             let parent_reader = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
@@ -1234,7 +1235,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 self.stream_provider.clone(),
                 parent_reader,
             )?;
-            let report = parent.prepare_fork(&preparer, request.clone()).await?;
+            let report = Box::pin(parent.prepare_fork(&preparer, request.clone())).await?;
             let declaration = LocalInheritedModelDeclaration {
                 boundary,
                 suffix: vec![ModelMessage {
@@ -1263,17 +1264,18 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     prompt: intent.prompt,
                 },
                 resources: apply_requested_resource_bound(
-                    swarm
-                        .child_budget_resources(
-                            intent.parent,
-                            parent_harness.bundle().limits(),
-                            swarm.config.run_limits,
-                        )
-                        .await?,
+                    Box::pin(swarm.child_budget_resources(
+                        intent.parent,
+                        parent_harness.bundle().limits(),
+                        swarm.config.run_limits,
+                    ))
+                    .await?,
                     intent.requested_resources,
                 )?,
                 report,
-                rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
+                rebind_proof: Some(
+                    Box::pin(preparer.authenticate_rebind(&request)).await?,
+                ),
                 declaration,
                 host: self.host.clone(),
                 stream: self.stream.clone(),
