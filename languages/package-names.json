@@ -84,7 +84,7 @@
     "haskell": {
       "implemented": false,
       "registry": "Hackage",
-      "umbrella": "acyclic-sdk"
+      "umbrella": "acyclic-haskell-grapesy-prototype"
     },
     "java": {
       "implemented": true,
