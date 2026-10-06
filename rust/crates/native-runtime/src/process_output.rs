@@ -111,7 +111,7 @@ impl Drop for OutputReader {
     }
 }
 
-/// Starts an owned reader for a process pipe.
+/// Starts an owned reader for a native process pipe.
 ///
 /// The callback runs on the reader task for every non-empty chunk. Returning
 /// `false` stops collection, allowing a host adapter to record an output-limit
@@ -119,7 +119,7 @@ impl Drop for OutputReader {
 #[cfg(any(target_os = "linux", target_vendor = "apple"))]
 pub fn spawn_output_reader<R, F>(reader: R, mut consume: F) -> io::Result<OutputReader>
 where
-    R: std::io::Read + std::os::fd::AsRawFd + Send + 'static,
+    R: std::os::fd::AsRawFd + Send + 'static,
     F: FnMut(&[u8]) -> bool + Send + 'static,
 {
     unix::spawn(reader, move |chunk| consume(chunk))
@@ -160,8 +160,8 @@ where
 mod unix {
     use super::OutputReader;
     use std::{
-        io::{self, Read},
-        os::fd::AsRawFd,
+        io,
+        os::fd::{AsRawFd, RawFd},
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -172,9 +172,10 @@ mod unix {
 
     pub(super) fn spawn<R, F>(reader: R, consume: F) -> io::Result<OutputReader>
     where
-        R: Read + AsRawFd + Send + 'static,
+        R: AsRawFd + Send + 'static,
         F: FnMut(&[u8]) -> bool + Send + 'static,
     {
+        validate_native_pipe(reader.as_raw_fd())?;
         configure_nonblocking(reader.as_raw_fd())?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = Arc::clone(&cancelled);
@@ -203,7 +204,7 @@ mod unix {
         mut consume: F,
     ) -> io::Result<Vec<u8>>
     where
-        R: Read + AsRawFd,
+        R: AsRawFd,
         F: FnMut(&[u8]) -> bool,
     {
         let mut bytes = Vec::new();
@@ -216,7 +217,7 @@ mod unix {
                     "process output reader cancelled",
                 ));
             }
-            let read = match reader.read(&mut buffer) {
+            let read = match read_native(reader.as_raw_fd(), &mut buffer) {
                 Ok(read) => read,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
                 Err(error) => return Err(error),
@@ -273,7 +274,43 @@ mod unix {
         }
     }
 
-    fn configure_nonblocking(fd: std::os::fd::RawFd) -> io::Result<()> {
+    fn read_native(fd: RawFd, buffer: &mut [u8]) -> io::Result<usize> {
+        loop {
+            // SAFETY: the caller owns this native descriptor and provides a
+            // live writable buffer for the duration of the syscall.
+            let read = unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if read >= 0 {
+                return usize::try_from(read)
+                    .map_err(|_| io::Error::other("native pipe read length overflow"));
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+    }
+
+    fn validate_native_pipe(fd: RawFd) -> io::Result<()> {
+        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+        // SAFETY: fstat initializes the provided native stat structure on
+        // success; the descriptor is borrowed only for this call.
+        if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fstat returned success and initialized the structure.
+        let stat = unsafe { stat.assume_init() };
+        let mode = stat.st_mode as u32;
+        if mode & (libc::S_IFMT as u32) != libc::S_IFIFO as u32 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native output reader requires a pipe descriptor",
+            ));
+        }
+        Ok(())
+    }
+
+    fn configure_nonblocking(fd: RawFd) -> io::Result<()> {
         // SAFETY: fcntl only reads and updates status flags on the owned
         // native output descriptor.
         let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -498,6 +535,16 @@ mod tests {
         );
         assert_eq!(reader.cancel_and_join().expect("cancel and join"), None);
         drop(writer_file);
+    }
+
+    #[test]
+    fn rejects_non_pipe_descriptor_before_reader_spawn() {
+        let temporary = tempfile::NamedTempFile::new().expect("temporary file");
+        let result = spawn_output_reader(temporary.reopen().expect("reopen file"), |_| true);
+        match result {
+            Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::Unsupported),
+            Ok(_) => panic!("regular files are not cancellable process pipes"),
+        }
     }
 }
 

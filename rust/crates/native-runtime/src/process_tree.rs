@@ -344,7 +344,10 @@ mod tests {
 
         tree.terminate_descendants()
             .expect("terminate and reconcile process tree");
-        wait_for_process_exit(grandchild_pid);
+        assert!(
+            !process_is_alive(grandchild_pid).expect("query reconciled grandchild liveness"),
+            "owned grandchild remained alive after reconciliation returned"
+        );
         assert!(!temporary.path().join("escaped").exists());
     }
 
