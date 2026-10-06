@@ -1639,10 +1639,12 @@ impl StockExecutor {
                     "fork-publication-inner-retry",
                     &*publish,
                 );
-                let effect_id = IdempotencyKey::new(format!(
-                    "model:{step}:publication:retry:{}",
-                    OperationId::new()
-                ))?;
+                let effect_id = durable_effect_id(
+                    "publication-retry",
+                    publication.operation_id,
+                    step,
+                    &publication,
+                )?;
                 await_publication(
                     publish,
                     budget.as_deref_mut(),
@@ -1675,10 +1677,12 @@ impl StockExecutor {
             let publish = publisher.publish(publication.clone());
             crate::stack_diagnostics::future_size("fork-publication-handle", &publish);
             crate::stack_diagnostics::future_size("fork-publication-inner", &*publish);
-            let effect_id = IdempotencyKey::new(format!(
-                "model:{step}:publication:initial:{}",
-                OperationId::new()
-            ))?;
+            let effect_id = durable_effect_id(
+                "publication-initial",
+                publication.operation_id,
+                step,
+                &publication,
+            )?;
             await_publication(
                 publish,
                 budget.as_deref_mut(),
@@ -1766,7 +1770,11 @@ impl StockExecutor {
     ) -> Result<Option<ToolRejectionFeedback>> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
-        let mut started = None;
+        // Retain the journal's claim key: it is the durable physical-attempt
+        // identity used by effect accounting after a crash. Older journals
+        // may have random claim keys, while new claims use a deterministic
+        // key so the identity is available before dispatch.
+        let mut started: Option<String> = None;
         let mut completed_tool = None;
         let mut retained_rejection = None;
         let mut failed_tool = None;
@@ -1786,7 +1794,7 @@ impl StockExecutor {
                             "tool call identity is bound to another invocation".into(),
                         ));
                     }
-                    started = Some(());
+                    started = Some(record.idempotency_key.clone());
                 }
                 ExecutionEvent::ToolCompleted {
                     step: event_step,
@@ -2020,7 +2028,6 @@ impl StockExecutor {
             prior_messages.push(message);
             return Ok(Some(feedback));
         }
-        let started = started.is_some();
         if let Some(reason) = failed_tool {
             return Err(Error::Invalid(reason.message().into()));
         }
@@ -2093,7 +2100,16 @@ impl StockExecutor {
                     }
                 }
             }
-            let claimed = if started {
+            let claim_id = durable_effect_id(
+                "tool-claim",
+                operation_id,
+                step,
+                &invocation,
+            )?;
+            let attempt_id = started
+                .clone()
+                .unwrap_or_else(|| claim_id.as_str().to_owned());
+            let claimed = if started.is_some() {
                 false
             } else {
                 let invocation_ref = stage_json(
@@ -2115,11 +2131,7 @@ impl StockExecutor {
                     .append_if_tail(
                         operation_id,
                         current.len() as u64,
-                        format!(
-                            "tool:{step}:{}:claim:{}",
-                            invocation.call_id,
-                            OperationId::new()
-                        ),
+                        claim_id.as_str().to_owned(),
                         ExecutionEvent::ToolStarted {
                             step,
                             call_id: invocation.call_id.clone(),
@@ -2141,12 +2153,12 @@ impl StockExecutor {
                 task_id: self.authenticated_task,
             };
             tool_context.validate_invocation(&invocation)?;
-            let effect_id = IdempotencyKey::new(format!(
-                "tool:{step}:{}:{}:{}",
-                invocation.call_id,
-                if claimed { "execute" } else { "reconcile" },
-                OperationId::new()
-            ))?;
+            let effect_id = durable_effect_id(
+                if claimed { "tool-execute" } else { "tool-reconcile" },
+                operation_id,
+                step,
+                &attempt_id,
+            )?;
             let result = if claimed {
                 let effect = tool
                     .executor
@@ -3713,6 +3725,23 @@ fn elapsed_provider_delta(
     elapsed_ms
         .checked_sub(admitted_time_ms)
         .ok_or(Error::Indeterminate(operation_id))
+}
+
+/// Derives an attempt identity from the durable admission identity. The
+/// resulting key survives restart and separates initial dispatch from its
+/// recovery attempt without creating a second ledger.
+fn durable_effect_id<T: Serialize>(
+    label: &str,
+    operation: OperationId,
+    step: u32,
+    admission: &T,
+) -> Result<IdempotencyKey> {
+    let digest = blake3::hash(&crate::contract::canonical_json_bytes(&(
+        label, operation, step, admission,
+    ))?)
+    .to_hex()
+    .to_string();
+    IdempotencyKey::new(format!("{label}:{digest}"))
 }
 
 /// Bounds publication I/O by the same admission ceiling used for provider

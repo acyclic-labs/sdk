@@ -937,6 +937,8 @@ mod tests {
         SwarmUsageReceipt, SwarmUsageSource,
     };
     use acyclic_stream::{MemoryStream, StreamClient};
+    #[cfg(feature = "filesystem-local")]
+    use acyclic_stream::{LocalStream, LocalStreamLimits};
     use std::sync::Arc;
 
     fn limits() -> SwarmBudgetLimits {
@@ -1012,6 +1014,96 @@ mod tests {
             resources,
             admission_digest: None,
         }
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn local_stream_effect_measurement_survives_cold_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let session_id = OperationId::from_bytes([0x71; 16]);
+        let owner = SwarmOwnerFence::new("cold-reopen-owner", 0)?;
+        let dispatch_id = IdempotencyKey::new("cold-reopen-dispatch")?;
+        let effect_id = IdempotencyKey::new("cold-reopen-effect")?;
+        let sibling_effect_id = IdempotencyKey::new("cold-reopen-sibling-effect")?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+            &client,
+            session_id,
+            owner.clone(),
+            limits(),
+            dispatch_id.clone(),
+        )
+        .await?;
+        journal
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &effect_id,
+                7,
+            )
+            .await?;
+        journal
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &sibling_effect_id,
+                5,
+            )
+            .await?;
+        assert_eq!(journal.usage()?.consumed.execution_time_ms, 12);
+        drop(journal);
+        drop(client);
+
+        // Reopen through a fresh LocalStream and replay the durable effect.
+        // The first retry must be idempotent; a changed physical measurement
+        // must be rejected without mutating the recovered projection.
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let mut reopened = SwarmBudgetJournal::open(&client, session_id).await?;
+        reopened
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &effect_id,
+                7,
+            )
+            .await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 12);
+        assert!(matches!(
+            reopened
+                .record_harness_effect_time_ms(
+                    session_id,
+                    &owner,
+                    &dispatch_id,
+                    &effect_id,
+                    8,
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        reopened
+            .record_harness_effect_time_ms(
+                session_id,
+                &owner,
+                &dispatch_id,
+                &sibling_effect_id,
+                5,
+            )
+            .await?;
+        assert_eq!(reopened.usage()?.consumed.execution_time_ms, 12);
+        Ok(())
     }
 
     #[tokio::test]
