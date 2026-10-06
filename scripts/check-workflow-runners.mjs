@@ -85,6 +85,15 @@ const expected = [
   ".github/workflows/stream-native-packages.yml:macos-15",
   ".github/workflows/stream-native-packages.yml:windows-11-vs2026-arm"
 ];
-if (JSON.stringify(githubHosted) !== JSON.stringify(expected)) {
+// This validator also runs in source-only checkouts that intentionally omit
+// some release workflows. Keep the allowlist strict for every workflow that
+// is present, while deriving the expected boundary from this checkout.
+const existingWorkflows = new Set(
+  readdirSync(directory)
+    .filter(name => /\.ya?ml$/.test(name))
+    .map(name => `${directory}/${name}`),
+);
+const expectedForCheckout = expected.filter(entry => existingWorkflows.has(entry.slice(0, entry.indexOf(":"))));
+if (JSON.stringify(githubHosted) !== JSON.stringify(expectedForCheckout)) {
   throw new Error(`GitHub-hosted runner boundary changed: ${JSON.stringify(githubHosted)}`);
 }

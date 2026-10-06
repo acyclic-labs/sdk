@@ -33227,7 +33227,7 @@
       "field": "expires_at_unix_seconds",
       "message": "CredentialResponse",
       "module": "filesystem",
-      "semantic_type": "timestamp_millis",
+      "semantic_type": "timestamp_seconds",
       "wire_field": "expires_at_unix_seconds"
     },
     {
@@ -35200,6 +35200,16 @@
         }
       ],
       "rust_name": "UnixTimestampMillis",
+      "wire_kind": "unsigned_integer"
+    },
+    {
+      "id": "timestamp_seconds",
+      "rules": [
+        {
+          "kind": "non_negative"
+        }
+      ],
+      "rust_name": "UnixTimestampSeconds",
       "wire_kind": "unsigned_integer"
     }
   ],

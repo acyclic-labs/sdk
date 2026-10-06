@@ -37,6 +37,23 @@ if [[ "$bun_platform" == "win32" ]] && command -v git.exe >/dev/null 2>&1; then
   git_bin="git.exe"
 fi
 source_sha=$("$git_bin" rev-parse --verify HEAD)
+expected_source="${CI_HEAD_SHA:-${GITHUB_SHA:-}}"
+if [[ -n "$expected_source" && "$source_sha" != "$expected_source" ]]; then
+  echo "package checkout differs from the selected source commit" >&2
+  exit 1
+fi
+git_status="$work/git-status"
+"$git_bin" status --porcelain=v1 --untracked-files=all >"$git_status"
+if [[ -s "$git_status" ]]; then
+  echo "package checkout is not clean" >&2
+  exit 1
+fi
+git_index="$work/git-index"
+"$git_bin" ls-files -v >"$git_index"
+if grep -Eq '^[a-zS] ' "$git_index"; then
+  echo "package checkout contains concealed index changes" >&2
+  exit 1
+fi
 cargo_bin="cargo"
 if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"

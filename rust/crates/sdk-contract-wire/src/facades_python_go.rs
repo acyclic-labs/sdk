@@ -628,7 +628,9 @@ fn python_response_field_type(field: &ResolvedRequestField) -> String {
 }
 
 fn python_response_field_expression(field: &ResolvedRequestField, receiver: &str) -> String {
-    let wire = python_proto_field_expression(receiver, &field.json_name);
+    // Python protobuf accessors and presence checks use the descriptor field
+    // name (snake_case), while JSON names may be lowerCamelCase.
+    let wire = python_proto_field_expression(receiver, &field.field);
     if let Some(item) = field.semantic_type.as_deref().and_then(semantic_type) {
         if matches!(item.wire_kind, WireValueKind::Message) {
             if matches!(item.rust_name, "MachineId" | "CheckpointId" | "OperationId") {
@@ -673,7 +675,10 @@ fn python_response_field_property(field: &ResolvedRequestField) -> String {
     let annotation = python_response_field_type(field);
     let expression = python_response_field_expression(field, "self._wire");
     let presence = if descriptor_has_presence(field) {
-        format!("        if not self._wire.HasField({name:?}):\n            return None\n")
+        format!(
+            "        if not self._wire.HasField({:?}):\n            return None\n",
+            field.field
+        )
     } else {
         String::new()
     };
@@ -1747,7 +1752,7 @@ fn python_all_rpc_models() -> String {
                 output.push_str(&format!(
                     "            if selected_{tag} == {field:?}:\n                {tag} = {arm}(value={expression})\n",
                     tag = tag,
-                    field = field.json_name,
+                    field = field.field,
                     arm = arm,
                     expression = expression,
                 ));
@@ -1773,13 +1778,13 @@ fn python_all_rpc_models() -> String {
                     "{expression} if message.WhichOneof({oneof:?}) == {field:?} else None",
                     expression = expression,
                     oneof = oneof,
-                    field = field.json_name,
+                    field = field.field,
                 )
             } else if descriptor_has_presence(field) {
                 format!(
                     "{expression} if message.HasField({field:?}) else None",
                     expression = expression,
-                    field = field.json_name,
+                    field = field.field,
                 )
             } else {
                 expression

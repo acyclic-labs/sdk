@@ -1,5 +1,6 @@
 import { HttpWorkersClient, type HttpWorkersOptions } from "./http.js";
 import { WORKERS_REMOTE_POLICY, isRustOwnedTransportUnavailable, selectRustOwnedTransport } from "./generated-client.js";
+import { ensureWorkersWasm } from "./wasm-runtime.js";
 
 export type WorkersTransport = "grpc" | "http";
 export interface WorkersEnvironment extends Omit<HttpWorkersOptions, "fetcher"> { readonly transport?: WorkersTransport }
@@ -9,6 +10,7 @@ export type WorkersClient = HttpWorkersClient | WorkersGrpcClient;
 export async function fromEnv(environment: WorkersEnvironment): Promise<WorkersClient> {
   const runtime = isNativeRuntime() ? "native" : "browser";
   const selected = selectRustOwnedTransport(WORKERS_REMOTE_POLICY, runtime, environment.transport);
+  await ensureWorkersWasm();
   if (selected === "http") return new HttpWorkersClient(environment);
   if (selected !== "grpc" || runtime !== "native") throw new TypeError("Workers gRPC transport requires a native Node or Bun runtime");
   let createWorkersGrpcClient: typeof import("./grpc.js")["createWorkersGrpcClient"];

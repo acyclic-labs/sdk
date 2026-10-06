@@ -1654,8 +1654,8 @@ mod tests {
         };
         assert!(validate_children_page_request(&first).is_ok());
         let continuation = ChildrenPageRequest {
-            parent: Some(parent.clone()),
-            after: Some(child_a.clone()),
+            parent: Some(parent),
+            after: Some(child_a),
             hierarchy_version: Some(revision),
             limit: 2,
         };
@@ -1687,7 +1687,7 @@ mod tests {
                 &continuation,
                 &ChildrenPage {
                     hierarchy_version: CommitId::from_bytes([8; 32]),
-                    ..page.clone()
+                    ..page
                 }
             )
             .is_err()
@@ -1815,10 +1815,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "indices are preceded by an assert_eq!(read.len(), 2), proving them in-bounds"
-    )]
     async fn append_fork_follow_and_replay_preserve_exact_lineage() -> Result<(), StreamError> {
         let provider = MemoryStream::default();
         let source = path("runs/a")?;
@@ -1859,12 +1855,15 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
         assert_eq!(read.len(), 2);
+        let [first, second] = read.as_slice() else {
+            return Err(StreamError::Unavailable);
+        };
         assert_eq!(
-            read[0].as_ref().map(|record| record.value.as_ref()),
+            first.as_ref().map(|record| record.value.as_ref()),
             Ok(b"one".as_slice())
         );
         assert_eq!(
-            read[1].as_ref().map(|record| record.value.as_ref()),
+            second.as_ref().map(|record| record.value.as_ref()),
             Ok(b"child".as_slice())
         );
         let mut follow = provider.follow(child.clone(), 2).await?;
@@ -1953,10 +1952,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(
-        clippy::indexing_slicing,
-        reason = "index is preceded by an assert_eq!(forked.len(), 1), proving it in-bounds"
-    )]
     async fn coordinated_conflict_changes_nothing_and_success_has_one_envelope()
     -> Result<(), StreamError> {
         let provider = MemoryStream::default();
@@ -2008,8 +2003,11 @@ mod tests {
             .collect::<Vec<_>>()
             .await;
         assert_eq!(forked.len(), 1);
+        let [forked_record] = forked.as_slice() else {
+            return Err(StreamError::Unavailable);
+        };
         assert_eq!(
-            forked[0].as_ref().map(|record| record.value.as_ref()),
+            forked_record.as_ref().map(|record| record.value.as_ref()),
             Ok(b"ready".as_slice())
         );
         Ok(())

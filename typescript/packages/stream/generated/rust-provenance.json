@@ -7,7 +7,7 @@
   "descriptorSha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
   "family": "stream",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "bbb0cc4e2266e23a81f8c0c47a95b8c220c4ddff36bef2e19b5c1c20da3be55b",
+  "generatedSourceSha256": "ec6e4b265ddeb64f2ce20ebc15d5e67b7c07e9a0d8e5d2e836a9a679e6a8e9c8",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
   "nativeCompanions": {

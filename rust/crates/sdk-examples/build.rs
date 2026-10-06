@@ -1,4 +1,4 @@
-#[path = "src/source_closure.rs"]
+#[path = "src/source_closure_common.rs"]
 mod source_closure;
 
 use acyclic_sdk_contract_wire::{BindingTransport, transport_control};

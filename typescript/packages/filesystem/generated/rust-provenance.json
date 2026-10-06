@@ -7,7 +7,7 @@
   "descriptorSha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
   "family": "filesystem",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "ee411cdf6c3e152f7eba2b8e763c83c40e78890ea65624b07cc45a0be0af555e",
+  "generatedSourceSha256": "4a96acee3ffa35a81afb84dadf660ac5a3c064ae09af6a958ad9585f1bb335ce",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
   "nativeCompanions": {

@@ -167,9 +167,7 @@
               "typescript/packages/stream/package.json",
               "typescript/packages/stream/scripts/build-wasm.mjs",
               "scripts/build-stream-native-package.mjs",
-              "rust/crates/sdk-stream-native/npm",
-              "dotnet/Acyclic.Sdk.Embedded.csproj",
-              "scripts/build-dotnet-embedded-package.ps1"
+              "rust/crates/sdk-stream-native/npm"
             ]
           },
           {
@@ -200,9 +198,7 @@
               "typescript/packages/stream/package.json",
               "typescript/packages/stream/scripts/build-wasm.mjs",
               "scripts/build-stream-native-package.mjs",
-              "rust/crates/sdk-stream-native/npm",
-              "dotnet/Acyclic.Sdk.Embedded.csproj",
-              "scripts/build-dotnet-embedded-package.ps1"
+              "rust/crates/sdk-stream-native/npm"
             ]
           },
           {
@@ -652,34 +648,9 @@
         "dotnet"
       ],
       "embedded": {
-        "capabilities": [
-          {
-            "artifact": {
-              "identity": "Acyclic.Sdk.Embedded",
-              "installable": true,
-              "kind": "dotnet-nuget",
-              "target_identities": []
-            },
-            "binding": "dotnet-nuget",
-            "coverage": "package-surface",
-            "family": "stream",
-            "installable": true,
-            "language": "csharp",
-            "qualification": "surface-only",
-            "receipt": null,
-            "source_evidence": [
-              "rust/crates/stream-wasm/Cargo.toml",
-              "typescript/packages/stream/package.json",
-              "typescript/packages/stream/scripts/build-wasm.mjs",
-              "scripts/build-stream-native-package.mjs",
-              "rust/crates/sdk-stream-native/npm",
-              "dotnet/Acyclic.Sdk.Embedded.csproj",
-              "scripts/build-dotnet-embedded-package.ps1"
-            ]
-          }
-        ],
-        "level": "ffi-or-wasm",
-        "qualification": "prototype"
+        "capabilities": [],
+        "level": "none",
+        "qualification": "unqualified"
       },
       "evidence": [
         {

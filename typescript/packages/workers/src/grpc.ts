@@ -4,7 +4,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
 import { WORKERS_HANDSHAKE, WORKERS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake, type RustOwnedWorkersPublicClient } from "./generated-client.js";
-import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersMessageLimit } from "./wasm-runtime.js";
+import { validateWorkersCaCertificate, validateWorkersCredential, validateWorkersGrpcEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersMessageLimit } from "./wasm-runtime.js";
 
 export interface WorkersGrpcOptions {
   readonly endpoint: string;
@@ -41,5 +41,18 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
     await handshake;
     return next(request);
   };
-  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedWorkersPublicClient;
+  const client = createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedWorkersPublicClient;
+  const invokeVersion = client.invokeVersion.bind(client);
+  const invokeDeployment = client.invokeDeployment.bind(client);
+  return {
+    ...client,
+    invokeVersion(request: Parameters<RustOwnedWorkersPublicClient["invokeVersion"]>[0], signal?: AbortSignal) {
+      validateWorkersInvokeVersion(request.versionSha256, request.method);
+      return invokeVersion(request, signal);
+    },
+    invokeDeployment(request: Parameters<RustOwnedWorkersPublicClient["invokeDeployment"]>[0], signal?: AbortSignal) {
+      validateWorkersInvokeDeployment(request.alias, request.method);
+      return invokeDeployment(request, signal);
+    },
+  } as RustOwnedWorkersPublicClient;
 }

@@ -1,6 +1,6 @@
 # Objects v2 Rust guide
 
-[`acyclic-objects` v2](../src/v2/mod.rs#L1) is a logical bucket/key contract. The current object is
+`acyclic-objects` v2 is a logical bucket/key contract. The current object is
 addressed by bucket and key. Reads and listings may lag mutations, while one
 object publication and its conditions are atomic.
 
@@ -9,7 +9,7 @@ providers use the same provider traits as the transport-independent types.
 
 ## A transport-independent in-memory example
 
-[`MemoryObjects::with_default_bucket`](../src/v2/memory.rs#L94) provides a
+[`MemoryObjects::with_default_bucket`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-memoryobjects-with_default_bucket) provides a
 deterministic in-memory implementation for local tests and examples.
 
 ```rust
@@ -44,15 +44,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-The [`ObjectsProvider`](../src/v2/mod.rs#L158) trait is shared by memory, native local, gRPC, and HTTP
-implementations. [`get`](../src/v2/mod.rs#L183) requires an explicit allocation bound. Streaming
+The [`ObjectsProvider`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-objectsprovider) trait is shared by memory, native local, gRPC, and HTTP
+implementations. [`get`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-objectsprovider-get) requires an explicit allocation bound. Streaming
 transports expose a validated header followed by bounded chunks; dropping a
 download cancels the caller's observation, while an upload source failure
 aborts publication.
 
 ## Current values, conditions, and retries
 
-[`wire::Preconditions`](../src/generated/acyclic.objects.v2.rs#L36) and mutation identities let PUT and delete requests carry current-value preconditions and a mutation
+[`wire::Preconditions`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-wire-preconditions) and mutation identities let PUT and delete requests carry current-value preconditions and a mutation
 identity. The service evaluates the condition atomically with publication.
 Retrying the same logical mutation with the same identity returns the retained
 receipt; changing the request under that identity is an idempotency mismatch.
@@ -61,7 +61,7 @@ the object. Aborting or an incomplete upload never publishes a current value.
 
 Listings are live, bounded queries over current keys in lexical order. A page
 can be truncated and resumed with its continuation token; it is not a captured
-snapshot. [`wire::ObjectInfo`](../src/generated/acyclic.objects.v2.rs#L57) and timestamps are validated by `response`, but the
+snapshot. [`wire::ObjectInfo`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-wire-objectinfo) and timestamps are validated by `response`, but the
 crate exposes no public object-version pointer.
 
 ## Durability and native local storage
@@ -73,7 +73,7 @@ v1 store is rejected without conversion or overwrite. Reopen repairs only an
 incomplete final record; an uncertain append makes later operations unavailable
 until the owner closes and reopens the store.
 
-[`LocalObjects::collect_garbage`](../src/v2/local.rs#L84) fences physical readers and mutations,
+[`LocalObjects::collect_garbage`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-localobjects-collect_garbage) fences physical readers and mutations,
 authenticates retained segments before deletion, and compacts private
 checkpoints. Current objects, staged parts, receipts, and pagination
 authentication survive checkpoint replacement. These are native storage
@@ -81,7 +81,7 @@ behaviors, not public object history.
 
 ## Route and legacy-topic coverage
 
-[`acyclic_objects::v2::HTTP_ROUTES`](../src/v2/mod.rs#L20) is the Rust-owned inventory of 13 operations
+[`acyclic_objects::v2::HTTP_ROUTES`](/rust/crates/objects/REFERENCE.md#acyclic_objects-v2-http_routes) is the Rust-owned inventory of 13 operations
 under `/v2/objects/`: bucket create/head/delete; object put/get/head/delete/list;
 and multipart create/upload-part/list-parts/complete/abort.
 

@@ -5,6 +5,7 @@
       "name": "host-default",
       "packages": [
         { "package": "acyclic-actors", "target": "host", "features": [], "default_features": false },
+        { "package": "acyclic-sdk", "target": "host", "features": [], "default_features": true },
         { "package": "acyclic-conformance", "target": "host", "features": [], "default_features": true },
         { "package": "acyclic-fs", "target": "host", "features": ["default", "acyclic-objects/grpc", "acyclic-stream/grpc"] },
         { "package": "acyclic-harness", "target": "host", "features": [], "default_features": true },
@@ -39,6 +40,7 @@
     {
       "name": "wasm-bindings",
       "packages": [
+        { "package": "acyclic-sdk", "target": "wasm32-unknown-unknown", "features": [], "default_features": true },
         { "package": "acyclic-fs-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
         { "package": "acyclic-harness", "target": "wasm32-unknown-unknown", "features": ["wasm"], "default_features": false },
         { "package": "acyclic-inference-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },

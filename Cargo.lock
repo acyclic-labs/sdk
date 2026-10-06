@@ -531,6 +531,7 @@ name = "acyclic-stream-native"
 version = "0.2.0"
 dependencies = [
  "acyclic-stream",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "napi",

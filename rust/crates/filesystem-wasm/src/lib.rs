@@ -1,8 +1,8 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
 //!
-//! `openBrowserFs` keeps the authority log in IndexedDB. Its `objectAcceleration`
+//! `openBrowserFs` keeps the authority log in `IndexedDB`. Its `objectAcceleration`
 //! option accepts `"indexeddb"` or `"opfs"`; OPFS changes only where immutable
-//! object bytes are stored, while workspace authority remains in IndexedDB.
+//! object bytes are stored, while workspace authority remains in `IndexedDB`.
 //! `openMemoryFs` uses process-local memory for deterministic, non-durable work.
 //! The exported `BrowserFs` methods operate on the same Rust workspace,
 //! generation, transaction, and work-budget contracts as the native binding.
@@ -33,6 +33,7 @@ pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 #[cfg(target_arch = "wasm32")]
 pub use acyclic_sdk_remote_web::BrowserFilesystemClient as BrowserRemoteFilesystemClient;
 
+#[cfg(any(test, target_arch = "wasm32"))]
 mod hosted_policy;
 
 #[cfg(target_arch = "wasm32")]

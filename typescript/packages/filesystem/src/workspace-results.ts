@@ -83,7 +83,7 @@ function validateOptions(
   operation: string,
   validatePositive: (value: number, label: string) => void = positive,
 ): void {
-    for (const field of fields) {
+  for (const field of fields) {
     const value = (options as unknown as Record<string, number>)[field];
     validatePositive(value, `maximum ${operation} ${field.replace("maximum", "").toLowerCase()}`);
   }

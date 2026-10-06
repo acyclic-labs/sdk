@@ -129,8 +129,16 @@ mod tests {
         let error_bytes = encode("GetObjectResponse", &error)?;
         let error_json: serde_json::Value = serde_json::from_slice(&error_bytes)
             .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
-        assert_eq!(error_json["error"]["requestId"], "fixture-request");
-        assert!(error_json["error"]["code"].is_string());
+        let error = error_json.get("error").and_then(serde_json::Value::as_object);
+        assert_eq!(
+            error
+                .and_then(|value| value.get("requestId"))
+                .and_then(serde_json::Value::as_str),
+            Some("fixture-request")
+        );
+        assert!(error
+            .and_then(|value| value.get("code"))
+            .is_some_and(serde_json::Value::is_string));
         assert!(error_bytes.len() < super::super::HTTP_JSON_FRAME_BYTES);
         Ok(())
     }

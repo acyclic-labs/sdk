@@ -7,7 +7,7 @@
   "descriptorSha256": "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea",
   "family": "inference",
   "generatedClientSha256": null,
-  "generatedSourceSha256": "eb69178ea6a08aa9dc6d1e36039add591267068975df2cff15b8b9a50beb3b6a",
+  "generatedSourceSha256": "93243aecde3dc16e7e22d07e2fc82c8bac0c0310018b014a6cacaf6b1c399d37",
   "generator": "sdk-typescript",
   "generatorVersion": "0.1.0",
   "nativeCompanions": {},

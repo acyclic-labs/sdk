@@ -4,7 +4,7 @@ import { createGrpcTransport } from "@connectrpc/connect-node";
 import { ProtocolService } from "../generated/proto/transport/v1/transport_pb.js";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { ACTORS_HANDSHAKE, ACTORS_REMOTE_POLICY, rustOwnedGrpcHandshakeRequest, validateRustOwnedGrpcHandshake, type RustOwnedActorsPublicClient } from "./generated-client.js";
-import { validateActorsCaCertificate, validateActorsCredential, validateActorsGrpcEndpoint, validateActorsMessageLimit } from "./wasm-runtime.js";
+import { validateActorsCaCertificate, validateActorsCredential, validateActorsGrpcEndpoint, validateActorsInvoke, validateActorsMessageLimit } from "./wasm-runtime.js";
 
 export interface ActorsGrpcOptions {
   readonly endpoint: string;
@@ -41,5 +41,13 @@ export function createActorsGrpcClient(options: ActorsGrpcOptions) {
     await handshake;
     return next(request);
   };
-  return createClient(ActorsService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedActorsPublicClient;
+  const client = createClient(ActorsService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [applicationAuthenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...tls })) as unknown as RustOwnedActorsPublicClient;
+  const invokeActor = client.invokeActor.bind(client);
+  return {
+    ...client,
+    invokeActor(request: Parameters<RustOwnedActorsPublicClient["invokeActor"]>[0], signal?: AbortSignal) {
+      validateActorsInvoke(request.actorId, request.method);
+      return invokeActor(request, signal);
+    },
+  } as RustOwnedActorsPublicClient;
 }

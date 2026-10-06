@@ -53,6 +53,10 @@ methods on native and browser targets. The HTTP adapter applies the JSON
 mapping, while the provider supplies authentication authority, billing, and
 deployment policy.
 
+`client::Client::connect_with_ca` is the native private-CA entry point. Browser
+fetch uses the browser's configured trust store and rejects a caller-provided
+CA rather than ignoring it.
+
 ## Build a bounded local contract check
 
 The following example constructs the public HTTP codec and descriptor-derived

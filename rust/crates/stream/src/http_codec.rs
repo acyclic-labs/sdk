@@ -552,18 +552,18 @@ mod tests {
     }
 
     #[test]
-    fn canonical_append_and_read_json_round_trip_through_wire() {
+    fn canonical_append_and_read_json_round_trip_through_wire()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let append = wire::AppendRequest {
             path: "events".to_owned(),
             records: vec![bytes::Bytes::from_static(b"hello")],
             if_tail: Some(0),
             idempotency_key: Some(bytes::Bytes::from_static(b"append-1")),
         };
-        let encoded = encode("append", &append.encode_to_vec()).expect("append JSON");
+        let encoded = encode("append", &append.encode_to_vec())?;
         let decoded = wire::AppendRequest::decode(
-            decode("append", encoded.as_bytes()).expect("append wire").as_slice(),
-        )
-        .expect("append request");
+            decode("append", encoded.as_bytes())?.as_slice(),
+        )?;
         assert_eq!(decoded, append);
 
         let read = wire::ReadRequest {
@@ -571,16 +571,17 @@ mod tests {
             from: 3,
             limit: 17,
         };
-        let encoded = encode("read", &read.encode_to_vec()).expect("read JSON");
+        let encoded = encode("read", &read.encode_to_vec())?;
         let decoded = wire::ReadRequest::decode(
-            decode("read", encoded.as_bytes()).expect("read wire").as_slice(),
-        )
-        .expect("read request");
+            decode("read", encoded.as_bytes())?.as_slice(),
+        )?;
         assert_eq!(decoded, read);
+        Ok(())
     }
 
     #[test]
-    fn base64_accepts_rfc4648_padding_and_multiple_blocks() {
+    fn base64_accepts_rfc4648_padding_and_multiple_blocks()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         for (encoded, expected) in [
             ("", b"".as_slice()),
             ("AA==", b"\0".as_slice()),
@@ -588,8 +589,9 @@ mod tests {
             ("AAAA", b"\0\0\0".as_slice()),
             ("SGVsbG8gV29ybGQ=", b"Hello World".as_slice()),
         ] {
-            assert_eq!(decode_base64(encoded).expect("valid Base64"), expected);
+            assert_eq!(decode_base64(encoded)?, expected);
         }
+        Ok(())
     }
 
     #[test]

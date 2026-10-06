@@ -1,3 +1,5 @@
+//! Exercise the built native stream module against the canonical TLS fixture.
+
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -5,6 +7,7 @@ use std::{
 };
 
 use acyclic_stream::{MemoryStream, grpc::Service};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use bytes::Bytes;
 use prost::Message;
 use rcgen::generate_simple_self_signed;
@@ -22,13 +25,15 @@ fn native_library_name() -> &'static str {
     }
 }
 
-fn node_module_path() -> PathBuf {
-    let test_binary = std::env::current_exe().expect("test executable path");
-    test_binary
+fn node_module_path() -> std::io::Result<PathBuf> {
+    let test_binary = std::env::current_exe()?;
+    let target_directory = test_binary
         .parent()
         .and_then(Path::parent)
-        .expect("Cargo target directory")
-        .join(native_library_name())
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "Cargo target directory")
+        })?;
+    Ok(target_directory.join(native_library_name()))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -56,7 +61,7 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
     });
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
-    let module_source = node_module_path();
+    let module_source = node_module_path()?;
     assert!(
         module_source.exists(),
         "native N-API module must be built before runtime qualification"
@@ -102,11 +107,11 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .env("ACYCLIC_STREAM_FIXTURE_ENDPOINT", endpoint)
         .env(
             "ACYCLIC_STREAM_FIXTURE_CA",
-            base64(certificate_pem.as_bytes()),
+            STANDARD.encode(certificate_pem.as_bytes()),
         )
         .env(
             "ACYCLIC_STREAM_FIXTURE_COMMIT_REQUEST",
-            base64(&commit_request_bytes),
+            STANDARD.encode(&commit_request_bytes),
         )
         .output()?;
     let _ = shutdown_sender.send(());
@@ -122,35 +127,4 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
     }
     assert!(String::from_utf8_lossy(&output.stdout).contains("\"recoveredTail\":\"2\""));
     Ok(())
-}
-
-fn base64(value: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::new();
-    for chunk in value.chunks(3) {
-        let first = chunk[0] as usize;
-        output.push(TABLE[first >> 2] as char);
-        let second = if chunk.len() > 1 {
-            chunk[1] as usize
-        } else {
-            0
-        };
-        output.push(TABLE[((first & 3) << 4) | (second >> 4)] as char);
-        if chunk.len() > 1 {
-            let third = if chunk.len() > 2 {
-                chunk[2] as usize
-            } else {
-                0
-            };
-            output.push(TABLE[((second & 15) << 2) | (third >> 6)] as char);
-        } else {
-            output.push('=');
-        }
-        if chunk.len() > 2 {
-            output.push(TABLE[chunk[2] as usize & 63] as char);
-        } else {
-            output.push('=');
-        }
-    }
-    output
 }

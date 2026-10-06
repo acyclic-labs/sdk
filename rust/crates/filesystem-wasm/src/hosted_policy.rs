@@ -188,10 +188,19 @@ pub fn validate_hosted_generation_continuity(
 /// numeric coercion to wrap negative, fractional, non-finite, or overflowing
 /// inputs before the Rust-owned policy runs.
 fn js_u32(value: f64) -> Result<u32, &'static str> {
-    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=u32::MAX as f64).contains(&value) {
+    if !value.is_finite() || value.fract() != 0.0 || !(0.0..=f64::from(u32::MAX)).contains(&value) {
         return Err("value must be a finite integer in the u32 range");
     }
-    Ok(value as u32)
+    Ok(bounded_f64_to_u32(value))
+}
+
+fn bounded_f64_to_u32(value: f64) -> u32 {
+    // The caller has already checked finiteness, integrality, and the complete
+    // non-negative u32 range, so this conversion cannot truncate or lose sign.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        value as u32
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -351,11 +360,11 @@ mod tests {
 
     #[test]
     fn javascript_numbers_never_wrap_into_valid_u32_values() {
-        for value in [-1.0, 1.5, f64::NAN, f64::INFINITY, (u32::MAX as f64) + 1.0] {
+        for value in [-1.0, 1.5, f64::NAN, f64::INFINITY, f64::from(u32::MAX) + 1.0] {
             assert!(js_u32(value).is_err(), "unexpectedly accepted {value:?}");
         }
         assert_eq!(js_u32(0.0), Ok(0));
-        assert_eq!(js_u32(u32::MAX as f64), Ok(u32::MAX));
+        assert_eq!(js_u32(f64::from(u32::MAX)), Ok(u32::MAX));
     }
 
     #[test]

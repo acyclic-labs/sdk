@@ -1518,7 +1518,8 @@ mod tests {
             transport
                 .children(ChildrenRequest {
                     parent: None,
-                    limit: (crate::MAX_ITEMS as u32).saturating_add(1),
+                    limit: u32::try_from(crate::MAX_ITEMS)
+                        .map_or(u32::MAX, |limit| limit.saturating_add(1)),
                 })
                 .await,
             Err(StreamError::LimitExceeded)

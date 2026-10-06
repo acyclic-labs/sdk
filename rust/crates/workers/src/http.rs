@@ -1,9 +1,15 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
+use futures::FutureExt;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
+use std::sync::{Arc, Mutex};
+
+type SharedHandshake = futures::future::Shared<
+    futures::future::LocalBoxFuture<'static, Option<bool>>,
+>;
 
 /// Error reported by the Workers HTTP client while configuring, encoding, or
 /// sending a canonical request.
@@ -43,6 +49,7 @@ pub struct Client {
     token: String,
     maximum: usize,
     descriptors: DescriptorPool,
+    handshake: Arc<Mutex<Option<SharedHandshake>>>,
 }
 
 impl Client {
@@ -134,6 +141,7 @@ impl Client {
             maximum: maximum_response_bytes,
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
+            handshake: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -143,6 +151,30 @@ impl Client {
     /// the endpoint without sending an application operation. Authentication
     /// failures and identity mismatches remain terminal errors.
     pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        let shared = {
+            let mut slot = self.handshake.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(shared) = slot.as_ref() {
+                shared.clone()
+            } else {
+                let client = self.clone();
+                let shared = async move { client.perform_handshake().await.ok() }
+                    .boxed_local()
+                    .shared();
+                *slot = Some(shared.clone());
+                shared
+            }
+        };
+        if let Some(result) = shared.await {
+            return Ok(result);
+        }
+        self.handshake
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.perform_handshake().await
+    }
+
+    async fn perform_handshake(&self) -> Result<bool, Error> {
         use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
         let family = BindingFamily::Workers;
         let version = control::control_protocol_version(family);
@@ -474,15 +506,16 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn native_client_accepts_a_valid_caller_ca() {
-        let certificate = rcgen::generate_simple_self_signed(["localhost".to_owned()]).unwrap();
+    fn native_client_accepts_a_valid_caller_ca() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture_result = rcgen::generate_simple_self_signed(["localhost".to_owned()]);
+        let certificate = fixture_result?;
         let pem = certificate.cert.pem();
-        assert!(Client::new_with_ca(
+        let _client = Client::new_with_ca(
             "https://localhost",
             "fixture-token",
             1024,
             Some(pem.as_bytes()),
-        )
-        .is_ok());
+        )?;
+        Ok(())
     }
 }

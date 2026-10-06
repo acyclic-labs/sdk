@@ -204,73 +204,6 @@ pub fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
     request::metadata(&value.metadata).map_err(|_| invalid())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{grpc_error_code, http_error_code, validate_get_body, validate_http_endpoint};
-    use crate::v2::wire;
-
-    #[test]
-    fn http_status_projection_prefers_wire_detail_and_covers_object_statuses() {
-        assert_eq!(
-            http_error_code(500, Some(wire::ErrorCode::NotFound as i32)),
-            wire::ErrorCode::NotFound
-        );
-        assert_eq!(http_error_code(304, None), wire::ErrorCode::NotModified);
-        assert_eq!(http_error_code(401, None), wire::ErrorCode::AccessDenied);
-        assert_eq!(
-            http_error_code(412, None),
-            wire::ErrorCode::PreconditionFailed
-        );
-        assert_eq!(
-            http_error_code(416, None),
-            wire::ErrorCode::RangeNotSatisfiable
-        );
-        assert_eq!(http_error_code(503, None), wire::ErrorCode::Unavailable);
-    }
-
-    #[test]
-    fn http_endpoint_policy_allows_https_and_loopback_http_only() {
-        for endpoint in [
-            "https://objects.example",
-            "http://localhost:8080",
-            "http://127.0.0.1:8080",
-            "http://[::1]:8080",
-        ] {
-            assert!(validate_http_endpoint(endpoint).is_ok(), "{endpoint}");
-        }
-        for endpoint in [
-            "http://objects.example",
-            "https://user@objects.example",
-            "https://objects.example/?query=1",
-            "https://objects.example/#fragment",
-        ] {
-            assert!(validate_http_endpoint(endpoint).is_err(), "{endpoint}");
-        }
-    }
-
-    #[test]
-    fn download_body_accounting_is_bounded_and_request_relative() {
-        assert_eq!(
-            validate_get_body(super::super::HTTP_BODY_FRAME_BYTES as u64, 100_000).unwrap(),
-            34_464
-        );
-        assert!(validate_get_body(65_537, 100_000).is_err());
-        assert!(validate_get_body(2, 1).is_err());
-    }
-
-    #[test]
-    fn grpc_status_projection_prefers_wire_detail_and_covers_connect_codes() {
-        assert_eq!(
-            grpc_error_code(14, Some(wire::ErrorCode::NotFound as i32)),
-            wire::ErrorCode::NotFound
-        );
-        assert_eq!(grpc_error_code(3, None), wire::ErrorCode::InvalidArgument);
-        assert_eq!(grpc_error_code(16, None), wire::ErrorCode::AccessDenied);
-        assert_eq!(grpc_error_code(8, None), wire::ErrorCode::QuotaExceeded);
-        assert_eq!(grpc_error_code(12, None), wire::ErrorCode::Unsupported);
-        assert_eq!(grpc_error_code(14, None), wire::ErrorCode::Unavailable);
-    }
-}
 /// Validates a complete or ranged download selection within its decoded allocation bound.
 pub fn get_header(
     header: &wire::GetObjectHeader,
@@ -368,4 +301,73 @@ pub fn listing(
         previous = Some(prefix);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{grpc_error_code, http_error_code, validate_get_body, validate_http_endpoint};
+    use crate::v2::wire;
+
+    #[test]
+    fn http_status_projection_prefers_wire_detail_and_covers_object_statuses() {
+        assert_eq!(
+            http_error_code(500, Some(wire::ErrorCode::NotFound as i32)),
+            wire::ErrorCode::NotFound
+        );
+        assert_eq!(http_error_code(304, None), wire::ErrorCode::NotModified);
+        assert_eq!(http_error_code(401, None), wire::ErrorCode::AccessDenied);
+        assert_eq!(
+            http_error_code(412, None),
+            wire::ErrorCode::PreconditionFailed
+        );
+        assert_eq!(
+            http_error_code(416, None),
+            wire::ErrorCode::RangeNotSatisfiable
+        );
+        assert_eq!(http_error_code(503, None), wire::ErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn http_endpoint_policy_allows_https_and_loopback_http_only() {
+        for endpoint in [
+            "https://objects.example",
+            "http://localhost:8080",
+            "http://127.0.0.1:8080",
+            "http://[::1]:8080",
+        ] {
+            assert!(validate_http_endpoint(endpoint).is_ok(), "{endpoint}");
+        }
+        for endpoint in [
+            "http://objects.example",
+            "https://user@objects.example",
+            "https://objects.example/?query=1",
+            "https://objects.example/#fragment",
+        ] {
+            assert!(validate_http_endpoint(endpoint).is_err(), "{endpoint}");
+        }
+    }
+
+    #[test]
+    fn download_body_accounting_is_bounded_and_request_relative() {
+        assert_eq!(
+            validate_get_body(super::super::HTTP_BODY_FRAME_BYTES as u64, 100_000)
+                .ok(),
+            Some(34_464)
+        );
+        assert!(validate_get_body(65_537, 100_000).is_err());
+        assert!(validate_get_body(2, 1).is_err());
+    }
+
+    #[test]
+    fn grpc_status_projection_prefers_wire_detail_and_covers_connect_codes() {
+        assert_eq!(
+            grpc_error_code(14, Some(wire::ErrorCode::NotFound as i32)),
+            wire::ErrorCode::NotFound
+        );
+        assert_eq!(grpc_error_code(3, None), wire::ErrorCode::InvalidArgument);
+        assert_eq!(grpc_error_code(16, None), wire::ErrorCode::AccessDenied);
+        assert_eq!(grpc_error_code(8, None), wire::ErrorCode::QuotaExceeded);
+        assert_eq!(grpc_error_code(12, None), wire::ErrorCode::Unsupported);
+        assert_eq!(grpc_error_code(14, None), wire::ErrorCode::Unavailable);
+    }
 }

@@ -809,9 +809,11 @@ mod tests {
     use super::*;
     use tokio_stream::wrappers::TcpListenerStream;
 
-    fn contract() -> MachineContract {
-        MachineContract {
-            image: Image::custom([7; 32]).unwrap_or_else(|_| unreachable!()),
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    fn contract() -> Result<MachineContract, ProviderError> {
+        Ok(MachineContract {
+            image: Image::custom([7; 32])?,
             capabilities: BTreeSet::new(),
             compatibility: CompatibilityPolicy::BestEffort,
             compatibility_revision: [8; 32],
@@ -819,23 +821,26 @@ mod tests {
             expiration: ExpirationPolicy::Never,
             network_policy_digest: [9; 32],
             budgets: Budgets::default(),
-        }
+        })
     }
 
-    fn machine(id: MachineId, last_checkpoint: Option<CheckpointId>) -> MachineObservation {
-        MachineObservation {
+    fn machine(
+        id: MachineId,
+        last_checkpoint: Option<CheckpointId>,
+    ) -> Result<MachineObservation, ProviderError> {
+        Ok(MachineObservation {
             id,
             state: MachineState::Running,
-            contract: contract(),
+            contract: contract()?,
             endpoints: vec![],
             last_checkpoint,
             created_at_unix_ms: 1,
             changed_at_unix_ms: 1,
-        }
+        })
     }
 
     #[test]
-    fn provider_output_identity_and_correlation_guards_reject_substitution() {
+    fn provider_output_identity_and_correlation_guards_reject_substitution() -> Result<(), ProviderError> {
         let machine_id = MachineId::new();
         let other_machine = MachineId::new();
         let checkpoint_id = CheckpointId::new();
@@ -843,14 +848,14 @@ mod tests {
         let operation_id = OperationId::new();
         let other_operation = OperationId::new();
 
-        assert!(machine_state_for(other_machine, machine(machine_id, None)).is_err());
+        assert!(machine_state_for(other_machine, machine(machine_id, None)?).is_err());
         assert!(
             checkpoint_state_for(
                 other_checkpoint,
                 &CheckpointObservation {
                     id: checkpoint_id,
                     source: machine_id,
-                    contract: contract(),
+                    contract: contract()?,
                     forkable: true,
                     created_at_unix_ms: 1,
                 },
@@ -913,30 +918,34 @@ mod tests {
             )
             .is_err()
         );
+        Ok(())
     }
 
     #[test]
-    fn fork_response_guards_reject_duplicate_source_or_mismatched_children() {
+    fn fork_response_guards_reject_duplicate_source_or_mismatched_children() -> Result<(), ProviderError> {
         let source = MachineId::new();
         let child = MachineId::new();
         let checkpoint = CheckpointId::new();
         let operation = OperationId::new();
-        let valid_child = machine(child, Some(checkpoint));
+        let duplicate_children = [
+            machine(child, Some(checkpoint))?,
+            machine(child, Some(checkpoint))?,
+        ];
 
         assert!(
             fork_admission(
                 checkpoint,
-                &[valid_child.clone(), valid_child.clone()],
+                &duplicate_children,
                 operation,
             )
             .is_err()
         );
-        assert!(fork_admission(checkpoint, &[machine(child, None)], operation).is_err());
+        assert!(fork_admission(checkpoint, &[machine(child, None)?], operation).is_err());
         assert!(
             live_fork_admission(
                 source,
                 ForkFidelity::MemoryAndDisk,
-                &[machine(source, None)],
+                &[machine(source, None)?],
                 operation,
             )
             .is_err()
@@ -945,57 +954,33 @@ mod tests {
             live_fork_admission(
                 source,
                 ForkFidelity::MemoryAndDisk,
-                &[machine(child, Some(checkpoint))],
+                &[machine(child, Some(checkpoint))?],
                 operation,
             )
             .is_err()
         );
+        Ok(())
     }
 
-    #[tokio::test]
-    async fn canonical_provider_serves_all_nineteen_rpc_operations_with_real_state()
-    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let provider = Arc::new(SimulatedMachines::default());
-        let pending_operation = OperationId::new();
-        provider.state.lock().await.operations.insert(
-            pending_operation,
-            OperationObservation {
-                id: pending_operation,
-                phase: OperationPhase::Pending,
-            },
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let (shutdown, stopped) = tokio::sync::oneshot::channel();
-        let server = tokio::spawn(async move {
-            tonic::transport::Server::builder()
-                .add_service(wire::machines_service_server::MachinesServiceServer::new(
-                    Service::new(provider),
-                ))
-                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                    let _ = stopped.await;
-                })
-                .await
-        });
-        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))?
-            .connect()
-            .await?;
-        let client = Machines::grpc(channel.clone());
-        let mut raw = wire::machines_service_client::MachinesServiceClient::new(channel);
+    async fn assert_pending_operation(client: &Machines, operation: OperationId) -> TestResult {
         assert_eq!(
-            client.cancel_operation(pending_operation).await?.phase,
+            client.cancel_operation(operation).await?.phase,
             OperationPhase::Cancelled
         );
         assert_eq!(
-            client.inspect_operation(pending_operation).await?.phase,
+            client.inspect_operation(operation).await?.phase,
             OperationPhase::Cancelled
         );
-        let mut cancelled = client.watch_operation(pending_operation).await?;
+        let mut cancelled = client.watch_operation(operation).await?;
         assert_eq!(
             cancelled.next().await.transpose()?.map(|value| value.phase),
             Some(OperationPhase::Cancelled)
         );
         assert!(cancelled.next().await.is_none());
+        Ok(())
+    }
+
+    async fn create_and_assert_idempotency(client: &Machines) -> Result<Machine, Box<dyn std::error::Error + Send + Sync>> {
         let image = Image::custom([7; 32])?;
         assert_eq!(client.qualify_image(image.clone()).await?.image, image);
         let create_key = IdempotencyKey::new();
@@ -1024,17 +1009,21 @@ mod tests {
         assert!(observations.next().await.is_none());
         match client.recover(create_key).await? {
             MutationOutcome::Created(value) => assert_eq!(value.id, machine.id()),
-            _ => panic!("recover must retain the actual admitted create"),
+            _ => return Err(std::io::Error::other("recover returned the wrong outcome").into()),
         }
+        Ok(machine)
+    }
+
+    async fn assert_machine_lifecycle(
+        machine: &Machine,
+    ) -> Result<(Checkpoint, Vec<Machine>, MachineFork), Box<dyn std::error::Error + Send + Sync>> {
+        let count = NonZeroU32::new(2)
+            .ok_or_else(|| std::io::Error::other("fork count must be nonzero"))?;
         let checkpoint = machine.checkpoint(IdempotencyKey::new()).await?;
         assert_eq!(checkpoint.inspect().await?.id, checkpoint.id());
-        let checkpoint_children = checkpoint
-            .fork(NonZeroU32::new(2).unwrap(), IdempotencyKey::new())
-            .await?;
+        let checkpoint_children = checkpoint.fork(count, IdempotencyKey::new()).await?;
         assert_eq!(checkpoint_children.len(), 2);
-        let live = machine
-            .fork(NonZeroU32::new(2).unwrap(), IdempotencyKey::new())
-            .await?;
+        let live = machine.fork(count, IdempotencyKey::new()).await?;
         assert_eq!(live.children.len(), 2);
         assert_eq!(live.fidelity, ForkFidelity::MemoryAndDisk);
         let ids: BTreeSet<_> = checkpoint_children
@@ -1056,6 +1045,42 @@ mod tests {
         machine.wake(IdempotencyKey::new()).await?;
         assert_eq!(machine.inspect().await?.state, MachineState::Running);
         assert!(!machine.events(None, 100).await?.events.is_empty());
+        Ok((checkpoint, checkpoint_children, live))
+    }
+
+    #[tokio::test]
+    async fn canonical_provider_serves_all_nineteen_rpc_operations_with_real_state()
+    -> TestResult {
+        let provider = Arc::new(SimulatedMachines::default());
+        let pending_operation = OperationId::new();
+        provider.state.lock().await.operations.insert(
+            pending_operation,
+            OperationObservation {
+                id: pending_operation,
+                phase: OperationPhase::Pending,
+            },
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(wire::machines_service_server::MachinesServiceServer::new(
+                    Service::new(provider),
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = stopped.await;
+                })
+                .await
+        });
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        let client = Machines::grpc(channel.clone());
+        let mut raw = wire::machines_service_client::MachinesServiceClient::new(channel);
+        assert_pending_operation(&client, pending_operation).await?;
+        let machine = create_and_assert_idempotency(&client).await?;
+        let (checkpoint, checkpoint_children, live) = assert_machine_lifecycle(&machine).await?;
         // Process-local metering is projected truthfully, without inventing a hosted signature.
         let receipt = raw
             .usage(wire::UsageRequest {
@@ -1076,13 +1101,13 @@ mod tests {
         checkpoint.destroy(IdempotencyKey::new()).await?;
         machine.destroy(IdempotencyKey::new()).await?;
         assert_eq!(machine.inspect().await?.state, MachineState::Destroyed);
-        assert_eq!(
-            raw.inspect_machine(wire::InspectMachineRequest::default())
-                .await
-                .unwrap_err()
-                .code(),
-            tonic::Code::InvalidArgument
-        );
+        match raw
+            .inspect_machine(wire::InspectMachineRequest::default())
+            .await
+        {
+            Ok(_) => return Err(std::io::Error::other("missing machine was accepted").into()),
+            Err(error) => assert_eq!(error.code(), tonic::Code::InvalidArgument),
+        }
         let _ = shutdown.send(());
         server.await??;
         Ok(())

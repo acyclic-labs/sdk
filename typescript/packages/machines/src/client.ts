@@ -23,6 +23,8 @@ export interface MachineListOptions {
   readonly pageSize?: number;
   /** Hard bound on the number of yielded Machines. */
   readonly maximum?: number;
+  /** Stops awaiting the current page request. */
+  readonly signal?: AbortSignal;
 }
 
 export class Machines {
@@ -56,17 +58,17 @@ export class Machines {
     const options: NativeMachinesOptions = { endpoint, caCertificate, certificate, privateKey };
     return new Machines(await NativeMachinesProvider.connect(options));
   }
-  qualifyImage(image: import("./index.js").Image): Promise<import("./index.js").ImageQualification> { return this.provider.qualifyImage(image); }
-  async create(request: CreateMachine): Promise<Machine> { const outcome = await this.provider.create(request); return new Machine(this.provider, expectOutcome(outcome, "created").machine.id); }
-  async attach(id: MachineId): Promise<Machine> { await this.provider.inspectMachine(id); return new Machine(this.provider, id); }
+  qualifyImage(image: import("./index.js").Image, signal?: AbortSignal): Promise<import("./index.js").ImageQualification> { return this.provider.qualifyImage(image, signal); }
+  async create(request: CreateMachine, signal?: AbortSignal): Promise<Machine> { const outcome = await this.provider.create(request, signal); return new Machine(this.provider, expectOutcome(outcome, "created").machine.id); }
+  async attach(id: MachineId, signal?: AbortSignal): Promise<Machine> { await this.provider.inspectMachine(id, signal); return new Machine(this.provider, id); }
   machine(id: MachineId): Machine { return new Machine(this.provider, id); }
   checkpoint(id: CheckpointId): Checkpoint { return new Checkpoint(this.provider, id); }
   operation(id: OperationId): Operation { return new Operation(this.provider, id); }
   /** Observes a durable operation by its exact retained operation identity. */
-  recover(id: OperationId): Promise<OperationObservation> { return this.provider.inspectOperation(id); }
+  recover(id: OperationId, signal?: AbortSignal): Promise<OperationObservation> { return this.provider.inspectOperation(id, signal); }
   /** Recovers the mutation outcome associated with an idempotency key. */
-  recoverMutation(key: IdempotencyKey): Promise<MutationOutcome> { return this.provider.recover(key); }
-  async recoverOperation(key: IdempotencyKey): Promise<Operation> { return this.operation(await this.provider.recoverOperation(key)); }
+  recoverMutation(key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome> { return this.provider.recover(key, signal); }
+  async recoverOperation(key: IdempotencyKey, signal?: AbortSignal): Promise<Operation> { return this.operation(await this.provider.recoverOperation(key, signal)); }
   async *list(options: MachineListOptions = {}): AsyncIterable<Machine> {
     const pageSize = options.pageSize ?? MANAGED_OCI_CONTRACT.maxPageSize;
     const maximum = options.maximum ?? 1024;
@@ -75,7 +77,7 @@ export class Machines {
     let cursor = options.after ?? null;
     let yielded = 0;
     while (yielded < maximum) {
-      const page = await this.provider.listMachines(cursor, Math.min(pageSize, maximum - yielded));
+      const page = await this.provider.listMachines(cursor, Math.min(pageSize, maximum - yielded), options.signal);
       for (const observation of page.machines) {
         yield new Machine(this.provider, observation.id);
         yielded += 1;
@@ -90,16 +92,16 @@ export class Machines {
 
 export class Machine {
   constructor(readonly provider: MachinesProvider, readonly id: MachineId) {}
-  inspect(): Promise<MachineObservation> { return this.provider.inspectMachine(this.id); }
-  async checkpoint(key: IdempotencyKey): Promise<Checkpoint> { return new Checkpoint(this.provider, expectOutcome(await this.provider.checkpoint(this.id, key), "checkpointed").checkpoint.id); }
+  inspect(signal?: AbortSignal): Promise<MachineObservation> { return this.provider.inspectMachine(this.id, signal); }
+  async checkpoint(key: IdempotencyKey, signal?: AbortSignal): Promise<Checkpoint> { return new Checkpoint(this.provider, expectOutcome(await this.provider.checkpoint(this.id, key, signal), "checkpointed").checkpoint.id); }
   /** Forks this running machine into `count` fresh children; see `MachinesProvider.forkMachine` for the exact semantics. */
-  async fork(count: number, key: IdempotencyKey): Promise<MachineFork> { const outcome = expectOutcome(await this.provider.forkMachine(this.id, count, key), "machine-forked"); if (outcome.source !== this.id) throw new MachineOutcomeError("machine-forked", outcome); return { fidelity: outcome.fidelity, children: outcome.children.map(value => new Machine(this.provider, value.id)) }; }
-  suspend(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspended" }>> { return this.#outcome("suspended", this.provider.suspend(this.id, key)); }
-  wake(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "woken" }>> { return this.#outcome("woken", this.provider.wake(this.id, key)); }
-  setSuspensionPolicy(policy: SuspensionPolicy, key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> { return this.#outcome("suspension-policy-set", this.provider.setSuspensionPolicy(this.id, policy, key)); }
-  destroy(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "machine-destroyed" }>> { return this.#outcome("machine-destroyed", this.provider.destroyMachine(this.id, key)); }
-  events(afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { return this.provider.events(this.id, afterSequence, limit); }
-  usage(startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.provider.usage(this.id, startUnixMs, endUnixMs); }
+  async fork(count: number, key: IdempotencyKey, signal?: AbortSignal): Promise<MachineFork> { const outcome = expectOutcome(await this.provider.forkMachine(this.id, count, key, signal), "machine-forked"); if (outcome.source !== this.id) throw new MachineOutcomeError("machine-forked", outcome); return { fidelity: outcome.fidelity, children: outcome.children.map(value => new Machine(this.provider, value.id)) }; }
+  suspend(key: IdempotencyKey, signal?: AbortSignal): Promise<Extract<MutationOutcome, { kind: "suspended" }>> { return this.#outcome("suspended", this.provider.suspend(this.id, key, signal)); }
+  wake(key: IdempotencyKey, signal?: AbortSignal): Promise<Extract<MutationOutcome, { kind: "woken" }>> { return this.#outcome("woken", this.provider.wake(this.id, key, signal)); }
+  setSuspensionPolicy(policy: SuspensionPolicy, key: IdempotencyKey, signal?: AbortSignal): Promise<Extract<MutationOutcome, { kind: "suspension-policy-set" }>> { return this.#outcome("suspension-policy-set", this.provider.setSuspensionPolicy(this.id, policy, key, signal)); }
+  destroy(key: IdempotencyKey, signal?: AbortSignal): Promise<Extract<MutationOutcome, { kind: "machine-destroyed" }>> { return this.#outcome("machine-destroyed", this.provider.destroyMachine(this.id, key, signal)); }
+  events(afterSequence: number | null = null, limit = MANAGED_OCI_CONTRACT.maxEventPageSize, signal?: AbortSignal): Promise<{ readonly events: readonly MachineEvent[]; readonly nextSequence: number | null }> { return this.provider.events(this.id, afterSequence, limit, signal); }
+  usage(startUnixMs: number, endUnixMs: number, signal?: AbortSignal): Promise<UsageReceipt> { return this.provider.usage(this.id, startUnixMs, endUnixMs, signal); }
   async #outcome<Kind extends MutationOutcome["kind"]>(kind: Kind, value: Promise<MutationOutcome>): Promise<Extract<MutationOutcome, { kind: Kind }>> { return expectOutcome(await value, kind); }
 }
 
@@ -108,16 +110,16 @@ export interface MachineFork { readonly fidelity: ForkFidelity; readonly childre
 
 export class Checkpoint {
   constructor(readonly provider: MachinesProvider, readonly id: CheckpointId) {}
-  inspect(): Promise<CheckpointObservation> { return this.provider.inspectCheckpoint(this.id); }
-  async fork(count: number, key: IdempotencyKey): Promise<readonly Machine[]> { return expectOutcome(await this.provider.fork(this.id, count, key), "forked").machines.map(value => new Machine(this.provider, value.id)); }
-  destroy(key: IdempotencyKey): Promise<Extract<MutationOutcome, { kind: "checkpoint-destroyed" }>> { return this.provider.destroyCheckpoint(this.id, key).then(value => expectOutcome(value, "checkpoint-destroyed")); }
+  inspect(signal?: AbortSignal): Promise<CheckpointObservation> { return this.provider.inspectCheckpoint(this.id, signal); }
+  async fork(count: number, key: IdempotencyKey, signal?: AbortSignal): Promise<readonly Machine[]> { return expectOutcome(await this.provider.fork(this.id, count, key, signal), "forked").machines.map(value => new Machine(this.provider, value.id)); }
+  destroy(key: IdempotencyKey, signal?: AbortSignal): Promise<Extract<MutationOutcome, { kind: "checkpoint-destroyed" }>> { return this.provider.destroyCheckpoint(this.id, key, signal).then(value => expectOutcome(value, "checkpoint-destroyed")); }
 }
 
 export class Operation {
   constructor(readonly provider: MachinesProvider, readonly id: OperationId) {}
-  inspect(): Promise<OperationObservation> { return this.provider.inspectOperation(this.id); }
-  cancel(): Promise<OperationObservation> { return this.provider.cancel(this.id); }
-  watch(): AsyncIterable<OperationObservation> { return this.provider.watchOperation(this.id); }
+  inspect(signal?: AbortSignal): Promise<OperationObservation> { return this.provider.inspectOperation(this.id, signal); }
+  cancel(signal?: AbortSignal): Promise<OperationObservation> { return this.provider.cancel(this.id, signal); }
+  watch(signal?: AbortSignal): AsyncIterable<OperationObservation> { return this.provider.watchOperation(this.id, signal); }
 }
 
 function expectOutcome<Kind extends MutationOutcome["kind"]>(outcome: MutationOutcome, kind: Kind): Extract<MutationOutcome, { kind: Kind }> { if (outcome.kind !== kind) throw new MachineOutcomeError(kind, outcome); return outcome as Extract<MutationOutcome, { kind: Kind }>; }

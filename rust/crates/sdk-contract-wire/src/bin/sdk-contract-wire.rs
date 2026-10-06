@@ -2121,6 +2121,25 @@ mod tests {
         assert!(deferred.is_empty());
     }
 
+    #[test]
+    fn all_languages_retains_deferred_products_primary_filters_them() {
+        let artifacts = vec![
+            ("generated/sdk/type-policy.json".to_owned(), vec![1]),
+            ("python/generated.py".to_owned(), vec![2]),
+            ("dotnet/GeneratedRemotePolicy.cs".to_owned(), vec![3]),
+        ];
+        let all = filter_product_artifacts_for_profile(artifacts.clone(), ProductProfile::AllLanguages)
+            .expect("all-language profile accepts every classified product");
+        assert_eq!(all, artifacts);
+
+        let primary = filter_product_artifacts_for_profile(
+            artifacts,
+            ProductProfile::RustTypescriptDocs,
+        )
+        .expect("primary profile filters explicitly deferred products");
+        assert_eq!(primary, vec![("generated/sdk/type-policy.json".to_owned(), vec![1])]);
+    }
+
     fn evidence_item() -> Value {
         serde_json::json!({
             "family": "actors",

@@ -565,7 +565,7 @@ where
     let mut exported_chunks = Vec::new();
     match service.export(Request::new(export_request.clone())).await {
         Ok(response) => {
-            let mut chunks = response.into_inner();
+            let chunks = response.into_inner();
             tokio::pin!(chunks);
             let mut encoded = Vec::new();
             while let Some(chunk) = chunks.next().await {

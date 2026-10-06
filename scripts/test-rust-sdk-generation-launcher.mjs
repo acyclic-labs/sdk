@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { generationInvocation } from "./rust-sdk-generation.mjs";
 
 const options = {
@@ -77,7 +77,7 @@ test("configured Rust output defaults also apply through the thin launcher", () 
   assert.equal(value(explicit, "--output"), resolve(options.callerDirectory, "explicit"));
 });
 
-test("SDK_BUILD_ROOT owns output, shared Cargo target, and rustdoc cache", () => {
+test("SDK_BUILD_ROOT owns output and source-keyed Cargo/rustdoc caches", () => {
   const configured = {
     ...options,
     temporaryRoot: undefined,
@@ -88,10 +88,10 @@ test("SDK_BUILD_ROOT owns output, shared Cargo target, and rustdoc cache", () =>
   const buildRoot = resolve(options.callerDirectory, "/configured/sdk-build");
   const generationRoot = join(buildRoot, "acyclic-sdk-generation");
   assert.equal(first.options.env.SDK_BUILD_ROOT, buildRoot);
-  assert.equal(first.options.env.CARGO_TARGET_DIR, join(generationRoot, "cargo-target"));
-  assert.equal(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, join(generationRoot, "rustdoc-cache"));
-  assert.equal(first.options.env.CARGO_TARGET_DIR, second.options.env.CARGO_TARGET_DIR);
-  assert.equal(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, second.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR);
+  assert.match(first.options.env.CARGO_TARGET_DIR, new RegExp(`${generationRoot.replaceAll("\\", "\\\\")}\\\\[0-9a-f]{16}\\\\cargo-target$`));
+  assert.match(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, new RegExp(`${generationRoot.replaceAll("\\", "\\\\")}\\\\[0-9a-f]{16}\\\\rustdoc-cache$`));
+  assert.notEqual(first.options.env.CARGO_TARGET_DIR, second.options.env.CARGO_TARGET_DIR);
+  assert.notEqual(first.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, second.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR);
   assert.equal(first.options.env.CARGO_TARGET_DIR.startsWith(first.options.env.SDK_BUILD_ROOT), true);
 });
 
@@ -105,6 +105,17 @@ test("explicit target and docs cache remain caller-owned under SDK_BUILD_ROOT", 
   assert.equal(plan.options.env.CARGO_TARGET_DIR, resolve(options.callerDirectory, "retained/cargo-target"));
   assert.equal(plan.options.env.SDK_DOCS_RUSTDOC_CACHE_DIR, resolve(options.callerDirectory, "retained/rustdoc-cache"));
   assert.equal(plan.options.env.SDK_BUILD_ROOT, resolve(options.callerDirectory, "/configured/sdk-build"));
+});
+
+test("explicit rustdoc cache directories cannot write inside the frozen source", () => {
+  assert.throws(
+    () => generationInvocation(
+      "generate",
+      ["--source-root", "/frozen/sdk"],
+      { ...options, environment: { SDK_DOCS_RUSTDOC_CACHE_DIR: "/frozen/sdk/rustdoc-cache" } },
+    ),
+    /Rustdoc cache directory must be outside the Rust source root/,
+  );
 });
 
 test("contract launcher keeps its PowerShell and Node entrypoints source-independent", () => {
@@ -124,8 +135,16 @@ test("contract launcher keeps its PowerShell and Node entrypoints source-indepen
   assert.doesNotMatch(filesystemPackage, /buf (?:format|lint)/, "package hooks must not treat the legacy proto tree as a generation authority");
 });
 
-test("Kotlin producer stages Maven output outside the Rust source checkout", () => {
-  const adapter = readFileSync(new URL("../jvm/kotlin-producer-adapter.ps1", import.meta.url), "utf8");
+test("Kotlin producer stages Maven output outside the Rust source checkout when the JVM profile is present", () => {
+  const adapterPath = new URL("../jvm/kotlin-producer-adapter.ps1", import.meta.url);
+  if (!existsSync(adapterPath)) {
+    // The primary Rust/docs source profile intentionally omits the second PR's
+    // language trees; keep this profile-scoped test explicit rather than
+    // importing a source file that is outside this checkout's contract.
+    assert.equal(existsSync(adapterPath), false);
+    return;
+  }
+  const adapter = readFileSync(adapterPath, "utf8");
   assert.match(adapter, /workspaceJvm/);
   assert.match(adapter, /maven\.repo\.local/);
   assert.match(adapter, /RuntimeInformation/);

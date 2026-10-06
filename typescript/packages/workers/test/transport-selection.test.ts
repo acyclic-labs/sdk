@@ -11,3 +11,7 @@ test("Workers HTTP override remains available", async () => {
   const client = await fromEnv({ endpoint: "https://workers.example", token: "fixture", transport: "http" });
   expect(client).toBeInstanceOf(HttpWorkersClient);
 });
+
+test("Workers HTTP factory awaits Rust WASM before validating credentials", async () => {
+  await expect(fromEnv({ endpoint: "https://workers.example", token: "bad\r\n", transport: "http" })).rejects.toThrow("invalid bearer credential");
+});

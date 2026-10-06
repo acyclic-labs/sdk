@@ -2,12 +2,16 @@
 use crate::{http_codec, http_validation, wire_codec, *};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream};
+use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
 #[cfg(not(target_arch = "wasm32"))]
 use reqwest::{Client, header::AUTHORIZATION};
 use serde_json::Value;
-use std::{collections::VecDeque, time::Duration};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use url::Url;
 
 #[cfg(target_arch = "wasm32")]
@@ -32,7 +36,12 @@ pub struct HttpStream {
     endpoint: Url,
     authorization: String,
     maximum: usize,
+    handshake: Arc<Mutex<Option<SharedHandshake>>>,
 }
+
+type SharedHandshake = futures::future::Shared<
+    futures::future::LocalBoxFuture<'static, Option<bool>>,
+>;
 
 #[cfg(target_arch = "wasm32")]
 struct BrowserResponse {
@@ -149,6 +158,7 @@ impl HttpStream {
             endpoint,
             authorization,
             maximum,
+            handshake: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -340,6 +350,30 @@ impl HttpStream {
     /// # Errors
     /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
     pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
+        let shared = {
+            let mut slot = self.handshake.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(shared) = slot.as_ref() {
+                shared.clone()
+            } else {
+                let client = self.clone();
+                let shared = async move { client.perform_handshake().await.ok() }
+                    .boxed_local()
+                    .shared();
+                *slot = Some(shared.clone());
+                shared
+            }
+        };
+        if let Some(result) = shared.await {
+            return Ok(result);
+        }
+        self.handshake
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        self.perform_handshake().await
+    }
+
+    async fn perform_handshake(&self) -> Result<bool, crate::client::ConnectError> {
         use crate::client::ConnectError;
         use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
         let malformed = || ConnectError::Negotiation("invalid control handshake response".into());

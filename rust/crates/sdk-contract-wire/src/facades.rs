@@ -820,6 +820,10 @@ public final class GeneratedRemotePolicy {{
   public static final String PROBE = {probe:?};
   public static final String POST_FAILURE_FALLBACK = {fallback:?};
   public static final String REPLAY = {replay:?};
+  public static final Map<String, String> SELECTION_POLICY = Map.of(
+      \"probe\", {probe:?},
+      \"postFailureFallback\", {fallback:?},
+      \"replay\", {replay:?});
   public static final Map<Runtime, Map<String, List<Option>>> OPTIONS = Map.of(
       Runtime.NATIVE, buildOptions(ClientRuntime.NATIVE),
       Runtime.BROWSER, buildOptions(ClientRuntime.BROWSER));
@@ -1014,6 +1018,13 @@ public static class GeneratedRemotePolicy
     public enum Runtime {{ Native, Browser }}
     public enum Transport {{ Grpc, GrpcWeb, HttpJson }}
     public readonly record struct Option(Transport Transport, bool Streaming, bool BearerAuth);
+    public static class OperationMetadata
+    {{
+        public const string Cancellation = \"cancellation\";
+        public const string Capabilities = \"capabilities\";
+        public const string Errors = \"errors\";
+        public const string Validations = \"validations\";
+    }}
     public readonly record struct Operation(bool ClientStreaming, bool ServerStreaming, bool BearerAuth, string Cancellation);
     public readonly record struct Availability(bool Grpc, bool GrpcWeb, bool HttpJson)
     {{
@@ -1038,6 +1049,13 @@ public static class GeneratedRemotePolicy
     public const string Probe = {probe:?};
     public const string PostFailureFallback = {fallback:?};
     public const string Replay = {replay:?};
+    public static readonly IReadOnlyDictionary<string, string> SelectionPolicy =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {{
+            [\"probe\"] = Probe,
+            [\"postFailureFallback\"] = PostFailureFallback,
+            [\"replay\"] = Replay,
+        }};
     public static readonly IReadOnlyDictionary<Runtime, IReadOnlyDictionary<string, IReadOnlyList<Option>>> Options =
         new Dictionary<Runtime, IReadOnlyDictionary<string, IReadOnlyList<Option>>>
         {{

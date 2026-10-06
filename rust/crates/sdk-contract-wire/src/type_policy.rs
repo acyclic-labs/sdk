@@ -722,18 +722,38 @@ fn collect_reachable_fields(
             .and_then(|message| message.options.as_ref())
             .and_then(|options| options.map_entry)
             .unwrap_or(false);
-        let oneof_name = field
-            .oneof_index
-            .and_then(|index| usize::try_from(index).ok())
-            .and_then(|index| message.oneof_decl.get(index))
-            .and_then(|declaration| declaration.name.clone());
+        let number = field.number.ok_or_else(|| {
+            format!(
+                "{family} {rpc} field {message_path}.{field_name} has no field number"
+            )
+        })?;
+        let oneof_name = match field.oneof_index {
+            Some(index) => {
+                let index = usize::try_from(index).map_err(|_| {
+                    format!(
+                        "{family} {rpc} field {message_path}.{field_name} has invalid oneof index {index}"
+                    )
+                })?;
+                let declaration = message.oneof_decl.get(index).ok_or_else(|| {
+                    format!(
+                        "{family} {rpc} field {message_path}.{field_name} has invalid oneof index {index}"
+                    )
+                })?;
+                Some(declaration.name.clone().ok_or_else(|| {
+                    format!(
+                        "{family} {rpc} field {message_path}.{field_name} oneof declaration {index} has no name"
+                    )
+                })?)
+            }
+            None => None,
+        };
         output.push(ResolvedRequestField {
             family: family.to_owned(),
             rpc: rpc.to_owned(),
             root_message: root_message.to_owned(),
             message_path: message_path.to_owned(),
             field: field_name.to_owned(),
-            number: field.number.unwrap_or_default(),
+            number,
             json_name: field
                 .json_name
                 .clone()
@@ -1607,6 +1627,7 @@ const OPAQUE_BYTES: &[SemanticRule] = &[];
 const NON_NEGATIVE_COUNT: &[SemanticRule] = &[SemanticRule::NonNegative];
 const POSITIVE_COUNT: &[SemanticRule] = &[SemanticRule::StrictlyPositive];
 const TIMESTAMP_MILLIS: &[SemanticRule] = &[SemanticRule::NonNegative];
+const TIMESTAMP_SECONDS: &[SemanticRule] = &[SemanticRule::NonNegative];
 const PRESENT_ONEOF: &[SemanticRule] =
     &[SemanticRule::ExactOneof, SemanticRule::PreserveUnknownOneof];
 const IMMUTABLE_MESSAGE: &[SemanticRule] = &[SemanticRule::Immutable];
@@ -1855,6 +1876,12 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
         rust_name: "UnixTimestampMillis",
         wire_kind: WireValueKind::UnsignedInteger,
         rules: TIMESTAMP_MILLIS,
+    },
+    SemanticType {
+        id: "timestamp_seconds",
+        rust_name: "UnixTimestampSeconds",
+        wire_kind: WireValueKind::UnsignedInteger,
+        rules: TIMESTAMP_SECONDS,
     },
 ];
 
@@ -2399,7 +2426,7 @@ pub const PUBLIC_FIELD_BINDINGS: &[PublicFieldBinding] = &[
     PublicFieldBinding {
         family: "filesystem",
         field: "expires_at_unix_seconds",
-        semantic_type: "timestamp_millis",
+        semantic_type: "timestamp_seconds",
         module: "filesystem",
         message: "CredentialResponse",
         wire_field: "expires_at_unix_seconds",
@@ -6201,8 +6228,7 @@ mod tests {
         assert!(
             findings
                 .iter()
-                .filter(|finding| finding.path.contains("haskell-positive"))
-                .next()
+                .find(|finding| finding.path.contains("haskell-positive"))
                 .is_none(),
             "opaque validated Haskell newtypes should pass"
         );
@@ -7365,6 +7391,11 @@ mod tests {
         assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
             binding.direction == PublicFieldDirection::Response
                 && binding.semantic_type == "timestamp_millis"
+        }));
+        assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
+            binding.direction == PublicFieldDirection::Response
+                && binding.semantic_type == "timestamp_seconds"
+                && binding.wire_field == "expires_at_unix_seconds"
         }));
         assert!(PUBLIC_FIELD_BINDINGS.iter().any(|binding| {
             binding.direction == PublicFieldDirection::Response

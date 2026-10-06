@@ -13,29 +13,54 @@ const TARGETS: &[(&str, &str, &str)] = &[
 ];
 
 #[test]
-fn every_filesystem_native_companion_fixture_is_installable() {
+fn every_filesystem_native_companion_fixture_is_installable()
+    -> Result<(), Box<dyn std::error::Error>>
+{
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../sdk-filesystem-native/npm");
     for (target, platform, architecture) in TARGETS {
         let package_dir = root.join(target);
-        let package: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(package_dir.join("package.json"))
-                .unwrap_or_else(|error| panic!("missing {target} package fixture: {error}")),
-        )
-        .unwrap_or_else(|error| panic!("invalid {target} package fixture: {error}"));
-        assert_eq!(package["name"], format!("@acyclic-labs/fs-{target}"));
-        assert_eq!(package["version"], "0.2.0");
-        assert_eq!(package["os"][0], *platform);
-        assert_eq!(package["cpu"][0], *architecture);
-        assert_eq!(package["main"], "index.js");
-        assert!(package["files"].as_array().is_some_and(|files| {
-            files.iter().any(|file| file == "index.js")
-                && files.iter().any(|file| file == "acyclic-fs.node")
-        }));
+        let package: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(package_dir.join("package.json"))?)?;
+        let expected_name = format!("@acyclic-labs/fs-{target}");
         assert_eq!(
-            fs::read_to_string(package_dir.join("index.js"))
-                .unwrap_or_else(|error| panic!("missing {target} loader fixture: {error}"))
-                .trim(),
+            package.get("name").and_then(serde_json::Value::as_str),
+            Some(expected_name.as_str())
+        );
+        assert_eq!(
+            package.get("version").and_then(serde_json::Value::as_str),
+            Some("0.2.0")
+        );
+        assert_eq!(
+            package
+                .get("os")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(serde_json::Value::as_str),
+            Some(*platform)
+        );
+        assert_eq!(
+            package
+                .get("cpu")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|values| values.first())
+                .and_then(serde_json::Value::as_str),
+            Some(*architecture)
+        );
+        assert_eq!(
+            package.get("main").and_then(serde_json::Value::as_str),
+            Some("index.js")
+        );
+        assert!(package
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|files| {
+                files.iter().any(|file| file == "index.js")
+                    && files.iter().any(|file| file == "acyclic-fs.node")
+            }));
+        assert_eq!(
+            fs::read_to_string(package_dir.join("index.js"))?.trim(),
             "module.exports = require(\"./acyclic-fs.node\");"
         );
     }
+    Ok(())
 }

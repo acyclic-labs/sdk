@@ -2,9 +2,13 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    error::Error,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::{
@@ -12,31 +16,59 @@ use tonic::{
     transport::{Identity, Server, ServerTlsConfig},
 };
 
+type TestResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+
+fn assert_fixture_auth<T>(request: &Request<T>) {
+    assert_eq!(
+        request
+            .metadata()
+            .get("authorization")
+            .and_then(|value| value.to_str().ok()),
+        Some("Bearer fixture-token")
+    );
+}
+
 async fn endpoint(
     family: BindingFamily,
     digest: String,
     requests: usize,
-) -> (String, tokio::task::JoinHandle<Vec<String>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
+) -> TestResult<(String, tokio::task::JoinHandle<TestResult<Vec<String>>>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
         let mut observed = Vec::new();
         for index in 0..requests {
-            let (mut stream, _) = listener.accept().await.unwrap();
+            let (mut stream, _) = listener.accept().await?;
             let mut bytes = Vec::new();
             while !bytes.windows(4).any(|part| part == b"\r\n\r\n") {
                 let mut chunk = [0; 1024];
-                let count = stream.read(&mut chunk).await.unwrap();
-                assert!(count > 0 && bytes.len() + count <= 64 * 1024);
-                bytes.extend_from_slice(&chunk[..count]);
+                let count = stream.read(&mut chunk).await?;
+                if count == 0 {
+                    return Err(io::Error::other("fixture closed before the HTTP headers").into());
+                }
+                let new_len = bytes
+                    .len()
+                    .checked_add(count)
+                    .filter(|length| *length <= 64 * 1024)
+                    .ok_or_else(|| io::Error::other("fixture request exceeded 64 KiB"))?;
+                let received = chunk
+                    .get(..count)
+                    .ok_or_else(|| io::Error::other("fixture returned an invalid read length"))?;
+                bytes.extend_from_slice(received);
+                debug_assert_eq!(bytes.len(), new_len);
             }
-            let request = String::from_utf8(bytes).unwrap();
-            assert!(
-                request
-                    .to_ascii_lowercase()
-                    .contains("authorization: bearer fixture-token\r\n")
-            );
-            observed.push(request.lines().next().unwrap().to_owned());
+            let request = String::from_utf8(bytes)?;
+            if !request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer fixture-token\r\n")
+            {
+                return Err(io::Error::other("fixture request omitted bearer authentication").into());
+            }
+            let request_line = request
+                .lines()
+                .next()
+                .ok_or_else(|| io::Error::other("fixture request omitted its request line"))?;
+            observed.push(request_line.to_owned());
             let body = if index == 0 {
                 serde_json::json!({
                     "protocol": { "version": control::control_protocol_version(family), "descriptorDigest": digest },
@@ -51,36 +83,38 @@ async fn endpoint(
                 body.len(),
                 body
             );
-            stream.write_all(response.as_bytes()).await.unwrap();
-            stream.shutdown().await.unwrap();
+            stream.write_all(response.as_bytes()).await?;
+            stream.shutdown().await?;
         }
-        observed
+        Ok::<Vec<String>, Box<dyn Error + Send + Sync>>(observed)
     });
-    (format!("http://{address}"), task)
+    Ok((format!("http://{address}"), task))
 }
 
 #[tokio::test]
-async fn workers_choose_verified_http_without_consumer_feature_flags() {
+async fn workers_choose_verified_http_without_consumer_feature_flags() -> TestResult<()> {
     let family = BindingFamily::Workers;
-    let (endpoint, server) = endpoint(family, control::archived_descriptor_digest(family), 1).await;
-    let client = crate::connect(&endpoint, "fixture-token").await.unwrap();
+    let (endpoint, server) =
+        endpoint(family, control::archived_descriptor_digest(family), 1).await?;
+    let client = crate::connect(&endpoint, "fixture-token").await?;
     assert_eq!(client.transport(), "http");
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
-        .unwrap()
-        .unwrap();
+        .map_err(|error| io::Error::other(format!("fixture timed out: {error}")))???;
     assert_eq!(observed, ["GET /v1/sdk/workers/handshake HTTP/1.1"]);
+    Ok(())
 }
 
 #[tokio::test]
-async fn incompatible_identity_is_terminal_before_any_application_request() {
-    let (endpoint, server) = endpoint(BindingFamily::Workers, "substituted-descriptor".into(), 1).await;
+async fn incompatible_identity_is_terminal_before_any_application_request() -> TestResult<()> {
+    let (endpoint, server) =
+        endpoint(BindingFamily::Workers, "substituted-descriptor".into(), 1).await?;
     assert!(crate::connect(&endpoint, "fixture-token").await.is_err());
     let observed = tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
-        .unwrap()
-        .unwrap();
+        .map_err(|error| io::Error::other(format!("fixture timed out: {error}")))???;
     assert_eq!(observed, ["GET /v1/sdk/workers/handshake HTTP/1.1"]);
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -104,25 +138,34 @@ impl crate::control_wire::transport::v1::protocol_service_server::ProtocolServic
         request: Request<crate::control_wire::protocol::v1::HandshakeRequest>,
     ) -> Result<Response<crate::control_wire::protocol::v1::HandshakeResponse>, Status> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(
-            request.metadata().get("authorization").unwrap(),
-            "Bearer fixture-token"
-        );
+        assert_fixture_auth(&request);
         if matches!(self.mode, TlsMode::Unauthorized) {
             return Err(Status::unauthenticated("invalid credential"));
         }
         let family = BindingFamily::Workers;
         let version = control::control_protocol_version(family);
-        let presented = request.get_ref().protocol.as_ref().unwrap();
+        let presented = request
+            .get_ref()
+            .protocol
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("fixture protocol identity is missing"))?;
         assert_eq!(presented.version, version);
         assert_eq!(
             presented.descriptor_digest,
             control::archived_descriptor_digest(family)
         );
-        let required = &request.get_ref().required.as_ref().unwrap().capabilities;
+        let required = &request
+            .get_ref()
+            .required
+            .as_ref()
+            .ok_or_else(|| Status::invalid_argument("fixture required capabilities are missing"))?
+            .capabilities;
         assert_eq!(required.len(), 1);
-        assert_eq!(required[0].name, family.name());
-        assert_eq!(required[0].version, version);
+        let required_capability = required
+            .first()
+            .ok_or_else(|| Status::invalid_argument("fixture required capability is missing"))?;
+        assert_eq!(required_capability.name, family.name());
+        assert_eq!(required_capability.version, version);
         Ok(Response::new(
             crate::control_wire::protocol::v1::HandshakeResponse {
                 protocol: Some(crate::control_wire::protocol::v1::ProtocolIdentity {
@@ -152,10 +195,7 @@ struct WorkerFixture {
 impl WorkerFixture {
     fn reject<T>(&self, request: &Request<T>) -> Result<(), Status> {
         self.application_calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(
-            request.metadata().get("authorization").unwrap(),
-            "Bearer fixture-token"
-        );
+        assert_fixture_auth(request);
         Err(Status::unimplemented("fixture operation rejected"))
     }
 }
@@ -221,23 +261,23 @@ impl crate::wire::workers_service_server::WorkersService for WorkerFixture {
 
 async fn tls_endpoint(
     mode: TlsMode,
-) -> (
+) -> TestResult<(
     String,
     String,
     Arc<AtomicUsize>,
     Arc<AtomicUsize>,
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
-) {
+)> {
     let certificate =
         rcgen::generate_simple_self_signed(["localhost".to_owned(), "127.0.0.1".to_owned()])
-            .unwrap();
+            ?;
     let pem = certificate.cert.pem();
     let identity = Identity::from_pem(pem.clone(), certificate.signing_key.serialize_pem());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!(
         "https://127.0.0.1:{}",
-        listener.local_addr().unwrap().port()
+        listener.local_addr()?.port()
     );
     let control_calls = Arc::new(AtomicUsize::new(0));
     let application_calls = Arc::new(AtomicUsize::new(0));
@@ -255,7 +295,7 @@ async fn tls_endpoint(
     let server = tokio::spawn(async move {
         Server::builder()
             .tls_config(ServerTlsConfig::new().identity(identity))
-            .unwrap()
+            ?
             .add_service(
                 crate::control_wire::transport::v1::protocol_service_server::ProtocolServiceServer::new(control),
             )
@@ -265,29 +305,30 @@ async fn tls_endpoint(
             })
             .await
     });
-    (
+    Ok((
         endpoint,
         pem,
         control_calls,
         application_calls,
         shutdown,
         server,
-    )
+    ))
 }
 
 #[tokio::test]
-async fn native_prefers_verified_grpc_and_never_replays_application_errors() {
+async fn native_prefers_verified_grpc_and_never_replays_application_errors() -> TestResult<()> {
     let (endpoint, ca, control_calls, application_calls, shutdown, server) =
-        tls_endpoint(TlsMode::Valid).await;
+        tls_endpoint(TlsMode::Valid).await?;
     let client = crate::connect_with_ca_certificate(&endpoint, "fixture-token", Some(ca.as_bytes()))
-        .await
-        .unwrap();
+        .await?;
     assert_eq!(client.transport(), "grpc");
     assert_eq!(control_calls.load(Ordering::SeqCst), 1);
-    let error = client
+    let Err(error) = client
         .inspect_job(&crate::wire::InspectJobRequest::default())
         .await
-        .unwrap_err();
+    else {
+        return Err(io::Error::other("fixture operation unexpectedly succeeded").into());
+    };
     assert!(matches!(
         error,
         crate::Error::Service {
@@ -297,35 +338,45 @@ async fn native_prefers_verified_grpc_and_never_replays_application_errors() {
         }
     ));
     assert_eq!(application_calls.load(Ordering::SeqCst), 1);
-    shutdown.send(()).unwrap();
+    shutdown
+        .send(())
+        .map_err(|_| io::Error::other("fixture server shutdown receiver dropped"))?;
     tokio::time::timeout(std::time::Duration::from_secs(5), server)
         .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
+        ???;
+    Ok(())
 }
 
 #[tokio::test]
-async fn native_workers_authentication_and_identity_failures_are_terminal() {
+async fn native_workers_authentication_and_identity_failures_are_terminal() -> TestResult<()> {
     for (mode, expected) in [
         (TlsMode::WrongIdentity, "DescriptorMismatch"),
         (TlsMode::Unauthorized, "invalid credential"),
     ] {
         let (endpoint, ca, control_calls, application_calls, shutdown, server) =
-            tls_endpoint(mode).await;
-        let error = crate::connect_with_ca_certificate(&endpoint, "fixture-token", Some(ca.as_bytes()))
-            .await
-            .err()
-            .unwrap();
+            tls_endpoint(mode).await?;
+        let Err(error) = crate::connect_with_ca_certificate(
+            &endpoint,
+            "fixture-token",
+            Some(ca.as_bytes()),
+        )
+        .await
+        else {
+            return Err(io::Error::other(format!(
+                "fixture connection unexpectedly succeeded for {expected}"
+            ))
+            .into());
+        };
         assert!(matches!(error, crate::Error::Configuration(_)));
         assert!(error.to_string().contains(expected), "{error}");
         assert_eq!(control_calls.load(Ordering::SeqCst), 1);
         assert_eq!(application_calls.load(Ordering::SeqCst), 0);
-        shutdown.send(()).unwrap();
+        shutdown
+            .send(())
+            .map_err(|_| io::Error::other("fixture server shutdown receiver dropped"))?;
         tokio::time::timeout(std::time::Duration::from_secs(5), server)
             .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+            ???;
     }
+    Ok(())
 }

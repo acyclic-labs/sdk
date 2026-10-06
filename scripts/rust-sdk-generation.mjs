@@ -1,8 +1,20 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function sourceCacheKey(sourceRoot) {
+  let canonicalRoot = sourceRoot;
+  try {
+    canonicalRoot = realpathSync.native(sourceRoot);
+  } catch {
+    // Unit tests and callers may describe a source root before creating it.
+  }
+  return createHash("sha256").update(canonicalRoot, "utf8").digest("hex").slice(0, 16);
+}
 
 function optionValue(args, option) {
   const index = args.lastIndexOf(option);
@@ -67,21 +79,29 @@ export function generationInvocation(operation, rawArgs = [], options = {}) {
       outputToSource === "" || (!outputToSource.startsWith("..") && !isAbsolute(outputToSource))) {
     throw new Error(`generation output must be outside the Rust source root: ${output}`);
   }
-  // A shared target is safe for the pinned Rust workspace and avoids a full
-  // compiler copy for each operation or checkout. Cargo fingerprints still
-  // bind artifacts to their source/toolchain inputs; callers that need hard
-  // isolation can continue to provide CARGO_TARGET_DIR explicitly.
+  // Cargo target and rustdoc cache state are keyed by the canonical source
+  // root. A package name is not a sufficient identity when independent
+  // worktrees share a build root: Cargo dep-info and rustdoc JSON can otherwise
+  // be reused for the wrong checkout.
+  const sourceKey = sourceCacheKey(sourceRoot);
   const target = resolve(callerDirectory, environment.CARGO_TARGET_DIR ?? join(
     generationRoot,
+    sourceKey,
     "cargo-target",
   ));
   const docsCache = resolve(callerDirectory, environment.SDK_DOCS_RUSTDOC_CACHE_DIR
-    ?? join(generationRoot, "rustdoc-cache"));
+    ?? join(generationRoot, sourceKey, "rustdoc-cache"));
   const targetToSource = relative(sourceRoot, target);
   const sourceToTarget = relative(target, sourceRoot);
   if (targetToSource === "" || (!targetToSource.startsWith("..") && !isAbsolute(targetToSource)) ||
       sourceToTarget === "" || (!sourceToTarget.startsWith("..") && !isAbsolute(sourceToTarget))) {
     throw new Error(`Cargo target directory must be outside the Rust source root: ${target}`);
+  }
+  const docsCacheToSource = relative(sourceRoot, docsCache);
+  const sourceToDocsCache = relative(docsCache, sourceRoot);
+  if (docsCacheToSource === "" || (!docsCacheToSource.startsWith("..") && !isAbsolute(docsCacheToSource)) ||
+      sourceToDocsCache === "" || (!sourceToDocsCache.startsWith("..") && !isAbsolute(sourceToDocsCache))) {
+    throw new Error(`Rustdoc cache directory must be outside the Rust source root: ${docsCache}`);
   }
   const args = [
     "run", "--quiet", "--locked",

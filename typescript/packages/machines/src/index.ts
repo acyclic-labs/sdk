@@ -149,26 +149,26 @@ export type MachineEventPage = Omit<ReadonlyGenerated<WireEventsOut>, "events"> 
 /** Provider contract. Implementations must document their actual isolation and durability. */
 export interface MachinesProvider {
   readonly assurance: "process-local-simulation" | "customer-hosted" | "managed-service";
-  qualifyImage(image: Image): Promise<ImageQualification>;
-  create(request: CreateMachine): Promise<MutationOutcome>;
-  inspectMachine(machineId: MachineId): Promise<MachineObservation>;
-  listMachines(after: MachineId | null, limit: number): Promise<MachinePage>;
-  checkpoint(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
-  inspectCheckpoint(checkpointId: CheckpointId): Promise<CheckpointObservation>;
-  fork(checkpointId: CheckpointId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
-  forkMachine(machineId: MachineId, count: number, key: IdempotencyKey): Promise<MutationOutcome>;
-  suspend(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
-  wake(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
-  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey): Promise<MutationOutcome>;
-  destroyMachine(machineId: MachineId, key: IdempotencyKey): Promise<MutationOutcome>;
-  destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey): Promise<MutationOutcome>;
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage>;
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt>;
-  recover(key: IdempotencyKey): Promise<MutationOutcome>;
-  recoverOperation(key: IdempotencyKey): Promise<OperationId>;
-  inspectOperation(operationId: OperationId): Promise<OperationObservation>;
-  cancel(operationId: OperationId): Promise<OperationObservation>;
-  watchOperation(operationId: OperationId): AsyncIterable<OperationObservation>;
+  qualifyImage(image: Image, signal?: AbortSignal): Promise<ImageQualification>;
+  create(request: CreateMachine, signal?: AbortSignal): Promise<MutationOutcome>;
+  inspectMachine(machineId: MachineId, signal?: AbortSignal): Promise<MachineObservation>;
+  listMachines(after: MachineId | null, limit: number, signal?: AbortSignal): Promise<MachinePage>;
+  checkpoint(machineId: MachineId, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  inspectCheckpoint(checkpointId: CheckpointId, signal?: AbortSignal): Promise<CheckpointObservation>;
+  fork(checkpointId: CheckpointId, count: number, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  forkMachine(machineId: MachineId, count: number, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  suspend(machineId: MachineId, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  wake(machineId: MachineId, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  destroyMachine(machineId: MachineId, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  destroyCheckpoint(checkpointId: CheckpointId, key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  events(machineId: MachineId, afterSequence: number | null, limit: number, signal?: AbortSignal): Promise<MachineEventPage>;
+  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number, signal?: AbortSignal): Promise<UsageReceipt>;
+  recover(key: IdempotencyKey, signal?: AbortSignal): Promise<MutationOutcome>;
+  recoverOperation(key: IdempotencyKey, signal?: AbortSignal): Promise<OperationId>;
+  inspectOperation(operationId: OperationId, signal?: AbortSignal): Promise<OperationObservation>;
+  cancel(operationId: OperationId, signal?: AbortSignal): Promise<OperationObservation>;
+  watchOperation(operationId: OperationId, signal?: AbortSignal): AsyncIterable<OperationObservation>;
 }
 
 /** Constructs a managed image using the Rust-generated OCI reference contract. */

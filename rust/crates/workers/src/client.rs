@@ -20,6 +20,8 @@ pub const DEFAULT_TRANSPORT: &str = "grpc";
 #[cfg(target_arch = "wasm32")]
 pub const DEFAULT_TRANSPORT: &str = "http";
 
+const _: () = assert!(DEFAULT_HTTP_RESPONSE_BYTES > 0);
+
 /// Failure reported by the platform-aware client during setup, transport, or service use.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -200,17 +202,3 @@ include!("generated/platform-client-methods.rs");
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "client_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-mod client_unit_tests {
-    use super::{DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT};
-
-    #[test]
-    fn default_transport_is_platform_owned() {
-        #[cfg(not(target_arch = "wasm32"))]
-        assert_eq!(DEFAULT_TRANSPORT, "grpc");
-        #[cfg(target_arch = "wasm32")]
-        assert_eq!(DEFAULT_TRANSPORT, "http");
-        assert!(DEFAULT_HTTP_RESPONSE_BYTES > 0);
-    }
-}

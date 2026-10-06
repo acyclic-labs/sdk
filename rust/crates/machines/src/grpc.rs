@@ -2225,6 +2225,93 @@ mod tests {
         }
     }
 
+    macro_rules! assert_bearer_rpcs {
+        ($client:expr) => {{
+            macro_rules! observe {
+                ($method:ident, $request:ident) => {
+                    let error = $client
+                        .clone()
+                        .$method(wire::$request::default())
+                        .await
+                        .unwrap_err();
+                    assert_ne!(error.code(), Code::Unauthenticated, stringify!($method));
+                };
+            }
+            observe!(qualify_image, QualifyImageRequest);
+            observe!(create, CreateMachineRequest);
+            observe!(checkpoint, CheckpointMachineRequest);
+            observe!(fork, ForkCheckpointRequest);
+            observe!(fork_machine, ForkMachineRequest);
+            observe!(suspend, MachineMutationRequest);
+            observe!(wake, MachineMutationRequest);
+            observe!(set_suspension_policy, SetSuspensionPolicyRequest);
+            observe!(destroy_machine, MachineMutationRequest);
+            observe!(destroy_checkpoint, CheckpointMutationRequest);
+            observe!(recover, RecoverRequest);
+            observe!(inspect_machine, InspectMachineRequest);
+            observe!(inspect_checkpoint, InspectCheckpointRequest);
+            observe!(list_machines, ListMachinesRequest);
+            observe!(events, EventsRequest);
+            observe!(usage, UsageRequest);
+            observe!(cancel, OperationRequest);
+            observe!(inspect_operation, OperationRequest);
+        }};
+    }
+
+    struct MtlsCredentials {
+        server_pem: String,
+        server_key: String,
+        ca_pem: String,
+        client_pem: String,
+        client_key_pem: String,
+    }
+
+    fn mtls_credentials()
+    -> Result<MtlsCredentials, Box<dyn std::error::Error + Send + Sync>> {
+        use rcgen::{
+            BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        };
+        let server_identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+        let server_pem = server_identity.cert.pem();
+        let server_key = server_identity.signing_key.serialize_pem();
+        let ca_key = KeyPair::generate()?;
+        let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key)?;
+        let issuer = Issuer::new(ca_params, ca_key);
+        let client_key = KeyPair::generate()?;
+        let mut client_params = CertificateParams::new(Vec::<String>::new())?;
+        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let client_cert = client_params.signed_by(&client_key, &issuer)?;
+        Ok(MtlsCredentials {
+            server_pem,
+            server_key,
+            ca_pem: ca_cert.pem(),
+            client_pem: client_cert.pem(),
+            client_key_pem: client_key.serialize_pem(),
+        })
+    }
+
+    fn mtls_operation_fixture()
+    -> Result<(IdempotencyKey, OperationId, OperationService), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        Ok((
+            key,
+            operation,
+            OperationService {
+                expected_key: key,
+                expected_operation: operation,
+                recovered: recovered_suspend(operation, operation, machine),
+                inspected: state.clone(),
+                cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+                watch: WatchReply::Items(vec![WatchItem::State(state)]),
+            },
+        ))
+    }
+
     #[tokio::test]
     async fn bearer_crosses_every_generated_rpc_and_client_clone()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -2300,34 +2387,7 @@ mod tests {
             channel,
             BearerAuth::new("opaque.account+/=")?,
         );
-        macro_rules! observe {
-            ($method:ident, $request:ident) => {
-                let error = client
-                    .clone()
-                    .$method(wire::$request::default())
-                    .await
-                    .unwrap_err();
-                assert_ne!(error.code(), Code::Unauthenticated, stringify!($method));
-            };
-        }
-        observe!(qualify_image, QualifyImageRequest);
-        observe!(create, CreateMachineRequest);
-        observe!(checkpoint, CheckpointMachineRequest);
-        observe!(fork, ForkCheckpointRequest);
-        observe!(fork_machine, ForkMachineRequest);
-        observe!(suspend, MachineMutationRequest);
-        observe!(wake, MachineMutationRequest);
-        observe!(set_suspension_policy, SetSuspensionPolicyRequest);
-        observe!(destroy_machine, MachineMutationRequest);
-        observe!(destroy_checkpoint, CheckpointMutationRequest);
-        observe!(recover, RecoverRequest);
-        observe!(inspect_machine, InspectMachineRequest);
-        observe!(inspect_checkpoint, InspectCheckpointRequest);
-        observe!(list_machines, ListMachinesRequest);
-        observe!(events, EventsRequest);
-        observe!(usage, UsageRequest);
-        observe!(cancel, OperationRequest);
-        observe!(inspect_operation, OperationRequest);
+        assert_bearer_rpcs!(client);
         let mut stream = client
             .clone()
             .watch_operation(operation_request(operation))
@@ -2343,38 +2403,17 @@ mod tests {
     #[tokio::test]
     async fn remote_bearer_crosses_mtls_constructor_and_operation_clones()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        use rcgen::{
-            BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-        };
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tonic::transport::ServerTlsConfig;
 
-        let server_identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
-        let server_pem = server_identity.cert.pem();
-        let server_key = server_identity.signing_key.serialize_pem();
-        let ca_key = KeyPair::generate()?;
-        let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        let ca_cert = ca_params.self_signed(&ca_key)?;
-        let issuer = Issuer::new(ca_params, ca_key);
-        let client_key = KeyPair::generate()?;
-        let mut client_params = CertificateParams::new(Vec::<String>::new())?;
-        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
-        let client_cert = client_params.signed_by(&client_key, &issuer)?;
-        let client_pem = client_cert.pem();
-        let client_key_pem = client_key.serialize_pem();
-        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
-        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
-        let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
-        let state = operation_state(operation, wire::OperationStatus::Succeeded);
-        let service = OperationService {
-            expected_key: key,
-            expected_operation: operation,
-            recovered: recovered_suspend(operation, operation, machine),
-            inspected: state.clone(),
-            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
-            watch: WatchReply::Items(vec![WatchItem::State(state)]),
-        };
+        let MtlsCredentials {
+            server_pem,
+            server_key,
+            ca_pem,
+            client_pem,
+            client_key_pem,
+        } = mtls_credentials()?;
+        let (key, operation, service) = mtls_operation_fixture()?;
         let observed = Arc::new(AtomicUsize::new(0));
         let received = observed.clone();
         let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -2396,7 +2435,7 @@ mod tests {
         let mut builder = Server::builder().tls_config(
             ServerTlsConfig::new()
                 .identity(Identity::from_pem(&server_pem, &server_key))
-                .client_ca_root(Certificate::from_pem(ca_cert.pem())),
+                .client_ca_root(Certificate::from_pem(ca_pem)),
         )?;
         let server = tokio::spawn(async move {
             builder
@@ -2426,7 +2465,7 @@ mod tests {
                 })
                 .await
         });
-        ready_receiver.await.unwrap();
+        ready_receiver.await?;
         let tls = || Tls {
             ca: server_pem.as_bytes(),
             certificate: client_pem.as_bytes(),
@@ -2618,7 +2657,10 @@ mod tests {
             let version = control::control_protocol_version(family);
             if matches!(self.0, ControlMode::BearerValid) {
                 assert_eq!(
-                    request.metadata().get("authorization").unwrap(),
+                    request
+                        .metadata()
+                        .get("authorization")
+                        .ok_or_else(|| Status::unauthenticated("missing bearer"))?,
                     "Bearer machine-token"
                 );
             }
@@ -2626,19 +2668,31 @@ mod tests {
                 request
                     .metadata()
                     .get(control::FAMILY_METADATA_KEY)
-                    .unwrap(),
+                    .ok_or_else(|| Status::invalid_argument("missing family metadata"))?,
                 family.name()
             );
-            let presented = request.get_ref().protocol.as_ref().unwrap();
+            let presented = request
+                .get_ref()
+                .protocol
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("missing protocol identity"))?;
             assert_eq!(presented.version, version);
             assert_eq!(
                 presented.descriptor_digest,
                 control::archived_descriptor_digest(family)
             );
-            let required = &request.get_ref().required.as_ref().unwrap().capabilities;
+            let required = &request
+                .get_ref()
+                .required
+                .as_ref()
+                .ok_or_else(|| Status::invalid_argument("missing required capabilities"))?
+                .capabilities;
             assert_eq!(required.len(), 1);
-            assert_eq!(required[0].name, family.name());
-            assert_eq!(required[0].version, version);
+            let capability = required
+                .first()
+                .ok_or_else(|| Status::invalid_argument("missing Machines capability"))?;
+            assert_eq!(capability.name, family.name());
+            assert_eq!(capability.version, version);
             if matches!(self.0, ControlMode::Unauthorized) {
                 return Err(tonic::Status::unauthenticated("identity rejected"));
             }

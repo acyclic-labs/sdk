@@ -110,6 +110,19 @@ pub struct GuideRemoteRequestSpec {
     pub request: &'static str,
 }
 
+/// Embedded guide behavior owned and executed by the Rust example crate.
+///
+/// Embedded scenarios deliberately have no remote request identity. Their
+/// operation names point at the executable Rust function and their receipt
+/// fields identify the runtime facts that qualify the behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GuideEmbeddedScenarioSpec {
+    pub scenario_id: &'static str,
+    pub family: &'static str,
+    pub operation: &'static str,
+    pub receipt_fields: &'static [&'static str],
+}
+
 /// The six guide families with a generated remote or native facade.
 pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str); 6] = [
     (
@@ -145,7 +158,7 @@ pub const GUIDE_PROJECTION_SCENARIOS: [(&str, &str, &str); 6] = [
 ];
 
 /// One typed request manifest for each remote guide scenario.
-pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 6] = [
+pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 5] = [
     GuideRemoteRequestSpec {
         scenario_id: filesystem_scenarios::SCENARIO_ID,
         family: "filesystem",
@@ -153,14 +166,6 @@ pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 6] = [
         service: "FilesystemService",
         method: "Handshake",
         request: "HandshakeRequest",
-    },
-    GuideRemoteRequestSpec {
-        scenario_id: harness_scenarios::SCENARIO_ID,
-        family: "harness",
-        operation: "acyclic.harness.v2.HarnessService/Submit",
-        service: "HarnessService",
-        method: "Submit",
-        request: "CommandEnvelope",
     },
     GuideRemoteRequestSpec {
         scenario_id: inference_scenarios::SCENARIO_ID,
@@ -195,6 +200,22 @@ pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 6] = [
         request: "PublishVersionRequest",
     },
 ];
+
+/// The Harness guide is an embedded admission, cancellation, and recovery
+/// scenario. Keep its qualification identity tied to the actual executable
+/// Rust function rather than to the unrelated remote Submit RPC.
+pub const GUIDE_EMBEDDED_SCENARIOS: [GuideEmbeddedScenarioSpec; 1] =
+    [GuideEmbeddedScenarioSpec {
+        scenario_id: harness_scenarios::SCENARIO_ID,
+        family: "harness",
+        operation: "acyclic_sdk_examples::harness_scenarios::execute_harness_scenario",
+        receipt_fields: &[
+            "admitted_and_completed",
+            "cancellation_rejected_admission",
+            "durable_replay_after_restart",
+            "journal_boundary_enforced",
+        ],
+    }];
 
 fn rust_body(scenario_id: &str) -> Option<String> {
     Some(match scenario_id {
@@ -434,7 +455,15 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let family = *family;
     let source = *source;
     let (module, version) = package_module(family)?;
-    let (service, method, request, operation) = remote_operation(family)?;
+    let (service, method, request, remote_operation_name) = remote_operation(family)?;
+    let operation = if family == "harness" {
+        GUIDE_EMBEDDED_SCENARIOS
+            .iter()
+            .find(|scenario| scenario.scenario_id == scenario_id)
+            .map(|scenario| scenario.operation)?
+    } else {
+        remote_operation_name
+    };
     let package_type = package_type(module)?;
     let java_service_type = java_service_type(module)?;
     let java_namespace = java_namespace(module, version);
@@ -529,13 +558,28 @@ print(response)"#,
             } else {
                 ""
             };
-            let harness_import = if family == "harness" {
-                "// CommandEnvelope is admitted by the public Harness facade.\n"
+            let machines_import = if family == "machines" {
+                "// CreateMachineRequest is mapped by the public Machines facade.\n"
             } else {
                 ""
             };
-            let machines_import = if family == "machines" {
-                "// CreateMachineRequest is mapped by the public Machines facade.\n"
+            let ts_proto_import = if family == "harness" {
+                String::new()
+            } else {
+                format!(
+                    "import {{ {service}, {request}Schema }} from \"@acyclic-labs/{ts_package}/proto\";\n",
+                    service = service,
+                    request = request,
+                    ts_package = ts_package,
+                )
+            };
+            let ts_buf_import = if matches!(family, "objects" | "workers") {
+                "import { create } from \"@bufbuild/protobuf\";\n"
+            } else {
+                ""
+            };
+            let ts_buffer_import = if family == "workers" {
+                "import { Buffer } from \"node:buffer\";\n"
             } else {
                 ""
             };
@@ -551,7 +595,10 @@ print(response)"#,
             let ts_call = if family == "filesystem" {
                 "const response = client.capabilities; // HandshakeRequest is performed by openFs.".to_owned()
             } else if family == "harness" {
-                "const response = client.issueScope(\"guide\", [\"event:append\"]);".to_owned()
+                r#"const response = client.issueScope("guide", ["event:append"]);
+if (response.id !== "guide" || !response.capabilities.includes("event:append")) {
+  throw new Error("embedded Harness scope proof failed");
+}"#.to_owned()
             } else if family == "inference" {
                 format!(
                     "const events = client.watchRun(new Uint8Array(16).fill(2), 0n); // WatchRunRequestSchema is generated by watchRun.\nfor await (const event of events) {{ console.log(event); break; }}\nconst response = events;",
@@ -576,23 +623,20 @@ print(response)"#,
             };
             format!(
             r#"// Rust scenario: {scenario_id}
-import {{ create }} from "@bufbuild/protobuf";
-import {{ Buffer }} from "node:buffer";
-import {{ {service}, {request}Schema }} from "@acyclic-labs/{ts_package}/proto";
+{ts_buf_import}{ts_buffer_import}
+{ts_proto_import}
 {facade_import}{additional_proto_import}
-{harness_import}
 {machines_import}
 
 {client_setup}
 {ts_call}
 console.log(response);"#,
             scenario_id = scenario_id,
-            service = service,
-            request = request,
-            ts_package = ts_package,
+            ts_buf_import = ts_buf_import,
+            ts_buffer_import = ts_buffer_import,
+            ts_proto_import = ts_proto_import,
             facade_import = facade_import,
             additional_proto_import = additional_proto_import,
-            harness_import = harness_import,
             machines_import = machines_import,
             client_setup = client_setup,
             ts_call = ts_call,
@@ -1131,7 +1175,9 @@ echo $response->serializeToJsonString(), PHP_EOL;"#,
         source,
         operation,
         language,
-        mode: if matches!(language, Language::Rust) {
+        mode: if matches!(language, Language::Rust)
+            || (family == "harness" && matches!(language, Language::TypeScript))
+        {
             GuideProjectionMode::Embedded
         } else {
             GuideProjectionMode::Remote
@@ -1206,6 +1252,11 @@ mod tests {
                 if language == Language::Rust {
                     assert_eq!(projection.mode, GuideProjectionMode::Embedded);
                     assert!(!projection.code.is_empty());
+                } else if scenario_id == harness_scenarios::SCENARIO_ID
+                    && language == Language::TypeScript
+                {
+                    assert_eq!(projection.mode, GuideProjectionMode::Embedded);
+                    assert!(!projection.code.trim().is_empty());
                 } else {
                     assert_eq!(projection.mode, GuideProjectionMode::Remote);
                     assert!(
@@ -1233,7 +1284,7 @@ mod tests {
     #[test]
     fn request_manifest_matches_every_remote_projection() {
         assert_eq!(
-            GUIDE_REMOTE_REQUESTS.len(),
+            GUIDE_REMOTE_REQUESTS.len() + GUIDE_EMBEDDED_SCENARIOS.len(),
             GUIDE_PROJECTION_SCENARIOS.len()
         );
         for spec in GUIDE_REMOTE_REQUESTS {
@@ -1245,6 +1296,44 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn embedded_harness_manifest_matches_executable_receipt() {
+        let spec = GUIDE_EMBEDDED_SCENARIOS
+            .iter()
+            .find(|spec| spec.scenario_id == harness_scenarios::SCENARIO_ID)
+            .expect("embedded Harness manifest");
+        assert_eq!(spec.family, "harness");
+        assert_eq!(
+            spec.operation,
+            "acyclic_sdk_examples::harness_scenarios::execute_harness_scenario"
+        );
+        let expected_fields: &[&str] = &[
+            "admitted_and_completed",
+            "cancellation_rejected_admission",
+            "durable_replay_after_restart",
+            "journal_boundary_enforced",
+        ];
+        assert_eq!(spec.receipt_fields, expected_fields);
+
+        let receipt = harness_scenarios::execute_harness_scenario().await;
+        assert!(receipt.admitted_and_completed);
+        assert!(receipt.cancellation_rejected_admission);
+        assert!(receipt.durable_replay_after_restart);
+        assert!(receipt.journal_boundary_enforced);
+
+        for language in [Language::Rust, Language::TypeScript] {
+            let projection = project(spec.scenario_id, language).expect("embedded projection");
+            assert_eq!(projection.operation, spec.operation);
+            assert_eq!(projection.mode, GuideProjectionMode::Embedded);
+        }
+        let typescript = project(spec.scenario_id, Language::TypeScript)
+            .expect("embedded Harness TypeScript projection");
+        assert!(typescript.code.contains("Harness.create"));
+        assert!(typescript.code.contains("issueScope"));
+        assert!(typescript.code.contains("embedded Harness scope proof failed"));
+        assert!(!typescript.code.contains("CommandEnvelope"));
     }
 
     #[test]

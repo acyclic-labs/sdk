@@ -23,8 +23,8 @@ export async function fromEnv(environment: ObjectsV2Environment): Promise<Object
     installed = { http: true };
   }
   let selected = selectRustOwnedTransport(OBJECTS_REMOTE_POLICY, runtime, environment.transport, installed);
+  await ensureObjectsWasm();
   if (selected === "http") {
-    await ensureObjectsWasm();
     return new HttpObjectsV2(environment);
   }
   if (selected !== "grpc" || runtime !== "native") throw new TypeError("Objects gRPC transport requires a native Node or Bun runtime");

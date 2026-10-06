@@ -11,3 +11,7 @@ test("Actors HTTP override remains available", async () => {
   const client = await fromEnv({ endpoint: "https://actors.example", token: "fixture", transport: "http" });
   expect(client).toBeInstanceOf(HttpActorsClient);
 });
+
+test("Actors HTTP factory awaits Rust WASM before validating credentials", async () => {
+  await expect(fromEnv({ endpoint: "https://actors.example", token: "bad\r\n", transport: "http" })).rejects.toThrow("invalid bearer credential");
+});

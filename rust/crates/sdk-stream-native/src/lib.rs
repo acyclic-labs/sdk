@@ -493,48 +493,45 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn connection_rejects_insecure_endpoint_before_network_io() {
-        let error = match Client::connect_endpoints(["http://127.0.0.1:1"], "fixture").await {
-            Ok(_) => {
-                assert!(false, "HTTP endpoint must be rejected");
-                return;
-            }
-            Err(error) => error,
+    async fn connection_rejects_insecure_endpoint_before_network_io()
+        -> std::result::Result<(), String>
+    {
+        let Err(error) = Client::connect_endpoints(["http://127.0.0.1:1"], "fixture").await else {
+            return Err("HTTP endpoint must be rejected".to_owned());
         };
         assert!(matches!(error, grpc::ConnectError::InsecureEndpoint));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn connection_rejects_more_than_canonical_endpoint_bound() {
+    async fn connection_rejects_more_than_canonical_endpoint_bound()
+        -> std::result::Result<(), String>
+    {
         let endpoints = (0..=grpc::MAX_ENDPOINTS)
             .map(|index| format!("https://endpoint-{index}.invalid"))
             .collect::<Vec<_>>();
-        let error = match Client::connect_endpoints(endpoints, "fixture").await {
-            Ok(_) => {
-                assert!(false, "endpoint pool must be bounded");
-                return;
-            }
-            Err(error) => error,
+        let Err(error) = Client::connect_endpoints(endpoints, "fixture").await else {
+            return Err("endpoint pool must be bounded".to_owned());
         };
         assert!(matches!(error, grpc::ConnectError::EndpointLimit));
+        Ok(())
     }
 
     #[tokio::test]
-    async fn connection_rejects_empty_private_ca_before_network_io() {
-        let error = match Client::connect_endpoints_with_ca_certificate(
+    async fn connection_rejects_empty_private_ca_before_network_io()
+        -> std::result::Result<(), String>
+    {
+        let Err(error) = Client::connect_endpoints_with_ca_certificate(
             ["https://endpoint.invalid"],
             "fixture",
             [],
         )
         .await
-        {
-            Ok(_) => {
-                assert!(false, "empty private CA must be rejected");
-                return;
-            }
-            Err(error) => error,
+        else {
+            return Err("empty private CA must be rejected".to_owned());
         };
         assert!(matches!(error, grpc::ConnectError::InvalidCaCertificate));
+        Ok(())
     }
 
     #[test]
