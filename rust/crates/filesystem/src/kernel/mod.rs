@@ -165,12 +165,17 @@ pub use probe::{
 pub(crate) use publication::contextual_publication_fingerprint;
 #[cfg(test)]
 pub(crate) use publication::encode_publication_payload;
+mod publication_evidence;
 pub use publication::{
     PublicationError, PublicationFailure, PublicationReceipt, PublishGenerationRequest,
     PublishedGeneration, decode_published_generation, publish_generation, publish_generation_async,
 };
 pub(crate) use publication::{
     PublicationIntent, publish_generation_async_with_context, publish_generation_async_with_permit,
+};
+pub use publication_evidence::{
+    GenerationPublicationEvidence, GenerationPublicationProjection, PublicationEvidenceError,
+    decode_generation_publication_evidence, encode_generation_publication_evidence,
 };
 pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest,
