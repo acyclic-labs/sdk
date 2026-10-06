@@ -844,6 +844,12 @@ pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<Pro
     ProcessTree::spawn(command)
 }
 
+/// Starts a one-use command with the strongest available native ownership
+/// handoff. The command is consumed so platform launch hooks cannot be reused.
+pub fn spawn_process_tree_owned(command: std::process::Command) -> io::Result<ProcessTree> {
+    ProcessTree::spawn_owned(command)
+}
+
 /// Runtime-independent completion of an owned native-file operation.
 /// Once admitted, dropping the observer never cancels the underlying operation.
 pub struct NativeCompletion<T> {

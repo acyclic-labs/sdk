@@ -13,6 +13,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["native-mount"] }
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 bytes.workspace = true
 napi.workspace = true
 napi-derive.workspace = true

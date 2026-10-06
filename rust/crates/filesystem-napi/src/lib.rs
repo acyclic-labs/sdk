@@ -44,12 +44,18 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 
 #[napi]
 #[allow(clippy::needless_pass_by_value)]
@@ -147,6 +153,452 @@ pub struct NativeCapabilities {
     pub writable_mount: bool,
     /// Whether mount I/O from this provider process is observable.
     pub provider_process_io_observable: bool,
+}
+
+/// A native process-tree owner that launches children with native ownership
+/// before user code can create descendants.
+///
+/// The returned token is an opaque ownership identity. Cleanup uses the native
+/// Job/process-group handle retained by this object, never a recovered PID.
+#[napi]
+pub struct NativeProcessOwner {
+    next_token: AtomicU64,
+    trees: Mutex<HashMap<u64, NativeProcessEntry>>,
+}
+
+struct NativeProcessEntry {
+    tree: ProcessTree,
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
+    write_in_flight: Arc<AtomicBool>,
+    terminating: Arc<AtomicBool>,
+    stdout: Option<NativeProcessReader>,
+    stderr: Option<NativeProcessReader>,
+}
+
+struct NativeProcessReader {
+    receiver: Receiver<NativeProcessChunk>,
+    overflowed: Arc<AtomicBool>,
+}
+
+enum NativeProcessChunk {
+    Data(Vec<u8>),
+    Eof,
+    Error(String),
+}
+
+/// Background stdin write task for one bounded native process token.
+pub struct NativeProcessWriteTask {
+    stdin: Arc<Mutex<ChildStdin>>,
+    bytes: Vec<u8>,
+    write_in_flight: Arc<AtomicBool>,
+    terminating: Arc<AtomicBool>,
+}
+
+impl Task for NativeProcessWriteTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(napi_error("native process termination is in progress"));
+        }
+        let mut stdin = self
+            .stdin
+            .lock()
+            .map_err(|_| napi_error("native process stdin state poisoned"))?;
+        stdin.write_all(&self.bytes).map_err(napi_error)?;
+        stdin.flush().map_err(napi_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+impl Drop for NativeProcessWriteTask {
+    fn drop(&mut self) {
+        self.write_in_flight.store(false, Ordering::Release);
+    }
+}
+
+const MAX_NATIVE_PROCESS_WRITE_BYTES: usize = 64 * 1024;
+
+impl NativeProcessEntry {
+    fn with_io(mut tree: ProcessTree) -> Self {
+        let stdin = tree.take_stdin().map(|value| Arc::new(Mutex::new(value)));
+        let stdout = tree.take_stdout().map(native_process_reader);
+        let stderr = tree.take_stderr().map(native_process_reader);
+        Self {
+            tree,
+            stdin,
+            write_in_flight: Arc::new(AtomicBool::new(false)),
+            terminating: Arc::new(AtomicBool::new(false)),
+            stdout,
+            stderr,
+        }
+    }
+}
+
+fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> NativeProcessReader {
+    let (sender, receiver) = mpsc::sync_channel(64);
+    let overflowed = Arc::new(AtomicBool::new(false));
+    let reader_overflowed = Arc::clone(&overflowed);
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 16 * 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    let _ = sender.try_send(NativeProcessChunk::Eof);
+                    return;
+                }
+                Ok(size) => {
+                    match sender.try_send(NativeProcessChunk::Data(buffer[..size].to_vec())) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            reader_overflowed.store(true, Ordering::Release);
+                            return;
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => return,
+                    }
+                }
+                Err(error) => {
+                    let _ = sender.try_send(NativeProcessChunk::Error(error.to_string()));
+                    return;
+                }
+            }
+        }
+    });
+    NativeProcessReader {
+        receiver,
+        overflowed,
+    }
+}
+
+#[napi]
+impl NativeProcessOwner {
+    /// Creates an empty native ownership registry.
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            next_token: AtomicU64::new(1),
+            trees: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Spawns an explicitly described process inside a native ownership
+    /// boundary before it is resumed. Environment inheritance is disabled;
+    /// callers must provide every variable the process may receive.
+    #[napi]
+    pub fn spawn(
+        &self,
+        executable: String,
+        args: Vec<String>,
+        cwd: Option<String>,
+        environment: Vec<String>,
+    ) -> Result<NativeProcessSpawn> {
+        if executable.trim().is_empty() {
+            return Err(napi_error("native process executable must be non-empty"));
+        }
+        let mut command = Command::new(&executable);
+        command.args(args);
+        command.env_clear();
+        for entry in environment {
+            let Some((key, value)) = entry.split_once('=') else {
+                return Err(napi_error(
+                    "native process environment entries must be KEY=VALUE",
+                ));
+            };
+            if key.is_empty() || key.contains('\0') || value.contains('\0') {
+                return Err(napi_error(
+                    "native process environment contains an invalid entry",
+                ));
+            }
+            command.env(key, value);
+        }
+        if let Some(cwd) = cwd {
+            if cwd.trim().is_empty() {
+                return Err(napi_error(
+                    "native process working directory must be non-empty",
+                ));
+            }
+            command.current_dir(cwd);
+        }
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let tree = spawn_process_tree_owned(command).map_err(napi_error)?;
+        let pid = tree
+            .id()
+            .ok_or_else(|| napi_error("native process did not expose a PID"))?;
+        let entry = NativeProcessEntry::with_io(tree);
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?
+            .insert(token, entry);
+        Ok(NativeProcessSpawn {
+            token: token.to_string(),
+            pid,
+        })
+    }
+
+    /// Terminates the owned process tree and retires its token on proof.
+    #[napi]
+    pub fn terminate(&self, token: String) -> NativeProcessTermination {
+        let Ok(token) = token.parse::<u64>() else {
+            return NativeProcessTermination::unknown("invalid owner token");
+        };
+        let Ok(mut trees) = self.trees.lock() else {
+            return NativeProcessTermination::unknown("native process owner state poisoned");
+        };
+        let Some(tree) = trees.get_mut(&token) else {
+            return NativeProcessTermination::unknown("owner token is not active");
+        };
+        tree.terminating.store(true, Ordering::Release);
+        match tree.tree.terminate_descendants() {
+            Ok(()) => match tree.tree.termination_complete() {
+                Ok(true) => {
+                    if tree.write_in_flight.load(Ordering::Acquire) {
+                        return NativeProcessTermination::unknown(
+                            "native process stdin write is still settling",
+                        );
+                    }
+                    trees.remove(&token);
+                    NativeProcessTermination::terminated()
+                }
+                Ok(false) => {
+                    NativeProcessTermination::unknown("native termination is still in progress")
+                }
+                Err(error) => NativeProcessTermination::unknown(&error.to_string()),
+            },
+            Err(error) => NativeProcessTermination::unknown(&error.to_string()),
+        }
+    }
+
+    /// Writes bytes to the native process stdin owned by `token`.
+    #[napi]
+    pub fn write_stdin(
+        &self,
+        token: String,
+        bytes: Buffer,
+    ) -> Result<AsyncTask<NativeProcessWriteTask>> {
+        let token = parse_process_token(&token)?;
+        if bytes.len() > MAX_NATIVE_PROCESS_WRITE_BYTES {
+            return Err(napi_error(
+                "native process stdin write exceeds the bounded request size",
+            ));
+        }
+        let (stdin, write_in_flight, terminating) = {
+            let trees = self
+                .trees
+                .lock()
+                .map_err(|_| napi_error("native process owner state poisoned"))?;
+            let entry = trees
+                .get(&token)
+                .ok_or_else(|| napi_error("owner token is not active"))?;
+            let stdin = entry
+                .stdin
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| napi_error("native process stdin is unavailable"))?;
+            if entry.terminating.load(Ordering::Acquire) {
+                return Err(napi_error("native process termination is in progress"));
+            }
+            if entry
+                .write_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(napi_error(
+                    "native process already has a stdin write in progress",
+                ));
+            }
+            (
+                stdin,
+                entry.write_in_flight.clone(),
+                entry.terminating.clone(),
+            )
+        };
+        Ok(AsyncTask::new(NativeProcessWriteTask {
+            stdin,
+            bytes: bytes.to_vec(),
+            write_in_flight,
+            terminating,
+        }))
+    }
+
+    /// Closes the native process stdin owned by `token`.
+    #[napi]
+    pub fn close_stdin(&self, token: String) -> Result<()> {
+        let token = parse_process_token(&token)?;
+        let mut trees = self
+            .trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?;
+        let entry = trees
+            .get_mut(&token)
+            .ok_or_else(|| napi_error("owner token is not active"))?;
+        entry.stdin.take();
+        Ok(())
+    }
+
+    /// Polls one bounded output chunk without blocking the JavaScript thread.
+    #[napi]
+    pub fn poll_output(&self, token: String, stream: String) -> Result<NativeProcessOutput> {
+        let token = parse_process_token(&token)?;
+        let trees = self
+            .trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?;
+        let entry = trees
+            .get(&token)
+            .ok_or_else(|| napi_error("owner token is not active"))?;
+        let reader = match stream.as_str() {
+            "stdout" => entry.stdout.as_ref(),
+            "stderr" => entry.stderr.as_ref(),
+            _ => return Err(napi_error("native process stream must be stdout or stderr")),
+        };
+        let Some(reader) = reader else {
+            return Ok(NativeProcessOutput::eof());
+        };
+        if reader.overflowed.load(Ordering::Acquire) {
+            return Ok(NativeProcessOutput::error(
+                "native process output exceeded the bounded reader queue".to_owned(),
+            ));
+        }
+        match reader.receiver.try_recv() {
+            Ok(NativeProcessChunk::Data(bytes)) => Ok(NativeProcessOutput::data(bytes)),
+            Ok(NativeProcessChunk::Eof) | Err(TryRecvError::Disconnected) => {
+                Ok(NativeProcessOutput::eof())
+            }
+            Ok(NativeProcessChunk::Error(error)) => Ok(NativeProcessOutput::error(error)),
+            Err(TryRecvError::Empty) => Ok(NativeProcessOutput::idle()),
+        }
+    }
+
+    /// Observes the direct root without changing native ownership.
+    #[napi]
+    pub fn poll_exit(&self, token: String) -> Result<NativeProcessExit> {
+        let token = parse_process_token(&token)?;
+        let mut trees = self
+            .trees
+            .lock()
+            .map_err(|_| napi_error("native process owner state poisoned"))?;
+        let entry = trees
+            .get_mut(&token)
+            .ok_or_else(|| napi_error("owner token is not active"))?;
+        let Some(status) = entry.tree.try_wait().map_err(napi_error)? else {
+            return Ok(NativeProcessExit::running());
+        };
+        Ok(NativeProcessExit::exited(status.code()))
+    }
+}
+
+fn parse_process_token(token: &str) -> Result<u64> {
+    token
+        .parse::<u64>()
+        .map_err(|_| napi_error("invalid owner token"))
+}
+
+#[napi(object)]
+/// One bounded nonblocking output observation.
+pub struct NativeProcessOutput {
+    /// `idle`, `data`, `eof`, or `error`.
+    pub kind: String,
+    /// Bytes when `kind` is `data`.
+    pub bytes: Option<Buffer>,
+    /// Error text when `kind` is `error`.
+    pub reason: Option<String>,
+}
+
+impl NativeProcessOutput {
+    fn idle() -> Self {
+        Self {
+            kind: "idle".to_owned(),
+            bytes: None,
+            reason: None,
+        }
+    }
+    fn eof() -> Self {
+        Self {
+            kind: "eof".to_owned(),
+            bytes: None,
+            reason: None,
+        }
+    }
+    fn data(bytes: Vec<u8>) -> Self {
+        Self {
+            kind: "data".to_owned(),
+            bytes: Some(Buffer::from(bytes)),
+            reason: None,
+        }
+    }
+    fn error(reason: String) -> Self {
+        Self {
+            kind: "error".to_owned(),
+            bytes: None,
+            reason: Some(reason),
+        }
+    }
+}
+
+#[napi(object)]
+/// One direct-root exit observation.
+pub struct NativeProcessExit {
+    /// `running` or `exited`.
+    pub kind: String,
+    /// Exit code when the root exited normally.
+    pub code: Option<i32>,
+}
+
+impl NativeProcessExit {
+    fn running() -> Self {
+        Self {
+            kind: "running".to_owned(),
+            code: None,
+        }
+    }
+    fn exited(code: Option<i32>) -> Self {
+        Self {
+            kind: "exited".to_owned(),
+            code,
+        }
+    }
+}
+
+#[napi(object)]
+/// Native process identity returned after atomic platform ownership.
+pub struct NativeProcessSpawn {
+    /// Opaque operation identity retained by the native owner.
+    pub token: String,
+    /// Direct root PID for observation only.
+    pub pid: u32,
+}
+
+#[napi(object)]
+/// Typed native process-tree termination observation.
+pub struct NativeProcessTermination {
+    /// `terminated` only after the native boundary reports no live members.
+    pub kind: String,
+    /// Recovery context when the outcome is `unknown`.
+    pub reason: Option<String>,
+}
+
+impl NativeProcessTermination {
+    fn terminated() -> Self {
+        Self {
+            kind: "terminated".to_owned(),
+            reason: None,
+        }
+    }
+
+    fn unknown(reason: &str) -> Self {
+        Self {
+            kind: "unknown".to_owned(),
+            reason: Some(reason.to_owned()),
+        }
+    }
 }
 
 /// Exact cumulative and resident immutable-object accelerator observations.
