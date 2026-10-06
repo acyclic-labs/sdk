@@ -283,11 +283,14 @@ fn surface_language(relative: &str) -> Option<&'static str> {
     }
 }
 
-fn surface_registry(hashes: &BTreeMap<String, String>) -> Value {
-    let mut by_language: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for relative in hashes.keys() {
+fn surface_registry(hashes: &BTreeMap<String, String>, source_revision: Option<&str>) -> Value {
+    let mut by_language: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
+    for (relative, hash) in hashes {
         if let Some(language) = surface_language(relative) {
-            by_language.entry(language).or_default().push(relative);
+            by_language
+                .entry(language)
+                .or_default()
+                .push((relative, hash));
         }
     }
     json!(TARGET_LANGUAGE_REGISTRY
@@ -295,7 +298,13 @@ fn surface_registry(hashes: &BTreeMap<String, String>) -> Value {
         .map(|language| json!({
             "language": language,
             "present": by_language.contains_key(language),
-            "files": by_language.get(language).cloned().unwrap_or_default(),
+            "source_revision": source_revision,
+            "files": by_language
+                .get(language)
+                .into_iter()
+                .flatten()
+                .map(|(path, sha256)| json!({"path": path, "sha256": sha256}))
+                .collect::<Vec<_>>(),
         }))
         .collect::<Vec<_>>())
 }
@@ -366,7 +375,7 @@ fn audit_with_source(
             "passed": passed, "required_languages": required,
             "verifier_sha256": verifier_hash, "artifact_sha256": before,
             "source_binding": source_binding,
-            "language_registry": surface_registry(&before),
+            "language_registry": surface_registry(&before, expected_source_revision),
             "errors": errors, "violations": violations,
         }),
         passed,
@@ -550,7 +559,10 @@ mod tests {
             fs::create_dir_all(root.join(directory)).unwrap();
             fs::write(root.join(directory).join(file), "generated").unwrap();
         }
-        let registry = surface_registry(&artifact_hashes(&root).unwrap());
+        let registry = surface_registry(
+            &artifact_hashes(&root).unwrap(),
+            Some("1111111111111111111111111111111111111111"),
+        );
         for language in ["haskell", "php", "dart", "ruby"] {
             let entry = registry
                 .as_array()
