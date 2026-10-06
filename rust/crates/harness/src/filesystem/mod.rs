@@ -342,7 +342,9 @@ where
         // references, but the owning scope still needs to resolve them while
         // replaying a model context. A whole-volume grant is required here so
         // delegated exact-file scopes cannot use this escape hatch.
-        if reference.path().starts_with(".system/") {
+        if reference.path().starts_with(".system/")
+            && !crate::conversation::is_inherited_context_path(reference.path())
+        {
             ContentGrant::verify(
                 &self.verifier,
                 &self.scope,
@@ -611,69 +613,20 @@ where
                             "inherited conversation is not canonical".into(),
                         ));
                     }
-                    if inherited.parent != seed.parent
+                    if inherited.format_version != 2
+                        || inherited.parent != seed.parent
                         || inherited.parent_revision != seed.parent_revision
                         || inherited.parent_agent == seed.child_agent
                         || inherited.through_sequence != seed.inherited_through_sequence
                         || inherited.attached_agents != seed.attached_agents
-                        || inherited.messages.len() as u64 != seed.inherited_through_sequence
                     {
                         return Err(Error::Invalid(
                             "inherited conversation does not match the fork boundary".into(),
                         ));
                     }
-                    for (index, message) in inherited.messages.iter().enumerate() {
-                        message.validate()?;
-                        if message.sequence != index as u64 + 1 {
-                            return Err(Error::Invalid(
-                                "inherited conversation is not a prefix".into(),
-                            ));
-                        }
-                        let mut references = vec![&message.content];
-                        match &message.attachments {
-                            ReferencedAttachments::Inline { items } => {
-                                references.extend(items.iter().map(|item| &item.file));
-                            }
-                            ReferencedAttachments::Manifest { manifest, .. } => {
-                                references.push(manifest);
-                            }
-                        }
-                        references.extend(message.extensions.values());
-                        for reference in references {
-                            for reader in std::iter::once(&seed.child_agent)
-                                .chain(seed.attached_agents.iter())
-                            {
-                                let owner_read = reference.volume().class()
-                                    == VolumeClass::AgentPrivate
-                                    && reference.volume().owner() == &VolumeOwner::Agent(*reader);
-                                let shared_read = reference.volume().class()
-                                    == VolumeClass::SessionShared
-                                    && seed.shared_grants.iter().any(|grant| {
-                                        grant.child_agent == *reader
-                                            && &grant.volume == reference.volume()
-                                            && grant.operations.contains(&VolumeOperation::Read)
-                                    });
-                                let project_read = reference.volume().class()
-                                    == VolumeClass::Project
-                                    && seed.resources.iter().any(|resource| {
-                                        matches!(&resource.revision,
-                                            ResourceRevision::Project { volume, .. }
-                                                if volume == reference.volume())
-                                    });
-                                let exact_read = seed.reference_grants.iter().any(|grant| {
-                                    grant.reader == *reader
-                                        && &grant.file == reference
-                                        && grant.attachment_manifest.is_none()
-                                });
-                                if !owner_read && !shared_read && !project_read && !exact_read {
-                                    return Err(Error::Unauthorized(
-                                        "inherited conversation reference lacks reader authority"
-                                            .into(),
-                                    ));
-                                }
-                            }
-                        }
-                    }
+                    // Parent reducer admission checks the digest and every required
+                    // reader grant against the retained authoritative history. This
+                    // provider verifies residency of the selected refs below.
                 }
             }
             if seed.child_private_volume.provider() == &self.host.provider {
@@ -873,6 +826,7 @@ pub(crate) enum InternalContentClass {
     Interaction,
     Workflow,
     Execution,
+    ModelPrefix,
 }
 
 impl InternalContentClass {
@@ -881,6 +835,7 @@ impl InternalContentClass {
             Self::Interaction => ".system/interactions/",
             Self::Workflow => ".system/workflows/",
             Self::Execution => ".system/execution/",
+            Self::ModelPrefix => ".system/inherited-conversation/model-prefix/",
         }
     }
 }
@@ -1098,6 +1053,73 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {
+    /// Freezes a completed exchange from the authoritative execution journal
+    /// before retaining its shared segment. Missing or incomplete completion
+    /// writes no prefix; the caller publishes the returned ref before activation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one exact journal exchange and direct-parent binding"
+    )]
+    pub async fn stage_completed_model_prefix(
+        &self,
+        private: &VolumeRef,
+        executor: &crate::executor::StockExecutor,
+        journal: &dyn crate::executor::ExecutionJournal,
+        input: &crate::executor::TurnInput,
+        step: u32,
+        call_id: &str,
+        parent: Option<(&FileRef, &crate::model::PreparedModelRequest)>,
+    ) -> Result<(FileRef, crate::model::PreparedModelRequest)> {
+        let prepared = executor
+            .completed_tool_prefix(journal, input, step, call_id)
+            .await?;
+        let segment = crate::model::ModelPrefix::select(&prepared, parent)?;
+        let reference = self.stage_model_prefix(private, &segment).await?;
+        Ok((reference, prepared))
+    }
+
+    /// Retains one immutable model segment in the parent's private volume.
+    /// Identical segments reuse the exact pinned reference across child forks.
+    /// Publish this ref in the completed tool result's conversation extensions
+    /// so ordinary fork admission binds its exact reader grants before activation.
+    pub async fn stage_model_prefix(
+        &self,
+        private: &VolumeRef,
+        prefix: &crate::model::ModelPrefix,
+    ) -> Result<FileRef> {
+        self.require("fork:publish", VolumeOperation::Read)?;
+        if private.provider() != &self.host.provider
+            || private.class() != VolumeClass::AgentPrivate
+            || private.owner()
+                != &VolumeOwner::Agent(
+                    self.scope.agent().ok_or_else(|| {
+                        Error::Unauthorized("model prefix parent is unbound".into())
+                    })?,
+                )
+        {
+            return Err(Error::Unauthorized(
+                "model prefix is not parent owned".into(),
+            ));
+        }
+        let grant =
+            ContentGrant::verify(&self.verifier, &self.scope, private, VolumeOperation::Write)?;
+        let bytes = prefix.canonical_bytes()?;
+        let digest = blake3::hash(&bytes).to_hex();
+        self.host
+            .put_internal_content(
+                private,
+                &grant,
+                &format!(".system/inherited-conversation/model-prefix/{digest}.json"),
+                &bytes,
+                crate::model::ModelPrefix::MEDIA_TYPE,
+                "model-prefix.json",
+                crate::model::MAX_MODEL_REQUEST_BYTES,
+                &IdempotencyKey::new(format!("model-prefix:{digest}"))?,
+                InternalContentClass::ModelPrefix,
+            )
+            .await
+    }
+
     /// Materializes an exact bounded parent prefix into a fresh child-private
     /// workspace. Only the parent controller can write this reserved path;
     /// ordinary agent file staging rejects every `.system` path.
@@ -1155,7 +1177,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let mut member = BTreeMap::<(String, String), (FileRef, FileRef)>::new();
         let mut manifests = BTreeMap::<String, FileRef>::new();
         let mut manifest_bytes_total = 0_u64;
-        for message in &prefix.messages {
+        for message in history.messages.iter().take(count) {
             direct.insert(message.content.read_capability()?, message.content.clone());
             for reference in message.extensions.values() {
                 direct.insert(reference.read_capability()?, reference.clone());

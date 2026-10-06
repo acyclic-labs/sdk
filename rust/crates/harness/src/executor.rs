@@ -338,6 +338,108 @@ impl StockExecutor {
         Ok(self)
     }
 
+    /// Freezes the exact retained model input through a completed tool exchange.
+    /// Fork composition may publish this prefix before activating children. This
+    /// only reads the existing execution journal; incomplete calls fail closed.
+    pub async fn completed_tool_prefix(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        call_id: &str,
+    ) -> Result<crate::model::PreparedModelRequest> {
+        let records = journal.replay(input.operation_id).await?;
+        let identity = self.request_digest(input)?;
+        if records.iter().enumerate().any(|(index, record)| {
+            record.operation_id != input.operation_id || record.sequence != index as u64 + 1
+        }) || !matches!(records.first().map(|record| &record.event),
+            Some(ExecutionEvent::Started { request_digest }) if request_digest == &identity)
+        {
+            return Err(Error::Conflict(
+                "tool prefix has another execution identity".into(),
+            ));
+        }
+        let (digest, file) = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelStarted {
+                    step: recorded,
+                    request_digest,
+                    request,
+                } if *recorded == step => Some((*request_digest, request)),
+                _ => None,
+            })
+            .ok_or(Error::Indeterminate(input.operation_id))?;
+        let request = load_json::<ModelRequest>(journal, file).await?;
+        let prepared = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        if prepared.manifest().request_digest != digest {
+            return Err(Error::Conflict("tool prefix request digest differs".into()));
+        }
+        let mut request = prepared.request().clone();
+        let mut admission = ModelEventAdmission::default();
+        let mut calls = Vec::new();
+        for record in &records {
+            if let ExecutionEvent::Model {
+                step: recorded,
+                event,
+            } = &record.event
+                && *recorded == step
+            {
+                let event = load_json::<ModelEvent>(journal, event).await?;
+                admission.observe(&event, self.limits)?;
+                if let ModelEvent::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } = event
+                {
+                    calls.push(ToolInvocation::for_model_call(
+                        input.operation_id,
+                        step,
+                        call_id,
+                        name,
+                        arguments,
+                    ));
+                }
+            }
+        }
+        if !admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
+            return Err(Error::Indeterminate(input.operation_id));
+        }
+        for invocation in calls {
+            let projection =
+                completed_tool_projection(journal, &records, step, &invocation, &request.tools)
+                    .await?;
+            request.messages.extend([
+                ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: ModelContent::Part(ModelContentPart::ToolCall {
+                        call_id: invocation.call_id.clone(),
+                        name: invocation.name.clone(),
+                        arguments: invocation.arguments,
+                    }),
+                },
+                ModelMessage {
+                    role: ModelRole::Tool,
+                    content: ModelContent::Part(ModelContentPart::ToolResult {
+                        call_id: invocation.call_id.clone(),
+                        name: invocation.name,
+                        value: projection,
+                    }),
+                },
+            ]);
+            if invocation.call_id == call_id {
+                break;
+            }
+        }
+        for message in &request.messages {
+            for file in message.content.file_refs() {
+                journal.verify_input_file(file).await?;
+            }
+        }
+        crate::model::PreparedModelRequest::prepare(request, self.limits)
+    }
+
     /// Enforces the same explicit tool grants and policy in the stock model loop.
     pub fn with_tool_authority(
         mut self,
@@ -1147,6 +1249,52 @@ impl Executor for StockExecutor {
     }
 }
 
+async fn completed_tool_projection(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    step: u32,
+    expected: &ToolInvocation,
+    tools: &[crate::tool::ToolDefinition],
+) -> Result<Value> {
+    let invocation = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted {
+                step: recorded,
+                call_id,
+                invocation,
+            } if *recorded == step && call_id == &expected.call_id => Some(invocation),
+            _ => None,
+        })
+        .ok_or(Error::Indeterminate(expected.operation_id))?;
+    if load_json::<ToolInvocation>(journal, invocation).await? != *expected {
+        return Err(Error::Conflict(
+            "completed tool prefix invocation differs".into(),
+        ));
+    }
+    let (result, projection) = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                step: recorded,
+                call_id,
+                result,
+                projection,
+            } if *recorded == step && call_id == &expected.call_id => Some((result, projection)),
+            _ => None,
+        })
+        .ok_or(Error::Indeterminate(expected.operation_id))?;
+    let definition = tools
+        .iter()
+        .find(|tool| tool.name == expected.name)
+        .ok_or_else(|| Error::Invalid("completed tool prefix has no pinned schema".into()))?;
+    let result = load_json::<ToolResult>(journal, result).await?;
+    let projection = load_json::<Value>(journal, projection).await?;
+    validate_value(&definition.output_schema, &result.value, "tool output")?;
+    validate_value(&definition.output_schema, &projection, "tool projection")?;
+    Ok(projection)
+}
+
 pub(crate) async fn stage_json<T: Serialize>(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
@@ -1884,7 +2032,35 @@ mod tests {
             selected_context: None,
             max_steps: 4,
         };
+        assert!(
+            executor
+                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .await
+                .is_err()
+        );
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let first = executor.execute(input.clone(), &journal).await?;
+        let completed_prefix = executor
+            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .await?;
+        let dispatched = model
+            .requests
+            .lock()
+            .map_err(|_| Error::Storage("model lock poisoned".into()))?
+            .get(1)
+            .cloned()
+            .ok_or_else(|| Error::NotFound("second model input".into()))?;
+        assert_eq!(
+            completed_prefix.bytes(),
+            crate::model::PreparedModelRequest::prepare(dispatched, Limits::default())?.bytes()
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&journal, &input, 0, "missing-call")
+                .await,
+            Err(Error::Indeterminate(_))
+        ));
+
         let mut replay_context = Vec::new();
         let changed_call = ToolInvocation::for_model_call(
             input.operation_id,
@@ -1927,6 +2103,31 @@ mod tests {
             ),
         );
         assert_eq!(executor.execute(input.clone(), &reopened).await?, first);
+        let incomplete = Journal(
+            Mutex::new(
+                reopened
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .iter()
+                    .filter(|record| !matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+                    .cloned()
+                    .collect(),
+            ),
+            Mutex::new(
+                reopened
+                    .1
+                    .lock()
+                    .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+                    .clone(),
+            ),
+        );
+        assert!(matches!(
+            executor
+                .completed_tool_prefix(&incomplete, &input, 0, "call-1")
+                .await,
+            Err(Error::Indeterminate(_))
+        ));
         let request_key = format!("{}:model:0:request", input.operation_id);
         reopened
             .1

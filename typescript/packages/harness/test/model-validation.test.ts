@@ -4,7 +4,7 @@ import {
   DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
 } from "../src/index.js";
 import {
-  prepareModelRequest, validateModelContent, validateUserInput,
+  prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type { WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -29,6 +29,8 @@ test("native and WASM request construction preserve exact Unicode and paired too
   };
   const bytes = prepareModelRequest(request, DEFAULT_LIMITS);
   expect(bytes).toEqual(Uint8Array.from(fixture));
+  const prefix = await readFile(new URL("../../../../fixtures/harness/v2/model-prefix.json", import.meta.url));
+  expect(encodeModelPrefix(bytes, null, undefined, DEFAULT_LIMITS)).toEqual(Uint8Array.from(prefix));
   expect(() => prepareModelRequest({ ...request, maxOutputTokens: 0 }, DEFAULT_LIMITS)).toThrow();
   expect(() => prepareModelRequest({ ...request, messages: request.messages.slice(0, 2) }, DEFAULT_LIMITS)).toThrow("incomplete");
   expect(() => prepareModelRequest({ ...request, tools: [...request.tools, ...request.tools] }, DEFAULT_LIMITS)).toThrow("repeated");
@@ -41,7 +43,7 @@ test("the actual task provider receives the admitted serialized input", async ()
     async *generate(request) {
       calls += 1;
       expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
-        model: request.model, messages: [{ role: "user", content: prompt }],
+        model: { provider: "mock", name: "exact", revision: "pinned", options: {} }, messages: [{ role: "user", content: prompt }],
         tools: [], max_output_tokens: 4_096,
       });
       expect(request.messages).toEqual([{ role: "user", content: prompt }]);
@@ -51,6 +53,66 @@ test("the actual task provider receives the admitted serialized input", async ()
   }).build();
   await runtime.run(prompt);
   expect(calls).toBe(1);
+});
+
+test("WASM direct-parent prefixes preserve exact provider bytes across depth three and siblings", async () => {
+  const fixture = await readFile(new URL("../../../../fixtures/harness/v2/model-request.json", import.meta.url));
+  const root = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
+  const core = new WasmReducer({ kind: "conversation", id: "model-prefix" }, "model-prefix", new Uint8Array(32).fill(19), []);
+  const files = new Map<string, Uint8Array>();
+  const references: FileRef[] = [];
+  const stage = async (bytes: Uint8Array, path: string, mediaType: string): Promise<FileRef> => {
+    const reference = contracts.validate("file_ref", {
+      volume: { provider: { namespace: "test", family: "filesystem", version: "2" },
+        id: "prefix-parent", class: "agent_private", owner: { kind: "agent", id: agent } },
+      path, version: `immutable-${path}`, descriptor: await descriptorFor(bytes, mediaType), display_name: path,
+    });
+    files.set(new TextDecoder().decode(contracts.encodeCanonicalJson(reference)), bytes.slice());
+    references.push(reference);
+    return reference;
+  };
+  try {
+    const attachment = await stage(new TextEncoder().encode("attachment é\0🦀\r\n"), "attachment.txt", "text/plain");
+    const tools = root.tools.map(tool => ({ name: tool.name, revision: tool.revision, description: tool.description,
+      inputSchema: tool.input_schema, outputSchema: tool.output_schema }));
+    let parentRequest = prepareModelRequest({ model: root.model, messages: [...root.messages,
+      { role: "user", content: [{ kind: "file", file: attachment, policy: "reference" }] }],
+      tools, maxOutputTokens: 4096 }, DEFAULT_LIMITS);
+    let head = await stage(encodeModelPrefix(parentRequest, null, undefined, DEFAULT_LIMITS), "prefix-0.json",
+      "application/vnd.acyclic.harness.model-prefix+json");
+    for (let depth = 1; depth <= 3; depth++) {
+      const scope = core.issueScopeForAgent(agent, `reader-${depth}`, references.map(ref => core.fileReadCapability(ref)));
+      const parentWire = contracts.decodeModelJson(parentRequest) as unknown as WasmModelRequestWire;
+      const children = depth === 1 ? ["primary", "sibling"] : ["primary"];
+      let primary: Uint8Array | undefined;
+      for (const child of children) {
+        const prompt = `notification ${depth}; task ${child}; identity ${child}; workspace ${child}; fresh scratch ${child} é\0🦀\r\n`;
+        let calls = 0;
+        const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
+          .model(root.model, { async *generate(request) {
+            calls++;
+            const expected = prepareModelRequest({ model: root.model, tools, maxOutputTokens: 4096,
+              messages: [...parentWire.messages, { role: "user", content: prompt }] }, DEFAULT_LIMITS);
+            expect(request.serializedInput).toEqual(expected);
+            if (child === "primary") primary = request.serializedInput.slice();
+            yield { kind: "completed" as const, metadata: {} };
+          }, async reconcile() { return undefined; } })
+          .tool({ ...tools[0]!, inputSchema: { type: "string" }, outputSchema: { type: "string" },
+            parseInput: value => value, parseOutput: value => value }, {
+            async execute(invocation) { return { value: invocation.arguments }; }, async reconcile() { return undefined; },
+          }).grant("tool:call:echo").build();
+        await runtime.run(prompt);
+        expect(calls).toBe(1);
+      }
+      const denied = core.issueScopeForAgent(agent, "missing-attachment", references.filter(ref => ref !== attachment).map(ref => core.fileReadCapability(ref)));
+      await expect(core.prepareInheritedModelRequest(denied, { model: root.model, tools, maxOutputTokens: 4096,
+        messages: [{ role: "user", content: "denied" }] }, head, files, DEFAULT_LIMITS)).rejects.toThrow();
+      const segment = encodeModelPrefix(primary!, head, parentRequest, DEFAULT_LIMITS);
+      expect((contracts.decodeModelJson(segment) as { messages: unknown[] }).messages).toHaveLength(1);
+      head = await stage(segment, `prefix-${depth}.json`, "application/vnd.acyclic.harness.model-prefix+json");
+      parentRequest = primary!;
+    }
+  } finally { core.free(); }
 });
 
 test("stale WASM modules fail compatibility checks before model dispatch", () => {

@@ -447,6 +447,7 @@ pub struct ModelPrefix {
     version: u32,
     parent: Option<FileRef>,
     binding_digest: [u8; 32],
+    message_digest: [u8; 32],
     total_messages: usize,
     messages: Vec<ModelMessage>,
 }
@@ -493,6 +494,7 @@ impl ModelPrefix {
             version: 1,
             parent,
             binding_digest: request.manifest.binding_digest,
+            message_digest: ordered_message_digest(&request.manifest.message_digests),
             total_messages: request.request.messages.len(),
             messages: messages.to_vec(),
         })
@@ -506,6 +508,20 @@ impl ModelPrefix {
         }
         Ok(bytes)
     }
+}
+
+fn message_prefix_hasher() -> blake3::Hasher {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness:model-prefix:ordered:v1");
+    hasher
+}
+
+fn ordered_message_digest(digests: &[[u8; 32]]) -> [u8; 32] {
+    let mut hasher = message_prefix_hasher();
+    for digest in digests {
+        hasher.update(digest);
+    }
+    *hasher.finalize().as_bytes()
 }
 
 impl PreparedModelRequest {
@@ -577,11 +593,20 @@ impl PreparedModelRequest {
             }
             expected_count = Some(remaining);
             next = segment.parent;
-            segments.push(segment.messages);
+            segments.push((segment.messages, segment.message_digest));
         }
         let mut messages = Vec::with_capacity(total_messages);
-        for segment in segments.into_iter().rev() {
+        let mut message_hasher = message_prefix_hasher();
+        for (segment, digest) in segments.into_iter().rev() {
+            for message in &segment {
+                message_hasher.update(&crate::contract::canonical_json_digest(message)?);
+            }
             messages.extend(segment);
+            if message_hasher.finalize().as_bytes() != &digest {
+                return Err(Error::Invalid(
+                    "model prefix ordered messages differ".into(),
+                ));
+            }
         }
         let inherited = ModelRequest {
             model: local.model.clone(),
@@ -711,6 +736,10 @@ mod tests {
         assert_eq!(
             prepared.bytes(),
             include_bytes!("../../../../fixtures/harness/v2/model-request.json")
+        );
+        assert_eq!(
+            ModelPrefix::select(&prepared, None)?.canonical_bytes()?,
+            include_bytes!("../../../../fixtures/harness/v2/model-prefix.json")
         );
         assert_eq!(
             serde_json::from_slice::<ModelRequest>(prepared.bytes())
@@ -913,7 +942,26 @@ mod tests {
         changed_parent.messages[0].content = ModelContent::Text("later parent mutation".into());
         let changed_parent = PreparedModelRequest::prepare(changed_parent, limits)?;
         assert!(ModelPrefix::select(&changed_parent, Some((&head, &prepared))).is_err());
-        assert_eq!(reopened.0, reader.0);
+        // An authenticated, canonical parent with the same shape and binding
+        // still must contain the exact messages claimed by the child segment.
+        let impostor = store_prefix(
+            &mut reader,
+            &ModelPrefix::select(&changed_parent, None)?,
+            88,
+        )?;
+        let mut descendant = prepared.request().clone();
+        descendant.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: ModelContent::Text("next".into()),
+        });
+        let descendant = PreparedModelRequest::prepare(descendant, limits)?;
+        let mislabeled = ModelPrefix::select(&descendant, Some((&impostor, &prepared)))?;
+        let mislabeled = store_prefix(&mut reader, &mislabeled, 89)?;
+        assert!(
+            matches!(PreparedModelRequest::inherit(request()?, &mislabeled, &reader, limits).await,
+            Err(Error::Invalid(message)) if message == "model prefix ordered messages differ")
+        );
+        assert_eq!(reopened.0.len() + 2, reader.0.len());
         Ok(())
     }
 

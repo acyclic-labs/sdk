@@ -534,7 +534,7 @@ pub(crate) fn is_internal_path(path: &str) -> bool {
     path == ".system" || path.starts_with(".system/")
 }
 
-fn is_inherited_context_path(path: &str) -> bool {
+pub(crate) fn is_inherited_context_path(path: &str) -> bool {
     path.starts_with(".system/inherited-conversation/")
 }
 
