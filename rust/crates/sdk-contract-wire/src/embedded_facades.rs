@@ -4,12 +4,18 @@
 //! protobuf message names and operation identities in one generator-owned
 //! stage while the checked-in native wrappers remain ABI lifetime adapters.
 
+use crate::stream::STREAM_SERVICE;
+
 /// One generated embedded facade source file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmbeddedFacadeOutput {
     pub path: &'static str,
     pub source: String,
 }
+
+pub const DOTNET_EMBEDDED_STREAM_PATH: &str = "dotnet/EmbeddedStream.Generated.cs";
+pub const JAVA_EMBEDDED_STREAM_PATH: &str =
+    "jvm/embedded/src/main/java/dev/acyclic/embedded/GeneratedStreamOperations.java";
 
 /// Emit the typed embedded facades consumed by the .NET and JVM packages.
 pub fn generate_embedded_facades() -> Vec<EmbeddedFacadeOutput> {
@@ -35,128 +41,217 @@ using StreamV2 = Acyclic.Stream.V2;\n\
 namespace Acyclic.Sdk.Embedded;\n\
 \n\
 /// Typed operation facade emitted from the Rust Stream contract.\n\
-public sealed class EmbeddedStreamOperations\n{\n\
+public sealed class EmbeddedStreamOperations\n\
+{\n\
     private readonly EmbeddedStreamEngine _engine;\n\
 \n\
     internal EmbeddedStreamOperations(EmbeddedStreamEngine engine) => _engine = engine;\n\
 \n\
 ",
     );
-    for (name, request, response, operation) in [
-        ("InspectIdempotency", "InspectIdempotencyRequest", "InspectIdempotencyResponse", "inspect_idempotency"),
-        ("Append", "AppendRequest", "AppendResponse", "append"),
-        ("Tail", "TailRequest", "TailResponse", "tail"),
-        ("Fork", "ForkRequest", "ForkReceipt", "fork"),
-        ("ChildrenPage", "ChildrenPageRequest", "ChildrenPageResponse", "children_page"),
-        ("Commit", "CommitRequest", "CommitResponse", "commit"),
-        ("ReadCommit", "ReadCommitRequest", "CommittedEnvelope", "read_commit"),
-    ] {
+
+    for method in STREAM_SERVICE
+        .methods
+        .iter()
+        .filter(|method| !method.client_streaming && !method.server_streaming)
+    {
         source.push_str(&format!(
-            "    public StreamV2.{response} {name}(StreamV2.{request} request) =>\n        _engine.CallWire(\"{operation}\", request, StreamV2.{response}.Parser);\n\n"
+            "    public StreamV2.{output} {name}(StreamV2.{input} request) =>\n        _engine.CallWire(\"{operation}\", request, StreamV2.{output}.Parser);\n\n",
+            name = method.name,
+            input = method.input,
+            output = method.output,
+            operation = snake_case(method.name),
         ));
     }
-    source.push_str(
-        "    public async IAsyncEnumerable<StreamV2.ReadResponse> Read(\n\
-        StreamV2.ReadRequest request,\n\
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)\n\
-    {\n\
-        await foreach (var record in _engine.ReadAsync(request.Path, request.From, request.Limit, cancellationToken).ConfigureAwait(false))\n\
-        {\n\
-            yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };\n\
-        }\n\
-    }\n\
-\n\
-    public async IAsyncEnumerable<StreamV2.ReadResponse> Follow(\n\
-        StreamV2.FollowRequest request,\n\
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)\n\
-    {\n\
-        await foreach (var record in _engine.FollowAsync(request.Path, request.From, cancellationToken).ConfigureAwait(false))\n\
-        {\n\
-            yield return new StreamV2.ReadResponse { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };\n\
-        }\n\
-    }\n\
-\n\
-    public async IAsyncEnumerable<StreamV2.ChildrenResponse> Children(\n\
-        StreamV2.ChildrenRequest request,\n\
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)\n\
-    {\n\
-        var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };\n\
-        if (request.HasParent) page.Parent = request.Parent;\n\
-        while (true)\n\
-        {\n\
-            cancellationToken.ThrowIfCancellationRequested();\n\
-            var response = ChildrenPage(page);\n\
-            foreach (var child in response.Children)\n\
-            {\n\
-                cancellationToken.ThrowIfCancellationRequested();\n\
-                yield return new StreamV2.ChildrenResponse { Child = child.Clone() };\n\
-            }\n\
-            if (!response.HasNextAfter) yield break;\n\
-            page.After = response.NextAfter;\n\
-            if (response.HierarchyVersion.Length != 0) page.HierarchyVersion = response.HierarchyVersion;\n\
-        }\n\
-    }\n\
-}\n",
-    );
+    for method in STREAM_SERVICE
+        .methods
+        .iter()
+        .filter(|method| method.server_streaming)
+    {
+        source.push_str(&dotnet_stream_method(method));
+    }
+    source.push_str("}\n");
     source
 }
 
+fn dotnet_stream_method(method: &crate::MethodSpec) -> String {
+    let template = match method.name {
+        "Read" => {
+            r#"    public async IAsyncEnumerable<StreamV2.{output}> {name}(
+        StreamV2.{input} request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var record in _engine.ReadAsync(request.Path, request.From, request.Limit, cancellationToken).ConfigureAwait(false))
+        {
+            yield return new StreamV2.{output} { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
+        }
+    }
+
+"#
+        }
+        "Follow" => {
+            r#"    public async IAsyncEnumerable<StreamV2.{output}> {name}(
+        StreamV2.{input} request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var record in _engine.FollowAsync(request.Path, request.From, cancellationToken).ConfigureAwait(false))
+        {
+            yield return new StreamV2.{output} { Record = new StreamV2.Record { Sequence = record.Sequence, Value = ByteString.CopyFrom(record.Value) } };
+        }
+    }
+
+"#
+        }
+        "Children" => {
+            r#"    public async IAsyncEnumerable<StreamV2.{output}> {name}(
+        StreamV2.{input} request,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var page = new StreamV2.ChildrenPageRequest { Limit = request.Limit };
+        if (request.HasParent) page.Parent = request.Parent;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var response = ChildrenPage(page);
+            foreach (var child in response.Children)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return new StreamV2.{output} { Child = child.Clone() };
+            }
+            if (!response.HasNextAfter) yield break;
+            page.After = response.NextAfter;
+            if (response.HierarchyVersion.Length != 0) page.HierarchyVersion = response.HierarchyVersion;
+        }
+    }
+
+"#
+        }
+        _ => panic!("unsupported Rust streaming method: {}", method.name),
+    };
+    substitute_method(template, method)
+}
+
 fn java_source() -> String {
-    r#"// Generated by acyclic-sdk-contract-wire; do not edit.
-package dev.acyclic.embedded;
+    let mut source = String::from(
+        "// Generated by acyclic-sdk-contract-wire; do not edit.\n\
+package dev.acyclic.embedded;\n\
+\n\
+import acyclic.stream.v2.Stream;\n\
+\n\
+/** Typed Stream operations emitted from the Rust contract model. */\n\
+public final class GeneratedStreamOperations {\n\
+  private final RustEmbedded engine;\n\
+\n\
+  GeneratedStreamOperations(RustEmbedded engine) { this.engine = engine; }\n\
+\n\
+",
+    );
+    for method in STREAM_SERVICE
+        .methods
+        .iter()
+        .filter(|method| !method.client_streaming && !method.server_streaming)
+    {
+        source.push_str(&format!(
+            "  public Stream.{output} {name}(Stream.{input} request) {{\n\
+    return engine.callWire(\"{operation}\", request, Stream.{output}.parser());\n\
+  }}\n\
+",
+            name = lower_camel(method.name),
+            input = method.input,
+            output = method.output,
+            operation = snake_case(method.name),
+        ));
+    }
+    for method in STREAM_SERVICE
+        .methods
+        .iter()
+        .filter(|method| method.server_streaming)
+    {
+        source.push_str(&java_stream_method(method));
+    }
 
-import acyclic.stream.v2.Stream;
+    let read_output = STREAM_SERVICE
+        .methods
+        .iter()
+        .find(|method| method.name == "Read")
+        .map(|method| method.output)
+        .expect("Rust Stream descriptor must define Read");
+    let children_output = STREAM_SERVICE
+        .methods
+        .iter()
+        .find(|method| method.name == "Children")
+        .map(|method| method.output)
+        .expect("Rust Stream descriptor must define Children");
+    source.push_str(&format!(
+        "  public Stream.{read_output} nextRead(RustEmbedded.Reader reader) {{\n\
+    return reader.nextRead();\n\
+  }}\n\
+  public Stream.{children_output} nextChild(RustEmbedded.ChildrenReader reader) {{\n\
+    return reader.next();\n\
+  }}\n\
+",
+    ));
+    source.push_str("}\n");
+    source
+}
 
-/** Typed Stream operations emitted from the Rust contract model. */
-public final class GeneratedStreamOperations {
-  private final RustEmbedded engine;
-
-  GeneratedStreamOperations(RustEmbedded engine) { this.engine = engine; }
-
-  public Stream.InspectIdempotencyResponse inspectIdempotency(Stream.InspectIdempotencyRequest request) {
-    return engine.callWire("inspect_idempotency", request, Stream.InspectIdempotencyResponse.parser());
-  }
-  public Stream.AppendResponse append(Stream.AppendRequest request) {
-    return engine.callWire("append", request, Stream.AppendResponse.parser());
-  }
-  public Stream.TailResponse tail(Stream.TailRequest request) {
-    return engine.callWire("tail", request, Stream.TailResponse.parser());
-  }
-  public Stream.ForkReceipt fork(Stream.ForkRequest request) {
-    return engine.callWire("fork", request, Stream.ForkReceipt.parser());
-  }
-  public Stream.ChildrenPageResponse childrenPage(Stream.ChildrenPageRequest request) {
-    return engine.callWire("children_page", request, Stream.ChildrenPageResponse.parser());
-  }
-  public Stream.CommitResponse commit(Stream.CommitRequest request) {
-    return engine.callWire("commit", request, Stream.CommitResponse.parser());
-  }
-  public Stream.CommittedEnvelope readCommit(Stream.ReadCommitRequest request) {
-    return engine.callWire("read_commit", request, Stream.CommittedEnvelope.parser());
-  }
-  public RustEmbedded.Reader read(Stream.ReadRequest request) {
+fn java_stream_method(method: &crate::MethodSpec) -> String {
+    let template = match method.name {
+        "Read" => {
+            r#"  public RustEmbedded.Reader {name}(Stream.{input} request) {
     return engine.openReader(request.getPath(), request.getFrom(), request.getLimit(), false);
   }
-  public RustEmbedded.Reader follow(Stream.FollowRequest request) {
+
+"#
+        }
+        "Follow" => {
+            r#"  public RustEmbedded.Reader {name}(Stream.{input} request) {
     return engine.openReader(request.getPath(), request.getFrom(), 0, true);
   }
-  public Stream.ReadResponse nextRead(RustEmbedded.Reader reader) {
-    return reader.nextRead();
-  }
-  public Stream.ChildrenResponse nextChild(RustEmbedded.ChildrenReader reader) {
-    return reader.next();
-  }
-  public RustEmbedded.ChildrenReader children(Stream.ChildrenRequest request) {
+
+"#
+        }
+        "Children" => {
+            r#"  public RustEmbedded.ChildrenReader {name}(Stream.{input} request) {
     return engine.children(request);
   }
-}
+
 "#
-    .to_owned()
+        }
+        _ => panic!("unsupported Rust streaming method: {}", method.name),
+    };
+    substitute_method(template, method)
+}
+
+fn substitute_method(template: &str, method: &crate::MethodSpec) -> String {
+    template
+        .replace("{name}", method.name)
+        .replace("{input}", method.input)
+        .replace("{output}", method.output)
+}
+
+fn snake_case(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 4);
+    for (index, character) in value.chars().enumerate() {
+        if character.is_ascii_uppercase() && index != 0 {
+            output.push('_');
+        }
+        output.push(character.to_ascii_lowercase());
+    }
+    output
+}
+
+fn lower_camel(value: &str) -> String {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return String::new();
+    };
+    first.to_ascii_lowercase().to_string() + characters.as_str()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::generate_embedded_facades;
+    use super::{generate_embedded_facades, snake_case};
     use crate::stream::STREAM_SERVICE;
 
     #[test]
@@ -191,11 +286,35 @@ mod tests {
     }
 
     #[test]
+    fn unary_wire_operation_names_are_derived_from_rust_methods() {
+        let outputs = generate_embedded_facades();
+        for method in STREAM_SERVICE
+            .methods
+            .iter()
+            .filter(|method| !method.client_streaming && !method.server_streaming)
+        {
+            let operation = format!("CallWire(\"{}\"", snake_case(method.name));
+            assert!(
+                outputs
+                    .iter()
+                    .any(|output| output.source.contains(&operation)),
+                "missing descriptor-derived operation {}",
+                operation
+            );
+        }
+    }
+
+    #[test]
     fn emitted_facades_are_marked_generated_and_do_not_use_tracked_proto_paths() {
         for output in generate_embedded_facades() {
-            assert!(output.source.starts_with("// Generated by acyclic-sdk-contract-wire"));
+            assert!(
+                output
+                    .source
+                    .starts_with("// Generated by acyclic-sdk-contract-wire")
+            );
             assert!(!output.source.contains("rust/crates/stream/proto"));
             assert!(!output.source.contains("rust\\crates\\stream\\proto"));
         }
     }
 }
+
