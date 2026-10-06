@@ -5,11 +5,15 @@
 //! semantic refinements, open wire values, and per-RPC client methods all
 //! come from the resolved Rust descriptor model and `type_policy.rs`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use prost_types::field_descriptor_proto::Type as FieldType;
 
-use crate::type_policy::{resolved_request_fields, resolved_response_fields, resolved_rpc_methods, ResolvedRequestField};
+use crate::type_policy::{
+    resolved_oneof_members, resolved_request_fields, resolved_response_fields,
+    resolved_rpc_methods, ResolvedOneofMember, ResolvedRequestField, SemanticType,
+    WireValueKind, SEMANTIC_TYPES,
+};
 
 pub const RUBY_TYPED_PATH: &str = "ruby/lib/acyclic_sdk/generated_typed.rb";
 pub const RUBY_RBS_PATH: &str = "ruby/sig/acyclic_sdk/generated_typed.rbs";
@@ -61,17 +65,44 @@ fn rpc_method_name(method: &crate::type_policy::ResolvedRpcMethod) -> String {
     method_name(&format!("{}_{}_{}", method.family, method.service.trim_end_matches("Service"), method.method))
 }
 
-fn semantic_class(value: &str) -> String { format!("Rust{}", camel(value)) }
-
-fn semantic_names() -> &'static [&'static str] {
-    &["ActorId", "OpenEnumValue", "Method", "Path", "Source", "Destination", "BucketName", "ObjectKey", "Alias", "JobId", "MachineId", "OperationId", "CheckpointId", "IdempotencyKeyBytes", "IdempotencyKeyText", "IdempotencyKeyMessage", "OpaqueText", "UploadId", "VersionSha256", "Sha256Digest", "RevisionDigest", "ImmutableImage", "Revision", "RunId", "EvaluationId", "PageLimit", "StreamPageLimit", "MachinePageLimit", "MachineEventPageLimit", "CommitId", "OneofArm"]
+fn semantic_descriptor(id: &str) -> Option<&'static SemanticType> {
+    SEMANTIC_TYPES.iter().find(|semantic| semantic.id == id)
 }
 
-fn semantic_value_type(name: &str) -> &'static str {
-    match name {
-        "PageLimit" | "StreamPageLimit" | "MachinePageLimit" | "MachineEventPageLimit" | "OpenEnumValue" | "OneofArm" => "Integer",
-        name if name.ends_with("PageLimit") || name.ends_with("OpenEnumValue") || name.ends_with("OneofArm") => "Integer",
-        "IdempotencyKeyBytes" | "Sha256Digest" | "VersionSha256" | "RevisionDigest" => "String",
+/// Return exactly the semantic identities reached by the Rust descriptor
+/// closure.  The previous implementation carried a second handwritten list
+/// here, which could silently expose stale wrappers or omit newly bound Rust
+/// fields.  The descriptor-resolved fields are the authority; the policy table
+/// only supplies the native name and wire kind for each reached identity.
+fn semantic_inventory() -> Vec<&'static SemanticType> {
+    let mut ids = BTreeSet::new();
+    for field in resolved_request_fields()
+        .expect("Rust request fields must resolve")
+        .into_iter()
+        .chain(resolved_response_fields().expect("Rust response fields must resolve"))
+    {
+        if let Some(id) = field.semantic_type {
+            ids.insert(id);
+        }
+    }
+    let mut output = SEMANTIC_TYPES
+        .iter()
+        .filter(|semantic| ids.contains(semantic.id))
+        .collect::<Vec<_>>();
+    output.sort_by_key(|semantic| semantic.id);
+    output
+}
+
+fn semantic_class(value: &str) -> String {
+    semantic_descriptor(value)
+        .map(|semantic| format!("Rust{}", camel(semantic.rust_name)))
+        .unwrap_or_else(|| format!("Rust{}", camel(value)))
+}
+
+fn semantic_value_type(id: &str) -> &'static str {
+    match semantic_descriptor(id).map(|semantic| semantic.wire_kind) {
+        Some(WireValueKind::Boolean) => "Boolean",
+        Some(WireValueKind::SignedInteger | WireValueKind::UnsignedInteger | WireValueKind::Enum | WireValueKind::Oneof) => "Integer",
         _ => "String",
     }
 }
@@ -131,6 +162,100 @@ fn all_messages() -> BTreeMap<String, Vec<ResolvedRequestField>> {
     }).collect::<Vec<_>>();
     for message in referenced { out.entry(message.trim_start_matches('.').to_owned()).or_insert_with(Vec::new); }
     out
+}
+
+/// Group concrete protobuf oneof members by their descriptor message and
+/// oneof identity.  Synthetic oneofs backing proto3 optional fields are
+/// intentionally excluded: those fields are represented by nullable members
+/// and must not become a misleading user-facing union.  The returned members
+/// still carry their exact field numbers and payload type identities, and each
+/// generated target receives an explicit unknown arm for forward compatibility.
+fn oneof_groups() -> Vec<(String, String, Vec<ResolvedOneofMember>)> {
+    let mut groups: BTreeMap<(String, String), Vec<ResolvedOneofMember>> = BTreeMap::new();
+    for member in resolved_oneof_members()
+        .expect("Rust oneof members must resolve")
+        .into_iter()
+        .filter(|member| !member.field.proto3_optional)
+    {
+        let Some(oneof) = member.field.oneof_name.clone() else { continue };
+        let key = (
+            member.field.message_path.trim_start_matches('.').to_owned(),
+            oneof,
+        );
+        let entries = groups.entry(key).or_default();
+        if !entries.iter().any(|existing| existing.field.number == member.field.number) {
+            entries.push(member);
+        }
+    }
+    groups
+        .into_iter()
+        .filter(|(_, members)| !members.is_empty())
+        .map(|((message, oneof), members)| (message, oneof, members))
+        .collect()
+}
+
+fn oneof_class(message: &str, oneof: &str) -> String {
+    format!("{}{}Choice", message_class(message), camel(oneof.trim_start_matches('_')))
+}
+
+fn oneof_variant(member: &ResolvedOneofMember) -> String {
+    camel(&member.field.field)
+}
+
+fn wire_scalar_type(field: &ResolvedRequestField) -> &'static str {
+    match field.wire_type.and_then(|value| FieldType::try_from(value).ok()) {
+        Some(FieldType::Bool) => "bool",
+        Some(FieldType::Double | FieldType::Float) => "float",
+        Some(FieldType::Int32 | FieldType::Sint32 | FieldType::Sfixed32 | FieldType::Int64 | FieldType::Sint64 | FieldType::Sfixed64 | FieldType::Uint32 | FieldType::Fixed32 | FieldType::Uint64 | FieldType::Fixed64) => "int",
+        Some(FieldType::String) => "String",
+        Some(FieldType::Bytes) => "Bytes",
+        Some(FieldType::Enum) => "RustOpenEnumValue",
+        Some(FieldType::Message | FieldType::Group) => "RustWireMessage",
+        None => "RustWireValue",
+    }
+}
+
+fn oneof_ruby_payload(member: &ResolvedOneofMember) -> String {
+    if member.payload_type.is_some() && matches!(member.payload_kind, FieldType::Message | FieldType::Group) {
+        message_class(member.payload_type.as_deref().unwrap_or("RustWireMessage"))
+    } else if member.payload_kind == FieldType::Enum {
+        "RustOpenEnumValue".to_owned()
+    } else {
+        match wire_scalar_type(&member.field) {
+            "bool" => "bool".to_owned(),
+            "float" => "Float".to_owned(),
+            "int" => "Integer".to_owned(),
+            "Bytes" => "String".to_owned(),
+            "String" => "String".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+}
+
+fn oneof_dart_payload(member: &ResolvedOneofMember) -> String {
+    if member.payload_type.is_some() && matches!(member.payload_kind, FieldType::Message | FieldType::Group) {
+        message_class(member.payload_type.as_deref().unwrap_or("RustWireMessage"))
+    } else {
+        match wire_scalar_type(&member.field) {
+            "bool" => "bool".to_owned(),
+            "float" => "double".to_owned(),
+            "int" => "int".to_owned(),
+            "Bytes" => "List<int>".to_owned(),
+            "String" => "String".to_owned(),
+            "RustOpenEnumValue" => "RustOpenEnumValue".to_owned(),
+            other => other.to_owned(),
+        }
+    }
+}
+
+fn oneof_php_payload(member: &ResolvedOneofMember) -> String {
+    match oneof_dart_payload(member).as_str() {
+        "bool" => "bool".to_owned(),
+        "double" => "float".to_owned(),
+        "int" => "int".to_owned(),
+        "List<int>" | "String" => "string".to_owned(),
+        value => value.to_owned(),
+    }
 }
 
 fn ruby_type(field: &ResolvedRequestField) -> String {
@@ -265,10 +390,22 @@ fn ruby_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     out
 }
 
+fn ruby_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) -> String {
+    let base = oneof_class(message, oneof);
+    let mut out = format!("        class {base}\n          attr_reader :tag, :value\n          def initialize(tag:, value:)\n            @tag = String(tag).freeze\n            @value = value\n            freeze\n          end\n          def self.unknown(tag:, payload:) = new(tag: \"unknown:#{{tag}}\", value: payload.freeze)\n");
+    for member in members {
+        let variant = oneof_variant(member);
+        out.push_str(&format!("          class {variant} < {base}\n            def initialize(value) = super(tag: \"{}\", value: value)\n          end\n", member.field.field));
+    }
+    out.push_str("        end\n");
+    out
+}
+
 fn render_ruby() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("# Generated by acyclic-sdk-contract-wire; do not edit.\n# Every public type and RPC signature originates in Rust type_policy.rs.\n\nmodule Acyclic\n  module GeneratedTyped\n");
-    for name in semantic_names().iter() { out.push_str(&ruby_wrapper(name, semantic_value_type(name))); }
+    for semantic in semantic_inventory() { out.push_str(&ruby_wrapper(&camel(semantic.rust_name), semantic_value_type(semantic.id))); }
+    for (message, oneof, members) in oneof_groups() { out.push_str(&ruby_oneof_group(&message, &oneof, &members)); }
     for (message, fields) in all_messages() { out.push_str(&ruby_message(&message_class(&message), &fields)); }
     out.push_str("        class Client\n          def initialize(callable) = (@call = callable)\n");
     for method in methods {
@@ -288,7 +425,13 @@ fn rbs_type(field: &ResolvedRequestField) -> String { ruby_type(field) }
 fn render_rbs() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("# Generated by acyclic-sdk-contract-wire.\nmodule Acyclic\n  module GeneratedTyped\n");
-    for name in semantic_names().iter() { out.push_str(&format!("    class Rust{name} < Object\n      attr_reader value: {}\n      def initialize: ({}) -> void\n      def to_wire: () -> {}\n    end\n", semantic_value_type(name), semantic_value_type(name), semantic_value_type(name))); }
+    for semantic in semantic_inventory() { let name = camel(semantic.rust_name); out.push_str(&format!("    class Rust{name} < Object\n      attr_reader value: {}\n      def initialize: ({}) -> void\n      def to_wire: () -> {}\n    end\n", semantic_value_type(semantic.id), semantic_value_type(semantic.id), semantic_value_type(semantic.id))); }
+    for (message, oneof, members) in oneof_groups() {
+        let base = oneof_class(&message, &oneof);
+        out.push_str(&format!("    class {base} < Object\n      attr_reader tag: String\n      attr_reader value: untyped\n      def initialize: (tag: String, value: untyped) -> void\n      def self.unknown: (tag: Integer, payload: String) -> {base}\n"));
+        for member in members { out.push_str(&format!("      class {} < {base}\n        def initialize: (untyped) -> void\n      end\n", oneof_variant(&member))); }
+        out.push_str("    end\n");
+    }
     for (message, fields) in all_messages() {
         let name = message_class(&message);
         out.push_str(&format!("    class {name} < Object\n"));
@@ -310,7 +453,12 @@ fn render_rbs() -> String {
 fn render_sorbet() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("# typed: true\n# Generated by acyclic-sdk-contract-wire; do not edit.\nmodule Acyclic\n  module GeneratedTyped\n");
-    for name in semantic_names().iter() { out.push_str(&format!("    class Rust{name} < T::Struct\n      const :value, {}\n      sig {{ returns({}) }}\n      def to_wire; value; end\n    end\n", if semantic_value_type(name) == "Integer" { "Integer" } else { "String" }, if semantic_value_type(name) == "Integer" { "Integer" } else { "String" })); }
+    for semantic in semantic_inventory() { let name = camel(semantic.rust_name); out.push_str(&format!("    class Rust{name} < T::Struct\n      const :value, {}\n      sig {{ returns({}) }}\n      def to_wire; value; end\n    end\n", if semantic_value_type(semantic.id) == "Integer" { "Integer" } else { "String" }, if semantic_value_type(semantic.id) == "Integer" { "Integer" } else { "String" })); }
+    for (message, oneof, members) in oneof_groups() {
+        let base = oneof_class(&message, &oneof);
+        out.push_str(&format!("    class {base} < T::Struct\n      const :tag, String\n      const :value, T.untyped\n      sig {{ params(tag: String, value: T.untyped).void }}\n      def initialize(tag:, value:); super; end\n    end\n"));
+        for member in members { out.push_str(&format!("    class {base}{} < {base}\n      const :value, {}\n    end\n", oneof_variant(&member), match oneof_ruby_payload(&member).as_str() { "bool" => "T::Boolean", "Float" => "Float", "Integer" => "Integer", "String" => "String", _ => "T.untyped" })); }
+    }
     for (message, fields) in all_messages() {
         let name = message_class(&message);
         out.push_str(&format!("    class {name} < T::Struct\n      const :unknown, T::Hash[Symbol, T.untyped], default: {{}}\n"));
@@ -350,10 +498,23 @@ fn php_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     out
 }
 
+fn php_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) -> String {
+    let base = oneof_class(message, oneof);
+    let mut out = format!("abstract readonly class {base}\n{{\n    public function __construct(public readonly string $tag) {{}}\n}}\n");
+    for member in members {
+        let variant = format!("{base}{}", oneof_variant(member));
+        let payload = oneof_php_payload(member);
+        out.push_str(&format!("final readonly class {variant} extends {base}\n{{\n    public function __construct(public readonly {payload} $value) {{ parent::__construct({:?}); }}\n}}\n", member.field.field));
+    }
+    out.push_str(&format!("final readonly class {base}Unknown extends {base}\n{{\n    /** @param string $payload */\n    public function __construct(public readonly int $unknownTag, public readonly string $payload) {{ parent::__construct('unknown:' . (string) $unknownTag); }}\n}}\n"));
+    out
+}
+
 fn render_php() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("<?php\n\n// Generated by acyclic-sdk-contract-wire; do not edit.\n// Public types and RPC signatures originate in Rust type_policy.rs.\n\nnamespace Acyclic\\Generated;\n\n");
-    for name in semantic_names().iter() { let scalar = if semantic_value_type(name) == "Integer" { "int" } else { "string" }; out.push_str(&format!("final readonly class Rust{name} {{ public function __construct(public readonly {scalar} $value) {{ }} public function toWire(): {scalar} {{ return $this->value; }} }}\n")); }
+    for semantic in semantic_inventory() { let name = camel(semantic.rust_name); let scalar = match semantic_value_type(semantic.id) { "Integer" => "int", "Boolean" => "bool", _ => "string" }; out.push_str(&format!("final readonly class Rust{name} {{ public function __construct(public readonly {scalar} $value) {{ }} public function toWire(): {scalar} {{ return $this->value; }} }}\n")); }
+    for (message, oneof, members) in oneof_groups() { out.push_str(&php_oneof_group(&message, &oneof, &members)); }
     for (message, fields) in all_messages() { out.push_str(&php_message(&message_class(&message), &fields)); }
     out.push_str("final class RustTypedClient\n{\n    public function __construct(private readonly \\Closure $call) {}\n");
     for method in methods {
@@ -387,11 +548,24 @@ fn dart_message(name: &str, fields: &[ResolvedRequestField]) -> String {
     out
 }
 
+fn dart_oneof_group(message: &str, oneof: &str, members: &[ResolvedOneofMember]) -> String {
+    let base = oneof_class(message, oneof);
+    let mut out = format!("sealed class {base} {{ const {base}(); }}\n");
+    for member in members {
+        let variant = format!("{base}{}", oneof_variant(member));
+        let payload = oneof_dart_payload(member);
+        out.push_str(&format!("final class {variant} extends {base} {{ final {payload} value; const {variant}(this.value); }}\n"));
+    }
+    out.push_str(&format!("final class {base}Unknown extends {base} {{ final int tag; final List<int> payload; const {base}Unknown(this.tag, this.payload); }}\n"));
+    out
+}
+
 fn render_dart() -> String {
     let (methods, _, _) = models();
     let mut out = String::from("// Generated by acyclic-sdk-contract-wire; do not edit.\n// Public types and RPC signatures originate in Rust type_policy.rs.\n\n");
-    for name in semantic_names().iter() { let scalar = if semantic_value_type(name) == "Integer" { "int" } else { "String" }; out.push_str(&format!("final class Rust{name} {{ final {scalar} value; const Rust{name}(this.value); }}\n")); }
+    for semantic in semantic_inventory() { let name = camel(semantic.rust_name); let scalar = match semantic_value_type(semantic.id) { "Integer" => "int", "Boolean" => "bool", _ => "String" }; out.push_str(&format!("final class Rust{name} {{ final {scalar} value; const Rust{name}(this.value); }}\n")); }
     out.push_str("sealed class RustWireChoice { const RustWireChoice(); }\nfinal class RustKnownWireChoice extends RustWireChoice { final String tag; final List<int> payload; const RustKnownWireChoice(this.tag, this.payload); }\nfinal class RustUnknownWireChoice extends RustWireChoice { final int tag; final List<int> payload; const RustUnknownWireChoice(this.tag, this.payload); }\n");
+    for (message, oneof, members) in oneof_groups() { out.push_str(&dart_oneof_group(&message, &oneof, &members)); }
     for (message, fields) in all_messages() { out.push_str(&dart_message(&message_class(&message), &fields)); }
     out.push_str("final class RustTypedClient {\n  final Future<Object?> Function(String, Object?) _call;\n  const RustTypedClient(this._call);\n");
     for method in methods {
