@@ -8229,7 +8229,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::{
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
     /// Provider used by the activation recovery test. The underlying
@@ -8946,6 +8946,120 @@ mod tests {
             },
             guarantee: EffectGuarantee::IdempotentRetry,
         })
+    }
+
+    struct TypedResolverError;
+
+    impl LocalModelForkResolver for TypedResolverError {
+        fn resolve<'a>(
+            &'a self,
+            _intent: LocalForkIntent,
+            _publication: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+            Box::pin(async {
+                Err(Error::Conflict("typed resolver failure".into()))
+            })
+        }
+    }
+
+    struct PanicResolver;
+
+    impl LocalModelForkResolver for PanicResolver {
+        fn resolve<'a>(
+            &'a self,
+            _intent: LocalForkIntent,
+            _publication: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+            Box::pin(async { panic!("resolver worker panicked") })
+        }
+    }
+
+    struct DropSignal(Arc<AtomicBool>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    struct PendingResolver {
+        started: Arc<StdMutex<Option<tokio::sync::oneshot::Sender<()>>>>,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl LocalModelForkResolver for PendingResolver {
+        fn resolve<'a>(
+            &'a self,
+            _intent: LocalForkIntent,
+            _publication: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+            let started = self
+                .started
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let dropped = self.dropped.clone();
+            Box::pin(async move {
+                if let Some(started) = started {
+                    let _ = started.send(());
+                }
+                let _drop_signal = DropSignal(dropped);
+                std::future::pending::<Result<LocalModelForkPlan>>().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_resolver_preserves_typed_errors_and_maps_panics_to_publication_uncertainty(
+    ) -> Result<()> {
+        let publication = OperationId::from_bytes([0xB1; 16]);
+        let intent = test_fork_intent(41);
+        assert!(matches!(
+            LocalModelForkPlans::resolve_on_owned_task(
+                Arc::new(TypedResolverError),
+                intent.clone(),
+                test_batch_publication(publication)?,
+            )
+            .await,
+            Err(Error::Conflict(message)) if message == "typed resolver failure"
+        ));
+        assert!(matches!(
+            LocalModelForkPlans::resolve_on_owned_task(
+                Arc::new(PanicResolver),
+                intent,
+                test_batch_publication(publication)?,
+            )
+            .await,
+            Err(Error::Indeterminate(operation)) if operation == publication
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dropping_owned_resolver_future_aborts_the_pending_worker() -> Result<()> {
+        let (started, observed) = tokio::sync::oneshot::channel();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let resolver = Arc::new(PendingResolver {
+            started: Arc::new(StdMutex::new(Some(started))),
+            dropped: dropped.clone(),
+        });
+        let running = tokio::spawn(LocalModelForkPlans::resolve_on_owned_task(
+            resolver,
+            test_fork_intent(42),
+            test_batch_publication(OperationId::from_bytes([0xB2; 16]))?,
+        ));
+        observed.await.map_err(|_| Error::Indeterminate(OperationId::from_bytes([0xB2; 16])))?;
+        running.abort();
+        assert!(matches!(running.await, Err(error) if error.is_cancelled()));
+        for _ in 0..100 {
+            if dropped.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
+        }
+        Err(Error::Conflict(
+            "dropping the owned resolver future detached its worker".into(),
+        ))
     }
 
     #[tokio::test]
