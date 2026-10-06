@@ -1,6 +1,7 @@
 //! Ref-only Stream journal for pinned resumable workflow transitions.
 
 use super::{FilesystemHost, InternalContentClass};
+use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeRef},
@@ -558,10 +559,7 @@ where
             record.validate()?;
             if record.idempotency_key != idempotency_key
                 || record.prior.revision != expected_revision
-                || record.next.revision
-                    != expected_revision
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Invalid("workflow revision exhausted".into()))?
+                || record.next.revision != next_revision(expected_revision)?
                 || expected_revision >= MAX_RECORDS
             {
                 return Err(Error::Invalid(
@@ -617,7 +615,7 @@ where
             {
                 Ok(AppendOutcome::Committed(receipt))
                     if receipt.start == expected_revision
-                        && receipt.end == expected_revision + 1 =>
+                        && Some(receipt.end) == expected_revision.checked_add(1) =>
                 {
                     self.advance_cached(&admission, &record);
                     Ok(WorkflowCommitOutcome::Applied(record))

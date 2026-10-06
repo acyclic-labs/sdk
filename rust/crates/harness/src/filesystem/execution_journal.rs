@@ -2,6 +2,7 @@
 
 use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
 use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
@@ -376,7 +377,7 @@ where
                     self.verify_event_refs(&observation.event).await?;
                     result.push(ExecutionRecord {
                         operation_id,
-                        sequence: record.sequence + 1,
+                        sequence: next_revision(record.sequence)?,
                         idempotency_key: observation.retry_digest,
                         event: observation.event,
                     });

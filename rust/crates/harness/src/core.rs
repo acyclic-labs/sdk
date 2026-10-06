@@ -1,6 +1,7 @@
 //! Deterministic, host-neutral durable substrate semantics.
 
 use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
     PolicyLayer, Result,
@@ -1778,10 +1779,7 @@ impl Reducer {
             self.revision,
             command.causal_parent.as_ref(),
         )?;
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?;
+        let revision = next_revision(self.revision)?;
         let payload = self.transition(&command.action)?;
         let mut event = Event {
             revision,
@@ -1865,10 +1863,7 @@ impl Reducer {
                 "operation identity is already bound to another event".into(),
             ));
         }
-        let expected = self
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?;
+        let expected = next_revision(self.revision)?;
         if event.revision != expected {
             return Err(Error::Conflict(format!(
                 "expected committed revision {expected}, found {}",
@@ -2938,12 +2933,7 @@ fn validate_interaction_transition(
     if prior.is_some_and(|value| value.outcome.is_terminal()) {
         return Err(Error::Conflict("interaction is already resolved".into()));
     }
-    let expected = prior.map_or(Ok(1_u64), |value| {
-        value
-            .expected_version
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("interaction revision exhausted".into()))
-    })?;
+    let expected = prior.map_or(Ok(1_u64), |value| next_revision(value.expected_version))?;
     if resolution.expected_version != expected {
         return Err(Error::Conflict(
             "interaction resolution version mismatch".into(),

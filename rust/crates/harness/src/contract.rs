@@ -53,6 +53,13 @@ pub(crate) mod capability {
     }
 }
 
+/// Successor of a durable revision or sequence, failing instead of wrapping.
+pub(crate) fn next_revision(revision: u64) -> Result<u64> {
+    revision
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("revision exhausted".into()))
+}
+
 /// One sorted-key JSON encoding for durable identities and Rust/WASM output.
 /// Conversion through Value preserves full-width serde integer values while
 /// avoiding struct declaration order as an accidental wire contract.

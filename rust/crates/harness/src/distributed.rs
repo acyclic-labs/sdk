@@ -1,6 +1,7 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
 use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
@@ -329,7 +330,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             for record in page {
                 let (revision, operation_id, key, digest, committed_at_ms, event) =
                     decode(&record.value)?;
-                if revision != record.sequence + 1 {
+                if revision != next_revision(record.sequence)? {
                     return Err(Error::Storage("coordinator revision is not gapless".into()));
                 }
                 if let SchedulerEvent::Declared { spec } = &event {
@@ -649,7 +650,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.verify_published_result(&event).await?;
         let mut projected = self.scheduler.clone();
         projected.apply(event.clone())?;
-        let revision = self.next_revision()?;
+        let revision = next_revision(self.revision)?;
         let committed_at_ms = self.next_committed_at_ms()?;
         let bytes = encode(
             revision,
@@ -726,12 +727,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
     }
 
-    fn next_revision(&self) -> Result<u64> {
-        self.revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))
-    }
-
     fn next_committed_at_ms(&self) -> Result<u64> {
         let after_previous = self
             .last_committed_at_ms
@@ -773,18 +768,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
             .clone();
         let operation = state.spec.clone();
+        let revision = next_revision(self.revision)?;
         let reservation = Reservation {
-            id: format!("{}:{operation_id}:{}", worker.id, self.revision + 1),
+            id: format!("{}:{operation_id}:{revision}", worker.id),
             placement: worker.id.clone(),
             admitted: operation.resources.clone(),
         };
         self.apply(
             operation_id,
-            IdempotencyKey::new(format!(
-                "pull:{}:{operation_id}:{}",
-                worker.id,
-                self.revision + 1
-            ))?,
+            IdempotencyKey::new(format!("pull:{}:{operation_id}:{revision}", worker.id))?,
             SchedulerEvent::Admitted {
                 operation_id,
                 reservation: reservation.clone(),
@@ -1012,7 +1004,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         committed_at_ms: u64,
         event: SchedulerEvent,
     ) -> Result<()> {
-        if revision != self.revision + 1 || scheduler_event_operation(&event) != operation_id {
+        if revision != next_revision(self.revision)?
+            || scheduler_event_operation(&event) != operation_id
+        {
             return Err(Error::Conflict(
                 "invalid committed coordinator event".into(),
             ));

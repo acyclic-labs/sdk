@@ -1,5 +1,6 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
+use crate::contract::next_revision;
 use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
     resources::CheckpointRef,
@@ -714,10 +715,7 @@ impl Scheduler {
                             operation.cancellation_requested = true;
                         }
                         if target != operation_id {
-                            operation.revision =
-                                operation.revision.checked_add(1).ok_or_else(|| {
-                                    Error::Invalid("operation revision exhausted".into())
-                                })?;
+                            operation.revision = next_revision(operation.revision)?;
                         }
                     }
                     if terminalized {
@@ -861,10 +859,7 @@ impl Scheduler {
                     } else if child.phase != OperationPhase::Terminal {
                         child.cancellation_requested = true;
                     }
-                    child.revision = child
-                        .revision
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+                    child.revision = next_revision(child.revision)?;
                     if terminalized {
                         self.completion_order.push(*child_id);
                     }
@@ -882,16 +877,10 @@ impl Scheduler {
             }
         }
         let operation = self.mutable(primary)?;
-        operation.revision = operation
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+        operation.revision = next_revision(operation.revision)?;
         if let Some(parent) = declared_parent {
             let parent = self.mutable(parent)?;
-            parent.revision = parent
-                .revision
-                .checked_add(1)
-                .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+            parent.revision = next_revision(parent.revision)?;
         }
         Ok(())
     }
