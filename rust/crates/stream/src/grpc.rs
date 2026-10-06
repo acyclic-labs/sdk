@@ -564,6 +564,29 @@ struct RecordCursor {
     active: Option<ActiveRecords>,
 }
 
+struct ChildCursor {
+    client: Client,
+    body: wire::ChildrenRequest,
+    remaining: u32,
+    active: Option<ActiveChildren>,
+    emitted: bool,
+}
+
+struct ActiveChildren {
+    children: tonic::Streaming<wire::ChildrenResponse>,
+}
+
+impl ChildCursor {
+    async fn open(&self) -> Result<ActiveChildren, StreamError> {
+        self.client
+            .unary(self.body.clone(), |mut service, request| {
+                Box::pin(async move { service.children(request).await })
+            })
+            .await
+            .map(|children| ActiveChildren { children })
+    }
+}
+
 struct ActiveRecords {
     records: tonic::Streaming<wire::ReadResponse>,
     endpoint: usize,
@@ -769,42 +792,70 @@ impl StreamProvider for Client {
     }
 
     async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        if request.limit == 0 || request.limit as usize > crate::MAX_ITEMS {
+            return Err(StreamError::LimitExceeded);
+        }
         let body = wire::ChildrenRequest {
             parent: request.parent.map(|path| path.to_string()),
             limit: request.limit,
         };
-        let mut last = None;
-        for _ in 0..self.channels.len() {
-            let response = self
-                .unary(body.clone(), |mut service, request| {
-                    Box::pin(async move { service.children(request).await })
-                })
-                .await?;
-            let collected = response
-                .map(|item| {
-                    let child = item
-                        .map_err(|error| status(&error))?
-                        .child
-                        .ok_or(StreamError::Unavailable)?;
-                    Ok(Child {
-                        path: path(child.path)?,
-                    })
-                })
-                .collect::<Vec<_>>()
-                .await;
-            if collected.iter().all(Result::is_ok) {
-                return Ok(stream::iter(collected).boxed());
-            }
-            let error = collected
-                .into_iter()
-                .find_map(Result::err)
-                .unwrap_or(StreamError::Unavailable);
-            if error != StreamError::Unavailable {
-                return Err(error);
-            }
-            last = Some(error);
-        }
-        Err(last.unwrap_or(StreamError::Unavailable))
+        let client = self.clone();
+        Ok(stream::unfold(
+            ChildCursor {
+                client,
+                body,
+                remaining: request.limit,
+                active: None,
+                emitted: false,
+            },
+            |mut cursor| async move {
+                loop {
+                    if cursor.remaining == 0 {
+                        return None;
+                    }
+                    if cursor.active.is_none() {
+                        match cursor.open().await {
+                            Ok(active) => cursor.active = Some(active),
+                            Err(error) => return Some((Err(error), cursor)),
+                        }
+                    }
+                    let Some(active) = cursor.active.as_mut() else {
+                        return Some((Err(StreamError::Unavailable), cursor));
+                    };
+                    match active.children.next().await {
+                        Some(Ok(response)) => {
+                            let Some(child) = response.child else {
+                                cursor.active = None;
+                                return Some((Err(StreamError::Unavailable), cursor));
+                            };
+                            let child = match path(child.path) {
+                                Ok(path) => Child { path },
+                                Err(error) => {
+                                    cursor.active = None;
+                                    return Some((Err(error), cursor));
+                                }
+                            };
+                            cursor.remaining = cursor.remaining.saturating_sub(1);
+                            cursor.emitted = true;
+                            return Some((Ok(child), cursor));
+                        }
+                        // A child listing has no resume cursor. Retrying after emitting a
+                        // child would duplicate an already-observed snapshot, so only retry
+                        // an ambiguous transport failure before the first item is delivered.
+                        Some(Err(error)) if !cursor.emitted && retryable(&error) => {
+                            cursor.active = None;
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+                        Some(Err(error)) => {
+                            cursor.active = None;
+                            return Some((Err(status(&error)), cursor));
+                        }
+                        None => return None,
+                    }
+                }
+            },
+        )
+        .boxed())
     }
 
     async fn children_page(
@@ -1276,6 +1327,79 @@ mod tests {
         }
     }
 
+    struct ChildStreamGuard(Arc<tokio::sync::Notify>);
+
+    impl Drop for ChildStreamGuard {
+        fn drop(&mut self) {
+            self.0.notify_one();
+        }
+    }
+
+    struct BlockingChildren {
+        inner: MemoryStream,
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        cancelled: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl StreamProvider for BlockingChildren {
+        async fn inspect_idempotency(
+            &self,
+            key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            self.inner.append(request).await
+        }
+
+        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+
+        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            let cancelled = self.cancelled.clone();
+            Ok(stream::once(async move {
+                started.notify_one();
+                let _guard = ChildStreamGuard(cancelled);
+                release.notified().await;
+                Ok(Child {
+                    path: StreamPath::new("blocked/child")
+                        .unwrap_or_else(|_| unreachable!("test path is valid")),
+                })
+            })
+            .boxed())
+        }
+
+        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
+
     fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
         provider_channel(Service::new(provider))
     }
@@ -1307,6 +1431,65 @@ mod tests {
             "fixture",
         )?;
         crate::conformance::verify(&transport).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_is_demand_driven_and_cancellable()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let cancelled = Arc::new(tokio::sync::Notify::new());
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(BlockingChildren {
+                inner: MemoryStream::default(),
+                started: started.clone(),
+                release: release.clone(),
+                cancelled: cancelled.clone(),
+            })))]),
+            "fixture",
+        )?;
+
+        let mut children = transport
+            .children(ChildrenRequest {
+                parent: None,
+                limit: 1,
+            })
+            .await?;
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_millis(100), children.next()).await;
+        assert!(
+            pending.is_err(),
+            "the first item should remain demand-driven"
+        );
+        tokio::time::timeout(std::time::Duration::from_millis(100), started.notified()).await?;
+        drop(children);
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancelled.notified()).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_children_enforces_the_wire_item_bound()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let transport = Client::from_channels(Arc::from([unavailable_channel()]), "fixture")?;
+        assert!(matches!(
+            transport
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: 0,
+                })
+                .await,
+            Err(StreamError::LimitExceeded)
+        ));
+        assert!(matches!(
+            transport
+                .children(ChildrenRequest {
+                    parent: None,
+                    limit: (crate::MAX_ITEMS as u32).saturating_add(1),
+                })
+                .await,
+            Err(StreamError::LimitExceeded)
+        ));
         Ok(())
     }
 
