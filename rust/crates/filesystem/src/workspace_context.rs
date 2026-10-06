@@ -6,6 +6,7 @@
 //! small control-plane facts; filesystem contents remain immutable SDK
 //! generations and are never enumerated here.
 
+use crate::record_store::stored_revision;
 use crate::{OperationId, WorkspaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -937,11 +938,7 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
             .state
             .lock()
             .map_err(|_| MemoryWorkspaceContextStoreError)?;
-        let revision = state
-            .records
-            .get(&context_id)
-            .map_or(0, |record| record.revision);
-        if revision != expected_revision {
+        if stored_revision(&state.records, &context_id) != expected_revision {
             return Ok(false);
         }
         let before = state.records.get(&context_id).cloned();
@@ -963,15 +960,12 @@ impl WorkspaceContextStore for MemoryWorkspaceContextStore {
         if require_exact_set && state.records.len() != expected_revisions.len() {
             return Ok(false);
         }
-        if expected_revisions.iter().any(|(context_id, expected)| {
-            state
-                .records
-                .get(context_id)
-                .map_or(0, |record| record.revision)
-                != *expected
-        }) || replacements
+        if expected_revisions
             .iter()
-            .any(|replacement| !expected_revisions.contains_key(&replacement.context_id))
+            .any(|(context_id, expected)| stored_revision(&state.records, context_id) != *expected)
+            || replacements
+                .iter()
+                .any(|replacement| !expected_revisions.contains_key(&replacement.context_id))
         {
             return Ok(false);
         }
