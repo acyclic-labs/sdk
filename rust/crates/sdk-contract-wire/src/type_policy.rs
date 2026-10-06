@@ -3295,34 +3295,19 @@ pub fn discover_language_producer_surfaces(artifact_root: &Path) -> Result<Vec<P
 }
 
 fn producer_authority_metadata_files(root: &Path) -> Vec<PathBuf> {
-    fn visit(directory: &Path, files: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(directory) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                visit(&path, files);
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-                continue;
-            };
-            if matches!(
-                name,
-                "rust-authority.json"
-                    | "source-authority.json"
-                    | "rust-source-authority.json"
-                    | "authority.json"
-            ) {
-                files.push(path);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    visit(root, &mut files);
-    files.sort();
-    files
+    // A producer's exported binding is a direct child of its output root.
+    // Searching arbitrary nested caches or copied qualification fixtures can
+    // otherwise turn an unrelated authority.json into the apparent contract
+    // identity for a public facade.
+    [
+        "rust-authority.json",
+        "toolchain-receipt.json",
+        "source-authority.json",
+    ]
+    .into_iter()
+    .map(|name| root.join(name))
+    .filter(|path| path.is_file())
+    .collect()
 }
 
 fn source_binding_value<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
@@ -3335,6 +3320,39 @@ fn model_digest_matches(actual: Option<&str>, expected: &str) -> bool {
     })
 }
 
+/// Return the contract-model identity from a producer-owned authority
+/// document.  `source_digest` is deliberately schema-scoped: the generated
+/// SDK source-authority manifest uses it for the whole checkout, while the
+/// language toolchain receipt uses it for the Rust contract model.  Treating
+/// every `source_digest` as a model digest would let a producer from a
+/// different contract pass whenever it was built from the same checkout.
+fn producer_model_digest<'a>(document: &'a serde_json::Value) -> Option<&'a str> {
+    let schema = source_binding_value(document, "schema");
+    let authority = document.get("authority");
+
+    source_binding_value(document, "rust_model_digest")
+        .or_else(|| source_binding_value(document, "model_digest"))
+        .or_else(|| authority.and_then(|value| source_binding_value(value, "rust_model_digest")))
+        .or_else(|| authority.and_then(|value| source_binding_value(value, "model_digest")))
+        .or_else(|| {
+            // The canonical Rust wire authority intentionally places the
+            // model digest in source_revision, alongside source_git_sha.
+            (schema == Some("acyclic.sdk.rust-authority.v1")
+                || schema.is_some_and(|value| value.ends_with(".rust-authority.v1")))
+                .then(|| source_binding_value(document, "source_revision"))
+                .flatten()
+        })
+        .or_else(|| {
+            // Only the producer receipt schema assigns source_digest this
+            // meaning.  In particular, do not accept
+            // acyclic.sdk.generation.source-authority.v1 here: its
+            // source_digest is the whole-checkout source identity.
+            schema
+                .filter(|value| *value == "acyclic.sdk.language-toolchain-receipt.v1")
+                .and_then(|_| source_binding_value(document, "source_digest"))
+        })
+}
+
 fn validate_producer_authority_document(
     document: &serde_json::Value,
     expected_git_revision: Option<&str>,
@@ -3344,16 +3362,16 @@ fn validate_producer_authority_document(
     let authority = source_binding_value(document, "authority");
     let schema = source_binding_value(document, "schema");
     if authority != Some("rust")
-        && !schema.is_some_and(|value| {
-            value.contains("rust-authority") || value.contains("source-authority")
-        })
+        && !matches!(
+            schema,
+            Some("acyclic.sdk.rust-authority.v1")
+                | Some("acyclic.sdk.language-toolchain-receipt.v1")
+        )
     {
         errors.push("authority metadata is not Rust-owned".to_owned());
     }
 
     let git_revision = source_binding_value(document, "source_git_sha");
-    let model_digest = source_binding_value(document, "source_digest")
-        .or_else(|| source_binding_value(document, "rust_model_digest"));
     let source_revision = source_binding_value(document, "source_revision");
     if let Some(expected) = expected_git_revision {
         let actual = git_revision.or(source_revision);
@@ -3365,12 +3383,7 @@ fn validate_producer_authority_document(
         }
     }
     if let Some(expected) = expected_model_digest {
-        let actual = model_digest.or_else(|| {
-            // A rust-authority.json uses source_revision for the model digest
-            // when source_git_sha is present.  A generation source-authority
-            // manifest instead uses source_digest for the same value.
-            git_revision.and_then(|_| source_revision)
-        });
+        let actual = producer_model_digest(document);
         if !model_digest_matches(actual, expected) {
             errors.push(format!(
                 "Rust model digest differs from generation: expected {expected}, got {}",
@@ -3967,6 +3980,61 @@ fn descriptor_payload_aliases(language: &str, name: &str) -> Vec<String> {
     aliases
 }
 
+/// Return the concrete scalar spelling used by the portable emitters for a
+/// descriptor-bound oneof arm.  A portable arm is a real union member, so a
+/// matcher must prove both its discriminant and its payload type.  The old
+/// matcher only looked for a message payload name; scalar arms consequently
+/// had no alias and could never satisfy the coverage gate.
+fn descriptor_oneof_scalar_aliases(
+    language: &str,
+    entry: &ResolvedOneofMember,
+) -> Vec<String> {
+    let scalar = match entry.payload_kind {
+        FieldType::Bool => match language {
+            "ruby" => "bool",
+            "php" => "bool",
+            "dart" => "bool",
+            _ => return Vec::new(),
+        },
+        FieldType::Double | FieldType::Float => match language {
+            "ruby" => "Float",
+            "php" => "float",
+            "dart" => "double",
+            _ => return Vec::new(),
+        },
+        FieldType::Int32
+        | FieldType::Sint32
+        | FieldType::Sfixed32
+        | FieldType::Int64
+        | FieldType::Sint64
+        | FieldType::Sfixed64
+        | FieldType::Uint32
+        | FieldType::Fixed32
+        | FieldType::Uint64
+        | FieldType::Fixed64
+        | FieldType::Enum => match language {
+            "ruby" => "Integer",
+            "php" => "int",
+            "dart" => "int",
+            _ => return Vec::new(),
+        },
+        FieldType::String => match language {
+            "ruby" => "String",
+            "php" => "string",
+            "dart" => "String",
+            _ => return Vec::new(),
+        },
+        FieldType::Bytes => match language {
+            "ruby" => "String",
+            "php" => "string",
+            "dart" => "List<int>",
+            _ => return Vec::new(),
+        },
+        FieldType::Message | FieldType::Group => return Vec::new(),
+    };
+    vec![scalar.to_owned()]
+}
+
 fn descriptor_haskell_payload_aliases(name: &str) -> Vec<String> {
     let parts = name
         .split('.')
@@ -4125,14 +4193,40 @@ fn source_contains_descriptor_oneof_arm(
                 "php" => format!("final readonly class {variant} extends {portable_choice}"),
                 _ => format!("final class {variant} extends {portable_choice}"),
             };
-            source.lines().any(|line| {
+            let scalar_aliases = descriptor_oneof_scalar_aliases(language, entry);
+            let lines = source.lines().collect::<Vec<_>>();
+            lines.iter().enumerate().any(|(index, line)| {
                 !is_source_comment(line)
                     && line.trim_start().starts_with(&declaration)
-                    && (source_contains_identifier_in_line(line, &payload)
-                        || payload_aliases.iter().any(|alias| {
-                            source_contains_identifier_in_line(line, alias)
-                                || source_contains_identifier(source, alias)
-                        }))
+                    && {
+                        let declaration_line = *line;
+                        let body = lines
+                            .iter()
+                            .skip(index)
+                            .take(16)
+                            .take_while(|candidate| {
+                                let trimmed = candidate.trim_start();
+                                **candidate == declaration_line
+                                    || (!trimmed.starts_with("class ")
+                                        && !trimmed.starts_with("final class ")
+                                        && !trimmed.starts_with("final readonly class "))
+                            })
+                            .copied()
+                            .collect::<Vec<_>>();
+                        body.iter().any(|candidate| {
+                            source_contains_identifier_in_line(candidate, &payload)
+                                || payload_aliases.iter().any(|alias| {
+                                    source_contains_identifier_in_line(candidate, alias)
+                                })
+                                || scalar_aliases.iter().any(|alias| {
+                                    if alias.contains('<') {
+                                        candidate.contains(alias)
+                                    } else {
+                                        source_contains_identifier_in_line(candidate, alias)
+                                    }
+                                })
+                        })
+                    }
             })
         }
         _ => false,
@@ -4747,7 +4841,10 @@ fn surface_language(path: &Path) -> Option<&'static str> {
         Some("cpp")
     } else if name == "RustTypedClients.cs" {
         Some("csharp")
-    } else if name == "generated_typed.rb" {
+    } else if name == "generated_typed.rb"
+        || name == "generated_typed.rbs"
+        || name == "rust_generated.rbi"
+    {
         Some("ruby")
     } else if name == "RustTyped.php" {
         Some("php")
@@ -4856,6 +4953,59 @@ mod tests {
     }
 
     #[test]
+    fn producer_binding_uses_contract_digest_not_checkout_source_digest() {
+        let root = producer_audit_fixture_root("digest-schema");
+        let git = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let model = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let checkout_digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+        // generated/rust-source-authority.json is intentionally a checkout
+        // identity.  Its source_digest must never qualify a producer's Rust
+        // contract model.
+        fs::write(
+            root.join("language-producers/python/source-authority.json"),
+            format!(
+                r#"{{"schema":"acyclic.sdk.generation.source-authority.v1","source_revision":"{git}","source_digest":"{checkout_digest}"}}"#
+            ),
+        )
+        .expect("generation source authority fixture");
+        let findings = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("producer binding audit");
+        assert!(findings.iter().any(|finding| {
+            finding.reason.contains("Rust model digest differs")
+                && finding.path.ends_with("source-authority.json")
+        }));
+
+        fs::remove_file(root.join("language-producers/python/source-authority.json"))
+            .expect("remove checkout authority fixture");
+        fs::write(
+            root.join("language-producers/python/toolchain-receipt.json"),
+            format!(
+                r#"{{"schema":"acyclic.sdk.language-toolchain-receipt.v1","source_revision":"{git}","source_git_sha":"{git}","source_digest":"sha256:{model}","rust_model_digest":"{model}"}}"#
+            ),
+        )
+        .expect("producer receipt fixture");
+        let passed = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("producer receipt binding audit");
+        assert!(passed.is_empty(), "unexpected receipt findings: {passed:?}");
+
+        fs::write(
+            root.join("language-producers/python/toolchain-receipt.json"),
+            format!(
+                r#"{{"schema":"acyclic.sdk.language-toolchain-receipt.v1","source_revision":"{git}","source_git_sha":"{git}","source_digest":"sha256:{checkout_digest}","rust_model_digest":"{checkout_digest}"}}"#
+            ),
+        )
+        .expect("stale producer receipt fixture");
+        let stale = audit_language_producer_source_bindings(&root, Some(git), Some(model))
+            .expect("stale receipt binding audit");
+        assert!(stale.iter().any(|finding| {
+            finding.reason.contains("Rust model digest differs")
+                && finding.path.ends_with("toolchain-receipt.json")
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn portable_descriptor_projections_require_concrete_enum_and_oneof_shapes() {
         let enum_name = "acyclic.objects.v2.ObjectState";
         let ruby_alias = descriptor_projection_aliases("ruby", enum_name)
@@ -4914,6 +5064,65 @@ mod tests {
             "ruby",
             &ruby_source.replace("RustAcyclicObjectsV2GetObjectHeader", "OpenEnumValue"),
             &member,
+        ));
+    }
+
+    #[test]
+    fn portable_descriptor_projections_require_scalar_oneof_payload_types() {
+        let field = ResolvedRequestField {
+            family: "actors".into(),
+            rpc: "acyclic.actors.v1.ActorsService/InvokeActor".into(),
+            root_message: "acyclic.actors.v1.InvokeActorRequest".into(),
+            message_path: "acyclic.actors.v1.InvokeActorRequest".into(),
+            field: "command".into(),
+            number: 2,
+            json_name: "command".into(),
+            type_name: None,
+            map_entry: false,
+            wire_type: Some(FieldType::String as i32),
+            label: None,
+            oneof_index: Some(0),
+            oneof_name: Some("payload".into()),
+            proto3_optional: false,
+            semantic_type: None,
+            validation_rules: Vec::new(),
+            validation_constraints: Vec::new(),
+        };
+        let member = ResolvedOneofMember {
+            field,
+            payload_kind: FieldType::String,
+            payload_type: None,
+            preserves_unknown_members: true,
+        };
+        let choice = "RustAcyclicActorsV1InvokeActorRequestPayloadChoice";
+        let variant = format!(
+            "final class {choice}Command extends {choice} {{ final String value; const {choice}Command(this.value); }}"
+        );
+        assert!(source_contains_descriptor_oneof_arm("dart", &variant, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "dart",
+            &variant.replace("String value", "Object value"),
+            &member
+        ));
+
+        let php = format!(
+            "final readonly class {choice}Command extends {choice} {{ public readonly string $value; }}"
+        );
+        assert!(source_contains_descriptor_oneof_arm("php", &php, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "php",
+            &php.replace("string $value", "mixed $value"),
+            &member
+        ));
+
+        let ruby = format!(
+            "class {choice}Command < {choice}\n  attr_reader value: String\n  def self.from_wire: (String) -> {choice}Command\n  def to_wire: () -> String\nend"
+        );
+        assert!(source_contains_descriptor_oneof_arm("ruby", &ruby, &member));
+        assert!(!source_contains_descriptor_oneof_arm(
+            "ruby",
+            &ruby.replace("Command", "Generic"),
+            &member
         ));
     }
 

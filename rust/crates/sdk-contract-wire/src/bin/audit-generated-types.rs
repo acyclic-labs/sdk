@@ -166,29 +166,69 @@ fn audit(root: &Path, required: &[String]) -> Result<(Value, bool), String> {
 }
 
 fn source_revision_from_metadata(value: &Value) -> Option<String> {
-    value
-        .get("source_git_sha")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            value
-                .get("source")
-                .and_then(|source| source.get("git_sha"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| value.get("source_revision").and_then(Value::as_str))
-        .or_else(|| {
-            value
-                .get("source")
-                .and_then(|source| source.get("revision"))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            value
-                .get("source_identity")
-                .and_then(|source| source.get("revision"))
-                .and_then(Value::as_str)
-        })
-        .map(ToOwned::to_owned)
+    fn git_revision(value: Option<&Value>) -> Option<String> {
+        let value = value.and_then(Value::as_str)?;
+        (value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| value.to_owned())
+    }
+
+    let schema = value.get("schema").and_then(Value::as_str).unwrap_or("");
+    let authority = value.get("authority");
+    let source = value.get("source");
+    let source_identity = value.get("source_identity");
+
+    // A Rust authority has two different identities: source_git_sha is the
+    // checkout revision, while source_revision is the contract-model digest.
+    // Never treat the latter as a Git revision.  The same distinction applies
+    // to the generated source-authority manifest whose source_digest is a
+    // whole-checkout digest rather than a contract digest.
+    match schema {
+        "acyclic.sdk.rust-authority.v1" => {
+            return git_revision(value.get("source_git_sha"));
+        }
+        "acyclic.sdk.generation.source-authority.v1"
+        | "acyclic.sdk.examples.source-authority.v1" => {
+            return git_revision(value.get("source_revision"));
+        }
+        "acyclic.sdk.language-toolchain-receipt.v1" => {
+            return git_revision(value.get("source_git_sha"))
+                .or_else(|| git_revision(value.get("source_revision")));
+        }
+        "acyclic.sdk.qualification.receipt.v1" => {
+            if matches!(
+                value.get("source_revision_kind").and_then(Value::as_str),
+                Some("git-oid" | "git-revision")
+            ) {
+                return git_revision(value.get("source_revision"));
+            }
+            return None;
+        }
+        _ => {}
+    }
+
+    // Live qualification receipts place the authority document under an
+    // `authority` object.  They are accepted only when their schema declares
+    // the RPD family and the nested value is explicitly a Git revision.
+    if schema.starts_with("acyclic.sdk.rpd.") {
+        return git_revision(authority.and_then(|item| item.get("source_git_sha")))
+            .or_else(|| git_revision(value.get("source_git_sha")));
+    }
+
+    // Other source-bound receipts are schema-scoped by their explicit Git
+    // kind.  Unrelated JSON with a convenient `source_revision` field must
+    // never participate in the artifact-cohort decision.
+    if value.get("source_git_sha_kind").and_then(Value::as_str) == Some("git-revision") {
+        return git_revision(value.get("source_git_sha"));
+    }
+    if matches!(
+        value.get("source_revision_kind").and_then(Value::as_str),
+        Some("git-oid" | "git-revision")
+    ) {
+        return git_revision(value.get("source_revision"));
+    }
+    git_revision(source.and_then(|item| item.get("git_sha")))
+        .or_else(|| git_revision(source.and_then(|item| item.get("revision"))))
+        .or_else(|| git_revision(source_identity.and_then(|item| item.get("revision"))))
 }
 
 fn metadata_source_revisions(
@@ -198,16 +238,7 @@ fn metadata_source_revisions(
     let mut observations = Vec::new();
     for relative in hashes.keys() {
         let path = root.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        let is_authority_metadata = name.ends_with(".json")
-            && (name.contains("receipt")
-                || name.contains("manifest")
-                || name.contains("authority")
-                || name == "type-policy.json"
-                || name == "docs.json");
-        if !is_authority_metadata {
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
             continue;
         }
         let Ok(bytes) = fs::read(&path) else {
@@ -295,7 +326,7 @@ fn surface_language(relative: &str) -> Option<&'static str> {
         "RustTypedClients.swift" => Some("swift"),
         "rust_typed_clients.hpp" => Some("cpp"),
         "RustTypedClients.cs" => Some("csharp"),
-        "generated_typed.rb" => Some("ruby"),
+        "generated_typed.rb" | "generated_typed.rbs" | "rust_generated.rbi" => Some("ruby"),
         "RustTyped.php" => Some("php"),
         "generated_typed.dart" => Some("dart"),
         "RustTypedClients.hs"
@@ -623,7 +654,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("qualification-receipt.json"),
-            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision":"0000000000000000000000000000000000000000"}"#,
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision_kind":"git-oid","source_revision":"0000000000000000000000000000000000000000"}"#,
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
@@ -675,7 +706,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("sdk-qualification-receipt.json"),
-            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision":"1111111111111111111111111111111111111111"}"#,
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision_kind":"git-oid","source_revision":"1111111111111111111111111111111111111111"}"#,
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
@@ -702,12 +733,12 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         fs::write(
             root.join("sdk-qualification-receipt.json"),
-            r#"{"source_revision":"1111111111111111111111111111111111111111"}"#,
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision_kind":"git-oid","source_revision":"1111111111111111111111111111111111111111"}"#,
         )
         .unwrap();
         fs::write(
             root.join("docs.json"),
-            r#"{"source_revision":"2222222222222222222222222222222222222222"}"#,
+            r#"{"schema":"acyclic.sdk.qualification.receipt.v1","source_revision_kind":"git-oid","source_revision":"2222222222222222222222222222222222222222"}"#,
         )
         .unwrap();
         let hashes = artifact_hashes(&root).unwrap();
@@ -722,6 +753,39 @@ mod tests {
                 .unwrap()
                 .contains("does not match expected Rust revision")
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn source_binding_ignores_contract_digest_and_unscoped_nested_json() {
+        let root = env::temp_dir().join(format!(
+            "acyclic-source-binding-schema-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("nested/cache")).unwrap();
+        let git = "1111111111111111111111111111111111111111";
+        let digest = "2222222222222222222222222222222222222222222222222222222222222222";
+        fs::write(
+            root.join("rust-authority.json"),
+            format!(
+                r#"{{"schema":"acyclic.sdk.rust-authority.v1","source_git_sha":"{git}","source_revision":"{digest}","source_revision_kind":"rust-model-sha256"}}"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("nested/cache/random.json"),
+            format!(r#"{{"source_revision":"{digest}"}}"#),
+        )
+        .unwrap();
+        let hashes = artifact_hashes(&root).unwrap();
+        let (report, error) = source_binding_report(&root, &hashes, Some(git));
+        assert_eq!(report["status"], "passed");
+        assert!(error.is_none());
+        assert_eq!(report["observations"][0]["source_revision"], git);
         fs::remove_dir_all(root).unwrap();
     }
 
