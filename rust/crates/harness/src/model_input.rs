@@ -1991,9 +1991,29 @@ mod tests {
                 "input.txt",
             )
             .await?;
+        let attachment_bytes = [0x00, 0xff, 0x41, 0x0d, 0x0a, 0xce, 0xbb];
+        let attachment = local
+            .storage()
+            .stage(
+                operation,
+                "attachments/evidence.bin",
+                &attachment_bytes,
+                "application/octet-stream",
+                "evidence-π.bin",
+            )
+            .await?;
         let output = local
             .storage()
-            .run_conversation(local.bundle(), operation, content.clone(), vec![], 8)
+            .run_conversation(
+                local.bundle(),
+                operation,
+                content.clone(),
+                vec![crate::conversation::Attachment {
+                    file: attachment.clone(),
+                    label: Some("evidence".into()),
+                }],
+                8,
+            )
             .await?;
         assert_eq!(output.text, "done");
         let records = local.storage().journal().replay(operation).await?;
@@ -2030,10 +2050,20 @@ mod tests {
             .iter()
             .find(|message| !message.files.is_empty())
             .ok_or_else(|| Error::Storage("attachment is missing from input manifest".into()))?;
-        assert_eq!(input_manifest.files, vec![content.clone()]);
+        assert_eq!(
+            input_manifest.files,
+            vec![content.clone(), attachment.clone()]
+        );
+        assert_eq!(local.storage().read(&attachment).await?, attachment_bytes);
         assert!(wire_bytes
             .windows(content.path().len())
             .any(|window| window == content.path().as_bytes()));
+        assert!(wire_bytes
+            .windows(attachment.path().len())
+            .any(|window| window == attachment.path().as_bytes()));
+        assert!(!wire_bytes
+            .windows(attachment_bytes.len())
+            .any(|window| window == attachment_bytes.as_slice()));
         assert!(!wire_bytes
             .windows(b"Whitespace:".len())
             .any(|window| window == b"Whitespace:"));
