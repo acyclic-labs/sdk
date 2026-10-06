@@ -1,7 +1,6 @@
 {
   "schema": "bounded-tlc-qualification/v1",
-  "generated_utc": "2026-10-06T00:07:08.7468085Z",
-  "source_head": "121d6f009b9dcad03ed622de61b7210aa800f554",
+  "generated_utc": "2026-10-06T00:07:55.2483200Z",
   "tool": {
     "path": "target/formal-tools/tla2tools-1.7.4.jar",
     "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
@@ -104,5 +103,7 @@
       "states_generated": 354,
       "distinct_states": 163
     }
-  ]
+  ],
+  "source_tree_commit": "94bc6245440ebfdeaeb9ceac5f625bbcab01c36e",
+  "qualification_source_head_before_commit": "121d6f009b9dcad03ed622de61b7210aa800f554"
 }
