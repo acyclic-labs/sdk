@@ -40,7 +40,8 @@ and writes the TypeScript bindings straight into each published package's
 `generated/proto/` (the only committed copy), using
 `scripts/generated-bindings.mjs` for descriptors, compatibility digests, and
 package paths. Filesystem carries Harness messages because its generated schema
-imports them.
+imports them. Rust-owned TypeScript contracts (limits, routes, enum maps) are
+rendered by `scripts/generate-contracts.mjs` from one Cargo build.
 `bun run check:generated` compares fresh Buf output and descriptors with the
 committed Rust tree and package copies. Rust
 WASM exports are built from the Rust crates and packaged beside the TypeScript
