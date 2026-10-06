@@ -1060,7 +1060,7 @@ internal static class RustDescriptorShapes\n{\n",
 
     out.push_str("    internal static IReadOnlyList<RustDescriptorOneofShape> Oneofs { get; } = new[] {\n");
     let mut seen_oneofs = BTreeSet::new();
-    for field in fields.iter().filter(|field| field.oneof_name.is_some() && !field.proto3_optional) {
+    for field in fields.iter().filter(|field| field.oneof_name.is_some()) {
         let Some(oneof) = field.oneof_name.as_deref() else { continue };
         let Some(payload_type) = field.type_name.as_deref() else { continue };
         if !matches!(field.wire_type, Some(kind) if kind == FieldType::Message as i32 || kind == FieldType::Group as i32) {
@@ -1073,6 +1073,14 @@ internal static class RustDescriptorShapes\n{\n",
         let key = (field.family.clone(), field.message_path.clone(), oneof.to_owned(), field.field.clone());
         if !seen_oneofs.insert(key) {
             continue;
+        }
+        if field.proto3_optional {
+            let payload_model = response_local_message_type(field, &field.family)
+                .unwrap_or_else(|| response_nested_model_name(payload_type, &field.family));
+            out.push_str(&format!(
+                "internal abstract record {alias}\n{{\n    internal sealed record {arm}({payload_model} Value) : {alias};\n}}\n\n",
+                arm = upper(&field.field),
+            ));
         }
         out.push_str(&format!(
             "        new({},{},{},{},{},{}),\n",
