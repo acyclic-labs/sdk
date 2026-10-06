@@ -305,7 +305,7 @@ case "$lane" in
     trap 'rm -rf -- "$deny_root"' EXIT
     tar -xzf "$archive" -C "$deny_root" --strip-components=1 \
       cargo-deny-0.19.0-x86_64-unknown-linux-musl/cargo-deny
-    "$deny_root/cargo-deny" check licenses
+    "$deny_root/cargo-deny" check
     ;;
   web)
     bash scripts/ensure-rust-target.sh wasm32-unknown-unknown
