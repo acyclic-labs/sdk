@@ -1,6 +1,7 @@
 import { arch, platform, report } from "node:process";
 import { Buffer } from "node:buffer";
 import { commitId, StreamError } from "./types.js";
+import { STREAM_NATIVE_COMPANION_TARGETS } from "./generated-client.js";
 import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { normalizeWireCommitBytes, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
@@ -68,10 +69,6 @@ interface NativeStreamModule {
   readonly NativeStreamCancellation: new () => NativeCancellation;
 }
 
-const TARGETS = new Set([
-  "win32-x64", "win32-arm64", "linux-x64-gnu", "linux-arm64-gnu", "linux-x64-musl", "linux-arm64-musl",
-  "darwin-x64", "darwin-arm64",
-]);
 let bindingPromise: Promise<NativeStreamModule> | undefined;
 
 /** Resolve the published native companion from the host ABI and libc. */
@@ -94,7 +91,7 @@ export function nativeCompanionTarget(
 
 async function binding(): Promise<NativeStreamModule> {
   const target = nativeCompanionTarget();
-  if (!TARGETS.has(target)) throw new Error(`@acyclic-labs/stream has no native companion for ${target}`);
+  if (!(STREAM_NATIVE_COMPANION_TARGETS as readonly string[]).includes(target)) throw new Error(`@acyclic-labs/stream has no native companion for ${target}`);
   bindingPromise ??= import(`@acyclic-labs/stream-${target}`).then((module) => {
     const namespace = module as NativeStreamModule & { readonly default?: NativeStreamModule };
     const candidate = namespace.NativeStreamClient === undefined ? namespace.default : namespace;

@@ -887,13 +887,14 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         "../../../../typescript/packages/{}/generated/proto/protocol/v1/protocol_pb.js",
         service.family
     );
-    typescript_with_paths(service, &family_path, &protocol_path)
+    typescript_with_paths(service, &family_path, &protocol_path, &[])
 }
 
-fn package_typescript(service: &ServiceMetadata) -> Result<String, Error> {
+fn package_typescript(service: &ServiceMetadata, source_root: &Path) -> Result<String, Error> {
     let family_path = package_proto_import_path(&service.family);
     let protocol_path = "../generated/proto/protocol/v1/protocol_pb.js";
-    typescript_with_paths(service, &family_path, protocol_path)
+    let native_companion_targets = native_companion_targets(source_root, &service.family)?;
+    typescript_with_paths(service, &family_path, protocol_path, &native_companion_targets)
 }
 
 fn typescript_semantic_name(id: &str) -> String {
@@ -1261,6 +1262,7 @@ fn typescript_with_paths(
     service: &ServiceMetadata,
     family_path: &str,
     protocol_path: &str,
+    native_companion_targets: &[String],
 ) -> Result<String, Error> {
     let constant = format!("{}_METHODS", service.family.to_ascii_uppercase());
     let title = format!(
@@ -1399,6 +1401,13 @@ fn typescript_with_paths(
             native,
             browser,
         ));
+        if !native_companion_targets.is_empty() {
+            output.push_str(&format!(
+                "\n/** Rust-owned native companion targets present in the generated package. */\nexport const {}_NATIVE_COMPANION_TARGETS = {:?} as const;\n",
+                service.family.to_ascii_uppercase(),
+                native_companion_targets,
+            ));
+        }
         output.push_str("\n/** Selects the first Rust-qualified transport that is installed for this runtime. */\nexport function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {\n  const options = policy.transport[runtime];\n  if (requested !== undefined) {\n    const option = options.find(candidate => candidate.kind === requested);\n    if (option === undefined || availability[requested] === false) throw new TypeError(`transport ${requested} is unavailable in the ${runtime} runtime`);\n    return option.kind;\n  }\n  const option = options.find(candidate => availability[candidate.kind] !== false);\n  if (option === undefined) throw new TypeError(`no installed transport is available in the ${runtime} runtime`);\n  return option.kind;\n}\n\n/** Identifies a missing optional adapter without swallowing endpoint or credential errors. */\nexport function isRustOwnedTransportUnavailable(error: unknown): boolean {\n  if (error === null || typeof error !== \"object\") return false;\n  const candidate = error as { readonly code?: unknown; readonly message?: unknown };\n  if (candidate.code === \"ERR_MODULE_NOT_FOUND\" || candidate.code === \"MODULE_NOT_FOUND\") return true;\n  return typeof candidate.message === \"string\" && (/Cannot find (?:module|package)/i.test(candidate.message) || /has no native companion/i.test(candidate.message));\n}\n\n");
     }
     output.push_str("export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }\n\n");
@@ -1633,11 +1642,14 @@ fn generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> 
     Ok(files)
 }
 
-fn package_generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> {
+fn package_generated_files(
+    manifest: &Manifest,
+    source_root: &Path,
+) -> Result<Vec<(String, String)>, Error> {
     manifest
         .services
         .iter()
-        .map(|service| Ok((service.family.clone(), package_typescript(service)?)))
+        .map(|service| Ok((service.family.clone(), package_typescript(service, source_root)?)))
         .collect()
 }
 
@@ -2185,6 +2197,24 @@ fn copy_or_check_package_file(mode: &str, source: &Path, destination: &Path) -> 
     Ok(())
 }
 
+fn native_companion_targets(source_root: &Path, family: &str) -> Result<Vec<String>, Error> {
+    let companion_root = source_root
+        .join("rust/crates")
+        .join(format!("sdk-{family}-native"))
+        .join("npm");
+    if !companion_root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut targets = fs::read_dir(&companion_root)?
+        .collect::<Result<Vec<_>, std::io::Error>>()?
+        .into_iter()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    targets.sort();
+    Ok(targets)
+}
+
 fn native_companion_dependencies(
     source_root: &Path,
     family: &str,
@@ -2529,7 +2559,7 @@ fn write_or_check_packages(
         generate_typescript_bindings(source_root, wire_root, output_root)?;
     }
     let manifest = model()?;
-    for (family, content) in package_generated_files(&manifest)? {
+    for (family, content) in package_generated_files(&manifest, source_root)? {
         let path = output_root
             .join("typescript")
             .join("packages")

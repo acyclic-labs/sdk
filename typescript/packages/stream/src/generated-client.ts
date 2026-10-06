@@ -17,7 +17,7 @@ export type RustOwnedSemanticBytes<Name extends string> = Uint8Array & { readonl
 export type RustOwnedSemanticNumber<Name extends string> = number & { readonly [rustOwnedSemanticBrand]: Name };
 export type RustOwnedSemanticMessage<Name extends string> = object & { readonly [rustOwnedSemanticBrand]: Name };
 
-export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message"; readonly rules: readonly string[]; }
+export interface RustOwnedSemanticFieldMetadata { readonly family: string; readonly field: string; readonly semanticType: string; readonly module: string; readonly message: string; readonly wireField: string; readonly direction: "request" | "response" | "nested_message" | "embedded_only"; readonly rules: readonly string[]; }
 
 export type RustOwnedCommitId = RustOwnedSemanticBytes<"commit_id">;
 export function makeRustOwnedCommitId(value: Uint8Array): RustOwnedCommitId { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedCommitId; }
@@ -25,8 +25,14 @@ export type RustOwnedDestination = RustOwnedSemanticString<"destination">;
 export function makeRustOwnedDestination(value: string): RustOwnedDestination { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedDestination; }
 export type RustOwnedIdempotencyKeyBytes = RustOwnedSemanticBytes<"idempotency_key_bytes">;
 export function makeRustOwnedIdempotencyKeyBytes(value: Uint8Array): RustOwnedIdempotencyKeyBytes { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedIdempotencyKeyBytes; }
+export type RustOwnedOpaqueText = RustOwnedSemanticString<"opaque_text">;
+export function makeRustOwnedOpaqueText(value: string): RustOwnedOpaqueText { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedOpaqueText; }
 export type RustOwnedPath = RustOwnedSemanticString<"path">;
 export function makeRustOwnedPath(value: string): RustOwnedPath { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedPath; }
+export type RustOwnedRevisionDigest = RustOwnedSemanticBytes<"revision_digest">;
+export function makeRustOwnedRevisionDigest(value: Uint8Array): RustOwnedRevisionDigest { if (value.byteLength !== 32) throw new RangeError("value has the wrong length"); return value as RustOwnedRevisionDigest; }
+export type RustOwnedSequence = RustOwnedSemanticNumber<"sequence">;
+export function makeRustOwnedSequence(value: number): RustOwnedSequence { if (value < 0) throw new RangeError("value must be non-negative"); return value as RustOwnedSequence; }
 export type RustOwnedSource = RustOwnedSemanticString<"source">;
 export function makeRustOwnedSource(value: string): RustOwnedSource { if (value.length === 0) throw new TypeError("value must not be empty"); return value as RustOwnedSource; }
 export type RustOwnedStreamPageLimit = RustOwnedSemanticNumber<"stream_page_limit">;
@@ -39,13 +45,19 @@ export const STREAM_PUBLIC_FIELD_BINDINGS = [
   { family: "stream", field: "destination", semanticType: "destination", module: "stream", message: "ForkRequest", wireField: "destination", direction: "request", rules: ["NonEmpty", "Utf8"] },
   { family: "stream", field: "limit", semanticType: "stream_page_limit", module: "stream", message: "ReadRequest", wireField: "limit", direction: "request", rules: ["StrictlyPositive", "MaxItems(1024)"] },
   { family: "stream", field: "commit_id", semanticType: "commit_id", module: "stream", message: "ReadCommitRequest", wireField: "commit_id", direction: "request", rules: ["NonEmpty"] },
+  { family: "stream", field: "hierarchy_version", semanticType: "revision_digest", module: "stream", message: "ChildrenPageResponse", wireField: "hierarchy_version", direction: "response", rules: ["FixedLength(32)"] },
+  { family: "stream", field: "next_after", semanticType: "opaque_text", module: "stream", message: "ChildrenPageResponse", wireField: "next_after", direction: "response", rules: ["NonEmpty", "Utf8"] },
+  { family: "stream", field: "forked_at", semanticType: "sequence", module: "stream", message: "CommittedFork", wireField: "forked_at", direction: "response", rules: ["NonNegative"] },
+  { family: "stream", field: "tail", semanticType: "sequence", module: "stream", message: "TailResponse", wireField: "tail", direction: "response", rules: ["NonNegative"] },
 ] as const satisfies readonly RustOwnedSemanticFieldMetadata[];
 
 export const STREAM_PUBLIC_NESTED_ROUTES = [
 ] as const;
 
+export type RustOwnedKnownWireMessage = AppendRequest | AppendResponse | ChildrenPageRequest | ChildrenPageResponse | ChildrenRequest | ChildrenResponse | CommitRequest | CommitResponse | CommittedEnvelope | FollowRequest | ForkReceipt | ForkRequest | InspectIdempotencyRequest | InspectIdempotencyResponse | ReadCommitRequest | ReadRequest | ReadResponse | TailRequest | TailResponse;
+
 export type RustOwnedWireChoice =
-  { readonly kind: "known"; readonly value: object } |
+  { readonly kind: "known"; readonly value: RustOwnedKnownWireMessage } |
   { readonly kind: "unknown"; readonly value: Uint8Array };
 
 import type * as RustWire from "../generated/proto/stream/v2/stream_pb.js";
@@ -60,7 +72,10 @@ export type RustOwnedPublicAppendRequest = Omit<RustWire.AppendRequest, "idempot
 };
 export type RustOwnedPublicAppendResponse = RustWire.AppendResponse;
 export type RustOwnedPublicChildrenPageRequest = RustWire.ChildrenPageRequest;
-export type RustOwnedPublicChildrenPageResponse = RustWire.ChildrenPageResponse;
+export type RustOwnedPublicChildrenPageResponse = Omit<RustWire.ChildrenPageResponse, "hierarchyVersion" | "nextAfter"> & {
+  readonly hierarchyVersion: RustOwnedRevisionDigest;
+  readonly nextAfter: RustOwnedOpaqueText;
+};
 export type RustOwnedPublicChildrenRequest = RustWire.ChildrenRequest;
 export type RustOwnedPublicChildrenResponse = RustWire.ChildrenResponse;
 export type RustOwnedPublicCommitRequest = RustWire.CommitRequest;
@@ -82,7 +97,9 @@ export type RustOwnedPublicReadRequest = Omit<RustWire.ReadRequest, "limit"> & {
 };
 export type RustOwnedPublicReadResponse = RustWire.ReadResponse;
 export type RustOwnedPublicTailRequest = RustWire.TailRequest;
-export type RustOwnedPublicTailResponse = RustWire.TailResponse;
+export type RustOwnedPublicTailResponse = Omit<RustWire.TailResponse, "tail"> & {
+  readonly tail: RustOwnedSequence;
+};
 
 export interface RustOwnedStreamPublicClient {
   readonly inspectIdempotency: (request: RustOwnedPublicInspectIdempotencyRequest, signal?: AbortSignal) => Promise<RustOwnedPublicInspectIdempotencyResponse>;
@@ -127,6 +144,9 @@ export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKi
 
 export const STREAM_REMOTE_POLICY = { protocol: "https-or-loopback-http", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", maximumMessageBytes: 8388608, maximumHttpRequestBytes: 8388608, maximumHttpResponseBytes: 8388608, requestTimeoutMillis: 30000, behaviorBinding: "native-wasm", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }, { kind: "http", streaming: true, bearerAuth: true }], browser: [{ kind: "http", streaming: true, bearerAuth: true }] } } as const satisfies RustOwnedRemotePolicy;
 
+/** Rust-owned native companion targets present in the generated package. */
+export const STREAM_NATIVE_COMPANION_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64-gnu", "linux-arm64-musl", "linux-x64-gnu", "linux-x64-musl", "win32-arm64", "win32-x64"] as const;
+
 /** Selects the first Rust-qualified transport that is installed for this runtime. */
 export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {
   const options = policy.transport[runtime];
@@ -163,7 +183,7 @@ export const STREAM_OPERATIONS = {
   "acyclic.stream.v2.StreamService/ReadCommit": { rpc: "acyclic.stream.v2.StreamService/ReadCommit", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["commit_id.non_empty_bytes"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "2af7becf2a65a5eed44be4771a0ec24f41e4672c1c4fced3e288215c970aeb2e", sourceModelSha256: "2af7becf2a65a5eed44be4771a0ec24f41e4672c1c4fced3e288215c970aeb2e", handshakeRoute: "/v1/sdk/stream/handshake", handshakeVersion: "acyclic.stream.v2", handshakeDescriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e", modeledOperations: 10, httpProjection: true } as const;
+export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "2d3777e23773d30c25a961fa21638e1ca1843103b4d7a5d7b4ea3d634c18fd99", sourceModelSha256: "2d3777e23773d30c25a961fa21638e1ca1843103b4d7a5d7b4ea3d634c18fd99", handshakeRoute: "/v1/sdk/stream/handshake", handshakeVersion: "acyclic.stream.v2", handshakeDescriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e", modeledOperations: 10, httpProjection: true } as const;
 
 export const STREAM_HANDSHAKE = { family: "stream", route: "/v1/sdk/stream/handshake", version: "acyclic.stream.v2", descriptorDigest: "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e" } as const;
 
