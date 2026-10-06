@@ -285,6 +285,10 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
+    inherited_prefix: Option<(
+        FileRef,
+        Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    )>,
 }
 
 impl StockExecutor {
@@ -305,6 +309,7 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
+            inherited_prefix: None,
         }
     }
 
@@ -313,6 +318,24 @@ impl StockExecutor {
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// Binds a child to an immutable parent model prefix. The supplied reader
+    /// must authenticate the child's exact generation-pinned read grants.
+    /// Context stages assemble local input before this prefix is prepended.
+    pub fn with_inherited_prefix(
+        mut self,
+        prefix: FileRef,
+        verifier: Arc<dyn crate::conversation::ContentResidencyVerifier>,
+    ) -> Result<Self> {
+        prefix.validate()?;
+        if prefix.descriptor().media_type() != crate::model::ModelPrefix::MEDIA_TYPE {
+            return Err(Error::Invalid(
+                "inherited model prefix has the wrong media type".into(),
+            ));
+        }
+        self.inherited_prefix = Some((prefix, verifier));
+        Ok(self)
     }
 
     /// Enforces the same explicit tool grants and policy in the stock model loop.
@@ -340,6 +363,7 @@ impl StockExecutor {
             "limits": self.limits,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
+            "inherited_prefix": self.inherited_prefix.as_ref().map(|(reference, _)| reference),
         }))
     }
 
@@ -441,7 +465,17 @@ impl StockExecutor {
                 .collect(),
             max_output_tokens: Some(4_096),
         };
-        let request = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        let request = if let Some((prefix, verifier)) = &self.inherited_prefix {
+            crate::model::PreparedModelRequest::inherit(
+                request,
+                prefix,
+                verifier.as_ref(),
+                self.limits,
+            )
+            .await?
+        } else {
+            crate::model::PreparedModelRequest::prepare(request, self.limits)?
+        };
         let request_digest = request.manifest().request_digest;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ModelStarted {
@@ -1644,6 +1678,109 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
             async { Ok(None) }.boxed()
         }
+    }
+
+    struct PrefixJournalReader(Arc<Journal>);
+    impl crate::conversation::ContentResidencyVerifier for PrefixJournalReader {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let bytes = self.0.load(file).await?;
+                file.descriptor().verify(&bytes)
+            })
+        }
+        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
+            self.0.load(file)
+        }
+    }
+
+    #[derive(Default)]
+    struct PrefixBoundaryModel(Mutex<Vec<Vec<u8>>>);
+    impl ModelProvider for PrefixBoundaryModel {
+        fn generate<'a>(
+            &'a self,
+            request: crate::model::PreparedModelRequest,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(request.bytes().to_vec());
+            Box::pin(stream::iter([Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            })]))
+        }
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
+        let model = Model::new("example", "model", "1", Value::Null)?;
+        let root = crate::model::PreparedModelRequest::prepare(
+            ModelRequest {
+                model: model.clone(),
+                messages: vec![ModelMessage {
+                    role: ModelRole::User,
+                    content: ModelContent::Text("parent é\0🦀".into()),
+                }],
+                tools: Vec::new(),
+                max_output_tokens: Some(4096),
+            },
+            Limits::default(),
+        )?;
+        let journal = Arc::new(Journal::default());
+        let root_file = journal
+            .stage(
+                OperationId::from_bytes([66; 16]),
+                "root".into(),
+                crate::model::ModelPrefix::select(&root, None)?.canonical_bytes()?,
+                crate::model::ModelPrefix::MEDIA_TYPE,
+            )
+            .await?;
+        let reader = Arc::new(PrefixJournalReader(journal.clone()));
+        let provider = Arc::new(PrefixBoundaryModel::default());
+        let executor = StockExecutor::new(
+            model,
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        )
+        .with_inherited_prefix(root_file, reader)?;
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([67; 16]),
+            input: ModelContent::Text("child task; fresh scratch".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor.execute(input.clone(), journal.as_ref()).await?;
+        executor.execute(input.clone(), journal.as_ref()).await?;
+        let mut expected = root.request().clone();
+        expected.messages.push(ModelMessage {
+            role: ModelRole::User,
+            content: input.input.clone(),
+        });
+        let expected = crate::model::PreparedModelRequest::prepare(expected, Limits::default())?;
+        assert_eq!(
+            *provider
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![expected.bytes().to_vec()]
+        );
+        let unbound = StockExecutor::new(
+            root.request().model.clone(),
+            provider.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        );
+        assert!(matches!(
+            unbound.execute(input, journal.as_ref()).await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
     }
 
     #[tokio::test]

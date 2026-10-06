@@ -67,3 +67,29 @@ or a real provider invocation. Publication integration, replacing the copied
 conversation prefix, WASM parity and durable Filesystem restart tests for this
 new contract remain pending. The earlier checkpoint test counts do not include
 this later foundation.
+
+`StockExecutor::with_inherited_prefix` now binds the exact prefix reference
+to the existing execution identity and prepends the authenticated inherited
+messages after local context assembly. A provider-boundary regression checks
+exact bytes and replay without dispatch, and rejects removing the bound prefix
+from a retry. This does not yet publish the prefix as part of a completed fork.
+
+## Platform checkpoint evidence
+
+The earlier request-construction source snapshot (base
+`105728988b2b1831f2a0d596fc744e3b2d4eee5e`, archive SHA-256
+`5a8ad8f395d2d310e2c93588790b751ffcf5dd9d4481b73aebc216bb8c42e3e8`)
+was actually executed using Rust 1.98.1 in isolated Linux WSL and macOS
+`ivar` directories. Both Harness lanes passed 191 unit and 17 integration
+tests. The macOS Codex consumer lane passed 43 tests with three real-Codex
+qualification tests ignored. Linux initially failed one temporary-executable
+launch with `ETXTBSY`; that test passed in isolation and the complete consumer
+suite passed with one test thread (43 passed, three ignored). The default
+parallel Linux consumer run remains a recorded failure; a serial rerun does
+not erase it. No real-Codex qualification or production-provider test is claimed.
+
+The later prefix and stock-loop integration have 180 native library tests
+passing with native lint. They were added after the platform snapshot and
+require fresh platform/WASM evidence after final integration. Owned work stays
+active through review, required CI repairs and human-authorized merge; delivery
+requires verifying the landed commit on main.

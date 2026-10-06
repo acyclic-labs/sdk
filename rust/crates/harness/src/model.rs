@@ -744,16 +744,23 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct PrefixReader(std::collections::BTreeMap<String, Vec<u8>>);
+    struct PrefixReader(
+        std::collections::BTreeMap<String, Vec<u8>>,
+        std::collections::BTreeSet<String>,
+    );
 
     impl crate::conversation::ContentResidencyVerifier for PrefixReader {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
-                if self.0.contains_key(&file.read_capability()?) {
-                    Ok(())
-                } else {
-                    Err(Error::Unauthorized("prefix read is not granted".into()))
+                let capability = file.read_capability()?;
+                if !self.1.contains(&capability) {
+                    return Err(Error::Unauthorized("prefix read is not granted".into()));
                 }
+                let bytes = self
+                    .0
+                    .get(&capability)
+                    .ok_or_else(|| Error::NotFound("prefix version is missing".into()))?;
+                file.descriptor().verify(bytes)
             })
         }
         fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
@@ -794,6 +801,7 @@ mod tests {
             FileDescriptor::from_bytes(&bytes, media_type)?,
             "model-prefix.json",
         )?;
+        reader.1.insert(file.read_capability()?);
         reader.0.insert(file.read_capability()?, bytes);
         Ok(file)
     }
@@ -871,6 +879,12 @@ mod tests {
                 .await
                 .is_err()
             );
+            let mut denied = reader.clone();
+            denied.1.remove(&head.read_capability()?);
+            assert!(matches!(
+                PreparedModelRequest::inherit(local.clone(), &head, &denied, limits).await,
+                Err(Error::Unauthorized(_))
+            ));
             let mut missing_attachment = reader.clone();
             missing_attachment.0.remove(&attachment.read_capability()?);
             assert!(
