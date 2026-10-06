@@ -108,6 +108,59 @@ const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 
+/// Polls one potentially deep composition future on an owned task boundary.
+/// The task handle is kept in this future, so cancellation of the caller
+/// aborts the child before it can outlive the operation that admitted it.
+async fn run_owned_swarm_task<T, F>(future: F, uncertain_operation: OperationId) -> Result<T>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = Result<T>> + Send + 'static,
+{
+    let tasks = TaskGroup::new(1);
+    let handle = tasks.spawn(future).await;
+    match handle.result().await {
+        Outcome::Succeeded(result) => result,
+        Outcome::Failed { .. } | Outcome::Cancelled | Outcome::Indeterminate { .. } => {
+            Err(Error::Indeterminate(uncertain_operation))
+        }
+    }
+}
+
+/// Verifies a published fork boundary away from the publisher's model/tool
+/// poll stack. The verification still reads the exact authenticated parent
+/// journal and uses the same immutable declaration, but a cancellation or
+/// task failure remains uncertain for the publication operation.
+async fn verify_fork_boundary_on_owned_task(
+    parent_storage: Arc<PersistentLocalHarness>,
+    publication: ModelBatchPublication,
+    limits: Limits,
+    inherited: Option<InheritedModelContext>,
+) -> Result<VerifiedModelForkBoundary<LocalStream>> {
+    let uncertain_operation = publication.operation_id;
+    run_owned_swarm_task(
+        async move {
+            match inherited {
+                Some(inherited) => {
+                    parent_storage
+                        .storage()
+                        .verified_inherited_model_fork_boundary(
+                            &publication,
+                            limits,
+                            &inherited,
+                        )
+                        .await
+                }
+                None => parent_storage
+                    .storage()
+                    .verified_model_fork_boundary(&publication, limits)
+                    .await,
+            }
+        },
+        uncertain_operation,
+    )
+    .await
+}
+
 #[cfg(test)]
 type MessageAdmissionPause = (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Notify>);
 
@@ -2113,25 +2166,12 @@ impl LocalModelForkPlans {
         intent: LocalForkIntent,
         publication: ModelBatchPublication,
     ) -> Result<LocalModelForkPlan> {
-        // Keep the group local to this call. The handle below owns the task's
-        // cancellation, so dropping the caller's future aborts the resolver
-        // even though plans themselves are a durable registry shared by
-        // retries and reopened publishers.
-        let resolver_tasks = TaskGroup::new(1);
         let uncertain_operation = publication.operation_id;
-        let handle = resolver_tasks
-            .spawn(async move { resolver.resolve(intent, publication).await })
-            .await;
-        match handle.result().await {
-            Outcome::Succeeded(result) => result,
-            // A resolver can have crossed an external read/rebind boundary
-            // before its task is cancelled or panics. Keep that publication
-            // uncertain so recovery reconciles it rather than retrying.
-            Outcome::Failed { .. } | Outcome::Cancelled => {
-                Err(Error::Indeterminate(uncertain_operation))
-            }
-            Outcome::Indeterminate { .. } => Err(Error::Indeterminate(uncertain_operation)),
-        }
+        run_owned_swarm_task(
+            async move { resolver.resolve(intent, publication).await },
+            uncertain_operation,
+        )
+        .await
     }
 
     /// Registers one exact prepared report before a model turn begins.
@@ -6297,25 +6337,16 @@ impl PersistentLocalSwarm {
         // tail, but it can only trust a declaration that crossed this check
         // before its durable admission record was written.
         let parent_declaration = self.declarations.lock().await.get(&request.parent).cloned();
-        let verified = match parent_declaration {
-            Some(parent_declaration) => {
-                let inherited = parent_declaration.context(self.config.limits)?;
-                parent_storage
-                    .storage()
-                    .verified_inherited_model_fork_boundary(
-                        &publication,
-                        self.config.limits,
-                        &inherited,
-                    )
-                    .await?
-            }
-            None => {
-                parent_storage
-                    .storage()
-                    .verified_model_fork_boundary(&publication, self.config.limits)
-                    .await?
-            }
-        };
+        let inherited = parent_declaration
+            .map(|declaration| declaration.context(self.config.limits))
+            .transpose()?;
+        let verified = verify_fork_boundary_on_owned_task(
+            parent_storage.clone(),
+            publication.clone(),
+            self.config.limits,
+            inherited,
+        )
+        .await?;
         if verified.boundary() != &declaration.boundary {
             return Err(Error::Conflict(
                 "published declaration differs from the authenticated model boundary".into(),
