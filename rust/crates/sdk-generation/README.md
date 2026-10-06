@@ -2,8 +2,8 @@
 
 This standalone maintainer tool calls the existing Rust-owned `sdk-docs`
 library directly against typed rustdoc JSON produced by the Actors build.
-Callers provide only the checkout, external rustdoc input, output directory,
-package version, and channel.
+Release generation invokes the pinned Rustdoc stage for the Actors package;
+preview generation accepts an explicitly supplied external JSON input.
 
 The source closure is declared in `src/main.rs` and covers the workspace
 manifest, guide files, Actors, sdk-docs, this launcher, all lockfiles, and the
@@ -16,11 +16,15 @@ accepted as a substitute source input. The launcher resolves the Git revision
 itself, hashes that source closure and the external rustdoc JSON, calls the
 existing `sdk-docs` library, and writes a versioned manifest. Release
 generation requires a clean checkout; preview generation binds the working-tree
-digest. `drift` invokes no generation stage.
+digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
+the supplied JSON input.
 
 ```text
 cargo +1.98.1 test --offline --locked
 cargo +1.98.1 run --offline --locked -- generate \
-  --root <checkout> --rustdoc-json <json-or-dir> --output <bundle> \
+  --root <checkout> --output <bundle> \
   --version <version> --channel release
+cargo +1.98.1 run --offline --locked -- generate \
+  --root <checkout> --rustdoc-json <json-or-dir> --output <bundle> \
+  --version <version> --channel preview
 ```

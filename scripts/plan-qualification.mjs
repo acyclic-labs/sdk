@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump to invalidate every recorded marker at once.
-const SCHEMA = "sdk-qualification-v1";
+const SCHEMA = "sdk-qualification-v2";
 
 const documentation = path =>
   /^(README|CONTRIBUTING|SECURITY)\.md$/.test(path) || /^docs\/[^/]+\.md$/.test(path);
@@ -25,6 +25,39 @@ const qualificationDefinition = path =>
   path.startsWith(".github/actions/");
 const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDefinition(path);
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
+
+// Pull requests retain the security preflight and these two repository-level
+// checks. Platform packaging and browser/native downstream lanes qualify on
+// release, scheduled, or manual runs; an explicit forced dispatch reruns all.
+export const pullRequestCoreLanes = new Set(["gate", "policy"]);
+
+export const qualificationEventKinds = Object.freeze({
+  pullRequest: "pull_request",
+  mainPush: "main_push",
+  release: "release",
+  forcedDispatch: "forced_dispatch",
+  manual: "manual",
+  schedule: "schedule",
+  other: "other",
+});
+
+export function classifyQualificationEvent({ eventName, ref, force = false }) {
+  if (eventName === "pull_request") return qualificationEventKinds.pullRequest;
+  if (eventName === "release") return qualificationEventKinds.release;
+  if (eventName === "workflow_dispatch") {
+    return force ? qualificationEventKinds.forcedDispatch : qualificationEventKinds.manual;
+  }
+  if (eventName === "schedule") return qualificationEventKinds.schedule;
+  if (eventName === "push" && ref === "refs/heads/main") return qualificationEventKinds.mainPush;
+  return qualificationEventKinds.other;
+}
+
+export function requiresFullQualification(event) {
+  return event === qualificationEventKinds.release ||
+    event === qualificationEventKinds.manual ||
+    event === qualificationEventKinds.schedule ||
+    event === qualificationEventKinds.forcedDispatch;
+}
 
 // Each predicate returns true for paths the lane can never observe.
 export const ignored = {
@@ -66,17 +99,27 @@ export function laneKeys(lanes, entries) {
 // Decides each lane's fate. `marker(lane)` returns the run that recorded the
 // lane's fingerprint, if any; `retained(runId, prefix)` names the artifact that
 // run still retains, or "".
-export function chooseLanes(lanes, { force, mainPush, trusted, marker, retained }) {
+export function chooseLanes(lanes, {
+  force,
+  mainPush,
+  pullRequest = false,
+  coreOnly = false,
+  trusted,
+  marker,
+  retained,
+}) {
   const matrix = [];
   const reused = {};
   for (const lane of lanes) {
+    if ((pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
     // Source-bound artifacts record the commit they were built from, and
     // releases require that commit to be the main commit being released.
     if (force || (mainPush && lane.source_bound)) {
       matrix.push(lane);
       continue;
     }
-    let source = trusted ?? marker(lane.lane);
+    const trustedForLane = mainPush && !pullRequestCoreLanes.has(lane.lane) ? null : trusted;
+    let source = trustedForLane ?? marker(lane.lane);
     let artifact = "";
     if (source && lane.artifact) {
       artifact = retained(source.run_id, lane.artifact);
@@ -171,11 +214,20 @@ function recordedMarker(lane) {
 
 function select() {
   const force = process.env.FORCE === "true";
-  const mainPush = process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/main";
+  const event = classifyQualificationEvent({
+    eventName: process.env.GITHUB_EVENT_NAME,
+    ref: process.env.GITHUB_REF,
+    force,
+  });
+  const pullRequest = event === qualificationEventKinds.pullRequest;
+  const mainPush = event === qualificationEventKinds.mainPush;
+  const fullQualification = requiresFullQualification(event);
   const trusted = !force && mainPush ? qualifiedPullRequestRun() : null;
   const { matrix, reused } = chooseLanes(readLanes(), {
     force,
     mainPush,
+    pullRequest,
+    coreOnly: !fullQualification,
     trusted,
     marker: recordedMarker,
     retained: retainedArtifact,
@@ -185,7 +237,7 @@ function select() {
   }
   // On pull requests, early-start lanes run in their own job that is queued at
   // workflow start and executes only when the plan requires it.
-  const early = process.env.GITHUB_EVENT_NAME === "pull_request"
+  const early = event === qualificationEventKinds.pullRequest
     ? matrix.filter(lane => lane.early_start)
     : [];
   output("matrix", matrix.filter(lane => !early.includes(lane)));

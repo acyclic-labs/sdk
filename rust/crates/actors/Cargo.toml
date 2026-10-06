@@ -13,14 +13,19 @@ readme = "README.md"
 prost.workspace = true
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
-reqwest.workspace = true
 serde_json.workspace = true
 ts-rs = "=12.0.1"
 thiserror.workspace = true
-tonic.workspace = true
 tonic-prost.workspace = true
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-workers = { path = "../workers" }
 tokio.workspace = true
 rcgen = "0.14.10"

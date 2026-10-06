@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { chooseLanes, ignored, laneKeys } from "./plan-qualification.mjs";
+import {
+  chooseLanes,
+  classifyQualificationEvent,
+  ignored,
+  laneKeys,
+  qualificationEventKinds,
+  requiresFullQualification,
+} from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
@@ -93,13 +100,13 @@ test("a lane whose artifact expired executes again", () => {
   assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
 });
 
-test("main pushes rebuild source-bound artifacts even from a trusted pull request", () => {
+test("ordinary main pushes keep downstream qualification off the routine path", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: false, mainPush: true, trusted: source, marker: () => null, retained: retainedAll,
+    force: false, mainPush: true, trusted: null, marker: () => null, retained: retainedAll,
+    coreOnly: true,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), lanes.filter(lane => lane.source_bound).map(lane => lane.lane));
-  assert.ok(!("linux" in reused));
-  assert.deepEqual(reused.windows, { run_id: 7, run_attempt: 2, artifact: "" });
+  assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+  assert.deepEqual(reused, {});
 });
 
 test("forced runs execute every lane", () => {
@@ -108,4 +115,45 @@ test("forced runs execute every lane", () => {
   });
   assert.equal(matrix.length, lanes.length);
   assert.deepEqual(reused, {});
+});
+
+test("routine pull requests qualify only the core gate and policy lanes", () => {
+  const { matrix } = chooseLanes(lanes, {
+    force: false,
+    mainPush: false,
+    pullRequest: true,
+    coreOnly: true,
+    trusted: null,
+    marker: () => null,
+    retained: () => "",
+  });
+  assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
+});
+
+test("release, manual, and scheduled events are full qualification events", () => {
+  const cases = [
+    [{ eventName: "release" }, qualificationEventKinds.release],
+    [{ eventName: "workflow_dispatch", force: false }, qualificationEventKinds.manual],
+    [{ eventName: "schedule" }, qualificationEventKinds.schedule],
+  ];
+  for (const [input, expected] of cases) {
+    const event = classifyQualificationEvent(input);
+    assert.equal(event, expected);
+    assert.equal(requiresFullQualification(event), true);
+  }
+});
+
+test("the workflow keeps full qualification off routine pull requests", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8").replaceAll("\r\n", "\n");
+  assert.match(workflow, /^  release:/m);
+  assert.doesNotMatch(workflow, /^  schedule:/m);
+  assert.match(workflow, /default: false/);
+  assert.match(workflow, /needs: plan/);
+  assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
+});
+
+test("the fast gate covers standalone Rust docs and generation crates", () => {
+  const script = readFileSync("scripts/qualify-ci.sh", "utf8");
+  assert.match(script, /cargo test -p acyclic-actors --locked --lib/);
+  assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
 });

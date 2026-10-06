@@ -75,6 +75,12 @@ struct Config {
     channel: String,
 }
 
+struct PinnedToolchain {
+    cargo: PathBuf,
+    rustc: PathBuf,
+    rustdoc: PathBuf,
+}
+
 fn digest(bytes: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(bytes);
@@ -400,6 +406,97 @@ fn current_tool_hash() -> io::Result<String> {
     Ok(hash_file(&path, "sdk-generation".into())?.sha256)
 }
 
+fn rustup_tool(tool: &str) -> io::Result<PathBuf> {
+    let output = Command::new("rustup")
+        .args(["which", "--toolchain", "1.98.1", tool])
+        .output()
+        .map_err(|error| {
+            io::Error::other(format!("failed to resolve {tool} with rustup: {error}"))
+        })?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "rustup could not resolve pinned {tool}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let path: PathBuf = String::from_utf8(output.stdout)
+        .map_err(io::Error::other)?
+        .trim()
+        .into();
+    if !path.is_file() {
+        return Err(io::Error::other(format!(
+            "rustup resolved {tool} to a non-file path: {}",
+            path.display()
+        )));
+    }
+    canonical(&path)
+}
+
+fn verify_tool_version(path: &Path, tool: &str) -> io::Result<()> {
+    let output = Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|error| io::Error::other(format!("failed to inspect {tool}: {error}")))?;
+    let version = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        || !version
+            .lines()
+            .next()
+            .is_some_and(|line| line.split_whitespace().take(2).eq([tool, "1.98.1"]))
+    {
+        return Err(io::Error::other(format!(
+            "resolved {tool} is not version 1.98.1: {}",
+            version.trim()
+        )));
+    }
+    Ok(())
+}
+
+fn pinned_toolchain() -> io::Result<PinnedToolchain> {
+    let cargo = rustup_tool("cargo")?;
+    let rustc = rustup_tool("rustc")?;
+    let rustdoc = rustup_tool("rustdoc")?;
+    verify_tool_version(&cargo, "cargo")?;
+    verify_tool_version(&rustc, "rustc")?;
+    verify_tool_version(&rustdoc, "rustdoc")?;
+    Ok(PinnedToolchain {
+        cargo,
+        rustc,
+        rustdoc,
+    })
+}
+
+fn sanitize_compiler_environment(command: &mut Command, tools: &PinnedToolchain) {
+    for (key, _) in env::vars_os() {
+        let uppercase = key.to_string_lossy().to_ascii_uppercase();
+        let remove = matches!(
+            uppercase.as_str(),
+            "RUSTC"
+                | "RUSTDOC"
+                | "RUSTFLAGS"
+                | "RUSTDOCFLAGS"
+                | "CARGO_ENCODED_RUSTFLAGS"
+                | "CARGO_ENCODED_RUSTDOCFLAGS"
+                | "RUSTC_WRAPPER"
+                | "RUSTC_WORKSPACE_WRAPPER"
+                | "CARGO_BUILD_TARGET"
+                | "CARGO_TARGET_DIR"
+                | "RUSTUP_TOOLCHAIN"
+        ) || uppercase.starts_with("CARGO_CFG_")
+            || uppercase.starts_with("CARGO_BUILD_")
+            || uppercase.starts_with("CARGO_TARGET_")
+            || uppercase.starts_with("RUSTC_")
+            || uppercase.starts_with("RUSTDOC_");
+        if remove {
+            command.env_remove(&key);
+        }
+    }
+    command
+        .env("RUSTC", &tools.rustc)
+        .env("RUSTDOC", &tools.rustdoc)
+        .env("RUSTC_BOOTSTRAP", "1");
+}
+
 fn rustdoc_target(config: &Config) -> io::Result<PathBuf> {
     let parent = config
         .output
@@ -422,14 +519,16 @@ fn rustdoc_target(config: &Config) -> io::Result<PathBuf> {
 fn generate_rustdoc(config: &Config) -> io::Result<PathBuf> {
     let target = rustdoc_target(config)?;
     let manifest = config.root.join("Cargo.toml");
-    let status = Command::new("cargo")
-        .arg("+1.98.1")
+    let tools = pinned_toolchain()?;
+    let mut cargo = Command::new(&tools.cargo);
+    cargo
         .args(["rustdoc", "--locked", "--manifest-path"])
         .arg(&manifest)
         .args(["--package", ACTORS_PACKAGE, "--lib", "--target-dir"])
         .arg(&target)
-        .args(["--", "-Z", "unstable-options", "--output-format", "json"])
-        .env("RUSTC_BOOTSTRAP", "1")
+        .args(["--", "-Z", "unstable-options", "--output-format", "json"]);
+    sanitize_compiler_environment(&mut cargo, &tools);
+    let status = cargo
         .status()
         .map_err(|error| io::Error::other(format!("failed to run pinned rustdoc: {error}")))?;
     if !status.success() {

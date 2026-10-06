@@ -30,14 +30,14 @@ fn git(root: &Path, args: &[&str]) {
     );
 }
 
-fn run(
+fn command(
     binary: &Path,
     operation: &str,
     root: &Path,
     rustdoc: Option<&Path>,
     output: &Path,
     channel: &str,
-) -> std::process::Output {
+) -> Command {
     let mut command = Command::new(binary);
     command.args([
         operation,
@@ -53,7 +53,20 @@ fn run(
     if let Some(rustdoc) = rustdoc {
         command.args(["--rustdoc-json", rustdoc.to_str().unwrap()]);
     }
-    command.output().unwrap()
+    command
+}
+
+fn run(
+    binary: &Path,
+    operation: &str,
+    root: &Path,
+    rustdoc: Option<&Path>,
+    output: &Path,
+    channel: &str,
+) -> std::process::Output {
+    command(binary, operation, root, rustdoc, output, channel)
+        .output()
+        .unwrap()
 }
 
 #[test]
@@ -400,7 +413,24 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     git(&root, &["commit", "--quiet", "-m", "fixture"]);
 
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
-    let result = run(binary, "generate", &root, None, &output, "release");
+    let result = command(binary, "generate", &root, None, &output, "release")
+        .env("RUSTC", root.join("missing-rustc.exe"))
+        .env("RUSTDOC", root.join("missing-rustdoc.exe"))
+        .env("RUSTFLAGS", "--cfg injected_compiler_override")
+        .env("RUSTDOCFLAGS", "--cfg injected_rustdoc_override")
+        .env("CARGO_ENCODED_RUSTFLAGS", "--cfg injected")
+        .env("RUSTC_WRAPPER", root.join("missing-wrapper.exe"))
+        .env(
+            "RUSTC_WORKSPACE_WRAPPER",
+            root.join("missing-workspace-wrapper.exe"),
+        )
+        .env("CARGO_BUILD_TARGET", "injected-target")
+        .env(
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+            "--cfg injected_target_override",
+        )
+        .output()
+        .unwrap();
     assert!(
         result.status.success(),
         "{}",

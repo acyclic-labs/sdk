@@ -121,11 +121,7 @@ impl Client {
         if !status.is_success() {
             let detail = self
                 .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
-                .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
+                .ok();
             return Err(Error::Service {
                 status: status.as_u16(),
                 detail,

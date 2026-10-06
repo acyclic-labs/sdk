@@ -2,10 +2,13 @@
 
 use std::collections::HashSet;
 
-pub mod grpc;
-pub mod http;
 /// Rust-owned semantic projections for generated SDK metadata.
 pub mod domain;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod grpc;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;
 
 /// Rust-owned Actors v1 wire types and schema metadata.
 pub mod wire;

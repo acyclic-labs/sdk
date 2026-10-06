@@ -219,13 +219,13 @@ impl From<ActorLimits> for wire::ActorLimits {
 /// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 pub enum SubscriptionStart {
+    /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
         #[ts(type = "bigint")]
         cursor: u64,
     },
-    CurrentHead {
-        current_head: bool,
-    },
+    /// Start at the service's current head, preserving the wire boolean.
+    CurrentHead { current_head: bool },
 }
 
 impl TryFrom<wire::SubscriptionStart> for SubscriptionStart {
@@ -273,7 +273,10 @@ impl TryFrom<wire::SubscriptionSpec> for SubscriptionSpec {
         if value.subscription_id.is_empty() || value.stream_path.is_empty() {
             return Err(DomainError::InvalidSubscription);
         }
-        let start_wire = value.start.ok_or(DomainError::InvalidSubscription)?;
+        let start_wire = value
+            .start
+            .as_ref()
+            .ok_or(DomainError::InvalidSubscription)?;
         if !matches!(
             start_wire.start.as_ref(),
             Some(wire::subscription_start::Start::Cursor(_))
@@ -281,24 +284,23 @@ impl TryFrom<wire::SubscriptionSpec> for SubscriptionSpec {
         ) {
             return Err(DomainError::InvalidSubscription);
         }
-        let start = start_wire.try_into()?;
+        let start = start_wire.clone().try_into()?;
         Ok(Self::from_validated(value, start))
     }
 }
 
 impl SubscriptionSpec {
     fn from_validated_wire(value: wire::SubscriptionSpec) -> Result<Self, DomainError> {
-        let start = value
-            .start
-            .as_ref()
-            .and_then(|start| start.start.as_ref())
-            .copied()
-            .ok_or(DomainError::InvalidSubscription)?;
-        let start = match start {
-            wire::subscription_start::Start::Cursor(cursor) => SubscriptionStart::Cursor { cursor },
-            wire::subscription_start::Start::CurrentHead(current_head) => {
-                SubscriptionStart::CurrentHead { current_head }
+        let start = match value.start.as_ref().and_then(|start| start.start.as_ref()) {
+            Some(wire::subscription_start::Start::Cursor(cursor)) => {
+                SubscriptionStart::Cursor { cursor: *cursor }
             }
+            Some(wire::subscription_start::Start::CurrentHead(current_head)) => {
+                SubscriptionStart::CurrentHead {
+                    current_head: *current_head,
+                }
+            }
+            None => return Err(DomainError::InvalidSubscription),
         };
         Ok(Self::from_validated(value, start))
     }
@@ -328,8 +330,11 @@ impl From<SubscriptionSpec> for wire::SubscriptionSpec {
 /// than normalized to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 pub enum SubscriptionState {
+    /// No subscription state was specified by the service.
     Unspecified,
+    /// The subscription is active.
     Active,
+    /// The subscription is paused.
     Paused,
 }
 
@@ -349,9 +354,13 @@ impl TryFrom<i32> for SubscriptionState {
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 pub enum ActorState {
+    /// No Actor state was specified by the service.
     Unspecified,
+    /// The Actor is active.
     Active,
+    /// The Actor is hibernated.
     Hibernated,
+    /// The Actor is paused.
     Paused,
 }
 
@@ -359,16 +368,27 @@ pub enum ActorState {
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 pub enum ErrorCode {
+    /// No service error code was specified.
     Unspecified,
+    /// The request was invalid.
     InvalidArgument,
+    /// The requested capability was denied.
     CapabilityDenied,
+    /// The requested capability expired.
     CapabilityExpired,
+    /// The Actor could not be found.
     ActorNotFound,
+    /// The subscription could not be found.
     SubscriptionNotFound,
+    /// The idempotency key did not match the original request.
     IdempotencyMismatch,
+    /// The request conflicted with current state.
     Conflict,
+    /// Admission was denied.
     AdmissionDenied,
+    /// Checkpoint creation failed.
     CheckpointFailed,
+    /// A required dependency was unavailable.
     DependencyUnavailable,
 }
 
@@ -509,6 +529,7 @@ fn actor_response(
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
+        #[doc = "Typed response preserving the optional server Actor observation."]
         pub struct $name {
             actor: Option<ActorObservation>,
         }
@@ -555,8 +576,8 @@ impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
             bindings: value
                 .bindings
                 .into_iter()
-                .map(|binding| Ok(Binding::from_validated(binding)))
-                .collect::<Result<_, _>>()?,
+                .map(Binding::from_validated)
+                .collect(),
             limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?),
             subscriptions: value
                 .subscriptions
@@ -571,7 +592,7 @@ impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
 impl From<CreateActorRequest> for wire::CreateActorRequest {
     fn from(value: CreateActorRequest) -> Self {
         Self {
-            code_sha256: Vec::from(&value.code_sha256).into(),
+            code_sha256: value.code_sha256.as_bytes().to_vec().into(),
             home_region: value.home_region,
             bindings: value.bindings.into_iter().map(Into::into).collect(),
             limits: Some(value.limits.into()),
@@ -604,8 +625,8 @@ impl TryFrom<wire::UpdateActorRequest> for UpdateActorRequest {
             bindings: value
                 .bindings
                 .into_iter()
-                .map(|binding| Ok(Binding::from_validated(binding)))
-                .collect::<Result<_, _>>()?,
+                .map(Binding::from_validated)
+                .collect(),
             limits: ActorLimits::from_validated(value.limits.ok_or(DomainError::MissingMessage)?),
             expected_configuration_revision: value.expected_configuration_revision,
             idempotency_key: value.idempotency_key,
@@ -617,7 +638,7 @@ impl From<UpdateActorRequest> for wire::UpdateActorRequest {
     fn from(value: UpdateActorRequest) -> Self {
         Self {
             actor_id: value.actor_id.0,
-            code_sha256: Vec::from(&value.code_sha256).into(),
+            code_sha256: value.code_sha256.as_bytes().to_vec().into(),
             bindings: value.bindings.into_iter().map(Into::into).collect(),
             limits: Some(value.limits.into()),
             expected_configuration_revision: value.expected_configuration_revision,
@@ -775,7 +796,7 @@ impl From<CheckpointActorRequest> for wire::CheckpointActorRequest {
 
 /// Typed invocation request. Method, URL, headers, and body preserve the
 /// existing wire contract without adding new validation rules.
-#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[derive(Clone, Debug, PartialEq, TS)]
 pub struct InvokeActorRequest {
     actor_id: ActorId,
     method: String,
@@ -813,7 +834,7 @@ impl From<InvokeActorRequest> for wire::InvokeActorRequest {
 }
 
 /// Typed invocation response with byte-preserving body and headers.
-#[derive(Clone, Debug, Eq, PartialEq, TS)]
+#[derive(Clone, Debug, PartialEq, TS)]
 pub struct InvokeActorResponse {
     status: u32,
     #[ts(type = "Uint8Array")]
@@ -850,7 +871,7 @@ mod tests {
     fn actor_id_matches_existing_presence_rule() {
         assert_eq!(ActorId::new(String::new()), Err(DomainError::EmptyActorId));
         assert_eq!(
-            ActorId::new("  ".into()).map(|value| value.as_str().into()),
+            ActorId::new("  ".into()).map(|value| value.as_str().to_owned()),
             Ok("  ")
         );
     }

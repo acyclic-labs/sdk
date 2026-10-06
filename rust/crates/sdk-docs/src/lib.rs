@@ -67,6 +67,9 @@ pub struct SourceSpan {
 #[serde(rename_all = "camelCase")]
 pub struct ApiItem {
     pub id: String,
+    /// Rustdoc parent identity retained when public-api reports one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     pub name: String,
     pub kind: String,
     pub path: String,
@@ -478,7 +481,8 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         .ok_or_else(|| Error::Invalid(format!("{} has no crate name", json_path.display())))?;
     let slug = slugify(&crate_name);
     let title = titleize(&crate_name);
-    let public_items = public_api::extract(json_path)?;
+    let mut public_items = public_api::extract(json_path)?;
+    deduplicate_public_items(&mut public_items);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
     for public_item in &public_items {
@@ -531,6 +535,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         };
         items.push(ApiItem {
             id: format_id(item_id),
+            parent_id: public_item.parent_id.map(format_id),
             name,
             kind: kind_name(item.inner.item_kind()).into(),
             path: path.join("::"),
@@ -545,7 +550,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             reexport_target,
         });
     }
-    deduplicate_items(&mut items);
+    items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
     let guides = guides_from_rustdoc(krate, &crate_name, &public_items)?;
     Ok(Family {
         slug,
@@ -556,15 +561,19 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
     })
 }
 
-fn deduplicate_items(items: &mut Vec<ApiItem>) {
-    items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
+fn deduplicate_public_items(items: &mut Vec<public_api::PublicItemSignature>) {
+    items.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then(left.path.cmp(&right.path))
+            .then(left.display.cmp(&right.display))
+            .then(left.parent_id.cmp(&right.parent_id))
+    });
     items.dedup_by(|left, right| {
         left.id == right.id
             && left.path == right.path
-            && left.signature == right.signature
-            && left.source == right.source
-            && left.reexport == right.reexport
-            && left.reexport_target == right.reexport_target
+            && left.display == right.display
+            && left.parent_id == right.parent_id
     });
 }
 
@@ -944,41 +953,27 @@ mod tests {
 
     #[test]
     fn duplicate_public_occurrences_collapse_without_losing_aliases() {
-        let item = ApiItem {
-            id: "1".into(),
-            name: "Thing".into(),
-            kind: "struct".into(),
-            path: "demo::Thing".into(),
-            signature: "pub struct Thing".into(),
-            docs: Some("A thing".into()),
-            source: None,
-            reexport: None,
-            reexport_target: None,
+        let item = public_api::PublicItemSignature {
+            id: Id(1),
+            parent_id: None,
+            display: "pub struct Thing".into(),
+            path: vec!["demo".into(), "Thing".into()],
         };
-        let alias = ApiItem {
-            id: "2".into(),
-            name: "Alias".into(),
-            kind: "use".into(),
-            path: "demo::Alias".into(),
-            signature: "pub use demo::Thing as Alias".into(),
-            docs: Some("An alias".into()),
-            source: None,
-            reexport: Some("demo::Thing".into()),
-            reexport_target: Some("demo::Thing".into()),
+        let nested_occurrence = public_api::PublicItemSignature {
+            parent_id: Some(Id(9)),
+            ..item.clone()
         };
-        let mut items = vec![item.clone(), alias.clone(), item];
-        deduplicate_items(&mut items);
-        assert_eq!(items, vec![alias, ApiItem {
-            id: "1".into(),
-            name: "Thing".into(),
-            kind: "struct".into(),
-            path: "demo::Thing".into(),
-            signature: "pub struct Thing".into(),
-            docs: Some("A thing".into()),
-            source: None,
-            reexport: None,
-            reexport_target: None,
-        }]);
+        let alias = public_api::PublicItemSignature {
+            id: Id(2),
+            parent_id: Some(Id(3)),
+            display: "pub use demo::Thing as Alias".into(),
+            path: vec!["demo".into(), "Alias".into()],
+        };
+        let mut items = vec![item.clone(), alias.clone(), nested_occurrence.clone(), item];
+        deduplicate_public_items(&mut items);
+        assert_eq!(items.len(), 3);
+        assert!(items.contains(&nested_occurrence));
+        assert!(items.contains(&alias));
     }
 
     #[test]
@@ -1156,11 +1151,15 @@ mod tests {
         let changed = build_data(&changed_source).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
         let family = &first.families[0];
-        assert!(family
+        let alias = family
             .items
             .iter()
-            .any(|item| item.reexport.as_deref() == Some("hidden::Visible")
-                && item.reexport_target.as_deref() == Some("demo::hidden::private_function")));
+            .find(|item| {
+                item.reexport.as_deref() == Some("hidden::Visible")
+                    && item.reexport_target.as_deref() == Some("demo::hidden::private_function")
+            })
+            .expect("the public alias should be projected");
+        assert!(alias.parent_id.is_some());
         let mismatched_path = root.join("mismatched.json");
         let mut mismatched = fixture.clone();
         mismatched["crate_version"] = serde_json::json!("9.9.9");
