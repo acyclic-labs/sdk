@@ -3244,7 +3244,12 @@ fn source_contains_descriptor_oneof_arm(
         .map(|name| descriptor_projection_aliases(language, name))
         .unwrap_or_default();
     match language {
-        "cpp" => source_contains_identifier(source, &format!("{choice}{arm}")),
+        "cpp" => source.lines().any(|line| {
+            !is_source_comment(line)
+                && line.contains(&format!("{choice}{arm}"))
+                && (line.contains(&payload)
+                    || payload_aliases.iter().any(|alias| line.contains(alias)))
+        }),
         "csharp" => {
             source_contains_identifier(source, &choice)
                 && source.lines().any(|line| {
