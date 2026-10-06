@@ -66,16 +66,16 @@ const wasmSmoke = {
   },
 };
 const wasmPackages = [
-  ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
-  ["harness", "build-harness-wasm.mjs", "acyclic_harness_wasm"],
-  ["inference", "build-inference-wasm.mjs", "acyclic_inference_wasm"],
-  ["machines", "build-machines-wasm.mjs", "acyclic_machines_wasm"],
-  ["objects", "build-objects-wasm.mjs", "acyclic_objects_wasm"],
-  ["stream", "build-stream-wasm.mjs", "acyclic_stream_wasm"],
+  ["filesystem", "acyclic_fs_wasm"],
+  ["harness", "acyclic_harness_wasm"],
+  ["inference", "acyclic_inference_wasm"],
+  ["machines", "acyclic_machines_wasm"],
+  ["objects", "acyclic_objects_wasm"],
+  ["stream", "acyclic_stream_wasm"],
 ];
-const checkWasmPackage = async ([packageName, buildScript, basename]) => {
+const checkWasmPackage = async ([packageName, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
-  const built = spawnSync(process.execPath, [join(root, "scripts", buildScript), output], {
+  const built = spawnSync(process.execPath, [join(root, "scripts", "build-wasm.mjs"), packageName, output], {
     cwd: root,
     encoding: "utf8",
   });
