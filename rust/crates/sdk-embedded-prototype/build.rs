@@ -12,6 +12,10 @@ fn main() {
     cbindgen::Builder::new()
         .with_crate(std::env::var("CARGO_MANIFEST_DIR").expect("manifest directory is set"))
         .with_language(cbindgen::Language::C)
+        // Keep the single Rust-owned C header directly consumable from C++20 as
+        // well as C: fixed-width enums remain ABI-stable and exported symbols
+        // retain C linkage under __cplusplus.
+        .with_cpp_compat(true)
         .generate()
         .expect("the embedded prototype C header must generate")
         .write_to_file(output);
