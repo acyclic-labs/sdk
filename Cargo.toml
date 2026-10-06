@@ -144,6 +144,7 @@ dbg_macro = "warn"
 missing_panics_doc = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
+undocumented_unsafe_blocks = "deny"
 
 # The CLI hashes its own executable to name its service. Unoptimized, that
 # takes ~20 s for a Linux debug binary and outlasts the client's readiness wait.
