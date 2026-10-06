@@ -1400,12 +1400,16 @@ impl StockExecutor {
         step: u32,
         completed: &[ModelMessage],
     ) -> Result<()> {
+        crate::stack_diagnostics::marker("completed-batch-enter");
         let records = journal.replay(operation).await?;
+        crate::stack_diagnostics::marker("completed-batch-after-replay");
         let (manifest_file, request_file) = prepared_model_input(&records, step)?
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
         let mut request: ModelRequest = load_json(journal, &request_file).await?;
+        crate::stack_diagnostics::marker("completed-batch-after-request-load");
         let manifest: crate::model_input::ModelInputManifest =
             load_json(journal, &manifest_file).await?;
+        crate::stack_diagnostics::marker("completed-batch-after-manifest-load");
         let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
             request.clone(),
             self.limits,
@@ -1417,6 +1421,7 @@ impl StockExecutor {
                 "completed batch model input bindings changed".into(),
             ));
         }
+        crate::stack_diagnostics::marker("completed-batch-after-prepare");
         request.messages.extend_from_slice(completed);
         let mut rejections = manifest.rejection_evidence;
         for record in &records {
@@ -1438,12 +1443,14 @@ impl StockExecutor {
             // steps are distinct occurrences and must retain multiplicity.
             rejections.push(feedback);
         }
+        crate::stack_diagnostics::marker("completed-batch-after-rejections");
         let boundary = crate::model_input::CompletedModelBoundary::capture_with_policy(
             request,
             self.limits,
             self.provider.model_option_policy(),
             &rejections,
         )?;
+        crate::stack_diagnostics::marker("completed-batch-after-boundary-capture");
         validate_completed_batch_exchange(
             journal,
             &records,
@@ -1454,8 +1461,10 @@ impl StockExecutor {
             self.limits,
         )
         .await?;
+        crate::stack_diagnostics::marker("completed-batch-after-validation");
         let key = format!("model:{step}:completed-batch");
         let reference = stage_json(journal, operation, &key, &boundary).await?;
+        crate::stack_diagnostics::marker("completed-batch-after-stage");
         journal
             .append(
                 operation,
@@ -1464,8 +1473,9 @@ impl StockExecutor {
                     step,
                     boundary: reference.clone(),
                 },
-            )
-            .await?;
+        )
+        .await?;
+        crate::stack_diagnostics::marker("completed-batch-after-append");
         self.publish_completed_batch(journal, operation, step, request_file.clone(), reference)
             .await
     }
