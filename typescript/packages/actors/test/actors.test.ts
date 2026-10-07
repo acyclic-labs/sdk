@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { fromBinary, type MessageShape } from "@bufbuild/protobuf";
 import { ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
-import { AddSubscriptionRequestSchema, InspectActorRequestSchema } from "../generated/proto/actors/v1/actors_pb.js";
+import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema } from "../generated/proto/actors/v1/actors_pb.js";
+import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
 describe("Rust-backed Actors client", () => {
+  test("installs every public operation from the maintained service descriptor", () => {
+    expect(ACTORS_OPERATION_NAMES).toEqual(ActorsService.methods.map(method => method.localName));
+    const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding: { connect: async () => ({ transport: "test" }) } });
+    for (const operation of ACTORS_OPERATION_NAMES) expect(typeof client[operation]).toBe("function");
+  });
+
   test("encodes semantic oneof requests and preserves optional response presence", async () => {
     let inspected: MessageShape<typeof InspectActorRequestSchema> | undefined;
     let subscribed: MessageShape<typeof AddSubscriptionRequestSchema> | undefined;

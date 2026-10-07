@@ -1,20 +1,15 @@
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
-import {
-  AddSubscriptionRequestSchema, AddSubscriptionResponseSchema,
-  CheckpointActorRequestSchema, CheckpointActorResponseSchema,
-  CreateActorRequestSchema, CreateActorResponseSchema,
-  InspectActorRequestSchema, InspectActorResponseSchema,
-  InvokeActorRequestSchema, InvokeActorResponseSchema,
-  RemoveSubscriptionRequestSchema, RemoveSubscriptionResponseSchema,
-  ResumeSubscriptionRequestSchema, ResumeSubscriptionResponseSchema,
-  UpdateActorRequestSchema, UpdateActorResponseSchema,
-} from "../generated/proto/actors/v1/actors_pb.js";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
-import { HTTP_ROUTES } from "./routes.js";
-import type * as Semantic from "./generated/semantic/actors/index.js";
+import {
+  ACTORS_OPERATION_NAMES,
+  installActorsMethods,
+  type ActorsClientMethods,
+  type ActorsMethod,
+  type ActorsOperation,
+} from "./generated/actors-service.js";
 
 /** Rust operation surface implemented by either the N-API or WASM bridge. */
-export type Operation = keyof typeof HTTP_ROUTES;
+export type Operation = ActorsOperation;
 
 export type ActorsRustClient = {
   readonly [K in Operation]: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
@@ -79,27 +74,21 @@ export class ActorsClient {
     this.#token = options.token;
     this.#caCertificate = options.caCertificate;
     this.#binding = options.binding ?? defaultBinding();
+    installActorsMethods(this, (method, request, callOptions) => this.#call(method, request, callOptions));
   }
 
   get transport(): Promise<string | undefined> { return this.#connection().then(client => client.transport); }
-  createActor(request: ReadonlySemantic<Semantic.CreateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.CreateActorResponse>> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema, options); }
-  updateActor(request: ReadonlySemantic<Semantic.UpdateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.UpdateActorResponse>> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema, options); }
-  inspectActor(request: ReadonlySemantic<Semantic.InspectActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.InspectActorResponse>> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema, options); }
-  addSubscription(request: ReadonlySemantic<Semantic.AddSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.AddSubscriptionResponse>> { return this.#call("addSubscription", AddSubscriptionRequestSchema, request, AddSubscriptionResponseSchema, options); }
-  removeSubscription(request: ReadonlySemantic<Semantic.RemoveSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.RemoveSubscriptionResponse>> { return this.#call("removeSubscription", RemoveSubscriptionRequestSchema, request, RemoveSubscriptionResponseSchema, options); }
-  resumeSubscription(request: ReadonlySemantic<Semantic.ResumeSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.ResumeSubscriptionResponse>> { return this.#call("resumeSubscription", ResumeSubscriptionRequestSchema, request, ResumeSubscriptionResponseSchema, options); }
-  checkpointActor(request: ReadonlySemantic<Semantic.CheckpointActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.CheckpointActorResponse>> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema, options); }
-  invokeActor(request: ReadonlySemantic<Semantic.InvokeActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.InvokeActorResponse>> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema, options); }
 
-  async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O, options?: ActorsCallOptions): Promise<Response> {
-    const encoded = toBinary(input, create(input, request as MessageShape<I>));
+  async #call<Request, Response>(method: ActorsMethod, request: Request, options?: ActorsCallOptions): Promise<Response> {
+    const operation = method.localName as Operation;
+    const encoded = toBinary(method.input, create(method.input, request as MessageShape<typeof method.input>));
     throwIfAborted(options?.signal);
     const client = await this.#connection(options?.signal);
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
-      return normalizeSemantic(fromBinary(output, response), output) as Response;
+      return normalizeSemantic(fromBinary(method.output, response), method.output) as Response;
     }) as Promise<Response>;
   }
 
@@ -166,6 +155,8 @@ function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
   return result;
 }
 
+export interface ActorsClient extends ActorsClientMethods {}
+
 /** Compatibility name retained while callers migrate to `ActorsClient`. */
 export class HttpActorsClient extends ActorsClient {}
 
@@ -216,7 +207,7 @@ function nativeBinding(): ActorsRustBinding {
       } finally {
         cancellation?.cleanup();
       }
-      const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
+      const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
           const cancellation = nativeCancellation(module, signal);
@@ -338,7 +329,7 @@ function wasmBinding(): ActorsRustBinding {
       }
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
-      const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
+      const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
         const method = snakeCase(operation);
         return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
