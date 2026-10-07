@@ -71,7 +71,6 @@ export const ignored = {
     unrelatedGithub(path) ||
     standaloneProjects(path) ||
     (path.startsWith("typescript/") && path !== "typescript/packages/filesystem/package.json") ||
-    path.startsWith("generated/typescript/") ||
     path.startsWith("languages/") ||
     path.startsWith("ffi/") ||
     ["bun.lock", "package.json", "tsconfig.json", "tsconfig.base.json"].includes(path),
