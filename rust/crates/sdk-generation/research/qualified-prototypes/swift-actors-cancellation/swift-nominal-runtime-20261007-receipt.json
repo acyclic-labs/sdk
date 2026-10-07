@@ -1,0 +1,116 @@
+{
+  "schema": "acyclic.swift-nominal-runtime-qualification-receipt/v1",
+  "recordedAt": "2026-10-07",
+  "status": "PASS_WINDOWS_AND_MACOS_ALL8_AND_TASK_CANCEL",
+  "producer": {
+    "workspace": "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+    "sourceRoot": "rust/crates/actors-uniffi",
+    "sourceLock": "producer-source-final-nominal-20261007.lock.json",
+    "fingerprint": "67E6EA4F1981872E440E1F9467993DC41911F044E3D298DA22EB34127DFC6713"
+  },
+  "maintainedGenerator": {
+    "source": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "templates": {
+      "Async": "830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6",
+      "macros": "5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4",
+      "Helpers": "932944185A48F7C99C81E0A08C3F89304515D7C20D025F552875D8BB816A7E44",
+      "CustomType": "30ECF288B0E70584214BF693A1E8EECF41DC2C3217E1BFA43767EEB785D66C84",
+      "EnumTemplate": "9DAEEFAE4A0DAF832FD0D3AC9D376D882235130E5EDA01677B037F4DD22E562D",
+      "genSwiftMod": "15063058EE8779D11D6C86B9B3A07843AFBBF228CC007A2D2E2B0A626FAE7EF2",
+      "swiftMod": "37BBA61731E61B439D9DDB0DD2F9FD34EBF0B2005D52FAAE5081A28CDF7E2259",
+      "runnerMain": "450E0DAF89518F734E2DF933F49680DBC38D724CCBCDC1BF8F6DE09161ECF975"
+    }
+  },
+  "semantics": {
+    "nominal": "ActorId, CodeSha256, PositiveU64 are generated public structs whose throwing constructors call Rust exported validators",
+    "immutable": "ActorLimits fields are public let; negative typecheck rejected assignment",
+    "currentHead": "wire bool descriptor preserved; generated Swift exposes StartCurrentHead with fileprivate init and public Start.currentHead() factory, while Rust validate_current_head(false) rejects false",
+    "uint64": "full cursor 9007199254740993 round-tripped",
+    "config": "uniffi.toml has generate_nominal_custom_types, generate_immutable_records, validated_enum_variants only; no copied Swift validation predicates"
+  },
+  "windows": {
+    "all8": "PASS",
+    "cancellation": "PASS",
+    "fixture": {
+      "standardOptions": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-runtime-20261007\\standard-options.json",
+      "standardEndpoint": "https://localhost:55189",
+      "pendingOptions": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-runtime-20261007\\pending-options.json",
+      "pendingEndpoint": "https://localhost:55186",
+      "pendingControl": "http://127.0.0.1:55188",
+      "standardPid": 62104,
+      "pendingPid": 64352,
+      "observedState": "pending started=2 aborted=2 active=0 after Windows and macOS cancellation",
+      "standardOptionsSha256": "5181737542E45A3A7AEF3773A3C5F5F7E9232D69341925A3F2CD56FBACC6D976",
+      "pendingOptionsSha256": "3A5F29F3F5A1EF9A47FAC89EC8B43044DB70B35340DD7F62AA619F0681ECD7EE"
+    },
+    "loadedNative": {
+      "path": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-runtime-20261007\\all8b\\consumer\\Native\\windows-x86_64\\acyclic_actors_uniffi.dll",
+      "sha256": "C1B4AE5EDCA834BFD39D5D027AC289F5D3434695E93DEB7FEC3CB752B24E7D5D"
+    },
+    "packageRoot": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-runtime-20261007\\all8b\\consumer",
+    "generated": {
+      "ActorsSwift": "22774DC9A3D2E4EE2139EC165521C7CFC26022569A2D6A2AD3FF482DA2087AA8",
+      "actorsFFIHeader": "435BA9DCF83307602977C6A962C85EFFD39BF060454465F64D5968599AF8A4A3",
+      "uniffiFFIHeader": "35F43F8644F0DBEC21F2F7DC9C869F0DD4F85629110187E5082EFDC8C817A7DF",
+      "modulemap": "1DEA19EE836327F0E5E7566595BA83A932C99442FE6783014EC0AF0D30B4458B"
+    },
+    "executables": {
+      "all8": "CBAF1E988E18E9C7F13DC4B72F2BA7FC0171105DE407B09D4A00E3465F4EF519",
+      "cancellation": "0A922E2051023D9D9B77399652741B5896FDFA96C3F190AC6029FAF99636E05E"
+    },
+    "consumerSources": {
+      "all8": "88DC1A1FBEAEAFF87EF4096B7FA4F81076BF7B6FFD87C4364099123D92084E2E",
+      "cancellation": "FC6450D024126B69226C94A7C7AD8D75A63C2A232BC794DB1C8C7867B06EA8F3"
+    }
+  },
+  "macOS": {
+    "host": "ivar",
+    "all8": "PASS",
+    "cancellation": "PASS",
+    "fixtureTransport": "SSH reverse forwards Windows task-owned dynamic ports 55189, 55186 and control 55198->55188",
+    "loadedNative": {
+      "path": "/Users/var/swift-mac-producer-target-20261007/release/libacyclic_actors_uniffi.dylib",
+      "sha256": "6D06C0FB87445FA4991C5F6C677E5881CBA25708E2E94A6CB1B702691D4031DE"
+    },
+    "packageRoot": "/Users/var/swift-mac-package-20261007/consumer",
+    "all8Executable": "/Users/var/swift-mac-package-20261007/build/arm64-apple-macosx/debug/ActorsAll8ConformanceConsumer",
+    "all8ExecutableSha256": "90DA625BBC73E50936C275AD91F33E2AD285AC6DA6817C425086F25891483066",
+    "cancellationExecutable": "/Users/var/swift-mac-package-cancel-20261007/build/arm64-apple-macosx/debug/ActorsConformanceConsumer",
+    "cancellationExecutableSha256": "FA0A1ECD33E7000FA694727DED6C23F56C5581CD33AA52FF4A34D62F795A57DF",
+    "generated": {
+      "ActorsSwift": "446999ACED9EDC4EE2A76FC3BCC8278B5A151932E7F822A7687BD122B43AF15C",
+      "actorsFFIHeader": "435BA9DCF83307602977C6A962C85EFFD39BF060454465F64D5968599AF8A4A3",
+      "uniffiFFIHeader": "35F43F8644F0DBEC21F2F7DC9C869F0DD4F85629110187E5082EFDC8C817A7DF",
+      "modulemap": "1DEA19EE836327F0E5E7566595BA83A932C99442FE6783014EC0AF0D30B4458B"
+    },
+    "fixtureOptionsSha256": {
+      "standard": "9DE04499B1C870F39504455643AE6E364E81AC049E586CF996FA61E4CD56D5DC",
+      "pending": "C4882972C8791702B4C55DAAC4C7EDDD1313B3F95B47B38D845A49DF58415D0F"
+    }
+  },
+  "negativeCompilation": {
+    "source": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-runtime-20261007\\negative-nominal.swift",
+    "sourceSha256": "C9A5A5CBCC033E009AEF3B71CE2BFC50D46B128AB4363717880B867FE37BE918",
+    "command": "swiftc -typecheck with package module and absolute temporary modulemaps",
+    "expected": "FAIL",
+    "evidence": [
+      "ActorId(value: 7) rejected: Int is not String",
+      "ActorLimits.handlerTimeoutMillis assignment rejected: let constant",
+      "Start.currentHead(false) rejected: Bool is not StartCurrentHead"
+    ]
+  },
+  "cleanup": {
+    "pendingState": "started=2 aborted=2 active=0",
+    "noForeignTermination": true,
+    "fixturePids": [
+      62104,
+      64352
+    ],
+    "sshTunnelPids": [
+      80232,
+      22672
+    ],
+    "terminalObserved": true,
+    "processes": "fixture PIDs 62104,64352 and SSH tunnel PIDs 80232,22672 all absent on three consecutive polls after owned-process termination"
+  }
+}

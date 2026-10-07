@@ -264,3 +264,48 @@ Current Actors c8 review WIP was signed, pushed, and remote-verified as
 codex/actors-c8-review-wip-checkpoint-20261007. Historical language cohorts are
 retained as evidence, and agents have been redirected to the actual main-based
 producer rather than relabeling old results.
+
+## Source authority and package review: 2026-10-07
+
+Current-main Filesystem metadata reports ten public acyclic Cargo owners and six
+native/WASM binding packages. The twenty-profile prototype refers to PRIMARY
+source (eleven owners and nine bindings), so it cannot be used as a current-main
+coverage receipt. The docs-data port is assigned to derive inventory from its
+actual source tree and refresh receipts after the new Actors bindings merge.
+
+Actors current-main candidate now has the semantic unit CurrentHeadMarker with
+fallible bool ingress and infallible true lowering. Generated SubscriptionStart
+TypeScript preserves the literal true in the currentHead variant. Compatibility,
+all binding generation, and exact-source Kani checks remain admission gates.
+Root reviewed exact optional-loader identity handling and requested platform-
+appropriate case/URL normalization. Historical PRIMARY native qualification
+metadata is being removed from product source rather than represented as current.
+
+Root reproduced a new packaging failure using the actual generated NAPI loader
+with a simulated Linux selector. With no Linux artifact installed, the loader
+throws a generic Error without MODULE_NOT_FOUND at the top; its cause chain has
+missing own WASI/Linux artifacts. The TypeScript fallback's narrow top-level
+module predicate therefore does not provide cross-platform fallback. Probe:
+Actors current candidate research/qualified-prototypes/actors-root-review-20261007/
+missing-platform-loader.mjs. This proves loader error shape, not Linux runtime
+qualification. Actual installed Linux/macOS default paths are assigned.
+
+Stream's documented Cargo wrapper capture prototype is now implemented and
+root independently ran all five focused tests successfully. The capture records
+actual rustc arguments instead of guessing Cargo configuration precedence.
+Review found a further unverified path: cached Cargo builds can emit no compiler
+invocation, while the reader requires one. A narrowly forced fresh product link
+or fully bound safe capture reuse must be verified without cleaning dependency
+caches or increasing ordinary CI cost. Actual pinned platform package generation
+remains outstanding. The follow-up currently adds about 334 production script
+lines, so code-minimality review also remains open.
+
+Filesystem Windows regeneration was observed live through rustc PID 65236; the
+source/outputs remain dirty until the owner freezes the corrected tree. Isolated
+Linux/macOS recipes and fixtures are prepared. No current installed package
+qualification or additional merge is claimed in this iteration.
+
+Remote Actors review WIP b75c841225de17676c2b241e1d83b563f7206a67 is verified.
+All language qualification must follow the actual main-based producer; historical
+cohorts remain evidence only. Actors alone does not close other service-family
+streaming, recovery, embedded, documentation, or language requirements.

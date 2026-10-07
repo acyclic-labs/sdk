@@ -1,0 +1,67 @@
+Current main producer Kotlin nominal UniFFI qualification
+Date: 2026-10-07
+
+Scope:
+- producer checkout: Q:\sdk\work\sdkgen-actors-c8-minimal
+- observed producer HEAD at qualification: 84a508449ea247297a0170db67377dd65a1baa41
+- this receipt is current-cohort evidence and does not retag older native resources.
+- only maintained source/config/patch files were added under actors-uniffi; peer changes were preserved.
+
+Producer/source identity:
+- facade Cargo.toml SHA-256: F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7
+- facade src/lib.rs SHA-256: C1AD6B61B170882BC0AB05770D98918DAFB56945D465F709084149A55C14920A
+- actors domain.rs SHA-256: 80B5268F5FD56703B05B51F586C827051FD04B0A48D34B4C75B07D7CD6613A10
+- Cargo.lock SHA-256: 7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206
+- Windows native DLL SHA-256: 1D0A5E8C0A7B8AC43756A4DE738DF5EC8CAD27EF065614D77CBE072D85B9117F
+- DLL was rebuilt after the latest domain marker and lock changes; source timestamps are later than the previous stale DLL.
+
+Rust-owned semantic validators:
+- validate_actor_id calls domain::ActorId::new.
+- validate_code_sha256 calls domain::CodeSha256::new.
+- validate_positive_u64 calls domain::PositiveU64::new.
+- validate_current_head calls CurrentHeadMarker::try_from and rejects false.
+- all validators map canonical DomainError values to BindingError; no Kotlin/TOML predicate duplicates these rules.
+
+CurrentHead marker:
+- the domain now uses CurrentHeadMarker for the true-only oneof payload while retaining bool wire encoding.
+- the marker has a Rust UniFFI custom_type conversion: lower always emits true and lift rejects false.
+- generated Kotlin exposes private-constructor CurrentHeadMarker.value class with Rust-backed from(Boolean).
+- the generated Start.CurrentHead payload is CurrentHeadMarker, so false cannot be forged through the public Kotlin surface.
+
+Maintained generator policy:
+- UniFFI source: pinned 0.31.0 task-local archive.
+- nominal patch SHA-256: 24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3
+- opaque constructor patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
+- producer config SHA-256: 819F591E389606E93B93FB72C707DC94F446BE370B5DA38B9556A30C27142535
+- no global Cargo registry files were modified.
+
+Generated package:
+- generated output: Q:\sdk\work\actors-uniffi-actors-c8-nominal-20261007-v3\uniffi
+- acyclic_actors_uniffi.kt SHA-256: C1B0AB3AE1BEAFF3BA8FB780E0F4F5A770A0DCD2755C8732C3FD784CB62039DA
+- acyclic_actors.kt SHA-256: 6608950F1B34A259C22AFCBDEAA19EFAAF1C23AEFA3031EB98291F8E2EC88A15
+- Kotlin value classes: ActorId, CodeSha256, PositiveU64, and CurrentHeadMarker.
+- generated records use val properties; no semantic typealias remains for these nominal roots.
+- generated validators are validateActorId, validateCodeSha256, validatePositiveU64, and validateCurrentHead.
+
+Installed Windows JAR:
+- path: Q:\sdk\work\actors-uniffi-actors-c8-nominal-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar
+- JAR SHA-256: AA0B8F33F9E96F533783251CEDE47D4B562397CE8030E8781E8D015C0AAE1FB6
+- resource: win32-x86-64/acyclic_actors_uniffi.dll
+- resource DLL SHA-256: 1D0A5E8C0A7B8AC43756A4DE738DF5EC8CAD27EF065614D77CBE072D85B9117F
+- Maven package with Kotlin 1.9.21, coroutines 1.8.0, JNA 5.15.0, and JVM target 17: PASS.
+
+Qualification results:
+- Rust cargo check and lib build offline: PASS.
+- installed JAR all-eight request-constructor shape: KOTLIN_ALL8_NOMINAL_COMPILE_SHAPE_PASS.
+- installed JAR Rust-backed nominal runtime: KOTLIN_RUST_BACKED_NOMINAL_RUNTIME_PASS.
+- invalid empty ActorId, 31-byte CodeSha256, zero PositiveU64, and CurrentHeadMarker(false): rejected.
+- full-u64 PositiveU64 value 9007199254740993: PASS.
+- coroutine cancellation forwarded to Rust CancellationHandle: KOTLIN_COROUTINE_CANCELLATION_FORWARD_PASS.
+- external negative consumer compile: expected FAIL; private nominal constructors, forged handle paths, and UInt/ULong mismatch were rejected.
+
+Platform/provenance boundary:
+- this receipt qualifies only the freshly rebuilt Windows resource and matching JAR.
+- no Linux or macOS bytes were assigned this source/lock identity; those require separate same-cohort rebuilds before cross-platform admission.
+
+Current qualification is source/package complete for Windows nominal policy, with cross-platform native parity still pending.
+
