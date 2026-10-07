@@ -15,12 +15,17 @@ case "$bun_platform" in
     exit 1
     ;;
 esac
+work_parent="${TMPDIR:-/tmp}"
 if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
-  work="$(mktemp -d "$(wslpath -u "$windows_temp")/sdk-inference-package.XXXXXXXX")"
-else
-  work="$(mktemp -d)"
+  work_parent="$(wslpath -u "$windows_temp")"
 fi
+# sccache keys Rust compilations by working directory and source paths, so a
+# fresh mktemp path would miss on every run. A stable per-checkout directory,
+# emptied before and after each run, keeps the package isolated and cached.
+work="$work_parent/sdk-inference-package-$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+rm -rf -- "$work"
+(umask 077 && mkdir -- "$work")
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
 cd "$root"

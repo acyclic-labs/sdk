@@ -7,7 +7,12 @@ output="$1"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 inference_evidence="$(dirname "$output")/inference/acyclic-inference.tgz"
 [[ -f "$inference_evidence" ]] || { echo 'filesystem qualification requires the preceding inference package artifact' >&2; exit 2; }
-work="$(mktemp -d -t sdk-fs-package.XXXXXXXX)"
+# sccache keys Rust compilations by working directory and source paths, so a
+# fresh mktemp path would miss on every run. A stable per-checkout directory,
+# emptied before and after each run, keeps the package isolated and cached.
+work="${TMPDIR:-/tmp}/sdk-fs-package-$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+rm -rf -- "$work"
+(umask 077 && mkdir -- "$work")
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 
 npm_stage="$work/npm-package"
