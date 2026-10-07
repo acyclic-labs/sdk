@@ -202,6 +202,60 @@ struct HostModel {
     reconcile: Function,
 }
 
+struct HostModelIterator {
+    iterator: JsValue,
+    controller: JsValue,
+    abort: Function,
+}
+impl Drop for HostModelIterator {
+    fn drop(&mut self) {
+        let _ = self.abort.call0(&self.controller);
+        if let Ok(value) = js_sys::Reflect::get(&self.iterator, &JsValue::from_str("return"))
+            && let Ok(close) = value.dyn_into::<Function>()
+        {
+            let _ = close.call0(&self.iterator);
+        }
+    }
+}
+
+impl HostModel {
+    fn start(&self, request: &PreparedModelRequest) -> Result<HostModelIterator> {
+        let constructor =
+            js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("AbortController"))
+                .ok()
+                .and_then(|value| value.dyn_into::<Function>().ok())
+                .ok_or_else(|| {
+                    Error::Unsupported("browser model cancellation provider is unavailable".into())
+                })?;
+        let controller = js_sys::Reflect::construct(&constructor, &js_sys::Array::new())
+            .map_err(|_| Error::Unsupported("browser model cancellation provider failed".into()))?;
+        let abort = js_sys::Reflect::get(&controller, &JsValue::from_str("abort"))
+            .ok()
+            .and_then(|value| value.dyn_into::<Function>().ok())
+            .ok_or_else(|| {
+                Error::Unsupported("browser model cancellation provider is invalid".into())
+            })?;
+        let signal =
+            js_sys::Reflect::get(&controller, &JsValue::from_str("signal")).map_err(|_| {
+                Error::Unsupported("browser model cancellation signal is unavailable".into())
+            })?;
+        let mut attempt = HostModelIterator {
+            iterator: JsValue::UNDEFINED,
+            controller,
+            abort,
+        };
+        attempt.iterator = self
+            .generate
+            .call2(
+                &JsValue::UNDEFINED,
+                &js_sys::Uint8Array::from(request.bytes()),
+                &signal,
+            )
+            .map_err(|_| Error::Storage("host model dispatch is uncertain".into()))?;
+        Ok(attempt)
+    }
+}
+
 impl ModelProvider for HostModel {
     fn generate<'a>(
         &'a self,
@@ -212,28 +266,21 @@ impl ModelProvider for HostModel {
         // event limits, cancellation, request identity and durable consumption.
         Box::pin(futures::stream::try_unfold(
             None,
-            move |iterator: Option<JsValue>| {
+            move |iterator: Option<HostModelIterator>| {
                 let request = request.clone();
                 async move {
                     let iterator = match iterator {
                         Some(iterator) => iterator,
-                        None => {
-                            let bytes = js_sys::Uint8Array::from(request.bytes());
-                            self.generate
-                                .call1(&JsValue::UNDEFINED, &bytes)
-                                .map_err(|_| {
-                                    Error::Storage("host model dispatch is uncertain".into())
-                                })?
-                        }
+                        None => self.start(&request)?,
                     };
-                    let next = js_sys::Reflect::get(&iterator, &JsValue::from_str("next"))
+                    let next = js_sys::Reflect::get(&iterator.iterator, &JsValue::from_str("next"))
                         .ok()
                         .and_then(|value| value.dyn_into::<Function>().ok())
                         .ok_or_else(|| {
                             Error::Invalid("host model must return an async iterator".into())
                         })?;
                     let pending = next
-                        .call0(&iterator)
+                        .call0(&iterator.iterator)
                         .map_err(|_| Error::Storage("host model stream is uncertain".into()))?;
                     let item = JsFuture::from(Promise::resolve(&pending))
                         .await
@@ -470,12 +517,12 @@ impl WasmTaskRuntime {
     }
 
     /// Composes an explicit provider with the stock model command executor.
-    /// Generate receives canonical request bytes and returns an async iterator;
+    /// Generate receives canonical request bytes and an `AbortSignal`, and returns an async iterator;
     /// reconcile receives the exact retained attempt and never redispatches it.
     #[wasm_bindgen(js_name = configureModel)]
     pub fn configure_model(
         &mut self,
-        model: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "WasmModelWire")] model: JsValue,
         generate: Function,
         reconcile: Function,
     ) -> std::result::Result<(), JsValue> {
@@ -509,6 +556,7 @@ impl WasmTaskRuntime {
     }
 
     /// Stages an exact immutable command/input artifact through the ordinary store.
+    #[wasm_bindgen(unchecked_return_type = "WasmFileRefWire")]
     pub async fn stage(
         &self,
         operation: String,
@@ -528,7 +576,7 @@ impl WasmTaskRuntime {
             .stage(operation, &key, &bytes)
             .await
             .map_err(js_error)?;
-        to_js(&file)
+        super::to_js_admitted(&file)
     }
 
     pub async fn admit(

@@ -273,6 +273,6 @@ pub enum MountError {
     InvalidNamespacePath(NamespacePathError),
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 #[path = "tests/mount.rs"]
 mod tests;

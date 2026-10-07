@@ -176,7 +176,10 @@ mod browser {
             // setTimeout accepts a signed 32-bit millisecond delay. Batches
             // preserve the complete caller duration, including sub-ms tails.
             let chunk = remaining.min(Duration::from_millis(i32::MAX as u64));
-            let millis = chunk.as_millis() + u128::from(chunk.subsec_nanos() % 1_000_000 != 0);
+            let millis =
+                chunk.as_millis() + u128::from(!chunk.subsec_nanos().is_multiple_of(1_000_000));
+            let millis = u32::try_from(millis)
+                .map_err(|_| Error::Invalid("browser timer chunk is out of range".into()))?;
             let (send, receive) = futures::channel::oneshot::channel();
             let mut send = Some(send);
             let callback = Closure::wrap(Box::new(move || {
@@ -188,7 +191,7 @@ mod browser {
                 .call2(
                     &global,
                     callback.as_ref(),
-                    &JsValue::from_f64(millis as f64),
+                    &JsValue::from_f64(f64::from(millis)),
                 )
                 .map_err(|_| Error::Unsupported("browser timer provider failed".into()))?;
             let timer = Timer {

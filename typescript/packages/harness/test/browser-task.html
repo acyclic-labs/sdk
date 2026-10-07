@@ -3,9 +3,13 @@
 <meta charset="utf-8">
 <title>Ordinary Harness task runtime on IndexedDB</title>
 <body data-result="pending">
+<pre id="result" data-status="pending">initializing</pre>
 <script type="module">
 import init, { WasmReducer, WasmTaskRegistry, WasmTaskRuntime } from "../generated/wasm/acyclic_harness_wasm.js";
+const result = document.querySelector("#result");
+const phase = text => { result.dataset.waiting = text; result.textContent = text; };
 try {
+  const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
   await init();
   const id = crypto.randomUUID();
   const owner = new WasmReducer({ kind: "task", id }, "browser-task", new Uint8Array(32).fill(23), []);
@@ -35,27 +39,36 @@ try {
     run_limits: { concurrency: 1n, max_steps: 16n, deadline_epoch_ms: null },
     session_limits: { active_tasks: 1n, total_tasks: 4n, depth: 1, model_steps: 16n }, concurrency: 1,
   };
+  phase("open ordinary task runtime and real providers");
   let runtime = await WasmTaskRuntime.open(options, owner, registry, scope);
+  phase("create authorized journal volume");
   await runtime.initializeVolume();
   const timerOperation = crypto.randomUUID();
-  const file = await runtime.stage(timerOperation, "timer", new TextEncoder().encode(JSON.stringify({ deadline_unix_ms: Date.now() + 2000 })));
+  const deadline = Date.now() + 30000;
+  phase("stage immutable timer command");
+  const file = await runtime.stage(timerOperation, "timer", new TextEncoder().encode(JSON.stringify({ deadline_unix_ms: deadline })));
   const operation = crypto.randomUUID();
+  phase("admit registered task");
   const admission = await runtime.admit(operation, "test.browser", "1", { file, operation: timerOperation });
-  if (admission.kind !== "accepted") throw new Error(`admission: ${JSON.stringify(admission)}`);
+  if (admission.kind !== "accepted") throw new Error(`admission: ${describe(admission)}`);
   const worker = { id: "browser-actor-a", available: {}, labels: {} };
+  phase("initial worker tick and durable suspension");
   const first = await runtime.workerTick(worker, null, 1, 2);
-  if (first.work?.kind !== "suspended") throw new Error(`initial tick: ${JSON.stringify(first)}`);
+  if (first.work?.kind !== "suspended") throw new Error(`initial tick: ${describe(first)}`);
   runtime.free();
+  phase("reopen providers under replacement worker");
   runtime = await WasmTaskRuntime.open(options, owner, registry, scope);
   if (await runtime.outcome(admission.task_id) != null) throw new Error("timer completed before durable wake");
-  await new Promise(resolve => setTimeout(resolve, 2100));
+  phase("wait for the explicitly retained timer deadline");
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 20));
   let cursor = null;
   let completed = false;
   for (let page = 0; page < 100 && !completed; page++) {
+    phase(`replacement worker wake page ${page}`);
     const tick = await runtime.workerTick({ ...worker, id: "browser-actor-b" }, cursor, 1, 2);
     cursor = tick.wake.cursor;
     completed = tick.work?.kind === "completed";
-    if (tick.work?.kind === "unresolved") throw new Error(JSON.stringify(tick.work));
+    if (tick.work?.kind === "unresolved") throw new Error(describe(tick.work));
     if (!cursor && !completed) throw new Error("durable timer was not woken");
   }
   if (!completed) throw new Error("replacement worker did not complete");
@@ -63,8 +76,10 @@ try {
   if (outcome?.Succeeded !== 7n) throw new Error("completed outcome differs");
   runtime.free(); registry.free(); owner.free();
   document.body.dataset.result = "passed";
+  result.dataset.status = "passed"; result.textContent = "passed";
 } catch (error) {
   document.body.dataset.result = `failed: ${error.message ?? error}`;
+  result.dataset.status = "failed"; result.textContent = document.body.dataset.result;
 }
 </script>
 </body>

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Harness task actor</title>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const query = new URLSearchParams(location.search);
+const actor = query.get("actor");
+const channel = new BroadcastChannel(`harness-task-${query.get("session")}`);
+try {
+  const fixture = await taskFixture(query.get("session"));
+  const runtime = await fixture.open();
+  channel.onmessage = async ({ data }) => {
+    if (data.actor !== actor) return;
+    try {
+      const tick = await runtime.workerTick({ id: actor, available: {}, labels: {} }, null, 128, 4);
+      channel.postMessage({ id: data.id, actor, tick, transitions: fixture.transitions() });
+    } catch (error) { channel.postMessage({ id: data.id, actor, error: String(error.message ?? error) }); }
+  };
+  channel.postMessage({ actor, kind: "ready" });
+} catch (error) { channel.postMessage({ actor, kind: "failed", error: String(error.message ?? error) }); }
+</script></html>

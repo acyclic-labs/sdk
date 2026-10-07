@@ -1062,11 +1062,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let deadline = ticket
                 .deadline_unix_ms
                 .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .as_millis();
-            if now < u128::from(deadline) {
+            let now = crate::platform::now_unix_millis();
+            if now == 0 {
+                return Err(Error::Storage("interaction clock is unavailable".into()));
+            }
+            if now < deadline {
                 return Err(Error::Conflict(
                     "interaction deadline has not elapsed".into(),
                 ));

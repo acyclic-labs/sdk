@@ -1008,6 +1008,11 @@ export class WasmTaskRegistry {
     [Symbol.dispose](): void;
     constructor();
     registerMachine(definition: WasmMachineDefinition, initialize: Function, transition: Function): void;
+    /**
+     * Callbacks share one immutable definition revision and are trusted host
+     * implementations. They receive runtime-owned invocation identities.
+     */
+    registerTool(definition: WasmModelToolDefinitionWire, execute: Function, reconcile: Function, project: Function): void;
 }
 
 /**
@@ -1023,6 +1028,12 @@ export class WasmTaskRuntime {
      * Publishes durable cancellation without claiming terminal completion.
      */
     cancel(task: string): Promise<void>;
+    /**
+     * Composes an explicit provider with the stock model command executor.
+     * Generate receives canonical request bytes and an AbortSignal, and returns an async iterator;
+     * reconcile receives the exact retained attempt and never redispatches it.
+     */
+    configureModel(model: any, generate: Function, reconcile: Function): void;
     /**
      * A page observation is not a retained model-consumption acknowledgment.
      */
@@ -1603,8 +1614,10 @@ export interface InitOutput {
     readonly wasmreducer_volumeStorageName: (a: number, b: any) => [number, number, number, number];
     readonly wasmtaskregistry_new: () => number;
     readonly wasmtaskregistry_registerMachine: (a: number, b: any, c: any, d: any) => [number, number];
+    readonly wasmtaskregistry_registerTool: (a: number, b: any, c: any, d: any, e: any) => [number, number];
     readonly wasmtaskruntime_admit: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any, i: number, j: number) => any;
     readonly wasmtaskruntime_cancel: (a: number, b: number, c: number) => any;
+    readonly wasmtaskruntime_configureModel: (a: number, b: any, c: any, d: any) => [number, number];
     readonly wasmtaskruntime_inbox: (a: number, b: number, c: number, d: bigint, e: number) => any;
     readonly wasmtaskruntime_initializeVolume: (a: number) => any;
     readonly wasmtaskruntime_open: (a: any, b: number, c: number, d: any) => any;

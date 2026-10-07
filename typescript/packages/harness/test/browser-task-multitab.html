@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Harness worker and concurrent tab recovery</title>
+<body><pre id="result" data-status="pending">initializing</pre>
+<script type="module">
+import { taskFixture } from "./browser-task-fixture.mjs";
+const result = document.querySelector("#result");
+const phase = text => { result.dataset.waiting = text; result.textContent = text; };
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
+const windows = [];
+let worker;
+let channel;
+let runtime;
+let fixture;
+try {
+  const session = crypto.randomUUID();
+  fixture = await taskFixture(session);
+  runtime = await fixture.open();
+  await runtime.initializeVolume();
+  const deadline = Date.now() + 30000;
+  const operation = crypto.randomUUID();
+  const file = await runtime.stage(operation, "timer", new TextEncoder().encode(JSON.stringify({ deadline_unix_ms: deadline })));
+  const admission = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file, operation });
+  assert(admission.kind === "accepted", describe(admission));
+  worker = new Worker("./browser-task-worker.mjs", { type: "module" });
+  const workerCall = kind => new Promise((resolve, reject) => {
+    const id = crypto.randomUUID();
+    worker.onmessage = ({ data }) => { if (data.id === id) data.error ? reject(new Error(data.error)) : resolve(data); };
+    worker.onerror = event => reject(new Error(event.message));
+    worker.postMessage({ kind, id, session });
+  });
+  phase("Web Worker opens the existing provider journals");
+  await workerCall("open");
+  phase("Web Worker suspends the ordinary registered task");
+  const first = await workerCall("tick");
+  assert(first.tick.work?.kind === "suspended", describe(first));
+  worker.terminate(); worker = undefined;
+  // A transport response alone is insufficient: observe the durable host.
+  assert(await runtime.outcome(admission.task_id) == null, "worker response fabricated completion");
+  channel = new BroadcastChannel(`harness-task-${session}`);
+  const pending = new Map();
+  const ready = new Map();
+  const actorReady = actor => new Promise((resolve, reject) => ready.set(actor, { resolve, reject }));
+  const leftReady = actorReady("left");
+  const rightReady = actorReady("right");
+  channel.onmessage = ({ data }) => {
+    const receiver = data.id ? pending.get(data.id) : ready.get(data.actor);
+    if (!receiver) return;
+    data.error ? receiver.reject(new Error(data.error)) : receiver.resolve(data);
+    if (data.id) pending.delete(data.id);
+  };
+  const actorCall = actor => new Promise((resolve, reject) => {
+    const id = crypto.randomUUID(); pending.set(id, { resolve, reject });
+    channel.postMessage({ actor, id, kind: "tick" });
+  });
+  phase("two replacement tabs open the same real providers");
+  for (const actor of ["left", "right"]) {
+    const tab = window.open(`browser-task-actor.html?session=${session}&actor=${actor}`, `harness-task-${session}-${actor}`);
+    assert(tab, "actor tab was blocked"); windows.push(tab);
+  }
+  await Promise.all([leftReady, rightReady]);
+  phase("wait for the retained deadline after terminating the worker");
+  await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 20));
+  phase("concurrent tabs discover and claim the durable wake");
+  const ticks = await Promise.all([actorCall("left"), actorCall("right")]);
+  assert(ticks.filter(value => value.tick.work?.kind === "completed").length === 1, describe(ticks));
+  assert(ticks.every(value => value.tick.work?.kind !== "unresolved"), describe(ticks));
+  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "transport response lacks durable completion");
+  const transitions = ticks.reduce((sum, value) => sum + value.transitions, 0);
+  const repeated = await Promise.all([actorCall("left"), actorCall("right")]);
+  assert(repeated.every(value => value.tick.work == null), "duplicate wake dispatched completed work");
+  assert(repeated.reduce((sum, value) => sum + value.transitions, 0) === transitions, "duplicate wake reexecuted the machine");
+  runtime.free(); runtime = await fixture.open();
+  assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "completion was lost on provider reopen");
+  result.dataset.status = "passed"; result.textContent = "passed: Web Worker termination, concurrent tab fencing, duplicate wake and reopen";
+} catch (error) {
+  result.dataset.status = "failed"; result.textContent = String(error.stack ?? error);
+} finally {
+  worker?.terminate(); windows.forEach(tab => tab.close()); channel?.close(); runtime?.free(); fixture?.free();
+}
+</script></body></html>

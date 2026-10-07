@@ -1713,6 +1713,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         if !sender_admission.grants.contains("mail:send") {
             return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
         }
+        sender_admission.limits.validate_file(&payload)?;
+        if !read_granted(&sender_admission.grants, &payload)? {
+            return Err(Error::Unauthorized(
+                "sender cannot read the mailed file".into(),
+            ));
+        }
         let recipient_admission = self
             .admission(OperationId::from_bytes(recipient.into_bytes()))
             .await?;
@@ -2721,6 +2727,129 @@ mod tests {
                 files: Mutex::new(BTreeMap::new()),
             })
         }
+    }
+
+    #[tokio::test]
+    async fn mail_identity_binds_both_agents_and_exact_authorized_payload() -> Result<()> {
+        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let authority = Authority {
+            kind: AggregateKind::Task,
+            id: "mail-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("mail-test", [7; 32], authority.clone());
+        let scope = issuer.root(
+            "owner",
+            Capabilities::new([
+                "operation:declare".to_owned(),
+                "operation:observe".to_owned(),
+                "operation:cancel".to_owned(),
+                "task:spawn:test.mail@1".to_owned(),
+                "mail:send".to_owned(),
+                "mail:read".to_owned(),
+                payloads
+                    .volume
+                    .capability(crate::conversation::VolumeOperation::Read)?,
+            ]),
+        );
+        let runtime_scope = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
+        let identity = MachineIdentity {
+            name: "test.mail".into(),
+            version: "1".into(),
+            digest: [3; 32],
+        };
+        let machine: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
+            identity: identity.clone(),
+            schema: serde_json::json!({"type":"integer"}),
+        });
+        let definition = TaskDefinition::<Value, i64>::resumable(
+            machine.clone(),
+            serde_json::json!({"type":"integer"}),
+            serde_json::json!({"type":"integer"}),
+        )?;
+        let task_identity = definition.identity().clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(machine)?;
+        let host = CoordinatorTaskHost::new(
+            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            stream.clone(),
+            payloads.clone(),
+            payloads.clone(),
+            authority,
+            scope,
+            issuer.verifier(),
+            runtime_scope.clone(),
+            tasks,
+            machines,
+            Arc::new(SystemUnixMillisClock),
+        )?;
+        let mut ids = Vec::new();
+        for index in 1..=4u8 {
+            let operation_id = OperationId::from_bytes([index; 16]);
+            let grants = if index == 4 {
+                Capabilities::new(["mail:send", "mail:read", "task:spawn:test.mail@1"])
+            } else {
+                runtime_scope.grants().clone()
+            };
+            host.admit(TaskAdmissionRecord {
+                operation_id,
+                task: task_identity.clone(),
+                machine: identity.clone(),
+                input: serde_json::json!(0),
+                input_schema: serde_json::json!({"type":"integer"}),
+                output_schema: serde_json::json!({"type":"integer"}),
+                parent: None,
+                grants,
+                limits: runtime_scope.limits(),
+                run_limits: runtime_scope.run_limits(),
+                policy: None,
+                extensions: None,
+                execution: None,
+            })
+            .await?;
+            ids.push(TaskId::from_bytes(operation_id.into_bytes()));
+        }
+        let [sender, recipient, other, unreadable] = ids.as_slice() else {
+            return Err(Error::Invalid("mail fixture needs four admissions".into()));
+        };
+        let message = OperationId::from_bytes([8; 16]);
+        let payload = payloads.stage(message, "body", b"7").await?;
+        let changed = payloads.stage(message, "changed", b"8").await?;
+        host.send(*sender, *recipient, message, payload.clone())
+            .await?;
+        // The caller loses the transport response; identical redelivery observes
+        // the original pointer and cannot append a second receiver record.
+        host.send(*sender, *recipient, message, payload.clone())
+            .await?;
+        for (from, to, body) in [
+            (*other, *recipient, payload.clone()),
+            (*sender, *other, payload.clone()),
+            (*sender, *recipient, changed),
+        ] {
+            assert!(matches!(
+                host.send(from, to, message, body).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        for (from, to) in [(*unreadable, *recipient), (*sender, *unreadable)] {
+            assert!(matches!(
+                host.send(from, to, OperationId::new(), payload.clone())
+                    .await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        let inbox = host.inbox(*recipient, 0, 16).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            inbox.first().map(|item| item.message_id.clone()),
+            Some(message.to_string())
+        );
+        assert_eq!(inbox.first().map(|item| &item.payload), Some(&payload));
+        assert_eq!(host.mail_intent(message)?.bounds().await?.tail, 2);
+        assert!(host.inbox(*other, 0, 16).await?.is_empty());
+        Ok(())
     }
 
     impl SchedulerPayloadStore for MemoryPayloads {

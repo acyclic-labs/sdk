@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html", "../harness/test/browser-task.html"];
+const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html", "../harness/test/browser-task.html", "../harness/test/browser-task-multitab.html"];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
 const PAGE_DEADLINE_MS = 600_000;
@@ -210,7 +210,8 @@ async function runPage(browser, observer, origin, page) {
   const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
   await browser.send("Runtime.enable", {}, sessionId);
-  await browser.send("Page.navigate", { url: `${origin}/test/${page}` }, sessionId);
+  const externalRust = /^http:\/\/127\.0\.0\.1:\d+\/$/.test(page);
+  await browser.send("Page.navigate", { url: externalRust ? page : `${origin}/test/${page}` }, sessionId);
   const deadline = Date.now() + PAGE_DEADLINE_MS;
   let observed;
   let last;
@@ -219,7 +220,9 @@ async function runPage(browser, observer, origin, page) {
       const evaluated = await browser.send(
         "Runtime.evaluate",
         {
-          expression: "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
+          expression: externalRust
+            ? "(() => { const text = document.querySelector('#output')?.textContent ?? ''; const match = text.match(/test result: (ok|FAILED)\\./); return { status: match ? (match[1] === 'ok' ? 'passed' : 'failed') : 'pending', text }; })()"
+            : "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
           returnByValue: true,
         },
         sessionId,

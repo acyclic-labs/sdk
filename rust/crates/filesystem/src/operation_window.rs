@@ -1193,7 +1193,7 @@ impl OperationWindowStore for MemoryOperationWindowStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 mod tests {
     use super::*;
     use crate::{

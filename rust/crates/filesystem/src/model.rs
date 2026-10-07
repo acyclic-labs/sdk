@@ -428,6 +428,6 @@ pub enum CheckoutModeError {
     DirectRequiresLive,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 #[path = "tests/model.rs"]
 mod tests;

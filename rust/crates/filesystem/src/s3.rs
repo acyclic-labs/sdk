@@ -1074,7 +1074,7 @@ pub enum S3Error {
     InvalidContinuation,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 mod tests {
     use super::*;
     use crate::Fs;

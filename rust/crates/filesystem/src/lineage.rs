@@ -475,7 +475,7 @@ impl WorkspaceLineageStore for MemoryWorkspaceLineageStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "memory"))]
 mod tests {
     use super::*;
     use crate::{Digest, Fs, WorkspaceName};
