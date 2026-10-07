@@ -349,7 +349,11 @@ pub fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(),
             return Err(Error::Invalid("Run result terminal is invalid"));
         }
         if let Some(context) = &result.context {
-            fixed::<32>(&context.revision)?;
+            // A completed run may return a new continuation context. Validate
+            // its complete shape while preserving the output revision as the
+            // context's own identity rather than binding it to RunView.input.
+            let revision = fixed::<32>(&context.revision)?;
+            validate_context_view(context, revision)?;
         }
         if let Some(receipt) = &result.receipt {
             fixed::<32>(&receipt.receipt_id)?;
@@ -825,19 +829,20 @@ mod tests {
     #[test]
     fn legacy_admission_and_renewal_reject_idle_responses() {
         let view = idle_view();
-        assert!(
-            validate_customer_wire("legacy_warm_context", &view.encode_to_vec(), &[2; 32], &[])
-                .is_err()
-        );
-        assert!(
-            validate_customer_wire(
-                "legacy_warm_commitment",
-                &view.encode_to_vec(),
-                &[1; 32],
-                &[]
-            )
-            .is_err()
-        );
+        assert!(validate_customer_wire(
+            "legacy_warm_context",
+            &view.encode_to_vec(),
+            &[2; 32],
+            &[]
+        )
+        .is_err());
+        assert!(validate_customer_wire(
+            "legacy_warm_commitment",
+            &view.encode_to_vec(),
+            &[1; 32],
+            &[]
+        )
+        .is_err());
         // Generic commitment inspection remains mode-neutral for recovered handles.
         assert!(
             validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_err()
@@ -932,28 +937,24 @@ mod tests {
                 .clone(),
             ..Default::default()
         };
-        assert!(
-            validate_customer_wire(
-                "idle_warm_context",
-                &view.encode_to_vec(),
-                &[2; 32],
-                &request.encode_to_vec()
-            )
-            .is_ok()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_context",
+            &view.encode_to_vec(),
+            &[2; 32],
+            &request.encode_to_vec()
+        )
+        .is_ok());
         let wrong_context = wire::RetainWarmRequest {
             context: vec![9; 32],
             ..request.clone()
         };
-        assert!(
-            validate_customer_wire(
-                "idle_warm_context",
-                &view.encode_to_vec(),
-                &[2; 32],
-                &wrong_context.encode_to_vec()
-            )
-            .is_err()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_context",
+            &view.encode_to_vec(),
+            &[2; 32],
+            &wrong_context.encode_to_vec()
+        )
+        .is_err());
         view.idle_kv
             .as_mut()
             .ok_or("fixture field absent")?
@@ -961,15 +962,13 @@ mod tests {
             .as_mut()
             .ok_or("fixture field absent")?
             .profile = vec![8; 32];
-        assert!(
-            validate_customer_wire(
-                "idle_warm_context",
-                &view.encode_to_vec(),
-                &[2; 32],
-                &request.encode_to_vec()
-            )
-            .is_err()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_context",
+            &view.encode_to_vec(),
+            &[2; 32],
+            &request.encode_to_vec()
+        )
+        .is_err());
         let mixed = wire::RetainWarmRequest {
             latency_profile: vec![9; 32],
             ..request
@@ -998,38 +997,32 @@ mod tests {
             .ok_or("fixture field absent")?
             .idle_timeout_ms = 20;
         view.expires_at_ms = 120;
-        assert!(
-            validate_customer_wire(
-                "idle_warm_commitment",
-                &view.encode_to_vec(),
-                &[1; 32],
-                &renewal.encode_to_vec()
-            )
-            .is_ok()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_commitment",
+            &view.encode_to_vec(),
+            &[1; 32],
+            &renewal.encode_to_vec()
+        )
+        .is_ok());
         let wrong_commitment = wire::RenewWarmRequest {
             commitment: vec![9; 32],
             ..renewal.clone()
         };
-        assert!(
-            validate_customer_wire(
-                "idle_warm_commitment",
-                &view.encode_to_vec(),
-                &[1; 32],
-                &wrong_commitment.encode_to_vec()
-            )
-            .is_err()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_commitment",
+            &view.encode_to_vec(),
+            &[1; 32],
+            &wrong_commitment.encode_to_vec()
+        )
+        .is_err());
         view.expires_at_ms = 130;
-        assert!(
-            validate_customer_wire(
-                "idle_warm_commitment",
-                &view.encode_to_vec(),
-                &[1; 32],
-                &renewal.encode_to_vec()
-            )
-            .is_err()
-        );
+        assert!(validate_customer_wire(
+            "idle_warm_commitment",
+            &view.encode_to_vec(),
+            &[1; 32],
+            &renewal.encode_to_vec()
+        )
+        .is_err());
         let mixed = wire::RenewWarmRequest {
             expires_at_ms: 120,
             ..renewal
@@ -1051,6 +1044,65 @@ mod tests {
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[4; 32]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[3; 32]).is_ok());
+    }
+
+    #[test]
+    fn completed_run_validates_the_full_result_context() -> Result<(), Error> {
+        let context = wire::ContextView {
+            revision: vec![10; 32],
+            parent: Some(vec![4; 32]),
+            lineage: vec![5; 32],
+            execution_profile: vec![6; 32],
+            content_digest: vec![7; 32],
+            model: "model".to_owned(),
+            provenance: Some(wire::ContextProvenance {
+                origin: Some(wire::context_provenance::Origin::Created(wire::Empty {})),
+            }),
+            ..Default::default()
+        };
+        let mut result = wire::RunResult::default();
+        result.context = Some(context);
+        result.terminal = wire::RunTerminal::Completed.into();
+        let view = wire::RunView {
+            run_id: vec![2; 16],
+            input: vec![3; 32],
+            model: "model".to_owned(),
+            result: Some(result),
+            ..Default::default()
+        };
+        assert!(validate_run_view(&view, [2; 16]).is_ok());
+        assert!(validate_customer_wire("run_view", &view.encode_to_vec(), &[2; 16], &[]).is_ok());
+
+        let mut missing_provenance = view.clone();
+        missing_provenance
+            .result
+            .as_mut()
+            .and_then(|result| result.context.as_mut())
+            .ok_or(Error::Invalid("result context fixture is absent"))?
+            .provenance = None;
+        assert!(validate_run_view(&missing_provenance, [2; 16]).is_err());
+        assert!(validate_customer_wire(
+            "run_view",
+            &missing_provenance.encode_to_vec(),
+            &[2; 16],
+            &[]
+        )
+        .is_err());
+
+        let mut invalid_digest = view;
+        invalid_digest
+            .result
+            .as_mut()
+            .and_then(|result| result.context.as_mut())
+            .ok_or(Error::Invalid("result context fixture is absent"))?
+            .content_digest
+            .clear();
+        assert!(validate_run_view(&invalid_digest, [2; 16]).is_err());
+        assert!(
+            validate_customer_wire("run_view", &invalid_digest.encode_to_vec(), &[2; 16], &[])
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]
