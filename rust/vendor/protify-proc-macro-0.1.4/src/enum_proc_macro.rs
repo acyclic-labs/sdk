@@ -1,5 +1,31 @@
 use crate::*;
 
+#[derive(Default)]
+pub(crate) struct EnumMacroArgs {
+	error: Option<Path>,
+	unknown: Option<Path>,
+}
+
+impl syn::parse::Parse for EnumMacroArgs {
+	fn parse(input: syn::parse::ParseStream<'_>) -> syn::Result<Self> {
+		let mut args = Self::default();
+		while !input.is_empty() {
+			let key: Ident = input.parse()?;
+			input.parse::<Token![=]>()?;
+			let value: Path = input.parse()?;
+			match key.to_string().as_str() {
+				"error" => args.error = Some(value),
+				"unknown" => args.unknown = Some(value),
+				_ => return Err(syn::Error::new(key.span(), "unsupported proto_enum argument")),
+			}
+			if input.peek(Token![,]) {
+				input.parse::<Token![,]>()?;
+			}
+		}
+		Ok(args)
+	}
+}
+
 struct EnumVariantCtx {
 	name: String,
 	options: TokensOr<TokenStream2>,
@@ -101,7 +127,7 @@ fn extract_enum_data(item: &mut ItemEnum) -> syn::Result<EnumData> {
 	})
 }
 
-pub fn enum_proc_macro(mut item: ItemEnum) -> TokenStream2 {
+pub fn enum_proc_macro(mut item: ItemEnum, macro_args: EnumMacroArgs) -> TokenStream2 {
 	let mut error: Option<TokenStream2> = None;
 
 	let EnumData {
@@ -224,13 +250,22 @@ pub fn enum_proc_macro(mut item: ItemEnum) -> TokenStream2 {
 			}
 		});
 
+		let unknown = macro_args.unknown.as_ref().map_or_else(
+			|| quote! { ::protify::prost::UnknownEnumValue(value) },
+			|path| quote! { #path(value) },
+		);
 		quote! {
 		  match value {
 				#(#tokens,)*
-				_ => Err(::protify::prost::UnknownEnumValue(value))
+				_ => Err(#unknown)
 		  }
 		}
 	};
+
+	let error_type = macro_args.error.as_ref().map_or_else(
+		|| quote! { ::protify::prost::UnknownEnumValue },
+		|path| quote! { #path },
+	);
 
 	let first_variant_ident = &variants_data.first().as_ref().unwrap().ident;
 
@@ -270,8 +305,8 @@ pub fn enum_proc_macro(mut item: ItemEnum) -> TokenStream2 {
 			}
 	  }
 
-	  impl TryFrom<i32> for #enum_ident {
-			type Error = ::protify::prost::UnknownEnumValue;
+		  impl TryFrom<i32> for #enum_ident {
+			type Error = #error_type;
 
 			#[inline]
 			fn try_from(value: i32) -> Result<Self, Self::Error> {

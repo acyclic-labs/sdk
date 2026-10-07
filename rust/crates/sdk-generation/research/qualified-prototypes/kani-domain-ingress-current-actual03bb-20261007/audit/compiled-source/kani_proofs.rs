@@ -60,17 +60,6 @@ fn code_sha256_rejects_64_bytes() {
     assert!(!valid_code_sha256(&bytes));
 }
 
-#[kani::proof]
-#[kani::unwind(65)]
-fn code_sha256_predicate_accepts_only_nonzero_32_byte_prefixes() {
-    let bytes: [u8; 64] = kani::any();
-    let length: usize = kani::any();
-    kani::assume(length <= bytes.len());
-    let candidate = &bytes[..length];
-    let expected = length == 32 && candidate.iter().any(|byte| *byte != 0);
-    assert_eq!(valid_code_sha256(candidate), expected);
-}
-
 fn assert_subscription_state_mapping(raw: i32) {
     match SubscriptionState::try_from(raw) {
         Ok(value) => assert_eq!(i32::from(value), raw),
@@ -401,3 +390,4 @@ fn enum_numeric_mappings_are_inverse_and_lossless() {
     let error_raw: i32 = kani::any();
     assert_error_code_mapping(error_raw);
 }
+

@@ -1,0 +1,41 @@
+{
+  "schema": "acyclic.kani-domain-ingress-proof/v1",
+  "captured_at": "2026-10-07T12:37:34.2544816Z",
+  "absolute_prototype_path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-domain-ingress-current-actual03bb-20261007",
+  "status": "in_progress_inconclusive",
+  "source_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "working_tree_note": "Current Q tree is dirty. The augmented harness source changed after the live invocation was compiled to add the bounded symbolic usize digest-length harness; therefore this is not a PASS receipt. The raw run is preserved and no final receipt is emitted until a terminal summary exists for the exact source inventory.",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "target": "/tmp/kani-domain-ingress-03bb (Linux ext4)",
+    "offline": true,
+    "rustc_wrapper": "",
+    "cargo_build_jobs": 1
+  },
+  "command": "cargo-kani --manifest-path rust/crates/actors/Cargo.toml --package acyclic-actors --exact --default-unwind 65 -j1 with 17 harnesses; raw output tee",
+  "raw_log": "audit/domain-ingress-current-kani068.raw.txt",
+  "raw_log_sha256": null,
+  "completed_harnesses": [
+    "domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless",
+    "domain::kani_proofs::actor_limits_constructor_accepts_exactly_positive_values",
+    "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+    "domain::kani_proofs::actor_observation_try_from_rejects_unknown_state",
+    "domain::kani_proofs::subscription_observation_try_from_rejects_unknown_state"
+  ],
+  "active_harness": "domain::kani_proofs::update_request_try_from_preserves_expected_revision",
+  "terminal_exit": null,
+  "manual_summary": null,
+  "live_process": {
+    "pty_session": 17660,
+    "cbmc_pid": 1031718,
+    "observed_elapsed": "33+ minutes at last audit",
+    "observed_rss": "~3.0 GiB",
+    "observed_cpu": "~101%",
+    "action": "single process left running; no duplicate or restart"
+  },
+  "source_binding": "Actual Q acyclic-actors domain TryFrom and From implementations; no copied projection algorithm",
+  "not_proven": "Overall augmented proof set, remaining harnesses, filesystem exact_u32_from_f64 (symbol not present in Q snapshot)",
+  "length_coverage": "Added code_sha256_predicate_accepts_only_nonzero_32_byte_prefixes using symbolic usize bounded to 0..=64; pending verification after current run and source freeze."
+}

@@ -325,15 +325,15 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
-	/// Returns 	rue` if the input item kind is [`Message`].
+	/// Returns `true` if the input item kind is [`Message`].
 	///
-	/// [`Message`]: InputItemKind::Message
+	/// [`Message`]: ItemKind::Message
 	#[must_use]
 	pub const fn is_message(self) -> bool {
 		matches!(self, Self::Message)
 	}
 
-	/// Returns 	rue` if the item kind is [`Oneof`].
+	/// Returns `true` if the item kind is [`Oneof`].
 	///
 	/// [`Oneof`]: ItemKind::Oneof
 	#[must_use]
@@ -341,4 +341,3 @@ impl ItemKind {
 		matches!(self, Self::Oneof)
 	}
 }
-

@@ -158,7 +158,8 @@ pub fn process_field_data(field: FieldOrVariant) -> Result<FieldDataKind, Error>
 		// We try to infer if a field is `Option` or `Vec` but
 		// wasn't explicitely marked as optional/repeated
 		if let ProtoField::Single(proto_type) = &mut field
-			&& (type_info.is_option() || type_info.is_vec())
+			&& (type_info.is_option()
+				|| (type_info.is_vec() && !matches!(proto_type, ProtoType::Bytes)))
 		{
 			let inner = std::mem::replace(proto_type, ProtoType::String);
 

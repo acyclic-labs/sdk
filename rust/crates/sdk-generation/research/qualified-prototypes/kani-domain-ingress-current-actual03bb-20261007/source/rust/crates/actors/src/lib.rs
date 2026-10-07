@@ -2,9 +2,6 @@
 
 use std::collections::HashSet;
 
-#[cfg(feature = "uniffi")]
-uniffi::setup_scaffolding!();
-
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::domain;
 

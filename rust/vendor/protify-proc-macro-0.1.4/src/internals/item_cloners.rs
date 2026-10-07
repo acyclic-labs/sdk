@@ -4,7 +4,10 @@ pub fn create_shadow_struct(item: &ItemStruct) -> ItemStruct {
 	let item_fields = if let Fields::Named(fields) = &item.fields {
 		fields.named.iter().map(|f| Field {
 			attrs: vec![],
-			vis: f.vis.clone(),
+			// Proxied structs are the public wire shadow of a private-field
+			// semantic model.  Keep the semantic fields encapsulated while making
+			// the generated protobuf fields accessible to transport adapters.
+			vis: Visibility::Public(token::Pub::default()),
 			mutability: syn::FieldMutability::None,
 			ident: f.ident.clone(),
 			colon_token: f.colon_token,

@@ -250,10 +250,11 @@ pub fn service_derive(_input: TokenStream) -> TokenStream {
 
 #[doc = include_str!("../docs/enum_macro.md")]
 #[proc_macro_attribute]
-pub fn proto_enum(_args: TokenStream, input: TokenStream) -> TokenStream {
+pub fn proto_enum(args: TokenStream, input: TokenStream) -> TokenStream {
 	let item = parse_macro_input!(input as ItemEnum);
+	let args = parse_macro_input!(args as crate::enum_proc_macro::EnumMacroArgs);
 
-	enum_proc_macro(item).into()
+	enum_proc_macro(item, args).into()
 }
 
 #[doc(hidden)]

@@ -19,6 +19,7 @@ import {
   ResumeSubscriptionRequestSchema, ResumeSubscriptionResponseSchema,
   UpdateActorRequestSchema, UpdateActorResponseSchema,
 } from "../generated/proto/actors/v1/actors_pb.js";
+import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 
 /** Rust operation surface implemented by either the N-API or WASM bridge. */
 export interface ActorsRustClient {
@@ -43,6 +44,8 @@ export interface ActorsOptions {
   readonly token: string;
   /** Native callers may inject the built N-API binding. */
   readonly binding?: ActorsRustBinding;
+  /** Optional secret-free per-operation observer. */
+  readonly observer?: AcyclicObserver;
 }
 
 /** Errors raised after Rust has returned a structured operation failure. */
@@ -53,8 +56,10 @@ export class ActorsTransportError extends Error {
 /** Typed Actors client backed by one Rust implementation on every platform. */
 export class ActorsClient {
   readonly #client: Promise<ActorsRustClient>;
+  readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: ActorsOptions) {
+    this.#observer = resolveObserver(options.observer);
     this.#client = (options.binding ?? wasmBinding()).connect(options.endpoint, options.token);
   }
 
@@ -70,8 +75,13 @@ export class ActorsClient {
 
   async #call<I extends DescMessage, O extends DescMessage>(operation: Operation, input: I, request: MessageShape<I>, output: O): Promise<MessageShape<O>> {
     const client = await this.#client;
-    const response = await client[operation](toBinary(input, request));
-    return fromBinary(output, response);
+    return observed(this.#observer, "actors", operation, async sizes => {
+      const encoded = toBinary(input, request);
+      if (sizes) sizes.requestBytes = encoded.byteLength;
+      const response = await client[operation](encoded);
+      if (sizes) sizes.responseBytes = response.byteLength;
+      return fromBinary(output, response);
+    });
   }
 }
 

@@ -9,7 +9,7 @@
 use std::{num::NonZeroU64, path::Path};
 
 use crate::wire;
-use crate::contract::ACTORS_FILE;
+use crate::contract::{ACTORS_FILE, SubscriptionStartProto};
 use protify::*;
 use ts_rs::{Config, ExportError, TS};
 
@@ -22,23 +22,11 @@ mod kani_proofs;
 #[ts(type = "string & { readonly __brand: unique symbol }")]
 pub struct ActorId(String);
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(ActorId, String, {
-	 lower: |value| value.0,
-	 try_lift: |value| Ok(ActorId::try_from(value)?),
-});
-
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/CodeSha256.ts")]
 #[ts(type = "Uint8Array & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
-
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(CodeSha256, Vec<u8>, {
-	 lower: |value| value.0.to_vec(),
-	 try_lift: |value| Ok(CodeSha256::new(value)?),
-});
 
 /// A strictly positive unsigned 64-bit value.
 ///
@@ -48,12 +36,6 @@ uniffi::custom_type!(CodeSha256, Vec<u8>, {
 #[ts(export_to = "actors/PositiveU64.ts")]
 #[ts(type = "bigint & { readonly __brand: unique symbol }")]
 pub struct PositiveU64(NonZeroU64);
-
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(PositiveU64, u64, {
-	 lower: |value| value.get(),
-	 try_lift: |value| Ok(PositiveU64::new(value)?),
-});
 
 /// Failure while constructing a semantic value from customer or wire input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -392,89 +374,77 @@ impl ActorLimits {
     }
 
 }
-/// The published subscription-start message owns its oneof declaration.
-/// Protify generates the wire shadow and fallible ingress from this semantic
-/// declaration, preserving cursor zero and the current-head boolean payload.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+
+
+
+/// The published oneof is retained exactly, including cursor zero and the
+/// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
 #[ts(type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }")]
-pub struct SubscriptionStart {
-    #[proto(
-        tag = 1,
-        oneof(proxied, tags(1, 2), required),
-        from_proto = parse_subscription_start
-    )]
-    start: subscription_start::Start,
-}
-
-fn parse_subscription_start(
-    value: Option<subscription_start::StartProto>,
-) -> Result<subscription_start::Start, DomainError> {
-    match value {
-        Some(subscription_start::StartProto::Cursor(cursor)) => {
-            Ok(subscription_start::Start::Cursor(cursor))
-        }
-        Some(subscription_start::StartProto::CurrentHead(true)) => {
-            Ok(subscription_start::Start::CurrentHead(true))
-        }
-        Some(subscription_start::StartProto::CurrentHead(false)) | None => {
-            Err(DomainError::InvalidSubscription)
-        }
-    }
-}
-
-pub mod subscription_start {
-    use super::*;
-
-    /// The semantic oneof for [`super::SubscriptionStart`].
-    #[proto_oneof(proxied, fallible = DomainError)]
-    #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-    #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
-    pub enum Start {
-        /// Start at the exact stream cursor, including cursor zero.
-        #[proto(tag = 1)]
-        Cursor(u64),
-        /// Start at the service's current head, preserving the wire boolean.
-        #[proto(tag = 2)]
-        CurrentHead(bool),
-    }
+pub enum SubscriptionStart {
+    /// Start at the exact u64 cursor, including cursor zero.
+    Cursor {
+        /// The exact stream cursor at which delivery begins.
+        #[ts(type = "bigint")]
+        cursor: u64,
+    },
+    /// Start at the service's current head, preserving the wire boolean.
+    CurrentHead {
+        /// The wire-preserved current-head presence payload.
+        current_head: bool,
+    },
 }
 
 impl SubscriptionStart {
-    /// Creates a cursor-based start selector.
-    #[must_use]
-    pub fn cursor(cursor: u64) -> Self {
-        Self {
-            start: subscription_start::Start::Cursor(cursor),
-        }
-    }
-
-    /// Creates a current-head start selector.
-    #[must_use]
-    pub fn current_head(current_head: bool) -> Self {
-        Self {
-            start: subscription_start::Start::CurrentHead(current_head),
-        }
-    }
-
     /// Returns the cursor payload when this start selects an explicit cursor.
     #[must_use]
     pub fn cursor_value(&self) -> Option<u64> {
-        match self.start {
-            subscription_start::Start::Cursor(cursor) => Some(cursor),
-            subscription_start::Start::CurrentHead(_) => None,
+        match self {
+            Self::Cursor { cursor } => Some(*cursor),
+            Self::CurrentHead { .. } => None,
         }
     }
 
     /// Returns the current-head payload when this start selects current head.
     #[must_use]
     pub fn current_head_value(&self) -> Option<bool> {
-        match self.start {
-            subscription_start::Start::Cursor(_) => None,
-            subscription_start::Start::CurrentHead(current_head) => Some(current_head),
+        match self {
+            Self::Cursor { .. } => None,
+            Self::CurrentHead { current_head } => Some(*current_head),
+        }
+    }
+}
+
+impl TryFrom<wire::SubscriptionStart> for SubscriptionStart {
+    type Error = DomainError;
+
+    fn try_from(value: wire::SubscriptionStart) -> Result<Self, Self::Error> {
+        match value.start {
+            Some(wire::subscription_start::Start::Cursor(cursor)) => {
+                Ok(Self::Cursor { cursor })
+            }
+            Some(wire::subscription_start::Start::CurrentHead(true)) => {
+                Ok(Self::CurrentHead { current_head: true })
+            }
+            Some(wire::subscription_start::Start::CurrentHead(false)) | None => {
+                Err(DomainError::InvalidSubscription)
+            }
+        }
+    }
+}
+
+impl From<SubscriptionStart> for wire::SubscriptionStart {
+    fn from(value: SubscriptionStart) -> Self {
+        Self {
+            start: Some(match value {
+                SubscriptionStart::Cursor { cursor } => {
+                    wire::subscription_start::Start::Cursor(cursor)
+                }
+                SubscriptionStart::CurrentHead { current_head } => {
+                    wire::subscription_start::Start::CurrentHead(current_head)
+                }
+            }),
         }
     }
 }
@@ -515,7 +485,13 @@ impl SubscriptionSpec {
     ) -> Result<Self, DomainError> {
         if subscription_id.is_empty()
             || stream_path.is_empty()
-            || (start.cursor_value().is_none() && start.current_head_value() != Some(true))
+            || !matches!(
+                start,
+                SubscriptionStart::Cursor { .. }
+                    | SubscriptionStart::CurrentHead {
+                        current_head: true
+                    }
+            )
         {
             return Err(DomainError::InvalidSubscription);
         }
@@ -632,7 +608,6 @@ pub enum ErrorCode {
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
-#[proto(name = "Error")]
 pub struct ServiceError {
     #[proto(tag = 1, enum_(ErrorCode), from_proto = parse_error_code, into_proto = encode_error_code)]
 
@@ -1491,7 +1466,7 @@ mod tests {
         let subscription = SubscriptionSpec::new(
             "events".into(),
             "agents/a/events".into(),
-            SubscriptionStart::cursor(u64::MAX),
+            SubscriptionStart::Cursor { cursor: u64::MAX },
             false,
         )
         .expect("valid subscription");
@@ -1545,7 +1520,7 @@ mod tests {
         let subscription = SubscriptionSpec::new(
             "events".into(),
             "agents/a/events".into(),
-            SubscriptionStart::current_head(true),
+            SubscriptionStart::CurrentHead { current_head: true },
             false,
         )
         .expect("valid subscription");
@@ -1558,7 +1533,7 @@ mod tests {
             SubscriptionSpec::new(
                 "events".into(),
                 "agents/a/events".into(),
-                SubscriptionStart::current_head(false),
+                SubscriptionStart::CurrentHead { current_head: false },
                 false,
             ),
             Err(DomainError::InvalidSubscription)
