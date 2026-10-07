@@ -17,7 +17,8 @@ use acyclic_harness::filesystem::{
     MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
     TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
     TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost, TaskCommandProgress,
-    TaskObserveCommand, TaskWakeCursor, TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
+    TaskObserveCommand, TaskWakeCursor, TaskWorkerAttempt, TaskWorkerOutcome, TimerTaskCommand,
+    ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -854,7 +855,37 @@ async fn worker_restart_with_options(
                     .await?;
             }
         }
-        let lease = if reopened && (uncertain || with_mail_send) {
+        let lease = if !reopened && with_command {
+            let before = stream
+                .stream("harness/v2/coordinator/events")?
+                .tail()
+                .await?;
+            assert!(matches!(
+                runtime.worker_tick(&worker, None, &NoCommands, 1, 0).await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(
+                stream
+                    .stream("harness/v2/coordinator/events")?
+                    .tail()
+                    .await?,
+                before
+            );
+            let tick = runtime
+                .worker_tick(&worker, None, &runtime.commands(), 1, 1)
+                .await?;
+            assert_eq!(tick.wake.events_read, 1);
+            let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = tick.work
+            else {
+                return Err(Error::NotFound("initial worker tick lease".into()));
+            };
+            assert_eq!(lease.operation.operation_id, operation);
+            let idle = runtime
+                .worker_tick(&worker, tick.wake.cursor, &NoCommands, 1, 1)
+                .await?;
+            assert!(idle.work.is_none());
+            lease
+        } else if reopened && (uncertain || with_mail_send) {
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -883,18 +914,22 @@ async fn worker_restart_with_options(
             && !with_mail_send
         {
             assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
+            assert!(
+                matches!(runtime.resume_task(old.clone(), &NoCommands, 1).await,
+                TaskWorkerAttempt::Unresolved { lease: attempted, .. } if attempted == *old)
+            );
         }
         let outcome = if with_command {
             if !reopened {
+                assert!(
+                    matches!(runtime.resume_task(lease.clone(), &NoCommands, 0).await,
+                    TaskWorkerAttempt::Unresolved { lease: retained, error: Error::Invalid(_) } if retained == lease)
+                );
                 assert!(
                     runtime
                         .run_task(lease.clone(), &NoCommands, 0)
                         .await
                         .is_err()
-                );
-                let yielded = runtime.run_task(lease.clone(), &NoCommands, 1).await?;
-                assert!(
-                    matches!(yielded, TaskWorkerOutcome::Yielded { lease: retained } if retained == lease)
                 );
                 assert_eq!(model.generated.load(Ordering::SeqCst), 0);
                 coordinator.refresh().await?;
@@ -1117,8 +1152,8 @@ async fn worker_restart_with_options(
                     assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
                 }
             }
-            runtime
-                .run_task(
+            let attempt = runtime
+                .resume_task(
                     lease.clone(),
                     &runtime.commands().with_model(
                         Model::new("test", "interrupted", "1", Value::Null)?,
@@ -1127,7 +1162,11 @@ async fn worker_restart_with_options(
                     ),
                     2,
                 )
-                .await?
+                .await;
+            match attempt {
+                TaskWorkerAttempt::Progress(progress) => progress,
+                TaskWorkerAttempt::Unresolved { error, .. } => return Err(error),
+            }
         } else {
             runtime.run_task(lease.clone(), &NoCommands, 1).await?
         };

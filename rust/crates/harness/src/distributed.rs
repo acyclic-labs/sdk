@@ -163,6 +163,23 @@ pub struct WorkLease {
     pub operation_revision: u64,
 }
 
+/// Owner-scoped pull result. An unresolved publication retains its exact
+/// attempted reservation identity without claiming that it committed.
+pub enum WorkPull {
+    /// No operation was admitted by this invocation.
+    Idle,
+    /// Coordinator publication was observed; execution must still verify it.
+    Claimed(WorkLease),
+    /// Publication or its observation failed. Check this exact attempt against
+    /// the coordinator before resuming; do not infer quiescence or refund it.
+    Unresolved {
+        /// Exact attempted lease, including the reservation identity.
+        lease: WorkLease,
+        /// Publication/observation failure.
+        error: Error,
+    },
+}
+
 /// Synchronous deterministic implementation of one pinned reducer contract.
 pub trait DurableReducer: Send + Sync {
     /// Exact immutable reducer identity.
@@ -1415,11 +1432,55 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     /// Pulls and atomically admits one dependency- and resource-ready operation.
     pub async fn pull(&mut self, worker: &Worker) -> Result<Option<WorkLease>> {
+        match self.pull_for(worker, None).await? {
+            WorkPull::Idle => Ok(None),
+            WorkPull::Claimed(lease) => Ok(Some(lease)),
+            WorkPull::Unresolved { error, .. } => Err(error),
+        }
+    }
+
+    /// Pulls only operations belonging to the verified owner. Shared resource
+    /// accounting and tail fencing use the same scheduler and publication path.
+    /// An uncertain admission returns its exact attempt instead of losing the
+    /// reservation identity in an error-only result.
+    pub async fn pull_owned(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        worker: &Worker,
+    ) -> Result<WorkPull> {
+        verifier.verify_audience(owner)?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains("operation:observe")
+            || !scope.capabilities().contains("operation:declare")
+        {
+            return Err(Error::Unauthorized(
+                "owned pull requires operation:declare and operation:observe".into(),
+            ));
+        }
+        self.pull_for(worker, Some(owner)).await
+    }
+
+    fn matches_pull_owner(&self, operation: OperationId, owner: Option<&Authority>) -> bool {
+        owner.is_none_or(|owner| {
+            self.scheduler
+                .operation(operation)
+                .is_some_and(|operation| operation.spec.owner.authority() == owner)
+        })
+    }
+
+    async fn pull_for(&mut self, worker: &Worker, owner: Option<&Authority>) -> Result<WorkPull> {
         self.refresh().await?;
         if worker.id.trim().is_empty() {
             return Err(Error::Invalid("worker identity is empty".into()));
         }
-        if let Some(operation_id) = self.scheduler.blocked_by_dependencies().first().copied() {
+        if let Some(operation_id) = self
+            .scheduler
+            .blocked_by_dependencies()
+            .into_iter()
+            .find(|operation| self.matches_pull_owner(*operation, owner))
+        {
             self.apply(
                 operation_id,
                 IdempotencyKey::new(format!("dependency-rejected:{operation_id}"))?,
@@ -1429,16 +1490,16 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 },
             )
             .await?;
-            return Ok(None);
+            return Ok(WorkPull::Idle);
         }
         let available = self.scheduler.available_for(&worker.id, &worker.available);
         let Some(operation_id) = self
             .scheduler
             .ready_for(&available, &worker.labels)
-            .first()
-            .copied()
+            .into_iter()
+            .find(|operation| self.matches_pull_owner(*operation, owner))
         else {
-            return Ok(None);
+            return Ok(WorkPull::Idle);
         };
         let state = self
             .scheduler
@@ -1451,28 +1512,37 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             placement: worker.id.clone(),
             admitted: operation.resources.clone(),
         };
-        self.apply(
-            operation_id,
-            IdempotencyKey::new(format!(
-                "pull:{}:{operation_id}:{}",
-                worker.id,
-                self.revision + 1
-            ))?,
-            SchedulerEvent::Admitted {
-                operation_id,
-                reservation: reservation.clone(),
-            },
-        )
-        .await?;
-        Ok(Some(WorkLease {
+        let mut lease = WorkLease {
             operation,
-            reservation,
+            reservation: reservation.clone(),
             checkpoint: state.checkpoint,
-            operation_revision: self
-                .scheduler
-                .operation(operation_id)
-                .map_or(0, |value| value.revision),
-        }))
+            operation_revision: state
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| Error::Storage("operation revision exhausted".into()))?,
+        };
+        if let Err(error) = self
+            .apply(
+                operation_id,
+                IdempotencyKey::new(format!(
+                    "pull:{}:{operation_id}:{}",
+                    worker.id,
+                    self.revision + 1
+                ))?,
+                SchedulerEvent::Admitted {
+                    operation_id,
+                    reservation: reservation.clone(),
+                },
+            )
+            .await
+        {
+            return Ok(WorkPull::Unresolved { lease, error });
+        }
+        lease.operation_revision = self
+            .scheduler
+            .operation(operation_id)
+            .map_or(0, |value| value.revision);
+        Ok(WorkPull::Claimed(lease))
     }
 
     /// Returns a crashed worker's exact lease to admission without losing its checkpoint.
@@ -3202,6 +3272,206 @@ mod tests {
         hide_location_read: std::sync::atomic::AtomicBool,
     }
 
+    #[tokio::test]
+    async fn owned_pull_filters_foreign_operations_but_shares_worker_capacity() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let foreign = OperationId::from_bytes([1; 16]);
+        let owned = OperationId::from_bytes([2; 16]);
+        let mut other = spec(foreign, 1)?;
+        other.owner = DurableOwner::Attached {
+            authority: Authority {
+                kind: AggregateKind::Task,
+                id: "foreign".into(),
+            },
+        };
+        declare(&mut coordinator, other, "foreign-pull").await?;
+        declare(&mut coordinator, spec(owned, 1)?, "owned-pull").await?;
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("owned-pull", [9; 32], owner.clone());
+        let scope = issuer.root(
+            "admit",
+            Capabilities::new(["operation:observe", "operation:declare"]),
+        );
+        let worker = Worker {
+            id: "shared-worker".into(),
+            available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+            labels: BTreeMap::new(),
+        };
+        let WorkPull::Claimed(lease) = coordinator
+            .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+            .await?
+        else {
+            return Err(Error::NotFound("owned pull".into()));
+        };
+        assert_eq!(lease.operation.operation_id, owned);
+        assert!(
+            coordinator
+                .scheduler()
+                .operation(foreign)
+                .is_some_and(|state| state.reservation.is_none())
+        );
+        assert!(matches!(
+            coordinator
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                .await?,
+            WorkPull::Idle
+        ));
+        assert!(coordinator.pull(&worker).await?.is_none());
+        let fence = LeaseFence::from(&lease.reservation);
+        coordinator
+            .apply(
+                owned,
+                IdempotencyKey::new("owned-start")?,
+                SchedulerEvent::Started {
+                    operation_id: owned,
+                    fence: fence.clone(),
+                },
+            )
+            .await?;
+        coordinator
+            .apply(
+                owned,
+                IdempotencyKey::new("owned-failed")?,
+                SchedulerEvent::Completed {
+                    operation_id: owned,
+                    fence: Some(fence),
+                    execution_duration_ns: None,
+                    outcome: crate::Outcome::Failed {
+                        message: "dependency failed".into(),
+                    },
+                },
+            )
+            .await?;
+        let blocked = OperationId::from_bytes([3; 16]);
+        let mut other = spec(blocked, 1)?;
+        other.owner = DurableOwner::Attached {
+            authority: Authority {
+                kind: AggregateKind::Task,
+                id: "foreign".into(),
+            },
+        };
+        other.dependencies.insert(owned);
+        declare(&mut coordinator, other, "foreign-blocked").await?;
+        assert!(matches!(
+            coordinator
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                .await?,
+            WorkPull::Idle
+        ));
+        assert!(
+            coordinator
+                .scheduler()
+                .operation(blocked)
+                .is_some_and(|state| state.phase != crate::scheduler::OperationPhase::Terminal)
+        );
+        let before = client.stream(COORDINATOR_PATH)?.tail().await?;
+        let denied = issuer.root("denied", Capabilities::new(["operation:observe"]));
+        assert!(matches!(
+            coordinator
+                .pull_owned(&owner, &denied, &issuer.verifier(), &worker)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, before);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn owned_pull_retains_exact_attempt_after_admission_ack_or_index_fault() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+        for fault in 0..3 {
+            let provider = Arc::new(LostSessionAck {
+                inner: MemoryStream::default(),
+                lose_ack: AtomicBool::new(false),
+                hide_receipt: AtomicBool::new(false),
+                location_fault: AtomicU8::new(0),
+                hide_location_read: AtomicBool::new(false),
+            });
+            let client = StreamClient::new(provider.clone());
+            let mut coordinator =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let operation = OperationId::from_bytes([31; 16]);
+            declare(&mut coordinator, spec(operation, 1)?, "fault-pull-root").await?;
+            let owner = Authority {
+                kind: AggregateKind::Task,
+                id: "owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("fault-pull", [9; 32], owner.clone());
+            let scope = issuer.root(
+                "admit",
+                Capabilities::new(["operation:observe", "operation:declare"]),
+            );
+            let worker = Worker {
+                id: "fault-worker".into(),
+                available: ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)])),
+                labels: BTreeMap::new(),
+            };
+            if fault == 1 {
+                provider.lose_ack.store(true, Ordering::SeqCst);
+                provider.hide_receipt.store(true, Ordering::SeqCst);
+            } else {
+                provider
+                    .location_fault
+                    .store(if fault == 2 { 4 } else { 1 }, Ordering::SeqCst);
+            }
+            let WorkPull::Unresolved { lease, error } = coordinator
+                .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                .await?
+            else {
+                return Err(Error::NotFound("unresolved admission attempt".into()));
+            };
+            assert!(if fault != 0 {
+                matches!(error, Error::Indeterminate(id) if id == operation)
+            } else {
+                matches!(error, Error::Storage(_))
+            });
+            assert_eq!(lease.operation.operation_id, operation);
+            drop(coordinator);
+            let mut reopened =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let retained = reopened
+                .scheduler()
+                .operation(operation)
+                .ok_or_else(|| Error::NotFound("retained admission".into()))?;
+            if fault == 2 {
+                assert!(retained.reservation.is_none());
+                assert!(
+                    crate::scheduler::require_execution_owner(
+                        retained,
+                        &LeaseFence::from(&lease.reservation),
+                        false
+                    )
+                    .is_err()
+                );
+                let WorkPull::Claimed(retried) = reopened
+                    .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                    .await?
+                else {
+                    return Err(Error::NotFound("uncommitted admission retry".into()));
+                };
+                assert_eq!(retried, lease);
+                continue;
+            }
+            assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+            assert_eq!(retained.revision, lease.operation_revision);
+            assert_eq!(retained.phase, crate::scheduler::OperationPhase::Admitted);
+            let tail = client.stream(COORDINATOR_PATH)?.tail().await?;
+            assert!(matches!(
+                reopened
+                    .pull_owned(&owner, &scope, &issuer.verifier(), &worker)
+                    .await?,
+                WorkPull::Idle
+            ));
+            assert_eq!(client.stream(COORDINATOR_PATH)?.tail().await?, tail);
+        }
+        Ok(())
+    }
+
     #[async_trait::async_trait]
     impl StreamProvider for LostSessionAck {
         async fn inspect_idempotency(
@@ -3233,6 +3503,19 @@ mod tests {
             &self,
             request: acyclic_stream::AppendRequest,
         ) -> std::result::Result<AppendOutcome, StreamError> {
+            if request.path.as_str() == COORDINATOR_PATH
+                && self
+                    .location_fault
+                    .compare_exchange(
+                        4,
+                        0,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    )
+                    .is_ok()
+            {
+                return Err(StreamError::Unavailable);
+            }
             let location = request
                 .path
                 .as_str()

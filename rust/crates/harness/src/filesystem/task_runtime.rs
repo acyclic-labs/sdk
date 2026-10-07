@@ -84,6 +84,29 @@ pub struct TaskWakePage {
     pub woken: Vec<TaskId>,
 }
 
+/// Worker attempt, always preserving a known lease when work is unresolved.
+pub enum TaskWorkerAttempt {
+    /// Normal worker progress, including explicit yielded/reconciling leases.
+    Progress(TaskWorkerOutcome),
+    /// Admission observation or execution failed. This exact lease is a resume
+    /// attempt, not proof of ownership or provider quiescence. Resumption checks
+    /// the retained coordinator reservation before dispatch.
+    Unresolved {
+        /// Exact attempted or retained lease.
+        lease: crate::distributed::WorkLease,
+        /// Admission or execution error.
+        error: Error,
+    },
+}
+
+/// One caller-driven service tick. It retains no background future.
+pub struct TaskWorkerTick {
+    /// Bounded discovery page; carry its cursor into the next tick.
+    pub wake: TaskWakePage,
+    /// At most one owned task attempt; none means no work was admitted.
+    pub work: Option<TaskWorkerAttempt>,
+}
+
 /// A bounded worker turn retains no suspended future or second queue.
 pub enum TaskWorkerOutcome {
     /// Checkpoint retained and reservation released until an authorized wake.
@@ -314,6 +337,62 @@ where
         self.harness
             .open_registered_task(task, fence, journal)
             .await
+    }
+
+    /// Performs one bounded discovery page followed by at most one owner-scoped
+    /// admission and worker turn through the trusted command adapter. Allowances are
+    /// checked before publication. Resource accounting uses the existing
+    /// coordinator; discovery/refresh costs retain their documented limits.
+    ///
+    /// Carry the wake cursor between ticks and repeat completed sweeps later.
+    /// Retain yielded, reconciling or unresolved leases and call `resume_task`
+    /// explicitly; another tick never rediscovers an active lease or assumes
+    /// that its provider stopped. Errors after an attempted admission return
+    /// that exact attempt in `work` rather than discarding its identity.
+    pub async fn worker_tick(
+        &self,
+        worker: &crate::distributed::Worker,
+        cursor: Option<TaskWakeCursor>,
+        commands: &dyn TaskCommandHost,
+        maximum_events: u32,
+        maximum_transitions: u32,
+    ) -> Result<TaskWorkerTick> {
+        if worker.id.trim().is_empty()
+            || maximum_transitions == 0
+            || u64::from(maximum_transitions) > crate::workflow::MAX_WORKFLOW_RECORDS
+        {
+            return Err(Error::Invalid(
+                "invalid worker tick allowance or identity".into(),
+            ));
+        }
+        let wake = self.poll_task_wake_page(cursor, maximum_events).await?;
+        let work = match self.host.pull_work(worker).await? {
+            crate::distributed::WorkPull::Idle => None,
+            crate::distributed::WorkPull::Claimed(lease) => {
+                Some(self.resume_task(lease, commands, maximum_transitions).await)
+            }
+            crate::distributed::WorkPull::Unresolved { lease, error } => {
+                Some(TaskWorkerAttempt::Unresolved { lease, error })
+            }
+        };
+        Ok(TaskWorkerTick { wake, work })
+    }
+
+    /// Resumes an explicit lease; every error returns the original attempt
+    /// so callers can reconcile or verify it without silently releasing capacity.
+    pub async fn resume_task(
+        &self,
+        lease: crate::distributed::WorkLease,
+        commands: &dyn TaskCommandHost,
+        maximum_transitions: u32,
+    ) -> TaskWorkerAttempt {
+        match self
+            .run_task(lease.clone(), commands, maximum_transitions)
+            .await
+        {
+            Ok(progress) => TaskWorkerAttempt::Progress(progress),
+            Err(error) => TaskWorkerAttempt::Unresolved { lease, error },
+        }
     }
 
     /// Inspects one page of a finite coordinator snapshot and polls its owned

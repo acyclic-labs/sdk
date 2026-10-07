@@ -446,6 +446,18 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Claims through the same coordinator, restricted to this signed owner.
+    pub async fn pull_work(
+        &self,
+        worker: &crate::distributed::Worker,
+    ) -> Result<crate::distributed::WorkPull> {
+        self.coordinator
+            .lock()
+            .await
+            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker)
+            .await
+    }
+
     /// Durably retains one timer identity without holding a waiting future.
     /// The existing owner-authenticated workflow wake supplies later admission.
     #[cfg(feature = "filesystem")]

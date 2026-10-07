@@ -59,7 +59,7 @@ pub use task_commands::{
 };
 pub use task_runtime::{
     FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
-    TaskWakeCursor, TaskWakePage, TaskWorkerOutcome,
+    TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome, TaskWorkerTick,
 };
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
