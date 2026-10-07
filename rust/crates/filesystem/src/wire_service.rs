@@ -9,7 +9,7 @@ use crate::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken, Digest,
     DurableCommit, ForkOptions, Fs, Generation, GenerationId, IdempotencyKey, JoinHistory,
-    JoinOutcome, MergeConflict, ObjectId, ObjectKind, Sequence, Transaction, TransactionCommit,
+    JoinOutcome, MergeConflict, ObjectId, Sequence, Transaction, TransactionCommit,
     TransactionConflict, TransactionConflictRegion, TransactionRebase, Workspace, WorkspaceDelete,
     WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
 };
@@ -1208,7 +1208,7 @@ where
                 let next_cursor = cursor.saturating_add(1);
                 let chunk = wire::ExportChunk {
                     cursor: next_cursor.to_le_bytes().to_vec(),
-                    object_id: encode_object_id(object),
+                    object_id: object.to_bytes().to_vec(),
                     contents: body.to_vec(),
                     terminal: next_index == objects.len(),
                 };
@@ -2040,7 +2040,7 @@ fn file_record_snapshot(record: crate::kernel::FileRecord) -> wire::FileRecordSn
         file_id: record.file_id.into_bytes().to_vec(),
         file_kind: file_kind(record.kind),
         link_count: record.link_count,
-        metadata_object: encode_object_id(record.metadata),
+        metadata_object: record.metadata.to_bytes().to_vec(),
         payload_kind: String::new(),
         logical_bytes: None,
         payload_object: Vec::new(),
@@ -2062,11 +2062,11 @@ fn file_record_snapshot(record: crate::kernel::FileRecord) -> wire::FileRecordSn
         } => {
             value.payload_kind = "regular".to_owned();
             value.logical_bytes = Some(output_u64(Some(logical_bytes)));
-            value.payload_object = encode_object_id(extents);
+            value.payload_object = extents.to_bytes().to_vec();
         }
         FilePayload::Directory { entries } => {
             value.payload_kind = "directory".to_owned();
-            value.payload_object = encode_object_id(entries);
+            value.payload_object = entries.to_bytes().to_vec();
         }
         FilePayload::SymbolicLink {
             target_bytes,
@@ -2074,7 +2074,7 @@ fn file_record_snapshot(record: crate::kernel::FileRecord) -> wire::FileRecordSn
         } => {
             value.payload_kind = "symbolic-link".to_owned();
             value.logical_bytes = Some(output_u64(Some(target_bytes)));
-            value.payload_object = encode_object_id(target);
+            value.payload_object = target.to_bytes().to_vec();
         }
         FilePayload::Empty => value.payload_kind = "empty".to_owned(),
         FilePayload::Device { major, minor } => {
@@ -2088,7 +2088,7 @@ fn file_record_snapshot(record: crate::kernel::FileRecord) -> wire::FileRecordSn
         } => {
             value.payload_kind = "reparse-point".to_owned();
             value.logical_bytes = Some(output_u64(Some(payload_bytes)));
-            value.payload_object = encode_object_id(payload);
+            value.payload_object = payload.to_bytes().to_vec();
         }
     }
     value
@@ -2201,31 +2201,8 @@ const fn join_history_code(value: JoinHistory) -> u8 {
     hosted_contract::join_history(value) as u8
 }
 
-fn encode_object_id(object: ObjectId) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(33);
-    bytes.push(object.kind.canonical_tag());
-    bytes.extend_from_slice(object.digest.as_bytes());
-    bytes
-}
-
 fn decode_object_id(bytes: &[u8]) -> Result<ObjectId, Status> {
-    if bytes.len() != 33 {
-        return Err(Status::invalid_argument(
-            "object identity must contain kind and digest",
-        ));
-    }
-    let (&tag, digest_bytes) = bytes
-        .split_first()
-        .ok_or_else(|| Status::invalid_argument("object identity must contain kind and digest"))?;
-    let kind = ObjectKind::from_canonical_tag(tag)
-        .map_err(|error| Status::invalid_argument(error.to_string()))?;
-    let digest: [u8; 32] = digest_bytes
-        .try_into()
-        .map_err(|_| Status::invalid_argument("object digest is malformed"))?;
-    Ok(ObjectId {
-        kind,
-        digest: Digest::from_bytes(digest),
-    })
+    ObjectId::try_from(bytes).map_err(|error| Status::invalid_argument(error.to_string()))
 }
 
 fn transfer_cursor(bytes: &[u8]) -> Result<u64, Status> {
