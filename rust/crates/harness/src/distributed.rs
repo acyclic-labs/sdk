@@ -1302,7 +1302,6 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.require_parent_owner(&event, parent_fence.as_ref())?;
-        self.require_command_wait(&event, waiting_command)?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
         let key = idempotency_key.as_str();
         if event.operation_id() != operation_id {
@@ -1316,11 +1315,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             return if existing_digest == digest && existing == event {
                 // A retained accounting receipt is not an execution permit.
                 // Revalidate the exact owner and cancellation state on retry.
+                self.require_command_wait(&event, waiting_command, true)?;
                 self.replay_intent(&event)
             } else {
                 Err(Error::Conflict("coordinator retry identity reused".into()))
             };
         }
+        self.require_command_wait(&event, waiting_command, false)?;
         if let SchedulerEvent::Declared { spec } = &event {
             self.content_verifier.verify(&spec.state).await?;
         }
@@ -1385,6 +1386,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         &self,
         event: &SchedulerEvent,
         waiting: Option<OperationId>,
+        replaying: bool,
     ) -> Result<()> {
         let Some(waiting) = waiting else {
             return Ok(());
@@ -1392,7 +1394,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let SchedulerEvent::WorkflowResumed {
             operation_id,
             workflow_revision,
-            ..
+            input,
         } = event
         else {
             return Err(Error::Invalid(
@@ -1403,12 +1405,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .scheduler
             .operation(*operation_id)
             .ok_or_else(|| Error::NotFound("waiting task".into()))?;
-        if operation.phase != crate::scheduler::OperationPhase::Suspended
+        if (!replaying && operation.phase != crate::scheduler::OperationPhase::Suspended)
             || operation.cancellation_requested
             || operation.workflow.as_ref().is_none_or(|slot| {
                 slot.revision != *workflow_revision
                     || slot.waiting_command != Some(waiting)
-                    || slot.input.is_some()
+                    // A committed wake fills this exact slot. Its retained
+                    // receipt may be observed again, but cannot wake a later
+                    // wait or substitute another input after a lost reply.
+                    || slot.input.as_ref() != replaying.then_some(input)
             })
         {
             return Err(Error::Conflict(
@@ -2605,8 +2610,14 @@ mod tests {
 
     #[tokio::test]
     async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Result<()> {
-        for cancel in [false, true] {
-            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        for (cancel, lost_ack) in [
+            (false, None),
+            (true, None),
+            (false, Some(false)),
+            (false, Some(true)),
+        ] {
+            let provider = Arc::new(LostSessionAck::default());
+            let client = StreamClient::new(provider.clone());
             let gate = Arc::new(PausedChildVerifier {
                 armed: std::sync::atomic::AtomicBool::new(false),
                 entered: tokio::sync::Notify::new(),
@@ -2716,6 +2727,14 @@ mod tests {
             );
             disturbance?;
             assert!(matches!(attempt, Err(Error::Conflict(_))));
+            if let Some(hidden) = lost_ack {
+                provider
+                    .lose_ack
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                provider
+                    .hide_receipt
+                    .store(hidden, std::sync::atomic::Ordering::SeqCst);
+            }
             let retry = first
                 .resume_command(
                     &owner,
@@ -2731,7 +2750,67 @@ mod tests {
             if cancel {
                 assert!(retry.is_err());
             } else {
-                assert_eq!(retry?, CoordinatorApply::Applied);
+                if lost_ack == Some(true) {
+                    assert!(matches!(retry, Err(Error::Indeterminate(id)) if id == task));
+                    drop(first);
+                    first = DistributedCoordinator::open(&client, gate.clone()).await?;
+                    let operation = first
+                        .scheduler()
+                        .operation(task)
+                        .ok_or_else(|| Error::NotFound("published wake".into()))?;
+                    assert_eq!(
+                        operation.phase,
+                        crate::scheduler::OperationPhase::WaitingForCapacity
+                    );
+                    assert!(operation.reservation.is_none());
+                    assert_eq!(
+                        first
+                            .resume_command(
+                                &owner,
+                                &signed,
+                                &verifier,
+                                task,
+                                1,
+                                input.clone(),
+                                IdempotencyKey::new("selected-wake")?,
+                                selected
+                            )
+                            .await?,
+                        CoordinatorApply::Replayed
+                    );
+                } else {
+                    assert_eq!(retry?, CoordinatorApply::Applied);
+                    assert_eq!(
+                        first
+                            .resume_command(
+                                &owner,
+                                &signed,
+                                &verifier,
+                                task,
+                                1,
+                                input.clone(),
+                                IdempotencyKey::new("selected-wake")?,
+                                selected
+                            )
+                            .await?,
+                        CoordinatorApply::Replayed
+                    );
+                }
+                assert!(
+                    first
+                        .resume_command(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            task,
+                            1,
+                            input.clone(),
+                            IdempotencyKey::new("another-wake")?,
+                            selected
+                        )
+                        .await
+                        .is_err()
+                );
                 // Releasing a replacement lease for a different command at the
                 // same checkpoint must not accept a stale readiness decision.
                 let lease = first
@@ -2786,12 +2865,37 @@ mod tests {
                             &verifier,
                             task,
                             1,
-                            input,
+                            input.clone(),
                             IdempotencyKey::new("second-selected-wake")?,
                             next
                         )
                         .await?,
                     CoordinatorApply::Applied
+                );
+                first
+                    .apply(
+                        task,
+                        IdempotencyKey::new("cancel-published-wake")?,
+                        SchedulerEvent::CancellationRequested {
+                            operation_id: task,
+                            recursive: false,
+                        },
+                    )
+                    .await?;
+                assert!(
+                    first
+                        .resume_command(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            task,
+                            1,
+                            input,
+                            IdempotencyKey::new("second-selected-wake")?,
+                            next
+                        )
+                        .await
+                        .is_err()
                 );
             }
         }
