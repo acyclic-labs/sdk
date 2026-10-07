@@ -31,8 +31,6 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
  */
 type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
   ? WorkCounters
-  : T extends { readonly fileKind: string }
-    ? Omit<T, "fileKind"> & { readonly fileKind: WorkspaceFileKind }
   : T extends Uint8Array
     ? Uint8Array
     : T extends readonly (infer Value)[]

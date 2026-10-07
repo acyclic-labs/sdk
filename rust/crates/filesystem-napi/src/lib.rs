@@ -186,32 +186,16 @@ mod napi_u32_codec {
 /// Serialize exact work counters as decimal strings so native JSON never
 /// rounds a Rust `u64` through JavaScript's number representation.
 fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
-    let value = serde_json::json!({
-        "authorityRecordsRead": work.authority_records_read.to_string(),
-        "authorityRecordsAppended": work.authority_records_appended.to_string(),
-        "authorityBytesRead": work.authority_bytes_read.to_string(),
-        "authorityBytesWritten": work.authority_bytes_written.to_string(),
-        "objectProbes": work.object_probes.to_string(),
-        "backendReadOperations": work.backend_read_operations.to_string(),
-        "backendWriteOperations": work.backend_write_operations.to_string(),
-        "durabilityOperations": work.durability_operations.to_string(),
-        "pageReads": work.page_reads.to_string(),
-        "pageWrites": work.page_writes.to_string(),
-        "objectBytesRead": work.object_bytes_read.to_string(),
-        "objectBytesWritten": work.object_bytes_written.to_string(),
-        "bytesHashed": work.bytes_hashed.to_string(),
-        "bytesCopied": work.bytes_copied.to_string(),
-        "bytesEncoded": work.bytes_encoded.to_string(),
-        "sourceBytesRead": work.source_bytes_read.to_string(),
-        "sourcePathComponents": work.source_path_components.to_string(),
-        "sourceEntriesVisited": work.source_entries_visited.to_string(),
-        "outputBytes": work.output_bytes.to_string(),
-        "itemsExamined": work.items_examined.to_string(),
-        "itemsReturned": work.items_returned.to_string(),
-        "allocationOperations": work.allocation_operations.to_string(),
-        "peakAllocationBytes": work.peak_allocation_bytes.to_string(),
-        "materializations": work.materializations.to_string(),
-    });
+    let mut value = serde_json::to_value(work).map_err(napi_error)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| napi_error("work counters must serialize as an object"))?;
+    for (field, value) in object {
+        let number = value
+            .as_u64()
+            .ok_or_else(|| napi_error(format!("work counter {field} must serialize as u64")))?;
+        *value = serde_json::Value::String(number.to_string());
+    }
     serde_json::to_string(&value).map_err(napi_error)
 }
 
@@ -8058,12 +8042,20 @@ mod tests {
     #[test]
     fn native_work_json_preserves_full_u64_values() {
         let work = acyclic_fs::WorkCounters {
+            authority_records_read: 9_007_199_254_740_993,
             bytes_copied: u64::MAX,
             materializations: u64::MAX,
             ..Default::default()
         };
         let encoded = work_json(&work).expect("work counters serialize");
         let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid work JSON");
+        let object = value.as_object().expect("work counters object");
+        assert_eq!(object.len(), 24, "every canonical counter must be present");
+        assert!(object.values().all(serde_json::Value::is_string));
+        assert_eq!(
+            value["authorityRecordsRead"],
+            serde_json::Value::String("9007199254740993".to_owned())
+        );
         assert_eq!(
             value["bytesCopied"],
             serde_json::Value::String(u64::MAX.to_string())
