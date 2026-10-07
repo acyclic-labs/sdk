@@ -1,65 +1,33 @@
 # Manual Kani proofs
 
-These harnesses are opt-in and compiled only when Kani supplies cfg(kani). They
-are excluded from normal builds and CI.
+The opt-in harnesses call the production admission functions directly:
 
-Pinned environment:
+- `exact_u32_from_f64_all_bits` quantifies every IEEE-754 `f64` bit pattern. Acceptance is equivalent to finite, integral input in `[0, u32::MAX]`, and conversion preserves the accepted value.
+- `validate_reconcile_limits_iff_all_three_nonzero` quantifies three `u32` limits. Admission succeeds exactly when all are nonzero; invalid limits return `WorkspaceError::JoinLimit`.
 
-- Kani Rust Verifier 0.68.0
-- CBMC 6.11.0
-- Rust nightly-2026-08-21
-- CaDiCaL 3.0.0
-- Linux/WSL, offline dependencies, one solver job
+The harnesses compile only under `cfg(kani)`. The build script registers that cfg for stable compiler checks. Normal builds and routine CI do not run a solver.
 
-Run from the repository root after installing the pinned Kani release:
+## Reproduce
 
-    export RUSTC_WRAPPER=
-    cargo +nightly-2026-08-21 kani --package acyclic-fs --harness kani_proofs::exact_u32_from_f64_all_bits --jobs 1
-    cargo +nightly-2026-08-21 kani --package acyclic-fs --harness operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero --jobs 1
+Use Kani 0.68.0, CBMC 6.11.0, Rust nightly-2026-08-21 and CaDiCaL 3.0.0 on Linux, with offline dependencies and one solver job. From the repository root:
 
-The first harness quantifies all u64 IEEE-754 bit patterns and calls the public
-production exact_u32_from_f64 function. The second calls the private production
-validate_reconcile_limits function from its parent module. Neither harness
-duplicates the implementation.
+```sh
+export RUSTC_WRAPPER=
+export CARGO_NET_OFFLINE=true
+cargo +nightly-2026-08-21 kani --package acyclic-fs --harness kani_proofs::exact_u32_from_f64_all_bits --jobs 1
+cargo +nightly-2026-08-21 kani --package acyclic-fs --harness operation_window::kani_reconcile_limits_proof::validate_reconcile_limits_iff_all_three_nonzero --jobs 1
+```
 
-Use the research receipts for solver output and negative controls. A successful
-manual run must record the exact source revision and SHA-256 hashes of the
-production modules alongside the raw Kani output.
+Record the executed source hashes, pinned toolchain and raw terminal solver output for each new proof run.
 
-Evidence linkage:
+## Evidence
 
-- The direct numeric proof receipt and raw Kani output are preserved on
-  `codex/kani-proof-filesystem-c2-20261007` at commit
-  `056625cf9ae9da8701385e98f867335d2dd9816f`, under
-  `rust/crates/sdk-generation/research/qualified-prototypes/kani-proof-integration-implementation-20261007/`.
-- Its production `numeric.rs` SHA-256 is
-  `F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF`.
-  This follow-up keeps that production function byte-identical; the receipt
-  therefore remains scoped to the same implementation, while this branch adds
-  only cfg(kani) call-site harnesses and documentation.
-- The reconciliation proof receipt records its production source hash and
-  solver result separately; do not treat either harness as a whole-crate proof.
+The historical receipt and raw logs are preserved at commit `056625cf9ae9da8701385e98f867335d2dd9816f` on `codex/kani-proof-filesystem-c2-20261007`, under `rust/crates/sdk-generation/research/qualified-prototypes/kani-proof-integration-implementation-20261007/`. Numeric verification completed with `0 of 7 failed`; reconciliation completed with `0 of 94 failed (2 unreachable)`. Both logs report `VERIFICATION: SUCCESSFUL`.
 
-Validation record for this follow-up source snapshot:
+That receipt records a dirty source snapshot containing the positive harnesses plus separate negative-control harnesses. The current positive harness bodies are identical after normalizing line endings and the final newline. Removed comments and negative controls change the complete proof-module hash. This integration does not claim a new solver run.
 
-- Linux ext4 source mirror, `RUSTC_WRAPPER=` and offline dependencies:
-  `cargo check --manifest-path rust/crates/filesystem/Cargo.toml --package acyclic-fs --offline`
-  completed with exit 0. Stable compilation emits the expected two
-  `unexpected_cfg(kani)` warnings because Kani owns that cfg name.
-- Pinned Kani 0.68.0 / CBMC 6.11.0 / nightly-2026-08-21 / CaDiCaL 3.0.0,
-  one solver job: `exact_u32_from_f64_all_bits` completed with `0 of 7
-  failed` and `VERIFICATION: SUCCESSFUL`; the reconciliation harness
-  completed with `0 of 94 failed (2 unreachable)` and
-  `VERIFICATION: SUCCESSFUL`.
-- Snapshot hashes: `numeric.rs` =
-  `F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF`,
-  `operation_window.rs` =
-  `5A6CCB503D039679922D519C48DD69F8E213D073B3B376C97B517A9EE92559B1`,
-  `lib.rs` =
-  `10BC1F4E4452D065E2A68B62B48F0361229F067ACAF827DC2C8984C989803299`,
-  `kani_proofs.rs` =
-  `D196B61DF258FE64B01833B9FA5AF48EC845D742E21184E2198A013726FCB7F5`,
-  and the reconciliation harness =
-  `9EABEE12C3AC11BD5C069F1772D4983735BC8B983E8AAA9740DBBF1A81014D30`.
-  The proofs call these production functions directly and assert only the
-  stated function-level properties.
+The production `numeric.rs` remains byte-identical to the qualified source, SHA-256 `F7841AD39FC70618DF72F2F6746B03F6DCC74D3016FBD74C8B93F43B34102CAF`. The production `validate_reconcile_limits` function is also unchanged. The canonical numeric positive function block hashes to `E78306E119110B77AD02414C5C120A874AB1EFEB0434855EE1DBEFFE5D1CB6D8`. The current LF numeric harness file hashes to `59635972C5E04968B5875B624DD37AF74678C18E84B06E15626898D9321E9317`.
+
+Historical negative controls deliberately asserted that unchanged production accepts `0.5` or a zero generation limit. Those assertions failed as expected. They are false-assertion controls, not mutations of the production implementation.
+
+The proven properties concern these two admission functions and their stated pre/postconditions.
