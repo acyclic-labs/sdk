@@ -130,6 +130,12 @@ pub enum InlineFileDataError {
 #[strum_discriminants(
     name(FilePayloadKind),
     derive(EnumIter, AsRefStr),
+    cfg_attr(feature = "typescript", derive(serde::Serialize, tsify::Tsify)),
+    cfg_attr(feature = "typescript", serde(rename_all = "kebab-case")),
+    cfg_attr(
+        feature = "napi-types",
+        napi_derive::napi(string_enum = "kebab-case")
+    ),
     strum(serialize_all = "kebab-case")
 )]
 pub enum FilePayload {

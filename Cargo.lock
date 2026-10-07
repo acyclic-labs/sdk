@@ -82,6 +82,8 @@ dependencies = [
  "hmac",
  "http",
  "libc",
+ "napi",
+ "napi-derive",
  "notify",
  "proptest",
  "prost",
