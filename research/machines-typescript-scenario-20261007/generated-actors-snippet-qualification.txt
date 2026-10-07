@@ -1,0 +1,7 @@
+Generated snippet SHA256: B03117F21D70A7B7E791921D774FAB9F2F52CA67352E90FF1B26BD515859719B
+Source Rust output SHA256: sha256:252356320c11e7ede9d50c3ea96164ff646dd28825fbf24685a483805169b162
+Installed package: @acyclic-labs/actors@0.2.0 (proto subpath)
+Package tarball SHA256: 08F898F339AA34D2F7100B4A7C4C44B0C6951882777B58FAD1B91AD7BBF05A64
+TypeScript compile: PASS
+Runtime: PASS
+Runtime assertion: homeRegion=eu; encodedBytes=77

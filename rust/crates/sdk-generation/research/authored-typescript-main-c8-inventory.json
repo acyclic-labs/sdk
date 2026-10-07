@@ -1,0 +1,519 @@
+{
+  "schema": "acyclic.sdk.authored-typescript-inventory.v1",
+  "files": [
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/routes.ts",
+      "lines": 10
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/module-contract.ts",
+      "lines": 11
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/index.ts",
+      "lines": 5
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/http.ts",
+      "lines": 140
+    },
+    {
+      "family": "workers",
+      "path": "typescript/packages/workers/src/grpc.ts",
+      "lines": 28
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/types.ts",
+      "lines": 147
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/token-operations.ts",
+      "lines": 4
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/native.ts",
+      "lines": 308
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/memory.ts",
+      "lines": 185
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/index.ts",
+      "lines": 6
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/http.ts",
+      "lines": 198
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/http-contract.ts",
+      "lines": 54
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/grpc.ts",
+      "lines": 155
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/default.ts",
+      "lines": 147
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/contract.ts",
+      "lines": 289
+    },
+    {
+      "family": "stream",
+      "path": "typescript/packages/stream/src/client.ts",
+      "lines": 286
+    },
+    {
+      "family": "pi",
+      "path": "typescript/packages/pi/src/index.ts",
+      "lines": 162
+    },
+    {
+      "family": "sdk",
+      "path": "typescript/packages/sdk/src/index.ts",
+      "lines": 9
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/wasm-runtime.ts",
+      "lines": 20
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2.ts",
+      "lines": 94
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2-http.ts",
+      "lines": 158
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/v2-grpc.ts",
+      "lines": 205
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "objects",
+      "path": "typescript/packages/objects/src/index.ts",
+      "lines": 4
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-results.ts",
+      "lines": 133
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-operations.ts",
+      "lines": 120
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-copies.ts",
+      "lines": 241
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/workspace-context.ts",
+      "lines": 100
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/wasm-node.ts",
+      "lines": 28
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/wasm-adapter.ts",
+      "lines": 315
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/transaction-adapter.ts",
+      "lines": 59
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/public-types.ts",
+      "lines": 111
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/native.ts",
+      "lines": 1166
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/mounted.ts",
+      "lines": 174
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory.ts",
+      "lines": 27
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory-options.ts",
+      "lines": 28
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/memory-node.ts",
+      "lines": 16
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/hosted.ts",
+      "lines": 1147
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/generation-adapter.ts",
+      "lines": 44
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/endpoint.ts",
+      "lines": 14
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/contracts.ts",
+      "lines": 1362
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/compat.ts",
+      "lines": 664
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/change-set-adapter.ts",
+      "lines": 31
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/browser.ts",
+      "lines": 59
+    },
+    {
+      "family": "filesystem",
+      "path": "typescript/packages/filesystem/src/binding-results.ts",
+      "lines": 114
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/wasm-runtime.ts",
+      "lines": 36
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/simulator.ts",
+      "lines": 76
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/managed-oci-contract.ts",
+      "lines": 10
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/index.ts",
+      "lines": 168
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/http.ts",
+      "lines": 80
+    },
+    {
+      "family": "machines",
+      "path": "typescript/packages/machines/src/client.ts",
+      "lines": 94
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/routes.ts",
+      "lines": 11
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/index.ts",
+      "lines": 4
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/http.ts",
+      "lines": 144
+    },
+    {
+      "family": "actors",
+      "path": "typescript/packages/actors/src/grpc.ts",
+      "lines": 28
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/widths.ts",
+      "lines": 54
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/index.ts",
+      "lines": 460
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/handles.ts",
+      "lines": 140
+    },
+    {
+      "family": "inference",
+      "path": "typescript/packages/inference/src/contract.ts",
+      "lines": 164
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/wire-transport.ts",
+      "lines": 847
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/wasm-runtime.ts",
+      "lines": 101
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/runtime.ts",
+      "lines": 2706
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/projection.ts",
+      "lines": 288
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/project.ts",
+      "lines": 212
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/private-directory-page-contract.ts",
+      "lines": 4
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/pagination.ts",
+      "lines": 113
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/openai.ts",
+      "lines": 255
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/observe.ts",
+      "lines": 60
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/objects.ts",
+      "lines": 238
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/native-contracts.ts",
+      "lines": 574
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/model.ts",
+      "lines": 129
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/memory-conversation.ts",
+      "lines": 602
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/memory-content-store.ts",
+      "lines": 86
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/limits-contract.ts",
+      "lines": 41
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/interaction.ts",
+      "lines": 93
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/index.ts",
+      "lines": 556
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/fork.ts",
+      "lines": 210
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/extension.ts",
+      "lines": 215
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/enums.ts",
+      "lines": 73
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/conversation.ts",
+      "lines": 130
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/conversation-page-contract.ts",
+      "lines": 3
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/component-label-contract.ts",
+      "lines": 19
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/client.ts",
+      "lines": 714
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/child-page-contract.ts",
+      "lines": 5
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/cache.ts",
+      "lines": 64
+    },
+    {
+      "family": "harness",
+      "path": "typescript/packages/harness/src/authority-contract.ts",
+      "lines": 17
+    }
+  ],
+  "definition": "Tracked package src TypeScript lines including blank lines; generated, dist and test directories excluded. Counts measure volume, not semantic ownership or correctness.",
+  "source_revision": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "families": [
+    {
+      "files": 5,
+      "lines": 247.0,
+      "family": "actors"
+    },
+    {
+      "files": 22,
+      "lines": 6013.0,
+      "family": "filesystem"
+    },
+    {
+      "files": 27,
+      "lines": 8355.0,
+      "family": "harness"
+    },
+    {
+      "files": 5,
+      "lines": 878.0,
+      "family": "inference"
+    },
+    {
+      "files": 7,
+      "lines": 524.0,
+      "family": "machines"
+    },
+    {
+      "files": 6,
+      "lines": 541.0,
+      "family": "objects"
+    },
+    {
+      "files": 1,
+      "lines": 162.0,
+      "family": "pi"
+    },
+    {
+      "files": 1,
+      "lines": 9.0,
+      "family": "sdk"
+    },
+    {
+      "files": 12,
+      "lines": 1839.0,
+      "family": "stream"
+    },
+    {
+      "files": 6,
+      "lines": 254.0,
+      "family": "workers"
+    }
+  ]
+}

@@ -9,7 +9,9 @@
       "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
       "rust/crates/actors-uniffi/src/lib.rs": "116288CF44F352BDC5C1B395AF66B7F230AEAC25F4F9E8C7C466F38375BF4A98",
       "rust/crates/actors/src/domain.rs": "C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA"
-    }
+    },
+    "cargoTomlPatch": "producer-actors-uniffi-ffi-buffer-feature.patch",
+    "cargoTomlPatchSha256": "8425403FC0A35BCFBFE417DF3768E677063F49D6C4B1848F1BB95AEC09366B3E"
   },
   "generator": {
     "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
@@ -25,13 +27,16 @@
       "crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs": "94383AF80885FC20A51628D238FA2F808966D1F17146EC8B8DD9F385D54634D8",
       "crates/ubdg_bindgen/src/dart/render_helpers.rs": "98192FEB8D942096C974785B20102F0D607E2ACA098837FC76A7E60C14066831",
       "crates/ubdg_bindgen/src/dart/type_map.rs": "91C3F6196E91925377AA5DD1E894AF555498BE0E2C50C2ECEF2E178E5E4C1425"
-    }
+    },
+    "fullSourceAndGoldenPatch": "generator-source-and-goldens-production-current.patch",
+    "fullSourceAndGoldenPatchSha256": "10F0B21729CE1E1FE7CDCAB0B73CEF8559E4D7C4BA3766B97C5C73D013FF7B38"
   },
   "generatedPackage": {
     "generated/acyclic_actors.dart": "56EADB2E3A983AEB4E6060C1402FF8C9FA5996D87BB155FDF7705C88EE8E7D21",
     "generated/acyclic_actors_uniffi.dart": "AAC613A13F836C13E84C6910657E51A678FC75B2F0D7E7E32D38B9CAAEA8B3EB",
     "pubspec.yaml": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
-    "pubspec.lock": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA"
+    "pubspec.lock": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+    "probe-static-negative.dart": "included; expected analyzer type error"
   },
   "native": {
     "windows": "95C28ED95C6DB0DBD49B9FA3555C529D0A5BF29178E67A339212D5228EB6E588",
@@ -40,7 +45,8 @@
   },
   "archive": {
     "name": "actors-uniffi-dart-production-current-20261007.zip",
-    "bytes": 6221972,
-    "sha256": "AABB843AC710F6FBEAE9C6F6BFC2D2F82445157B97C6A64DD08E56929444A06E"
-  }
+    "bytes": 6222305,
+    "sha256": "67A55D1F8A2437CBCD65DD56BFE4969EA646B46496A7B7E26B0A69A2A7276347"
+  },
+  "semanticAudit": "dart-generator-golden-and-semantics-audit-20261007.md"
 }

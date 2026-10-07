@@ -17,7 +17,9 @@
     "actorFacadeCargoTomlSha256PreFeature": "03F3A7B92277A06FB9C544B711571840DBD6625F55D2D457CF1B3129586C5EBD",
     "actorFacadeCargoTomlSha256PostFeature": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
     "ffiFeature": "scaffolding-ffi-buffer-fns",
-    "producer": "official crates.io uniffi 0.31.0"
+    "producer": "official crates.io uniffi 0.31.0",
+    "producerSourcePatch": "producer-actors-uniffi-ffi-buffer-feature.patch",
+    "producerSourcePatchSha256": "8425403FC0A35BCFBFE417DF3768E677063F49D6C4B1848F1BB95AEC09366B3E"
   },
   "generator": {
     "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
@@ -32,10 +34,10 @@
       "failed": 0
     },
     "goldenTests": {
-      "passed": 2,
-      "failed": 19,
+      "passed": 21,
+      "failed": 0,
       "total": 21,
-      "reason": "expected legacy snapshot drift from maintained BigInt output"
+      "reason": "regenerated reproducibly from maintained generator"
     },
     "modifiedSourceSha256": {
       "callback_rs": "7187C048787686D8FA39B796D4EC1C39091B784053E4942CDA0EC2F68D33C0ED",
@@ -46,7 +48,19 @@
       "objects_rs": "94383AF80885FC20A51628D238FA2F808966D1F17146EC8B8DD9F385D54634D8",
       "render_helpers_rs": "98192FEB8D942096C974785B20102F0D607E2ACA098837FC76A7E60C14066831",
       "type_map_rs": "91C3F6196E91925377AA5DD1E894AF555498BE0E2C50C2ECEF2E178E5E4C1425"
-    }
+    },
+    "fullSourceAndGoldenPatch": "generator-source-and-goldens-production-current.patch",
+    "fullSourceAndGoldenPatchBytes": 145253,
+    "fullSourceAndGoldenPatchSha256": "10F0B21729CE1E1FE7CDCAB0B73CEF8559E4D7C4BA3766B97C5C73D013FF7B38",
+    "semanticAudit": "dart-generator-golden-and-semantics-audit-20261007.md",
+    "goldenRoots": 19,
+    "nominalTypeAudit": "ActorId/CodeSha256/PositiveU64 aliases remain erased in Dart; policy gap recorded",
+    "readonlyAudit": "record fields final; collections mutable; no readonly policy",
+    "goldenSnapshotManifest": "dart-golden-snapshot-manifest-20261007.json",
+    "goldenSnapshotManifestSha256": "C44050C36C94FB54E5E34F5740524512D26D1B3614B8C0026A4E16C8D6CAEFB0",
+    "testLog": "dart-generator-tests-20261007.out",
+    "testLogSha256": "DFCEB40049CEBC72828F84E6E4BE50F51FAE3FCF7928C562B3A16C71D264CED3",
+    "semanticAuditSha256": "88F178FE7C137070D880A69FB227F96137EAAFEDC6C5D0AA4C3C822A9C697B49"
   },
   "generated": {
     "domainPath": "generated-production-current-20261007/acyclic_actors.dart",
@@ -58,9 +72,10 @@
     "pubspecSha256": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
     "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
     "archive": "actors-uniffi-dart-production-current-20261007.zip",
-    "archiveBytes": 6221972,
-    "archiveSha256": "AABB843AC710F6FBEAE9C6F6BFC2D2F82445157B97C6A64DD08E56929444A06E",
-    "configSha256": "4CAAF6734B5FF84C9859A373D14A8D855CAADD07185F890DA4C652BA1F4E73C7"
+    "archiveBytes": 6222305,
+    "archiveSha256": "67A55D1F8A2437CBCD65DD56BFE4969EA646B46496A7B7E26B0A69A2A7276347",
+    "configSha256": "4CAAF6734B5FF84C9859A373D14A8D855CAADD07185F890DA4C652BA1F4E73C7",
+    "staticNegativeProbe": "probe-static-negative.dart included in archive; analyzer expected failure captured per platform"
   },
   "native": {
     "windows": {
@@ -103,17 +118,20 @@
     "windows": {
       "all8": "PASS",
       "cancellation": "PASS",
-      "evidence": "dart-production-current-windows-all8.out; dart-production-current-windows-cancel.out"
+      "evidence": "dart-production-current-windows-all8.out; dart-production-current-windows-cancel.out",
+      "staticNegativeTyping": "PASS expected analyzer error int -> BigInt"
     },
     "wsl": {
       "all8": "PASS",
       "cancellation": "PASS",
-      "evidence": "dart-production-current-wsl-all8.out; dart-production-current-wsl-cancel.out"
+      "evidence": "dart-production-current-wsl-all8.out; dart-production-current-wsl-cancel.out",
+      "staticNegativeTyping": "PASS expected analyzer error int -> BigInt"
     },
     "macosIvar": {
       "all8": "PASS",
       "cancellation": "PASS",
-      "evidence": "dart-production-current-macos-all8.out; dart-production-current-macos-cancel.out"
+      "evidence": "dart-production-current-macos-all8.out; dart-production-current-macos-cancel.out",
+      "staticNegativeTyping": "PASS expected analyzer error int -> BigInt"
     }
   },
   "semanticRoots": {

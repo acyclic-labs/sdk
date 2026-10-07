@@ -1,0 +1,37 @@
+Current integrated producer Kotlin nominal custom-type qualification
+Date: 2026-10-07
+
+Scope:
+- checkout: Q:\sdk\work\sdkgen-main-port-current
+- this receipt supersedes no historical evidence; the older actual03bb receipt remains historical.
+- all nineteen semantic roots are consumed from acyclic-actors; no Kotlin record mirror was authored.
+
+Producer identity:
+- facade Cargo.toml SHA-256: F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7
+- facade src/lib.rs SHA-256: 116288CF44F352BDC5C1B395AF66B7F230AEAC25F4F9E8C7C466F38375BF4A98
+- actors domain.rs SHA-256: C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA
+- Cargo.lock SHA-256: 76CBBF63F05EE624982D0403AFCCD837D148ADCF0C2E22E786472324F3208B1E
+- Windows native producer: D5234D54B999FE6BA14BD9F202F40B12ACD1E3EC907012CF875BE7A0B826C72C
+
+Maintained generator policy:
+- base: UniFFI 0.31.0 source from the Cargo registry, copied to a task-local source archive
+- nominal patch SHA-256: B967FD1DE8875FB8CA26B4E34DB8A9DF6EDC2B4139D02958D53462BC9EA11845
+- opaque-constructor patch retained separately at generator-patches/uniffi-0.31.0-kotlin-opaque-constructors.patch
+- config: uniffi.nominal.toml (SHA-256: 8DF0403FBC151E87D91D4A7E9B129EEE16638D1BD3311989C3E6D3C1129505F7)
+- task-local patched bindgen: Q:\sdk\work\actors-uniffi-generator-kotlin-nominal-20261007-v2\uniffi-0.31.0\uniffi-0.31.0\target\debug\uniffi-bindgen.exe
+- no global Cargo registry files were changed.
+
+Generated output:
+- output: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v2\uniffi
+- generated Kotlin SHA-256 values: 26C6611C89CA4CCDC5FCCECD311AC2DF9A88AC04AD985D2DB0697E63508D249D, DE26E52F2F3ACF2198F6E3396A77FEBEC76E1454F706789B6EC68C9E84E91A64
+- ActorId, CodeSha256, PositiveU64 are generated private-constructor Kotlin value classes with validating from(...) factories; no typealias declarations occur for these roots.
+- generate_immutable_records=true produced val record properties.
+- Kotlin compile: Maven offline compile PASS.
+- nominal runtime probe: KOTLIN_NOMINAL_CUSTOM_TYPES_PASS
+- probe source: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v2\consumer-compile\src\main\kotlin\NominalCompileProbe.kt
+
+CurrentHead:
+- current Rust source still declares CurrentHead(bool), and the generated Kotlin oneof therefore remains CurrentHead(Boolean).
+- Rust semantic projection rejects CurrentHead(false), covered by domain tests. A no-argument foreign CurrentHead constructor requires a Rust-owned validated marker custom type or unit-like semantic variant; this generator patch intentionally does not invent a hand-written foreign mirror.
+
+

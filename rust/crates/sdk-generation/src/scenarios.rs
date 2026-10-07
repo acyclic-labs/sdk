@@ -372,7 +372,8 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
     let request = value
         .get("request")
         .ok_or_else(|| Error::Invalid("Actors scenario output has no request".into()))?;
-    let code_sha256 = bytes_hex(required_field(request, "code_sha256")?)?;
+    let code_sha256 = required_field(request, "code_sha256")?;
+    let _code_sha256_hex = bytes_hex(code_sha256)?;
     let home_region = string_field(request, "home_region")?;
     let idempotency_key = string_field(request, "idempotency_key")?;
     let limits = request
@@ -389,7 +390,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
         ));
     }
     let code_literal =
-        serde_json::to_string(&code_sha256).map_err(|error| Error::Invalid(error.to_string()))?;
+        serde_json::to_string(code_sha256).map_err(|error| Error::Invalid(error.to_string()))?;
     let region_literal =
         serde_json::to_string(&home_region).map_err(|error| Error::Invalid(error.to_string()))?;
     let idempotency_literal = serde_json::to_string(&idempotency_key)
@@ -399,7 +400,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
     let subscriptions_literal =
         serde_json::to_string(subscriptions).map_err(|error| Error::Invalid(error.to_string()))?;
     let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ CreateActorRequestSchema }} from \"@acyclic-labs/actors\";\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\n\nconst request = create(CreateActorRequestSchema, {{\n  codeSha256: Uint8Array.from(Buffer.from({code_literal}, \"hex\")),\n  homeRegion: {region_literal},\n  bindings: {bindings_literal},\n  limits: {{\n    handlerTimeoutMillis: BigInt(\"{handler_timeout_millis}\"),\n    memoryBytes: BigInt(\"{memory_bytes}\"),\n    checkpointBytes: BigInt(\"{checkpoint_bytes}\"),\n  }},\n  subscriptions: {subscriptions_literal},\n  idempotencyKey: {idempotency_literal},\n}});\nconst encoded = toBinary(CreateActorRequestSchema, request);\nif (encoded.length === 0) throw new Error(\"Rust Actors request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ homeRegion: request.homeRegion, encodedBytes: encoded.length }}));\n",
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ CreateActorRequestSchema }} from \"@acyclic-labs/actors/proto\";\nimport {{ create, toBinary }} from \"@bufbuild/protobuf\";\n\nconst request = create(CreateActorRequestSchema, {{\n  codeSha256: Uint8Array.from({code_literal}),\n  homeRegion: {region_literal},\n  bindings: {bindings_literal},\n  limits: {{\n    handlerTimeoutMillis: BigInt(\"{handler_timeout_millis}\"),\n    memoryBytes: BigInt(\"{memory_bytes}\"),\n    checkpointBytes: BigInt(\"{checkpoint_bytes}\"),\n  }},\n  subscriptions: {subscriptions_literal},\n  idempotencyKey: {idempotency_literal},\n}});\nconst encoded = toBinary(CreateActorRequestSchema, request);\nif (encoded.length === 0) throw new Error(\"Rust Actors request encoded to an empty payload\");\nconsole.log(JSON.stringify({{ homeRegion: request.homeRegion, encodedBytes: encoded.length }}));\n",
         execution.scenario.id, execution.stdout_sha256,
     );
     Ok(TypeScriptSnippet {
@@ -737,7 +738,7 @@ mod tests {
             "../../../../research/machines-typescript-scenario-20261007/machines-typescript-consumer.output.json"
         );
         let execution = ScenarioExecution {
-            scenario: SCENARIOS[3],
+            scenario: SCENARIOS[4],
             source_sha256: "sha256:test-source".into(),
             stdout_sha256: digest_bytes(output.as_bytes()),
             stderr_sha256: digest_bytes(&[]),
@@ -750,5 +751,57 @@ mod tests {
         if let Some(path) = std::env::var_os("SCENARIO_SNIPPET_OUTPUT") {
             std::fs::write(path, snippets[0].source.as_bytes()).expect("write snippet receipt");
         }
+    }
+
+    #[test]
+    fn actors_projection_is_rendered_from_rust_output() {
+        let output = include_str!(
+            "../../../../research/machines-typescript-scenario-20261007/actors-typescript-consumer.output.json"
+        );
+        let execution = ScenarioExecution {
+            scenario: SCENARIOS[1],
+            source_sha256: "sha256:test-source".into(),
+            stdout_sha256: digest_bytes(output.as_bytes()),
+            stderr_sha256: digest_bytes(&[]),
+            stdout: output.into(),
+        };
+        let snippets = render_typescript(&[execution]).expect("Rust output should render");
+        assert_eq!(snippets.len(), 1);
+        assert!(snippets[0].source.contains("CreateActorRequestSchema"));
+        assert!(snippets[0].source.contains("BigInt(\"1000\")"));
+        if let Some(path) = std::env::var_os("ACTORS_SCENARIO_SNIPPET_OUTPUT") {
+            std::fs::write(path, snippets[0].source.as_bytes()).expect("write snippet receipt");
+        }
+    }
+
+    #[test]
+    fn actors_projection_changes_when_rust_output_changes() {
+        let output = include_str!(
+            "../../../../research/machines-typescript-scenario-20261007/actors-typescript-consumer.output.json"
+        );
+        let mut changed: serde_json::Value =
+            serde_json::from_str(output).expect("Rust output should be JSON");
+        changed["request"]["home_region"] = serde_json::Value::String("us".into());
+        let changed = serde_json::to_string(&changed).expect("changed Rust output should encode");
+        let executions = [
+            ScenarioExecution {
+                scenario: SCENARIOS[1],
+                source_sha256: "sha256:source-a".into(),
+                stdout_sha256: digest_bytes(output.as_bytes()),
+                stderr_sha256: digest_bytes(&[]),
+                stdout: output.into(),
+            },
+            ScenarioExecution {
+                scenario: SCENARIOS[1],
+                source_sha256: "sha256:source-b".into(),
+                stdout_sha256: digest_bytes(changed.as_bytes()),
+                stderr_sha256: digest_bytes(&[]),
+                stdout: changed,
+            },
+        ];
+        let snippets = render_typescript(&executions).expect("both Rust outputs should render");
+        assert_eq!(snippets.len(), 2);
+        assert_ne!(snippets[0].source, snippets[1].source);
+        assert!(snippets[1].source.contains("homeRegion: \"us\""));
     }
 }

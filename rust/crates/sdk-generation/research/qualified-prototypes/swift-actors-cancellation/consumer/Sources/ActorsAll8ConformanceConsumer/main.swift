@@ -46,7 +46,11 @@ struct SwiftPostPatchAll8Consumer {
         )
         let actorID = try ActorId(value: options.actorId)
         let digest = try CodeSha256(value: Data(repeating: 1, count: 32))
-        let limits = try ActorLimits(handlerTimeoutMillis: 1000, memoryBytes: 4096, checkpointBytes: 8192)
+        let limits = try ActorLimits(
+            handlerTimeoutMillis: PositiveU64(value: 1000),
+            memoryBytes: PositiveU64(value: 4096),
+            checkpointBytes: PositiveU64(value: 8192)
+        )
 
         _ = try requireObservation(await client.inspectActor(actorId: actorID, cancellation: nil), label: "ordinary-inspect", actorID: options.actorId)
         let spec = try SubscriptionSpec(

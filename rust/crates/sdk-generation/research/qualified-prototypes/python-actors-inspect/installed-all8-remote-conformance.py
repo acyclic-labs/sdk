@@ -6,14 +6,17 @@ FIXTURE = Path(os.environ.get("ACYCLIC_FIXTURE_OPTIONS", r"Q:\sdk\work\go-remote
 
 def check_actor(value, expected):
     assert value is not None
-    actor_id = value.actor_id.value() if callable(getattr(value.actor_id, "value", None)) else value.actor_id
-    code_sha256 = value.code_sha256.value() if callable(getattr(value.code_sha256, "value", None)) else value.code_sha256
+    observation = value.actor if hasattr(value, "actor") else value
+    assert observation is not None
+    actor_id = observation.actor_id.value() if callable(getattr(observation.actor_id, "value", None)) else observation.actor_id
+    code_sha256 = observation.code_sha256.value() if callable(getattr(observation.code_sha256, "value", None)) else observation.code_sha256
     assert actor_id == expected["actorId"]
     assert bytes(code_sha256) == bytes(expected["codeSha256"])
-    assert value.home_region == expected["homeRegion"]
-    assert value.state.value == expected["state"]
-    assert value.checkpoint_epoch == expected["checkpointEpoch"]
-    assert value.configuration_revision == expected["configurationRevision"]
+    assert observation.home_region == expected["homeRegion"]
+    state = observation.state.value if hasattr(observation.state, "value") else observation.state
+    assert state == expected["state"]
+    assert observation.checkpoint_epoch == expected["checkpointEpoch"]
+    assert observation.configuration_revision == expected["configurationRevision"]
 
 async def main():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -100,7 +103,7 @@ async def main():
         ("resume_subscription", resume),
         ("checkpoint_actor", checkpoint),
     ):
-        method = getattr(client, operation)
+        method = getattr(client, "inspect_actor" if operation == "inspect_actor_request" else operation)
         result = await method(request, None)
         check_actor(result, expected)
         operations.append(operation)
@@ -114,7 +117,7 @@ async def main():
         fixture["endpoint"], "wrong-token", fixture["caCertificate"].encode("utf-8"), None,
     )
     try:
-        await unauthorized.inspect_actor(actor, None)
+        await unauthorized.inspect_actor(inspect, None)
     except m.BindingError.Service as error:
         assert error.grpc_code == 16
         assert error.service_code is None
@@ -125,7 +128,7 @@ async def main():
     cancelled = m.CancellationHandle()
     cancelled.cancel()
     try:
-        await client.inspect_actor(actor, cancelled)
+        await client.inspect_actor(inspect, cancelled)
     except m.BindingError as error:
         assert "cancel" in type(error).__name__.lower() or "cancel" in str(error).lower()
     else:
@@ -144,7 +147,7 @@ async def main():
         if not marker_path:
             raise AssertionError("ACYCLIC_PENDING_MARKER_PATH is required with a pending fixture")
         marker = Path(marker_path)
-        task = asyncio.create_task(pending_client.inspect_actor(actor, None))
+        task = asyncio.create_task(pending_client.inspect_actor(inspect, None))
         for _ in range(200):
             if marker.exists() and "request path=" in marker.read_text(encoding="utf-8", errors="replace"):
                 break

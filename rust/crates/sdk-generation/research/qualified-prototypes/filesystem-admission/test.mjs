@@ -97,7 +97,9 @@ export function openMemoryFs() {
     async createVolume() {
       const acquisitionWork = ${JSON.stringify(mode)} === "work-mismatch"
         ? { first: 0n }
-        : { first: 0n, second: 0n };
+        : ${JSON.stringify(mode)} === "work-extra"
+          ? { first: 0n, second: 0n, third: 0n }
+          : { first: 0n, second: 0n };
       return { acquisitionWork, free() {} };
     },
     async createWorkspace() {
@@ -140,7 +142,11 @@ function workspace() {
 }
 module.exports = { NativeFs: { async open() { return {
   async createVolume() {
-    const acquisitionWork = mode === "work-mismatch" ? { first: "0" } : { first: "0", second: "0" };
+    const acquisitionWork = mode === "work-mismatch"
+      ? { first: "0" }
+      : mode === "work-extra"
+        ? { first: "0", second: "0", third: "0" }
+        : { first: "0", second: "0" };
     return { acquisitionWorkJson: JSON.stringify(acquisitionWork), free() {} };
   },
   async createWorkspace() { return workspace(); },
@@ -278,6 +284,16 @@ const selectedSourceLabel = "Cargo.toml";
       assert.match(result.output, /wasm work receipt fields differ from generated Rust declaration/);
     } finally {
       await rm(workMismatch.fixture, { recursive: true, force: true });
+    }
+
+    progress("work receipt extra field mismatch");
+    const workExtra = await makeFixture({ mode: "work-extra" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, workExtra));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /wasm work receipt fields differ from generated Rust declaration/);
+    } finally {
+      await rm(workExtra.fixture, { recursive: true, force: true });
     }
 
     progress("artifact mutation fixture");

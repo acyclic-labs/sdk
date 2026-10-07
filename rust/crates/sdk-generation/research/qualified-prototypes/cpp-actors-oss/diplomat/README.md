@@ -9,31 +9,30 @@ record mirrors the Rust fields.
 
 The generated C++ surface covers all eight caller request families: create,
 update, inspect, add subscription, remove subscription, resume subscription,
-checkpoint, and invoke. The first seven response wrappers preserve the full
-canonical actor observation through typed accessors (presence, identity,
-home region, state, subscriptions, checkpoint, revision, and code digest).
-Invoke preserves response absence, status, body bytes, and ordered headers.
-`ActorsError` keeps a typed error kind, the canonical Rust display message,
-and numeric detail for contract or unknown-enum errors.
+checkpoint, and invoke. All eight response wrappers preserve the canonical
+actor observation through typed accessors (presence, identity, home region,
+state, subscriptions, checkpoint, revision, and code digest). Invoke
+additionally preserves response absence, status, body bytes, and ordered
+headers. `ActorsError` keeps a typed error kind, the canonical Rust display
+message, and numeric detail for contract or unknown-enum errors.
 
 `ActorsClient` is a Rust-owned Tokio runtime with authenticated TLS CA
-configuration. Its maintained Diplomat callback boundary exposes an
-in-flight invoke handle with caller-driven `poll`, typed completion/error
-state, and a real Rust cancellation token. A live C++ consumer proves bearer
-authentication, TLS, response fields, callback completion, and server-observed
-in-flight abort against the package static library.
+configuration. Its maintained Diplomat callback boundary exposes Rust-owned
+handles for all eight operations with caller-driven `poll`, typed completion
+and error state, and a real cancellation token. A live C++ consumer proves
+bearer authentication, TLS, all eight typed responses, callback completion,
+and server-observed in-flight abort against the package static library.
 
-The generated C++ headers, static library, consumers, and negative strong
- type compile receipt are staged outside the source tree at
-`Q:\cpp-actors-diplomat-package`. The exact run is recorded in
+The generated C++ headers, static library, consumers, and negative strong type
+compile receipt are staged outside the source tree at
+`Q:\cpp-actors-diplomat-package-final`. The exact run is recorded in
 `qualification-receipt.txt`. Q: is used for all target and package output to
 avoid consuming the system volume.
 
 This remains a qualification prototype rather than a production SDK cutover.
 Foundation-port still needs to select the production annotation location and
-metadata ownership. The six non-invoke operations have typed request/result
-surfaces, but are not yet wired to `ActorsClient` transport methods. Diplomat
-0.16.1 rejects a callback parameter carrying both `Fn` and `Send`; therefore
-completion dispatch is deliberately caller-polled and no automatic
-cross-thread callback is claimed. These are explicit scope gaps, rather than
-claims that the whole C++ SDK is qualified.
+metadata ownership. Diplomat 0.16.1 rejects a callback parameter carrying
+both `Fn` and `Send`; therefore completion dispatch is deliberately
+caller-polled and no automatic cross-thread callback is claimed. This is an
+explicit maintained-tool gap, rather than a claim that the whole C++ SDK is
+qualified.

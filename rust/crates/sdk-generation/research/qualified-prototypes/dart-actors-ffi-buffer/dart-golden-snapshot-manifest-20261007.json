@@ -1,0 +1,121 @@
+{
+  "date": "2026-10-07",
+  "generatorBaseRevision": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+  "count": 19,
+  "snapshots": [
+    {
+      "fixture": "fixtures/compound-demo",
+      "expected": "compound_demo.dart",
+      "bytes": 7431,
+      "sha256": "68238A0E7DDB4C49EE4ED38B4C6A07689BCD0FCAF4CC6BA8A9BE463C9E74FC5D"
+    },
+    {
+      "fixture": "fixtures/coverall-demo",
+      "expected": "coverall_demo.dart",
+      "bytes": 124412,
+      "sha256": "B452A539A6B3BB4901C167C0ABD76EFA980AF421D6E2E3B1E162515FA3CD5BEB"
+    },
+    {
+      "fixture": "fixtures/custom-types-demo",
+      "expected": "custom_types_demo.dart",
+      "bytes": 55604,
+      "sha256": "7ADA97C4CD991CACFA10FC83E2746E2A896638AA944B61A388826D99DA6C3DAA"
+    },
+    {
+      "fixture": "fixtures/docstrings-demo",
+      "expected": "docstrings_demo.dart",
+      "bytes": 10105,
+      "sha256": "4F1CFE3CCB4ECC097FDE096C4EF54A0D8BFCE50AF4B697F3CFC442A5FD708AE9"
+    },
+    {
+      "fixture": "fixtures/error-types-demo",
+      "expected": "error_types_demo.dart",
+      "bytes": 9386,
+      "sha256": "7C6ADC4985B9FBD37D41136548491D8093EF155E07B0DC4F5ABECF74026D050C"
+    },
+    {
+      "fixture": "fixtures/ext-types-demo",
+      "expected": "ext_types_demo.dart",
+      "bytes": 16277,
+      "sha256": "CAEB4AB2315F752187417915B5E8CDB01E95464A4FE94D1C33499F7A001393BE"
+    },
+    {
+      "fixture": "fixtures/futures-stress",
+      "expected": "futures_stress.dart",
+      "bytes": 95549,
+      "sha256": "61C3D7E509532C24021705D58E6D1D19CD2D9416061A4F8F581E0487B38849C3"
+    },
+    {
+      "fixture": "fixtures/keywords-demo",
+      "expected": "keywords_demo.dart",
+      "bytes": 15960,
+      "sha256": "0B7C8DEF8150C8DD3D449EA67EAEC1DEB726DD4CB54A2ED3B9196359E74B8D2C"
+    },
+    {
+      "fixture": "fixtures/model-types-demo",
+      "expected": "model_types_demo.dart",
+      "bytes": 11312,
+      "sha256": "894548579A6DD9F1F446AEA5ABC6D004988D04EE154C59BFB4814B6E6CDBA04D"
+    },
+    {
+      "fixture": "fixtures/non-exhaustive-demo",
+      "expected": "non_exhaustive_demo.dart",
+      "bytes": 10621,
+      "sha256": "2D8B80D66667CE9C88F658AF526B1BC7D2261D8287962BE877F1FB3E63F29CE2"
+    },
+    {
+      "fixture": "fixtures/regressions/async-object-lift-demo",
+      "expected": "async_object_lift_demo.dart",
+      "bytes": 10832,
+      "sha256": "6F747D11AD9FBFD1C24EF788481EFC8A65ACDB3A31C69A09A0BF0DE8DEC792B3"
+    },
+    {
+      "fixture": "fixtures/regressions/callback-custom-async-demo",
+      "expected": "callback_custom_async_demo.dart",
+      "bytes": 13743,
+      "sha256": "A86E189D7B0014F4189A630C0FB478D7F0CA9785062B5E3612F2AE6BA96352E5"
+    },
+    {
+      "fixture": "fixtures/regressions/custom-shadow-demo",
+      "expected": "custom_shadow_demo.dart",
+      "bytes": 14903,
+      "sha256": "9F43178860401326943906E88F52E135C67A20660CC98007933B1190099852AC"
+    },
+    {
+      "fixture": "fixtures/regressions/defaults-demo",
+      "expected": "defaults_demo.dart",
+      "bytes": 8932,
+      "sha256": "24A7E1C5E3427D4C77AF4EAF2E25744DAEBCDDD814B1AD9FA7C3A25132A84B4F"
+    },
+    {
+      "fixture": "fixtures/regressions/forward-refs-demo",
+      "expected": "forward_refs_demo.dart",
+      "bytes": 4700,
+      "sha256": "CFFBDB608EB4C2E8A9C16359FE21A84B504CFD8623B2A3CCBFE9EFFEA1E4D011"
+    },
+    {
+      "fixture": "fixtures/rename-demo",
+      "expected": "rename_demo.dart",
+      "bytes": 4353,
+      "sha256": "BCF8FA6295F4E2133DD792E64C00B00B7F541A0051541E4D9B73EBB9BCDFA931"
+    },
+    {
+      "fixture": "fixtures/simple-fns",
+      "expected": "simple_fns.dart",
+      "bytes": 256877,
+      "sha256": "685E53A91FDD205F7D40A713A6EF28F4BFB96ED8E06EEFFFA1282B08FB474B17"
+    },
+    {
+      "fixture": "fixtures/trait-demo",
+      "expected": "trait_demo.dart",
+      "bytes": 19554,
+      "sha256": "54CC7E1D71748DD138B4BCCD7FDCD4DBA61A8743888F7B9A19796CAE80F1BAE0"
+    },
+    {
+      "fixture": "fixtures/type-limits-demo",
+      "expected": "type_limits_demo.dart",
+      "bytes": 51815,
+      "sha256": "4283863CD06607364C743D4EB33D946971CB0B7023E7CA931652FAFFA1CC007F"
+    }
+  ]
+}

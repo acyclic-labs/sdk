@@ -105,6 +105,12 @@ fn write_fixture_owner_packages(root: &Path) {
 }
 
 fn write_fixture_private_packages(root: &Path) {
+    fs::create_dir_all(root.join("rust/crates/workers")).unwrap();
+    fs::write(
+        root.join("rust/crates/workers/README.md"),
+        "Workers fixture README\n",
+    )
+    .unwrap();
     let package_root = root.join("rust/crates/actors-napi");
     fs::create_dir_all(package_root.join("src")).unwrap();
     fs::create_dir_all(package_root.join("qualification")).unwrap();
@@ -169,9 +175,7 @@ fn main() {
         path,
         r#"
 fn main() {
-    println!(
-        "{\"validated\":true,\"request\":{\"code_sha256\":[17,17,17,17],\"home_region\":\"eu\",\"bindings\":[],\"limits\":{\"handler_timeout_millis\":1000,\"memory_bytes\":1024,\"checkpoint_bytes\":1024},\"subscriptions\":[],\"idempotency_key\":\"create-typescript-consumer\"}}"
-    );
+    println!("{}", "{\"validated\":true,\"request\":{\"code_sha256\":[17,17,17,17],\"home_region\":\"eu\",\"bindings\":[],\"limits\":{\"handler_timeout_millis\":1000,\"memory_bytes\":1024,\"checkpoint_bytes\":1024},\"subscriptions\":[],\"idempotency_key\":\"create-typescript-consumer\"}}");
 }
 "#,
     )

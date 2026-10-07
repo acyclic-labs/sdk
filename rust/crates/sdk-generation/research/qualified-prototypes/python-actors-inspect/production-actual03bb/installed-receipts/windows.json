@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.language-package.qualification/v1",
+  "status": "PASS",
+  "operations": [
+    "create_actor",
+    "update_actor",
+    "inspect_actor_request",
+    "add_subscription",
+    "remove_subscription",
+    "resume_subscription",
+    "checkpoint_actor",
+    "invoke"
+  ],
+  "checks": [
+    "remote",
+    "service_error",
+    "pre-cancelled",
+    "in-flight-task-cancellation",
+    "server-abort-cleanup"
+  ],
+  "fixture_options_sha256": "1a6693cf9e3690575ce20df1d3daba1591bc54dc021f2cc6713af2deb87fad55",
+  "source_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "source_inventory_sha256": "2a4a09d4dc5638e10d432ddb433315cec815dfe7ed5df2ea2fd60aabe7795b07",
+  "toolchain": {
+    "uniffi_bindgen": "0.31.0",
+    "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+    "python_patch_sha256": "ba9a79b23d3a32b3468507b6dbb8c6e740c172dec2a8724647be353fbc674920"
+  },
+  "artifacts": {
+    "wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-production-actual03bb-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+      "sha256": "79f982a432ca7fe876535e8a8847670e9cebf6fe9a48eb4b164e1271234080fd",
+      "bytes": 2970969
+    }
+  }
+}

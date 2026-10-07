@@ -11,6 +11,15 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "acyclic_actorsFFI",
+            path: "Generated/acyclic_actorsFFI",
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .unsafeFlags(["-L", "Native/windows-x86_64"], .when(platforms: [.windows])),
+                .linkedLibrary("acyclic_actors_uniffi", .when(platforms: [.windows])),
+            ]
+        ),
+        .target(
             name: "acyclic_actors_uniffiFFI",
             path: "Generated/acyclic_actors_uniffiFFI",
             publicHeadersPath: "include",
@@ -21,7 +30,7 @@ let package = Package(
         ),
         .target(
             name: "AcyclicActors",
-            dependencies: ["acyclic_actors_uniffiFFI"],
+            dependencies: ["acyclic_actorsFFI", "acyclic_actors_uniffiFFI"],
             path: "Generated/AcyclicActors"
         ),
         .executableTarget(

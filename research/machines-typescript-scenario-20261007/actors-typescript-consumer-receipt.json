@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "scenario": "actors/typescript-consumer",
+  "source": "rust/crates/actors/examples/actors-typescript-consumer.rs",
+  "sourceSha256": "859F0AC49A7AAC2206E6C84FC5D7A3C496B88590B8A6D56386B044A9717746C9",
+  "output": "actors-typescript-consumer.output.json",
+  "outputSha256": "252356320C11E7EDE9D50C3EA96164FF646DD28825FBF24685A483805169B162",
+  "generatedSnippet": "generated-actors-typescript-consumer.ts",
+  "snippetSha256": "B03117F21D70A7B7E791921D774FAB9F2F52CA67352E90FF1B26BD515859719B",
+  "package": "@acyclic-labs/actors@0.2.0",
+  "packageTarballSha256": "08F898F339AA34D2F7100B4A7C4C44B0C6951882777B58FAD1B91AD7BBF05A64",
+  "packageSubpath": "@acyclic-labs/actors/proto",
+  "typecheck": "PASS",
+  "runtime": "PASS",
+  "runtimeAssertion": "homeRegion=eu; encodedBytes=77"
+}

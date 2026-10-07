@@ -184,6 +184,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -251,6 +255,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -266,6 +274,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -281,6 +293,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -296,6 +312,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -311,6 +331,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -326,6 +350,10 @@ mod ffi {
         pub fn home_region<'a>(&'a self) -> &'a str { self.inner.actor().map(|a| a.home_region()).unwrap_or("") }
         pub fn state(&self) -> i32 { self.inner.actor().map(|a| i32::from(a.state())).unwrap_or(0) }
         pub fn subscription_count(&self) -> usize { self.inner.actor().map(|a| a.subscriptions().len()).unwrap_or(0) }
+        pub fn subscription_id<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.subscription_id()).unwrap_or("") }
+        pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
+        pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
+        pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }

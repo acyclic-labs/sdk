@@ -28,3 +28,7 @@ Generated canonical enums and oneof: ActorState, ErrorCode, SubscriptionState, S
 - Producer source: `Q:\\sdk\\work\\sdkgen-main-port-current`, commit recorded in the production receipt; the source tree was dirty and its exact status is retained.
 - Installed archive: `Q:\\sdk\\work\\actors-uniffi-dart-production-current-20261007.zip`.
 - Primary receipt directory: `C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer`.
+
+The producer source-only feature patch is preserved as producer-actors-uniffi-ffi-buffer-feature.patch (SHA-256 8425403FC0A35BCFBFE417DF3768E677063F49D6C4B1848F1BB95AEC09366B3E); the exact source/gen/package manifest is dart-production-current-source-manifest-20261007.json and the full receipt is dart-production-current-receipt-20261007.json.
+
+- Static negative typing fixture probe-static-negative.dart is included in the archive and correctly rejected by Dart analyzer on Windows, WSL, and ivar macOS (int is not assignable to public BigInt).
