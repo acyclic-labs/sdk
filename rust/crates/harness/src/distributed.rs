@@ -297,6 +297,118 @@ pub async fn read_coordinator_event_page<P: StreamProvider>(
     Ok(events)
 }
 
+/// Reads immutable declaration metadata without opening or refreshing a
+/// scheduler. The existing derived intent location is checked against one
+/// original coordinator record, including its logical key, digest and commit.
+/// Requires the owner's signed operation:observe scope. No writes are issued.
+///
+/// None means the location is absent; it does not prove that no declaration
+/// committed. Legacy/missing locations require bootstrap through the existing
+/// mutable coordinator. This is not current lifecycle, cancellation, reservation
+/// or shared-accounting authority. Verify those before executing any work.
+pub async fn observe_declaration<P: StreamProvider>(
+    client: &StreamClient<P>,
+    owner: &Authority,
+    scope: &Scope,
+    verifier: &AuthorityVerifier,
+    operation_id: OperationId,
+    declaration_key: &IdempotencyKey,
+) -> Result<Option<OperationSpec>> {
+    verifier.verify_audience(owner)?;
+    verifier.verify(scope)?;
+    if !scope.capabilities().contains(capability::OPERATION_OBSERVE) {
+        return Err(Error::Unauthorized(
+            "declaration observation requires operation:observe".into(),
+        ));
+    }
+    let Some((_, event, ..)) = read_indexed_intent(client, declaration_key.as_str(), None).await?
+    else {
+        return Ok(None);
+    };
+    let SchedulerEvent::Declared { spec } = event else {
+        return Err(Error::Conflict(
+            "declaration key does not identify a declaration".into(),
+        ));
+    };
+    if spec.operation_id != operation_id {
+        return Err(Error::Conflict(
+            "declaration operation identity differs".into(),
+        ));
+    }
+    if spec.owner.authority() != owner {
+        return Err(Error::Unauthorized(
+            "declaration belongs to another owner".into(),
+        ));
+    }
+    Ok(Some(*spec))
+}
+
+async fn read_intent_location<P: StreamProvider>(
+    client: &StreamClient<P>,
+    key: &str,
+) -> Result<Option<IntentLocation>> {
+    IdempotencyKey::new(key.to_owned())?;
+    let stream = client.stream(intent_location_path(key))?;
+    let records = match stream.read(0, 2).await {
+        Ok(records) => records.try_collect::<Vec<_>>().await?,
+        Err(StreamError::NotFound) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let [record] = records.as_slice() else {
+        return Err(Error::Storage(
+            "intent location must contain one immutable record".into(),
+        ));
+    };
+    let location: IntentLocation =
+        serde_json::from_slice(&record.value).map_err(|error| Error::Storage(error.to_string()))?;
+    if record.sequence != 0
+        || location.key != key
+        || location.revision == 0
+        || crate::contract::canonical_json_bytes(&location)?.as_slice() != record.value.as_ref()
+    {
+        return Err(Error::Storage("intent location identity differs".into()));
+    }
+    Ok(Some(location))
+}
+
+async fn read_indexed_intent<P: StreamProvider>(
+    client: &StreamClient<P>,
+    key: &str,
+    maximum_revision: Option<u64>,
+) -> Result<Option<RetainedIntent>> {
+    let Some(location) = read_intent_location(client, key).await? else {
+        return Ok(None);
+    };
+    // A concurrent host may have indexed a later commit. It is outside this
+    // projection's snapshot; the coordinator tail CAS still fences writes.
+    if maximum_revision.is_some_and(|maximum| location.revision > maximum) {
+        return Ok(None);
+    }
+    let records = client
+        .stream(COORDINATOR_PATH)?
+        .read(location.revision - 1, 1)
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let [record] = records.as_slice() else {
+        return Err(Error::Storage("intent source record is absent".into()));
+    };
+    let (revision, operation, source_key, digest, _, event) = decode(&record.value)?;
+    if record.sequence != location.revision - 1
+        || revision != location.revision
+        || record.commit_id.as_bytes() != &location.commit_id
+        || source_key != key
+        || digest != location.event_digest
+        || event.operation_id() != operation
+    {
+        return Err(Error::Storage(
+            "intent location differs from coordinator source".into(),
+        ));
+    }
+    let intent = (digest, event, revision, record.commit_id);
+    Ok(Some(intent))
+}
+
 /// One logical coordinator whose entire semantic history is a Stream.
 pub struct DistributedCoordinator<P> {
     client: StreamClient<P>,
@@ -419,28 +531,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     async fn read_intent_location(&self, key: &str) -> Result<Option<IntentLocation>> {
-        IdempotencyKey::new(key.to_owned())?;
-        let stream = self.client.stream(intent_location_path(key))?;
-        let records = match stream.read(0, 2).await {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        let [record] = records.as_slice() else {
-            return Err(Error::Storage(
-                "intent location must contain one immutable record".into(),
-            ));
-        };
-        let location: IntentLocation = serde_json::from_slice(&record.value)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if record.sequence != 0
-            || location.key != key
-            || location.revision == 0
-            || crate::contract::canonical_json_bytes(&location)?.as_slice() != record.value.as_ref()
-        {
-            return Err(Error::Storage("intent location identity differs".into()));
-        }
-        Ok(Some(location))
+        read_intent_location(&self.client, key).await
     }
 
     async fn ensure_intent_location(&self, location: IntentLocation) -> Result<()> {
@@ -505,36 +596,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if let Some(intent) = self.intents.get(key) {
             return Ok(Some(intent.clone()));
         }
-        let Some(location) = self.read_intent_location(key).await? else {
+        let Some(intent) = read_indexed_intent(&self.client, key, Some(self.revision)).await?
+        else {
             return Ok(None);
         };
-        // A concurrent host may have indexed a later commit. It is outside this
-        // projection's snapshot; the coordinator tail CAS still fences writes.
-        if location.revision > self.revision {
-            return Ok(None);
-        }
-        let records = self
-            .stream
-            .read(location.revision - 1, 1)
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        let [record] = records.as_slice() else {
-            return Err(Error::Storage("intent source record is absent".into()));
-        };
-        let (revision, operation, source_key, digest, _, event) = decode(&record.value)?;
-        if record.sequence != location.revision - 1
-            || revision != location.revision
-            || record.commit_id.as_bytes() != &location.commit_id
-            || source_key != key
-            || digest != location.event_digest
-            || event.operation_id() != operation
-        {
-            return Err(Error::Storage(
-                "intent location differs from coordinator source".into(),
-            ));
-        }
-        let intent = (digest, event, revision, record.commit_id);
         self.cache_intent(key.to_owned(), intent.clone());
         Ok(Some(intent))
     }
@@ -1907,6 +1972,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn declaration_point_observation_is_read_only_bounded_and_source_verified() -> Result<()>
+    {
+        use std::sync::atomic::Ordering;
+        let provider = Arc::new(LostSessionAck::default());
+        let client = StreamClient::new(provider.clone());
+        let operation = OperationId::from_bytes([1; 16]);
+        let declaration = spec(operation, 0)?;
+        let owner = declaration.owner.authority().clone();
+        let issuer = AuthorityIssuer::new("declaration-observer", [9; 32], owner.clone());
+        let scope = issuer.root("observe", Capabilities::new(["operation:observe"]));
+        let verifier = issuer.verifier();
+        let key = IdempotencyKey::new("point-declaration")?;
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        declare(&mut coordinator, declaration.clone(), key.as_str()).await?;
+        coordinator
+            .apply(
+                operation,
+                IdempotencyKey::new("point-cancel")?,
+                SchedulerEvent::CancellationRequested {
+                    operation_id: operation,
+                    recursive: false,
+                },
+            )
+            .await?;
+        // Evict the declaration from the existing coordinator's retry cache.
+        for value in 2..82 {
+            declare(
+                &mut coordinator,
+                spec(OperationId::from_bytes([value; 16]), 0)?,
+                &format!("point-other-{value}"),
+            )
+            .await?;
+        }
+        assert!(!coordinator.intents.contains_key(key.as_str()));
+        let location = coordinator
+            .read_intent_location(key.as_str())
+            .await?
+            .ok_or_else(|| Error::NotFound("point location".into()))?;
+        drop(coordinator);
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        // No coordinator is opened, no lifecycle map is reconstructed, and the
+        // immutable declaration remains metadata after cancellation.
+        assert_eq!(
+            observe_declaration(&client, &owner, &scope, &verifier, operation, &key).await?,
+            Some(declaration)
+        );
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.observation_maximum.load(Ordering::SeqCst), 2);
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        let denied = issuer.root("denied", Capabilities::default());
+        assert!(matches!(
+            observe_declaration(&client, &owner, &denied, &verifier, operation, &key).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(provider.observation_reads.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            observe_declaration(
+                &client,
+                &owner,
+                &scope,
+                &verifier,
+                OperationId::from_bytes([99; 16]),
+                &key
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        let foreign = Authority {
+            kind: AggregateKind::Task,
+            id: "foreign".into(),
+        };
+        let foreign_issuer = AuthorityIssuer::new("foreign-observer", [7; 32], foreign.clone());
+        let foreign_scope =
+            foreign_issuer.root("observe", Capabilities::new(["operation:observe"]));
+        assert!(matches!(
+            observe_declaration(
+                &client,
+                &foreign,
+                &foreign_scope,
+                &foreign_issuer.verifier(),
+                operation,
+                &key
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let missing = IdempotencyKey::new("point-missing")?;
+        assert_eq!(
+            observe_declaration(&client, &owner, &scope, &verifier, operation, &missing).await?,
+            None
+        );
+        assert!(matches!(
+            observe_declaration(
+                &client,
+                &owner,
+                &scope,
+                &verifier,
+                operation,
+                &IdempotencyKey::new("point-cancel")?
+            )
+            .await,
+            Err(Error::Conflict(_))
+        ));
+        // Extending the immutable location is rejected, even when the original
+        // coordinator declaration remains intact.
+        provider.forbid_writes.store(false, Ordering::SeqCst);
+        client
+            .stream(intent_location_path(key.as_str()))?
+            .append_batch(
+                vec![Bytes::from(crate::contract::canonical_json_bytes(
+                    &location,
+                )?)],
+                Some(1),
+                None,
+            )
+            .await?;
+        provider.forbid_writes.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            observe_declaration(&client, &owner, &scope, &verifier, operation, &key).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(provider.observation_writes.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn intent_locations_rebuild_legacy_history_and_replay_evicted_atomic_session()
     -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
@@ -3198,12 +3390,17 @@ mod tests {
         Ok(())
     }
 
+    #[derive(Default)]
     struct LostSessionAck {
         inner: MemoryStream,
         lose_ack: std::sync::atomic::AtomicBool,
         hide_receipt: std::sync::atomic::AtomicBool,
         location_fault: std::sync::atomic::AtomicU8,
         hide_location_read: std::sync::atomic::AtomicBool,
+        forbid_writes: std::sync::atomic::AtomicBool,
+        observation_reads: std::sync::atomic::AtomicUsize,
+        observation_maximum: std::sync::atomic::AtomicU32,
+        observation_writes: std::sync::atomic::AtomicUsize,
     }
 
     #[tokio::test]
@@ -3325,6 +3522,7 @@ mod tests {
                 hide_receipt: AtomicBool::new(false),
                 location_fault: AtomicU8::new(0),
                 hide_location_read: AtomicBool::new(false),
+                ..Default::default()
             });
             let client = StreamClient::new(provider.clone());
             let mut coordinator =
@@ -3437,6 +3635,11 @@ mod tests {
             &self,
             request: acyclic_stream::AppendRequest,
         ) -> std::result::Result<AppendOutcome, StreamError> {
+            if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                self.observation_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(StreamError::Unavailable);
+            }
             if request.path.as_str() == COORDINATOR_PATH
                 && self
                     .location_fault
@@ -3484,12 +3687,23 @@ mod tests {
             &self,
             request: acyclic_stream::ForkRequest,
         ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
+            if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                self.observation_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(StreamError::Unavailable);
+            }
             self.inner.fork(request).await
         }
         async fn read(
             &self,
             request: acyclic_stream::ReadRequest,
         ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                self.observation_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.observation_maximum
+                    .fetch_max(request.limit, std::sync::atomic::Ordering::SeqCst);
+            }
             if request
                 .path
                 .as_str()
@@ -3519,6 +3733,11 @@ mod tests {
             &self,
             request: acyclic_stream::CommitRequest,
         ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
+            if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                self.observation_writes
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(StreamError::Unavailable);
+            }
             self.inner.commit(request).await
         }
         async fn read_commit(
@@ -3538,6 +3757,7 @@ mod tests {
                 hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
                 location_fault: std::sync::atomic::AtomicU8::new(0),
                 hide_location_read: std::sync::atomic::AtomicBool::new(false),
+                ..Default::default()
             }));
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -3600,6 +3820,7 @@ mod tests {
                 hide_receipt: std::sync::atomic::AtomicBool::new(false),
                 location_fault: std::sync::atomic::AtomicU8::new(fault),
                 hide_location_read: std::sync::atomic::AtomicBool::new(false),
+                ..Default::default()
             }));
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;

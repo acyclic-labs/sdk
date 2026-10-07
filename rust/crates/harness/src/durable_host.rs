@@ -1266,26 +1266,48 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     async fn admission(&self, operation_id: OperationId) -> Result<TaskAdmissionRecord> {
-        let state = {
+        let declaration_key = IdempotencyKey::new(format!("task-admission:{operation_id}"))?;
+        let indexed = crate::distributed::observe_declaration(
+            &self.stream,
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            operation_id,
+            &declaration_key,
+        )
+        .await?;
+        let spec = if let Some(spec) = indexed {
+            spec
+        } else {
+            // Missing/legacy locations are not evidence of missing admission.
+            // Bootstrap through the existing authoritative reducer, then use
+            // its verified declaration. This fallback remains a mutable read.
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh().await?;
-            let state = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-            )?;
-            if let Some(limits) = self.session_limits
-                && coordinator.scheduler().session_limits(operation_id)? != limits
-            {
+            coordinator
+                .observe_operation(&self.owner, &self.owner_scope, &self.verifier, operation_id)?
+                .spec
+        };
+        if let Some(limits) = self.session_limits {
+            let mut coordinator = self.coordinator.lock().await;
+            // Session configuration and parent links are immutable. A cached
+            // hierarchy can check these pinned ceilings without refreshing
+            // unrelated lifecycle events; unknown descendants still bootstrap.
+            let retained = match coordinator.scheduler().session_limits(operation_id) {
+                Err(Error::NotFound(_)) => {
+                    coordinator.refresh().await?;
+                    coordinator.scheduler().session_limits(operation_id)?
+                }
+                other => other?,
+            };
+            if retained != limits {
                 return Err(Error::Conflict(
                     "retained session ceilings differ from owner bindings".into(),
                 ));
             }
-            state
-        };
+        }
         let value = self
-            .read_json(&state.spec.state)
+            .read_json(&spec.state)
             .await
             .map_err(|error| match error {
                 Error::NotFound(_) => {
@@ -1311,11 +1333,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .narrow(admission.grants.clone(), admission.limits)?
             .with_run_limits(admission.run_limits)?;
         if admission.operation_id != operation_id
-            || admission.task.name != state.spec.entrypoint.name
-            || admission.task.version != state.spec.entrypoint.version
-            || admission.task.digest != state.spec.entrypoint.digest
-            || admission.output_schema != state.spec.entrypoint.result_schema
-            || state.spec.parent
+            || admission.task.name != spec.entrypoint.name
+            || admission.task.version != spec.entrypoint.version
+            || admission.task.digest != spec.entrypoint.digest
+            || admission.output_schema != spec.entrypoint.result_schema
+            || spec.parent
                 != admission.parent.map(|parent| ParentLink {
                     operation_id: OperationId::from_bytes(parent.into_bytes()),
                     slot: operation_id.to_string(),
@@ -3641,6 +3663,40 @@ mod tests {
         assert!(matches!(host.admit(root_admission(
             parent_operation, serde_json::json!(0),
         )).await?, Admission::Accepted(id) if id == parent));
+        let metadata_revision = host.coordinator.lock().await.revision();
+        let unrelated_operation = OperationId::from_bytes([201; 16]);
+        let mut unrelated = host
+            .coordinator
+            .lock()
+            .await
+            .scheduler()
+            .operation(parent_operation)
+            .ok_or_else(|| Error::NotFound("metadata parent".into()))?
+            .spec
+            .clone();
+        unrelated.operation_id = unrelated_operation;
+        let mut remote = DistributedCoordinator::open(&stream, payloads.clone()).await?;
+        remote
+            .declare_operation(
+                &owner,
+                &owner_scope,
+                &issuer.verifier(),
+                unrelated,
+                IdempotencyKey::new("unrelated-metadata-observation")?,
+            )
+            .await?;
+        drop(remote);
+        assert_eq!(
+            host.admission(parent_operation).await?.operation_id,
+            parent_operation
+        );
+        let cached = host.coordinator.lock().await;
+        assert_eq!(cached.revision(), metadata_revision);
+        assert!(
+            cached.scheduler().operation(unrelated_operation).is_none(),
+            "immutable metadata reads must not hydrate unrelated lifecycle history"
+        );
+        drop(cached);
         let request = DurableBatchRequest {
             group_id: GroupId::from_bytes([9; 16]),
             batch_id: BatchId::from_bytes([10; 16]),
