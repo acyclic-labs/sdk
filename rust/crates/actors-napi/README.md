@@ -12,3 +12,9 @@ domain conversion succeeds. Operation failures use the structured result
 metadata (`code`, numeric `grpcCode` with `grpcName`, `serviceCode` and
 `serviceMessage`, plus semantic `semanticCode`, `semanticValue`, and
 `contractCode` fields where applicable).
+
+The `ActorId(value)` and `CodeSha256(value)` exports are Rust-owned validating
+constructors. Their generated declarations reference the canonical
+`@acyclic-labs/actors/types` aliases, so a TypeScript facade can use the same
+nominal types as the `ts-rs` domain declarations without a second runtime
+schema or JavaScript-side validator.

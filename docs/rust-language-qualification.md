@@ -67,3 +67,69 @@ Every qualified package must record:
 
 Until those records exist for the current C checkout, Python, Kotlin/JVM, and
 Swift remain useful generator/package prototypes rather than qualified SDKs.
+
+## Bounded proof obligations
+
+The following are the concrete obligations for the Rust contract and native
+adapter. They are requirements for future evidence; none is recorded here as
+proved.
+
+1. **Wire identity:** each public operation keeps its declared RPC identity,
+   field number, enum value, JSON name, and descriptor membership. Regeneration
+   must produce the same descriptor hash when the Rust contract is unchanged.
+2. **Presence and value round trips:** for every generated-valid domain value,
+   encode/decode preserves `Option` presence, bytes, `u64`, nominal IDs, and
+   enum values. An unknown numeric enum value must remain observable through the
+   Rust unknown-value representation rather than becoming a known value.
+3. **Validation agreement:** a value accepted by the Rust domain validator is
+   accepted by the generated boundary, and a rejected value cannot reach the
+   transport. Error variants and their payloads must preserve the Rust error
+   identity.
+4. **Facade correspondence:** each generated binding operation calls exactly
+   one corresponding method on `actors::client::Client`; no generated language
+   layer may add a second validator, wire schema, transport policy, or recovery
+   implementation.
+5. **Constructor invariants:** every public native constructor establishes the
+   same invariants as `ActorId`, `CodeSha256`, and other Rust domain constructors,
+   including rejection of invalid lengths and values.
+
+The first two obligations have a small pure-Rust proof surface. The remaining
+parts are deliberately classified separately: descriptor and generated-source
+hashes are deterministic artifact checks; facade correspondence is a source or
+ABI inspection; and package installation, native loading, remote transport,
+streaming, cancellation, recovery, and OS behavior require executable consumer
+tests. None of those platform or service claims can be established by a Kani
+harness alone.
+
+The first bounded harness should stay independent of package generation and
+network code:
+
+* `valid_code_sha256(&[u8])` should be checked with a symbolic `[u8; 32]`:
+  it returns true exactly when at least one byte is non-zero. This is the pure
+  predicate used by `CodeSha256::new`; `Vec` allocation and the constructor's
+  conversion are tested separately with runtime property tests.
+* `SubscriptionState::try_from` and `From<SubscriptionState> for i32` should
+  be checked for the three known values `0..=2`, then with a symbolic `i32`
+  constrained outside that set to prove that
+  `DomainError::UnknownSubscriptionState(raw)` preserves the unknown number.
+  The same finite-value harness can be instantiated for `ActorState` and
+  `ErrorCode` after the subscription proof is stable.
+
+These harnesses target exact functions already present in
+`rust/crates/actors/src/domain.rs`; they do not introduce a second contract or
+validation rule. The proposed proof is bounded to fixed arrays, finite enum
+domains, and one symbolic `i32`; it does not claim an unbounded theorem.
+
+[Kani](https://github.com/model-checking/kani) is the maintained OSS candidate
+for bounded model checking of small, pure Rust conversion and validation
+functions. It can provide proof within explicit finite bounds; it cannot prove
+native package loading, a remote service, or an unbounded stream. 
+
+[Proptest](https://github.com/proptest-rs/proptest) is the maintained OSS
+candidate for executable property tests over larger generated value spaces. It
+provides shrinking counterexamples and repeatable seeds, but passing runs are
+testing evidence rather than a mathematical proof. Use it for codec, presence,
+unknown-enum, error, cancellation, and generated-binding cases that are not
+tractable as Kani harnesses. The Kani and Proptest obligations above remain
+unfulfilled until receipts identify the exact Rust revision, bounds or seeds,
+and observed results.

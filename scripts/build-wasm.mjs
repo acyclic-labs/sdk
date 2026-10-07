@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const packages = ["filesystem", "stream", "objects", "machines", "inference", "harness"];
+const packages = ["filesystem", "stream", "objects", "machines", "inference", "harness", "actors"];
 
 for (const name of packages) {
   const result = spawnSync(process.execPath, ["run", "build:wasm"], {

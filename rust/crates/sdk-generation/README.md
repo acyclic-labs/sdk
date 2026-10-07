@@ -20,9 +20,10 @@ versioned manifest. The same run calls the Actors crate's `domain::export_typesc
 stage, so `generated/typescript/actors` is emitted from the Rust-owned semantic
 types and included in the artifact digest. Before either operation, the
 launcher compares the configured checkout's hashed TypeScript source inputs
-(`actors/src/codegen.rs`, `contract.rs`, `domain.rs`, and `wire.rs`) with the
-inputs compiled into this binary, so a bundle cannot combine a rustdoc checkout
-with a TypeScript exporter from another checkout. Release
+(the four Actors Rust type sources plus this crate's manifest, lockfile, build
+script, and launcher source) with the inputs compiled into this binary, so a
+bundle cannot combine a rustdoc checkout with a stale TypeScript exporter or
+dependency lock. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
 the supplied JSON input. Release Rustdoc also emits its exact dep-info file;

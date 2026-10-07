@@ -36,6 +36,7 @@ const SOURCE_PATHS: &[&str] = &[
     "rust/crates/sdk-generation/Cargo.toml",
     "rust/crates/sdk-generation/Cargo.lock",
     "rust/crates/sdk-generation/README.md",
+    "rust/crates/sdk-generation/build.rs",
     "rust/crates/sdk-generation/rust-toolchain.toml",
     "rust/crates/sdk-generation/src",
     "rust/crates/sdk-generation/tests",
@@ -95,17 +96,22 @@ struct RustdocInput {
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
-const ACTORS_TYPESCRIPT_SOURCE: &[&str] = &[
-    "src/codegen.rs",
-    "src/contract.rs",
-    "src/domain.rs",
-    "src/wire.rs",
+const TYPESCRIPT_BINDING_SOURCE: &[&str] = &[
+    "rust/crates/actors/src/codegen.rs",
+    "rust/crates/actors/src/contract.rs",
+    "rust/crates/actors/src/domain.rs",
+    "rust/crates/actors/src/wire.rs",
+    "rust/crates/actors/Cargo.toml",
+    "rust/crates/sdk-generation/Cargo.toml",
+    "rust/crates/sdk-generation/Cargo.lock",
+    "rust/crates/sdk-generation/build.rs",
+    "rust/crates/sdk-generation/src/main.rs",
 ];
 
-fn actors_typescript_source_digest(root: &Path) -> io::Result<String> {
+fn typescript_binding_digest(root: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    for relative in ACTORS_TYPESCRIPT_SOURCE {
-        let path = root.join("rust/crates/actors").join(relative);
+    for relative in TYPESCRIPT_BINDING_SOURCE {
+        let path = root.join(relative);
         hasher.update(relative.as_bytes());
         hasher.update([0]);
         let mut file = File::open(&path)?;
@@ -123,8 +129,8 @@ fn actors_typescript_source_digest(root: &Path) -> io::Result<String> {
 }
 
 fn verify_compiled_actors_source(root: &Path) -> io::Result<()> {
-    let configured = actors_typescript_source_digest(root)?;
-    let compiled = env!("SDK_GENERATION_ACTORS_SOURCE_SHA256");
+    let configured = typescript_binding_digest(root)?;
+    let compiled = env!("SDK_GENERATION_TYPESCRIPT_BINDING_SHA256");
     if configured != compiled {
         return Err(io::Error::other(format!(
             "configured Actors TypeScript source digest {configured} does not match the compiled dependency {compiled}"

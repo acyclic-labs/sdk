@@ -53,6 +53,21 @@ const runtimeFingerprint = value => {
   return value;
 };
 const wasmSmoke = {
+  actors: module => {
+    const required = [
+      "ActorsClient",
+      "CancellationHandle",
+      "ActorId",
+      "CodeSha256",
+      "validateCreateActor",
+      "validateUpdateActor",
+      "validateAddSubscription",
+    ];
+    if (required.some(name => typeof module[name] !== "function")) {
+      throw new Error("Actors WASM export surface is incomplete");
+    }
+    return required;
+  },
   filesystem: module => typeof module.openMemoryFs === "function",
   harness: module => module.decodeAggregateKind(1),
   inference: module => typeof module.validate_customer_wire === "function",
@@ -66,6 +81,7 @@ const wasmSmoke = {
   },
 };
 const wasmPackages = [
+  ["actors", "build-actors-wasm.mjs", "acyclic_actors_wasm"],
   ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
   ["harness", "build-harness-wasm.mjs", "acyclic_harness_wasm"],
   ["inference", "build-inference-wasm.mjs", "acyclic_inference_wasm"],

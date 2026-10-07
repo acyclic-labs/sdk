@@ -1,12 +1,35 @@
 # Rust generator dependency audit
 
-This document records the dependency boundary for the Rust owned SDK and documentation generator in this worktree. It is based on the current source and pinned manifests in this checkout.
+This document records the dependency boundary for the Rust owned SDK and documentation generator in the current worktree.
 
-## Current generation boundary
+**Reviewed tree:** `C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk`  
+**Review date:** 2026-10-07  
+**Method:** source and pinned manifest/lock inspection only. No build, download, or dependency resolution was run.
 
-The generation command is the standalone crate [`rust/crates/sdk-generation`](../rust/crates/sdk-generation). Its lockfile currently contains 209 package records. The complete workspace lockfile contains 570 package records because it covers product, native, WASM, and code generation targets together.
+## Current graph
 
-The generation executable imports the shared Actors contract and generator source directly:
+The complete workspace lock contains **570 package records**. The standalone [`rust/crates/sdk-generation/Cargo.lock`](../rust/crates/sdk-generation/Cargo.lock) now contains **312 package records**, up from 209 after the Actors dependency was added. The increase is real and is part of the current source graph; the earlier 209 figure is stale.
+
+The current [`rust/crates/sdk-generation/Cargo.toml`](../rust/crates/sdk-generation/Cargo.toml) has these direct dependencies:
+
+```toml
+acyclic-actors = { path = "../actors", default-features = false }
+depinfo = "=0.7.10"
+protoc-bin-vendored = "=3.2.0"
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+sdk-docs = { path = "../sdk-docs" }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+tonic-prost-build = "=0.14.6"
+ts-rs = "=12.0.1"
+```
+
+`sha2` is also used by the crate's build script to hash the compiled TypeScript source closure.
+
+## Why the heavy dependencies are currently required
+
+The generator binary imports the Actors implementation in two ways:
 
 ```rust
 #[path = "../../actors/src/contract.rs"]
@@ -15,20 +38,37 @@ mod contract;
 mod actors_codegen;
 ```
 
-These imports are part of the generation input and determine the required dependencies. The generator does not use a separately authored protobuf contract.
+The first imported file uses `protify::*` for the Rust contract declarations and `ts_rs::TS` with a `TS` derive. The second uses `tonic_prost_build` and `protoc_bin_vendored` to render the canonical Actors proto, descriptor, and transport facade. `main.rs` calls that imported generator directly in `generate_actors_contract_artifacts`.
 
-| Dependency | Authoritative source that uses it | Purpose |
+The binary also depends on the real `acyclic-actors` crate API: `acyclic_actors::domain::export_typescript` emits the TypeScript artifact from the compiled Rust crate. That dependency was the source of the current 103-record lock increase. The lock now contains the `acyclic-actors` package and its own Protify, TS-RS, Tonic, and vendored-protoc edges in addition to the direct source-import edges.
+
+| Dependency | Current owner/use | Current decision |
 | --- | --- | --- |
-| `depinfo = 0.7.10` | `sdk-generation/src/main.rs` | Reads rustdoc dependency information so all crate owned Markdown is included and hashed. |
-| `sdk-docs` | `sdk-generation/src/main.rs` | Converts pinned rustdoc JSON and source metadata into versioned docs data and writes the bundle. |
-| `serde`, `serde_json` | `sdk-generation/src/main.rs` and `sdk-docs` | Generation manifests, docs data, schemas, and receipts. |
-| `sha2` | `sdk-generation/src/main.rs` and `sdk-docs` | Source, rustdoc, tool, and artifact identities. |
-| `protify = 0.1.4` | `actors/src/contract.rs` | Rust declarations, protobuf metadata, wire derives, and generated contract surface. |
-| `ts-rs = 12.0.1` | `actors/src/contract.rs` | The contract's TypeScript type derivation used by the current generated surface. |
-| `tonic-prost-build = 0.14.6` | `actors/src/codegen.rs` | Generates the maintained Rust transport facade from the rendered Rust owned contract. |
-| `protoc-bin-vendored = 3.2.0` | `actors/src/codegen.rs` | Supplies the pinned protoc executable and include path for reproducible generation. |
+| `acyclic-actors` | Real API for TypeScript export and compiled Actors source identity | Keep |
+| `protify` | Source-included `actors/src/contract.rs` | Keep while path import remains |
+| `ts-rs` | Source-included `actors/src/contract.rs` | Keep while path import remains |
+| `tonic-prost-build` | Source-included `actors/src/codegen.rs` | Keep while path import remains |
+| `protoc-bin-vendored` | Source-included `actors/src/codegen.rs` | Keep while path import remains |
+| `depinfo` | Rustdoc dep-info parsing | Keep |
+| `sdk-docs` | Rustdoc and source docs projection | Keep |
+| `serde`, `serde_json` | Generation manifests and docs data | Keep |
+| `sha2` | Source, tool, and artifact hashes | Keep |
 
-All nine direct dependencies in [`sdk-generation/Cargo.toml`](../rust/crates/sdk-generation/Cargo.toml) are therefore required by the current source closure. Removing the four Actors codegen dependencies would break the imported contract or generated output. Moving that source closure to a dedicated generator package is a future architecture change that must preserve the same artifacts and hashes; it is not a dependency deletion.
+There is no truthful direct-dependency deletion in the current source graph. Removing the four codegen dependencies without first removing the `#[path]` imports breaks compilation or generated output.
+
+## Duplicate source graph and exact cleanup path
+
+The same physical Actors contract is compiled once as part of `acyclic-actors` and again through the `#[path]` import in `sdk-generation`. The TypeScript projection already uses the real crate API, but the contract renderer and transport generator still use source paths because `actors/src/codegen.rs` is not a public module of `acyclic-actors`.
+
+The maintainable cleanup is an API boundary change, followed by lock and output verification:
+
+1. Expose a maintainer-only `codegen` API from the Actors source, or create a dedicated `acyclic-actors-codegen` package. The API must call the existing `acyclic_actors::contract::render_proto_files` implementation and retain the existing `tonic-prost-build` and vendored-protoc recipe.
+2. Keep generator dependencies behind that codegen API/feature. The published runtime Actors crate should not gain unconditional generator dependencies merely to make the function public.
+3. Change `sdk-generation` to call the real codegen API and retain `acyclic_actors::domain::export_typescript`; remove the two `#[path]` modules only after the new API emits the same descriptor, proto, transport facade, and TypeScript artifacts.
+4. Once the path imports are gone, remove `protify`, `ts-rs`, `tonic-prost-build`, and `protoc-bin-vendored` from `sdk-generation`'s direct manifest. They will remain where the Actors contract and codegen actually own them.
+5. Recreate the standalone generation lock and compare source closure, generated artifact hashes, provenance, and docs bundle hashes. Check the standalone workspace bootstrap explicitly; the existing path dependency arrangement must continue to resolve without requiring the root workspace to be bootstrapped first.
+
+This is a proposed refactor, not a completed optimization. No source API move was made in this review.
 
 ## Protify feature selection
 
@@ -38,73 +78,53 @@ The current generator pins Protify with:
 protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 ```
 
-This is the proven minimal feature selection for the imported Actors contract. Protify's default feature set additionally enables `regex`, `cel`, `chrono`, and `inventory`; the generator deliberately disables defaults and selects `std` only.
+This is the proven minimal feature selection for the imported Actors contract. Protify's `default` feature set additionally enables `regex`, `cel`, `chrono`, and `inventory`; the current generator disables defaults and selects `std` only.
 
-The cached Protify manifests show that its `std` feature does not enable CEL. The `cel` feature is separate and explicitly enables the CEL dependency plus CEL support in `proto-types` and the proc macro. The current generator does not request that feature. The lockfile contains a `cel` package record through the broader resolved package metadata, but that record alone does not establish that Protify's CEL feature is compiled.
+The cached Protify manifests show that `std` does not enable CEL. The `cel` feature separately enables the CEL dependency plus CEL support in `proto-types` and the proc macro. The lock's `cel` package record is not sufficient evidence that the Protify CEL feature is compiled; it appears in the resolved package metadata through optional dependency declarations. No offline feature-resolved tree was run here.
 
-Do not enable Protify defaults. Do not remove `protify` from the generator while the imported Actors contract remains in place.
+Do not enable Protify defaults. Do not remove Protify from the current generator until the source-import refactor above has been completed and qualified.
 
 ## Documentation dependencies
 
-The local [`sdk-docs`](../rust/crates/sdk-docs) crate is the Rustdoc owned documentation projection. Its source uses each declared dependency:
+The local [`sdk-docs`](../rust/crates/sdk-docs) crate uses every declared dependency:
 
 - `public-api` extracts public API signatures from rustdoc JSON.
 - `rustdoc-types` is the pinned rustdoc JSON model.
-- `schemars` emits schemas for the generated docs bundle.
+- `schemars` emits bundle schemas.
 - `semver` validates released documentation versions.
-- `serde` and `serde_json` serialize the bundle and version index.
+- `serde` and `serde_json` serialize bundles and indexes.
 - `sha2` hashes source inputs and generated data.
-- `tempfile` provides a safe temporary JSON file for `public-api` extraction.
+- `tempfile` provides temporary JSON files for public API extraction.
 
-The docs lock contains two rustdoc model versions because `public-api 0.52.2` depends on `rustdoc-types 0.59.0`, while this crate pins `rustdoc-types 0.60.0`. No compatible newer `public-api` release is available in the local cache. This duplicate is retained until a maintained compatible pair is selected and the extracted API output is requalified.
+Its lock contains two rustdoc model versions because `public-api 0.52.2` requires `rustdoc-types 0.59.0`, while `sdk-docs` pins 0.60.0. No compatible newer `public-api` release is available in the local cache. Do not force unification without requalifying extracted signatures.
 
-## Maintained OSS generator components
+## Feature optimization candidates not yet verified
 
-The current Rust generation stack uses maintained OSS components at pinned versions:
+These are investigations only, not completed reductions:
 
-- Protify for Rust owned protobuf declarations and derives.
-- Prost and Tonic build tooling through the Actors generator.
-- Vendored protoc for reproducible protobuf compilation across release targets.
-- `ts-rs` for the current TypeScript type projection.
-- `public-api` and `rustdoc-types` for public API extraction from rustdoc JSON.
-- Schemars for machine readable docs schemas.
+- `prost-build 0.14.4` defaults to `format`, which enables `prettyplease` and `syn`; `cleanup-markdown` adds `pulldown-cmark` and `pulldown-cmark-to-cmark`.
+- `tonic-prost-build 0.14.6` defaults to `transport` and `cleanup-markdown`.
+- Individual workspace build crates may reduce these features if generated output remains byte identical. The current Actors generator uses the Tonic builder and must preserve its transport facade and descriptor output.
+- The `sdk-generation` lock package count must not be used as a build-size claim until a feature-resolved offline metadata inspection is recorded.
 
-The generation executable invokes these through its Rust source closure. The website consumes the resulting Rust generated docs bundle; it does not become another contract source.
+## Evidence hashes
 
-## Feature minimality status
-
-The following are confirmed from manifests and source inspection:
-
-- `sdk-generation` already disables Protify default features and selects only `std`.
-- The Actors contract and codegen source directly require Protify, TS-RS, Tonic Prost build, and vendored protoc.
-- The docs crate uses all of its direct dependencies.
-- No dependency can be removed from `sdk-generation` without changing the current source closure.
-
-The following are candidates for later investigation and are **not completed optimizations**:
-
-- `prost-build` defaults include formatting support; `tonic-prost-build` defaults include transport and Markdown cleanup. Individual build crates may be able to reduce those features if generated output remains byte identical.
-- The Actors generator could eventually move to a dedicated `sdk-contract-codegen` package, separating generator-only dependencies from runtime consumers. This requires preserving the exact Rust contract, descriptors, TypeScript output, transport facade, provenance, and artifact hashes.
-- The two rustdoc-types versions might be unified after a compatible `public-api` upgrade is available and its extracted signatures are requalified.
-- Offline dependency metadata can distinguish optional lockfile package records from feature activated compilation edges more precisely than a lockfile package count.
-
-None of these candidates should be described as done until the relevant generated outputs and source identities have been compared.
-
-## Evidence identities
-
-SHA-256 identities for the reviewed current tree:
+SHA-256 identities from the exact tree at review time:
 
 ```text
-Cargo.toml                                      F48D5BD3D03513DBA45EC66DD01223CD9CBAAE02AC919503C864B68AD822F765
 Cargo.lock                                      91FDBD0277AB71C696F6844AC30FACC57CCA35C5B7F3455E80A077A49FED819A
-rust/crates/sdk-generation/Cargo.toml            37FED366C8C3601FBB2635D1E2EAFF1E1E20EDB7E062641E9CC12D7A4F8C8E0A
-rust/crates/sdk-generation/Cargo.lock            BFDB958FAA52A6BD9A52A2A5915ADDD8E913FBB291A3013E6CC4171DC2FE3847
-rust/crates/sdk-generation/src/main.rs           19079F8F27E61E2F3D960995AB6A383BA2271A9A799D9472B726E10E1106F0AF
+rust/crates/sdk-generation/Cargo.toml            37CC53839F4A984EEE55776A5ECE4BF58AE530E3DE1AF30EE2A1A750A952D11A
+rust/crates/sdk-generation/Cargo.lock            81D412F70930A7FE7C3E8E0FAE37D20FE61D419E6C2948FAF91CF582EB276171
+rust/crates/sdk-generation/src/main.rs           E699539F1E185D3BAA02A5DB48125DD746E6965215F83DD997AC392585DBF6DF
+rust/crates/sdk-generation/build.rs              61EDFD5051788935531EAD3278AACF3948F6570541416D9CE6E9297E169DD4B0
+rust/crates/actors/Cargo.toml                    29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE
+rust/crates/actors/src/lib.rs                    37BDD77E0AB5F4A6995E4DD03E4028CE4886FA0E6A2A06FCEFCC63CC8BCFA4CA
+rust/crates/actors/src/contract.rs               505832C4DE1EB148AA773312C042748C09743C7F8FD44622F6B5B2B2A8F952F0
+rust/crates/actors/src/codegen.rs                D83FB385F7924C7B938071E5B1AA8117399295D778AB1FB951F52B64BD982165
+rust/crates/actors/src/domain.rs                  418620A3B3AAFB251E97013F3C3B12286D11316D0F1E9447FC2CB263BDADEC
+rust/crates/actors/src/wire.rs                    88E74B1DFB9F7C4309A6DE8AEDCBF5EA53FC15D5439251CC914771F97A749115
 rust/crates/sdk-docs/Cargo.toml                  D0A6436FEEE25E925FCE23AFEE58B9BFCE734FCDDDAFA1C1A690F9A8A7211A47
 rust/crates/sdk-docs/Cargo.lock                  BA374B86A6AD72DE7261123816F92FCCB39546E8D64FB95A2FD9E317F4CA1A91
-rust/crates/sdk-docs/src/lib.rs                  E3619C865698A33D8C9F6C8546574DA9DBDA4D7A3D154800D55C2DA04FA1058B
-rust/crates/actors/Cargo.toml                    29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE
-rust/crates/actors/src/contract.rs               9FD71C3A6A6BCB7665E1FF6824852BAFFA56F7BDD5A583B793D42CCB763612FA
-rust/crates/actors/src/codegen.rs                D83FB385F7924C7B938071E5B1AA8117399295D778AB1FB951F52B64BD982165
 ```
 
-No build or download was performed for this audit.
+No build or download was performed for this update.

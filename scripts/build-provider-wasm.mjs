@@ -1,10 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const providers = new Set(["filesystem", "stream", "objects", "machines"]);
+const providers = new Set(["filesystem", "stream", "objects", "machines", "actors"]);
 
 function bashExecutable() {
   if (process.platform !== "win32") return "bash";
@@ -34,10 +34,10 @@ function shellPath(path) {
   return path;
 }
 
-export async function buildProviderWasm(name) {
+export async function buildProviderWasm(name, outputArgument) {
   if (!providers.has(name)) throw new Error(`unsupported WASM provider: ${name}`);
   const packageDir = join(root, "typescript", "packages", name);
-  const output = join(packageDir, "generated", "wasm");
+  const output = outputArgument ? resolve(outputArgument) : join(packageDir, "generated", "wasm");
   const bindgen = await run([bashExecutable(), shellPath(join(root, "scripts", "ensure-wasm-bindgen.sh"))], packageDir, "pipe");
   if (!bindgen) throw new Error("pinned wasm-bindgen resolver returned no executable");
   const cargo = process.platform === "win32" ? "cargo.exe" : "cargo";

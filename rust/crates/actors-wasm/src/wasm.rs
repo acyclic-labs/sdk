@@ -14,6 +14,8 @@ use wasm_bindgen::{JsValue, prelude::*};
 /// JavaScript names and byte-level aliases are emitted from this Rust boundary.
 #[wasm_bindgen(typescript_custom_section)]
 const ACTORS_TYPES: &'static str = r#"
+import type { ActorId, CodeSha256 } from "@acyclic-labs/actors/types";
+
 export type ActorsWireBytes = Uint8Array;
 
 export interface ActorsError extends Error {
@@ -84,6 +86,33 @@ fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), JsValue> {
 
 fn validate_add(request: &wire::AddSubscriptionRequest) -> Result<(), JsValue> {
     acyclic_actors::validate_add_subscription(request).map_err(contract_error)
+}
+
+/// Constructs the Rust-owned nominal Actor identity while preserving its
+/// ergonomic string representation in generated TypeScript.
+#[wasm_bindgen(
+    js_name = ActorId,
+    unchecked_param_type = "string",
+    unchecked_return_type = "ActorId"
+)]
+pub fn actor_id(value: String) -> Result<String, JsValue> {
+    acyclic_actors::domain::ActorId::new(value)
+        .map(|value| value.as_str().to_owned())
+        .map_err(semantic_error)
+}
+
+/// Constructs the Rust-owned nominal SHA-256 digest while preserving its
+/// ergonomic `Uint8Array` representation in generated TypeScript.
+#[wasm_bindgen(
+    js_name = CodeSha256,
+    unchecked_param_type = "Uint8Array",
+    unchecked_return_type = "CodeSha256"
+)]
+pub fn code_sha256(value: JsValue) -> Result<JsValue, JsValue> {
+    let value = js_sys::Uint8Array::new(&value).to_vec();
+    acyclic_actors::domain::CodeSha256::new(value)
+        .map(|value| js_sys::Uint8Array::from(value.as_bytes().as_slice()).into())
+        .map_err(semantic_error)
 }
 
 fn grpc_code(code: i32) -> &'static str {

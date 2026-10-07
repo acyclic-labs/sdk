@@ -22,6 +22,13 @@
     "./grpc": {
       "default": "./dist/grpc.js",
       "types": "./dist/grpc.d.ts"
+    },
+    "./native": {
+      "types": "./dist/native.d.ts",
+      "default": "./dist/native.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts"
     }
   },
   "types": "./dist/index.d.ts",
@@ -39,6 +46,14 @@
     "@bufbuild/protobuf": "2.15.0",
     "@connectrpc/connect": "2.1.1",
     "@connectrpc/connect-node": "2.1.1"
+  },
+  "optionalDependencies": {
+    "@acyclic-labs/actors-darwin-arm64": "0.2.0",
+    "@acyclic-labs/actors-darwin-x64": "0.2.0",
+    "@acyclic-labs/actors-linux-arm64": "0.2.0",
+    "@acyclic-labs/actors-linux-x64": "0.2.0",
+    "@acyclic-labs/actors-win32-arm64": "0.2.0",
+    "@acyclic-labs/actors-win32-x64": "0.2.0"
   },
   "devDependencies": {
     "typescript": "7.0.2",

@@ -1579,4 +1579,87 @@ mod tests {
             Err(DomainError::InvalidSubscription)
         );
     }
+
+    #[test]
+    fn public_create_constructor_round_trips_and_uses_canonical_validation() {
+        let digest = CodeSha256::new(vec![1; 32]).expect("valid digest");
+        let binding = Binding::new("storage".into(), "read".into(), "bucket/a".into())
+            .expect("valid binding");
+        let limits = ActorLimits::new(1, u64::MAX, 4096).expect("positive limits");
+        let subscription = SubscriptionSpec::new(
+            "events".into(),
+            "agents/a/events".into(),
+            SubscriptionStart::Cursor { cursor: u64::MAX },
+            false,
+        )
+        .expect("valid subscription");
+        let request = CreateActorRequest::new(
+            digest.clone(),
+            "eu".into(),
+            vec![binding.clone()],
+            limits,
+            vec![subscription.clone()],
+            "create-1".into(),
+        )
+        .expect("valid create request");
+        let wire: wire::CreateActorRequest = request.clone().into();
+        let decoded = CreateActorRequest::try_from(wire).expect("canonical decode");
+        assert_eq!(decoded, request);
+        assert_eq!(decoded.code_sha256(), &digest);
+        assert_eq!(decoded.bindings(), &[binding]);
+        assert_eq!(decoded.subscriptions(), &[subscription]);
+
+        let duplicate = CreateActorRequest::new(
+            digest,
+            "eu".into(),
+            Vec::new(),
+            ActorLimits::new(1, 1, 1).expect("positive limits"),
+            vec![subscription.clone(), subscription],
+            "create-2".into(),
+        );
+        assert_eq!(
+            duplicate,
+            Err(DomainError::Contract(crate::ContractError::DuplicateName))
+        );
+    }
+
+    #[test]
+    fn public_update_and_add_constructors_preserve_wire_inverse() {
+        let actor_id = ActorId::new("actor-1".into()).expect("valid actor id");
+        let digest = CodeSha256::new(vec![2; 32]).expect("valid digest");
+        let limits = ActorLimits::new(1, 2, 3).expect("positive limits");
+        let update = UpdateActorRequest::new(
+            actor_id.clone(),
+            digest.clone(),
+            Vec::new(),
+            limits,
+            u64::MAX,
+            "update-1".into(),
+        )
+        .expect("valid update request");
+        let update_wire: wire::UpdateActorRequest = update.clone().into();
+        assert_eq!(UpdateActorRequest::try_from(update_wire), Ok(update));
+
+        let subscription = SubscriptionSpec::new(
+            "events".into(),
+            "agents/a/events".into(),
+            SubscriptionStart::CurrentHead { current_head: true },
+            false,
+        )
+        .expect("valid subscription");
+        let add = AddSubscriptionRequest::new(actor_id, subscription, "add-1".into())
+            .expect("valid add request");
+        let add_wire: wire::AddSubscriptionRequest = add.clone().into();
+        assert_eq!(AddSubscriptionRequest::try_from(add_wire), Ok(add));
+
+        assert_eq!(
+            SubscriptionSpec::new(
+                "events".into(),
+                "agents/a/events".into(),
+                SubscriptionStart::CurrentHead { current_head: false },
+                false,
+            ),
+            Err(DomainError::InvalidSubscription)
+        );
+    }
 }

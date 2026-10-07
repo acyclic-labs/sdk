@@ -7,7 +7,7 @@
 use std::{future::Future, sync::Arc};
 
 use acyclic_actors::{client, wire};
-use napi::bindgen_prelude::{Buffer, Error, Result, Status};
+use napi::bindgen_prelude::{Buffer, Error, Result, Status, Uint8Array};
 use napi_derive::napi;
 use prost::Message;
 use serde::Serialize;
@@ -99,6 +99,35 @@ fn native_metadata(context: &str, error: impl std::fmt::Display) -> ErrorMetadat
 
 fn native_error(context: &str, error: impl std::fmt::Display) -> Error {
     napi_error(native_metadata(context, error))
+}
+
+/// Constructs the Rust-owned nominal Actor identity used by the TypeScript
+/// facade. The generated N-API declaration keeps the same branded primitive
+/// projection as the `ts-rs` domain declaration; validation remains in the
+/// canonical Rust domain type.
+#[napi(
+    js_name = "ActorId",
+    ts_return_type = "import('@acyclic-labs/actors/types').ActorId"
+)]
+pub fn actor_id(#[napi(ts_arg_type = "string")] value: String) -> Result<String> {
+    acyclic_actors::domain::ActorId::new(value)
+        .map(|value| value.as_str().to_owned())
+        .map_err(|error| napi_error(domain_error_metadata(error)))
+}
+
+/// Constructs the Rust-owned nominal code digest used by the TypeScript
+/// facade. The byte projection is a branded `Uint8Array`, while the canonical
+/// Rust domain type enforces the exact digest predicate.
+#[napi(
+    js_name = "CodeSha256",
+    ts_return_type = "import('@acyclic-labs/actors/types').CodeSha256"
+)]
+pub fn code_sha256(
+    #[napi(ts_arg_type = "Uint8Array")] value: Uint8Array,
+) -> Result<Uint8Array> {
+    acyclic_actors::domain::CodeSha256::new(value.as_ref().to_vec())
+        .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
+        .map_err(|error| napi_error(domain_error_metadata(error)))
 }
 
 fn grpc_code_name(code: i32) -> String {
@@ -570,6 +599,20 @@ impl NativeActorsClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nominal_constructors_delegate_validation_to_the_domain_types() -> Result<()> {
+        assert_eq!(actor_id(String::from("actor-1"))?, "actor-1");
+        let actor_error = actor_id(String::new()).expect_err("empty ActorId must be rejected");
+        assert!(actor_error.reason.contains("empty_actor_id"));
+
+        let digest = code_sha256(Uint8Array::from(vec![1; 32]))?;
+        assert_eq!(digest.as_ref(), &[1; 32]);
+        let digest_error =
+            code_sha256(Uint8Array::from(vec![0; 31])).expect_err("short digest must be rejected");
+        assert!(digest_error.reason.contains("invalid_code_sha256"));
+        Ok(())
+    }
 
     #[test]
     fn protobuf_boundary_preserves_empty_request() -> Result<()> {

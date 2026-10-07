@@ -17,14 +17,19 @@ fn temp(name: &str) -> PathBuf {
 }
 
 fn copy_compiled_actors_typescript_sources(root: &Path) {
-    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../actors");
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     for relative in [
-        "src/codegen.rs",
-        "src/contract.rs",
-        "src/domain.rs",
-        "src/wire.rs",
+        "rust/crates/actors/src/codegen.rs",
+        "rust/crates/actors/src/contract.rs",
+        "rust/crates/actors/src/domain.rs",
+        "rust/crates/actors/src/wire.rs",
+        "rust/crates/actors/Cargo.toml",
+        "rust/crates/sdk-generation/Cargo.toml",
+        "rust/crates/sdk-generation/Cargo.lock",
+        "rust/crates/sdk-generation/build.rs",
+        "rust/crates/sdk-generation/src/main.rs",
     ] {
-        let destination = root.join("rust/crates/actors").join(relative);
+        let destination = root.join(relative);
         fs::copy(source_root.join(relative), destination).unwrap();
     }
 }
@@ -106,6 +111,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "rust/crates/actors/examples/example.rs",
         "rust/crates/sdk-docs/src/lib.rs",
         "rust/crates/sdk-generation/src/main.rs",
+        "rust/crates/sdk-generation/build.rs",
         "rust/crates/sdk-generation/tests/fixed_docs.rs",
         "docs/objects-v2-http.md",
         "docs/rust-source-generation.md",
@@ -195,6 +201,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "rust-owned source\n",
     )
     .unwrap();
+    let source_binding_path = root.join("rust/crates/actors/src/domain.rs");
+    let source_binding = fs::read(&source_binding_path).unwrap();
+    fs::write(&source_binding_path, b"foreign semantic source\n").unwrap();
+    assert!(
+        !run(binary, "generate", &root, Some(&rustdoc), &foreign, "preview")
+            .status
+            .success()
+    );
+    fs::write(&source_binding_path, source_binding).unwrap();
     let duplicate = Command::new(binary)
         .args([
             "generate",
@@ -418,6 +433,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
             "[toolchain]\nchannel = \"1.98.1\"\n",
         ),
         ("rust/crates/sdk-generation/src/main.rs", "fn main() {}\n"),
+        ("rust/crates/sdk-generation/build.rs", "fn main() {}\n"),
         (
             "rust/crates/sdk-generation/tests/fixed_docs.rs",
             "fixture test\n",
