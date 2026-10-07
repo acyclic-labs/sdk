@@ -22,6 +22,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(parent)?;
             std::fs::write(parent.join("readonly.ts"), render_readonly())?;
             std::fs::write(parent.join("nominal.ts"), render_nominal())?;
+            let public_semantic = parent.join("semantic/actors");
+            std::fs::create_dir_all(&public_semantic)?;
+            std::fs::write(
+                public_semantic.join("readonly.ts"),
+                render_readonly_semantic(),
+            )?;
         }
         std::fs::write(output, source)?;
     } else {
@@ -204,4 +210,54 @@ export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker>
 }
 "#
     .to_owned()
+}
+
+fn render_readonly_semantic() -> String {
+    const TYPES: &[&str] = &[
+        "ActorId",
+        "ActorLimits",
+        "ActorObservation",
+        "ActorState",
+        "AddSubscriptionRequest",
+        "AddSubscriptionResponse",
+        "Binding",
+        "CheckpointActorRequest",
+        "CheckpointActorResponse",
+        "CodeSha256",
+        "CurrentHeadMarker",
+        "CreateActorRequest",
+        "CreateActorResponse",
+        "ErrorCode",
+        "InspectActorRequest",
+        "InspectActorResponse",
+        "InvokeActorRequest",
+        "InvokeActorResponse",
+        "PositiveU64",
+        "RemoveSubscriptionRequest",
+        "RemoveSubscriptionResponse",
+        "ResumeSubscriptionRequest",
+        "ResumeSubscriptionResponse",
+        "ServiceError",
+        "SubscriptionObservation",
+        "SubscriptionSpec",
+        "SubscriptionStart",
+        "SubscriptionState",
+        "UpdateActorRequest",
+        "UpdateActorResponse",
+    ];
+    let aliases = TYPES
+        .iter()
+        .map(|name| format!("export type {name} = ReadonlySemantic<Semantic.{name}>;"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        r#"// Generated from the Rust semantic metadata entrypoint. Do not edit.
+// Raw ts-rs declarations remain an internal generator boundary; package users
+// receive this recursive readonly projection from the package root.
+import type * as Semantic from "./index.js";
+import type {{ ReadonlySemantic }} from "../../readonly.js";
+
+{aliases}
+"#
+    )
 }
