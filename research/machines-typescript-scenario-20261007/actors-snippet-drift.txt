@@ -1,0 +1,6 @@
+Negative drift qualification:
+
+- Baseline Rust scenario output SHA256: 252356320C11E7EDE9D50C3EA96164FF646DD28825FBF24685A483805169B162
+- Temporary source mutation: actors-typescript-consumer.rs changed home region from `eu` to `us`; source restored after the run.
+- Mutated Rust scenario output SHA256: 41A1C58BC487FD0D2A8C5F966AAD0C649419D3AF073EE431F37328A2AC16DA8D
+- Renderer unit test `actors_projection_changes_when_rust_output_changes` passed and asserted the generated source changed to `homeRegion: "us"`.

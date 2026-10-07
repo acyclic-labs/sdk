@@ -1,0 +1,41 @@
+{
+  "schema": "acyclic.kani-domain-cutover-receipt/v1",
+  "artifact": "kani-domain-cutover-current-20261007",
+  "status": "source_compile_blocked",
+  "source_checkout": "Q:/sdk/work/sdkgen-main-port-current",
+  "source_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "source_hashes": {
+    "rust/crates/actors/src/domain.rs": "C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA",
+    "rust/crates/actors/src/domain/kani_proofs.rs": "1B8E6785B888135993394B3C4CC9E9A6C544C0645466E5C71D67AF465B1CF462"
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "target_positive": "/tmp/kani-domain-cutover-current-0093-positive",
+    "offline": true,
+    "jobs": 1
+  },
+  "runs": [
+    {
+      "harness": "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "terminal_exit": 1,
+      "raw_log": "audit/positive-u64-current-kani068.raw.txt",
+      "raw_log_sha256": "6A224726F9ABD4C65FC5F54A0DD6498ED1E59805CED74168A80A7434238035C3"
+    },
+    {
+      "harness": "domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+      "terminal_exit": 1,
+      "raw_log": "audit/subscription-start-current-kani068.raw.txt",
+      "raw_log_sha256": "06F5A21BFE09BA6A860A696D5C3D9B06B86BE83555E9356DAC3F0A932C54EF48"
+    }
+  ],
+  "compile_error": "E0583: file not found for module kani_proofs; domain.rs is included inside contract::generated::domain, so Rust resolves mod kani_proofs to rust/crates/actors/src/kani_proofs.rs, but current checkout contains rust/crates/actors/src/domain/kani_proofs.rs only.",
+  "solver_started": false,
+  "production_source_edited": false,
+  "original_actors_solver": {
+    "pty": 17660,
+    "cbmc_pid": 1031718,
+    "action": "untouched"
+  }
+}

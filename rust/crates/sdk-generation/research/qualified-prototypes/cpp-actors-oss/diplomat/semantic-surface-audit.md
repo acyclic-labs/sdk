@@ -22,7 +22,7 @@ Captured 2026-10-07 from the rebuilt installed package. The bridge stores canoni
 | 7 | `SubscriptionSpec` | Canonical subscription id, stream path, start, and placement-anchor fields. |
 | 8 | `SubscriptionState` | Rust enum remains an integer-backed canonical state; response accessor preserves raw published value. |
 | 9 | `ActorState` | Rust enum remains an integer-backed canonical state; unknown values become typed semantic errors. |
-| 10 | `SubscriptionObservation` | Response accessors preserve ordered id, stream path, state, and placement-anchor entries. |
+| 10 | `SubscriptionObservation` | Response accessors preserve ordered id, stream path, state, delivered/completed/recoverable `u64` cursors, placement anchor, retry count, failure code, and optional failed cursor presence/value. |
 | 11 | `ActorObservation` | Optional actor presence plus identity, digest, region, state, subscriptions, checkpoint, epoch, and revision. |
 | 12 | `CreateActorRequest` | Caller supplies digest, region, nested bindings/limits/subscriptions, and idempotency key. |
 | 13 | `UpdateActorRequest` | Caller supplies actor identity, replacement digest/configuration, expected `u64` revision, and idempotency key. |
@@ -33,7 +33,7 @@ Captured 2026-10-07 from the rebuilt installed package. The bridge stores canoni
 | 18 | `CheckpointActorRequest` | Caller supplies identity and idempotency key. |
 | 19 | `InvokeActorRequest/Response` | Caller supplies identity, method, URL, arbitrary body bytes, and ordered headers; response preserves absence, status, body, and ordered headers. |
 
-The eight-operation consumer sends every caller-supplied field to an authenticated TLS fixture. The fixture asserts nested binding fields, all three limits, the large cursor `9007199254740993`, every idempotency key, expected revision, actor identity, method, URL, body bytes, and header name/value. It receives all seven actor responses and checks actor presence, identity, region, state, subscription count, checkpoint epoch, revision, and digest.
+The eight-operation consumer sends every caller-supplied field to an authenticated TLS fixture. The fixture asserts nested binding fields, all three limits, the large cursor `9007199254740993`, every idempotency key, expected revision, actor identity, method, URL, body bytes, and header name/value. It receives all seven actor responses and checks actor presence, identity, region, state, subscription count, every nested subscription field including optional failed-cursor presence/value, checkpoint epoch, revision, and digest.
 
 ## Presence, immutability, and errors
 

@@ -1,6 +1,50 @@
-use sdk_docs::{build_data, BuildInput, Channel};
+use sdk_docs::{build_data, BuildInput, Channel, GeneratedSource};
 use sdk_docs::rustdoc_profiles::{api_owner_for_package, extract_owned_api_for_crate, load_metadata_with_cargo, observe_rustdoc, project_into_docs, validate_rustdoc_version, ProfileSpec};
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use sha2::{Digest, Sha256};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}};
+
+fn generated_sources_for_receipts(receipts: &[PathBuf]) -> Vec<GeneratedSource> {
+    let mut physical = BTreeSet::new();
+    for receipt in receipts {
+        let value: serde_json::Value = serde_json::from_reader(fs::File::open(receipt).unwrap()).unwrap();
+        collect_span_files(&value, &mut physical);
+    }
+    physical
+        .into_iter()
+        .filter(|path| path.to_string_lossy().contains("owner-audit-target"))
+        .map(|path| {
+            let bytes = fs::read(&path).unwrap();
+            let digest = format!("{:x}", Sha256::digest(&bytes));
+            let path_digest = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+            GeneratedSource {
+                logical_path: PathBuf::from(format!("generated/rustdoc/{digest}-{path_digest}.rs")),
+                physical_path: path,
+                sha256: digest,
+            }
+        })
+        .collect()
+}
+
+fn collect_span_files(value: &serde_json::Value, files: &mut BTreeSet<PathBuf>) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(serde_json::Value::Object(span)) = object.get("span") {
+                if let Some(serde_json::Value::String(filename)) = span.get("filename") {
+                    files.insert(PathBuf::from(filename));
+                }
+            }
+            for child in object.values() {
+                collect_span_files(child, files);
+            }
+        }
+        serde_json::Value::Array(array) => {
+            for child in array {
+                collect_span_files(child, files);
+            }
+        }
+        _ => {}
+    }
+}
 
 #[test]
 fn qualify_all_published_and_binding_receipts() {
@@ -48,7 +92,9 @@ fn qualify_all_published_and_binding_receipts() {
         profiles.insert(id, spec);
         files.push(path);
     }
-    let data = build_data(&BuildInput { version: "0.2.0".into(), channel: Channel::Preview, revision: "0123456789012345678901234567890123456789".into(), source_state: "working-tree".into(), source_sha256: None, repository_root: root, rustdoc_files: files, generated_sources: Vec::new(), mark_latest: false }).unwrap();
+    let generated_sources = generated_sources_for_receipts(&files);
+    assert!(!generated_sources.is_empty(), "owner profiles should attest generated build-script sources");
+    let data = build_data(&BuildInput { version: "0.2.0".into(), channel: Channel::Preview, revision: "0123456789012345678901234567890123456789".into(), source_state: "working-tree".into(), source_sha256: None, repository_root: root, rustdoc_files: files, generated_sources, mark_latest: false }).unwrap();
     let sidecar = project_into_docs(&data, &metadata, items, &profiles).unwrap();
     assert_eq!(data.families.len(), 20);
     assert!(!sidecar.entries.is_empty());

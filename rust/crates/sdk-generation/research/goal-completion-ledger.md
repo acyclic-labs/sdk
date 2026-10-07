@@ -132,3 +132,46 @@ C-worktree prototypes, historical receipts, bounded proofs, and closure
 equivalence can support a milestone but cannot close an unqualified generator,
 language, snippet, generated-data, or transport requirement.
 
+
+## Current source audit: 2026-10-07 after Stream merge
+
+The preceding status-only answer made no authoritative change. This continuation
+makes progress through final Filesystem source freeze, current-main integration,
+actual browser cancellation evidence, and direct-production proof results.
+
+- Remote main remains `c8bef0be476cbfd5d4fa30d1f8d017fa5336d964`.
+- Filesystem signed source `367c45cecd67b3c0375e8d373713bc3d7e13b4c5`
+  is frozen on parent `f775b8465d836cf69b358f9fa9ebd8edbfa819db`.
+  It derives discriminants from canonical FilePayload with maintained Strum,
+  generates payload/counter metadata, and exposes a finite WASM kind getter.
+  Its diff is 119 additions and 117 deletions across 20 files, including generated
+  outputs. This is not a large TypeScript deletion. Installed qualification is
+  source-bound to that candidate; current-main integration and fresh final
+  qualification are still required before admission.
+- Actual headless Chrome exercised all eight Actors operations through packaged
+  WASM and gRPC-Web. Invalid identities/digest/currentHead were rejected before
+  transport. In-flight abort left one Rust request active and no server abort;
+  pending connection abort timed out. These are merge-blocking implementation
+  defects, not missing test coverage. Native package-shape shims do not qualify
+  a real installed companion. The candidate still needs the companion package.
+- Kani directly proved PositiveU64 accepts exactly nonzero symbolic u64 values
+  and valid subscription wire conversions preserve oneof/cursor identity.
+  Both terminal exits were zero, respectively 0/100 and 0/141 failed checks.
+  Evidence: qualified-prototypes/kani-domain-cutover-current-20261007/
+  receipt.current-fixed.json. The source is Q producer 0093 plus its one-line
+  Kani module path fix; later semantic changes require fresh proof binding.
+- Nominal Kotlin configuration now selects Rust validator exports rather than
+  authored Kotlin predicates. Swift nominal generation compiles, but fresh
+  installed runtime qualification remains outstanding. Shared Rust CurrentHead
+  marker changes must propagate to the actual main-integration producer.
+- PHP protobuf runtime fails full unsigned-u64 preservation above signed max
+  under the tested maintained native and pure-PHP paths. Brick Math preserves
+  values alone but does not integrate with generated setters. This cohort is
+  not qualified; record concrete exclusion evidence rather than narrowing the
+  contract to signed integers.
+- Stream build-input attestation remains WIP. Ambient RUSTC_LINKER is not proof
+  of the effective Cargo linker; producer identification must reflect actual
+  configuration/invocation before that follow-up is admitted.
+
+All M1-M6 completion gates remain open. No additional merge was performed during
+this audit. Source snapshots are WIP preservation, not qualification receipts.

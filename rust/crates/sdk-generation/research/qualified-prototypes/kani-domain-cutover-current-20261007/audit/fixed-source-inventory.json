@@ -1,0 +1,16 @@
+{
+  "schema": "acyclic.kani-domain-cutover/v2",
+  "captured_at": "2026-10-07T14:31:28.1522275Z",
+  "status": "source_fixed_for_kani_module_resolution",
+  "canonical_current_checkout": "Q:\\sdk\\work\\sdkgen-main-port-current",
+  "current_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "source_hashes": {
+    "rust/crates/actors/src/domain.rs": "7CE9752CDFFFF0A8D3119AD2019BB9FA510D92DD0ED865D367512124BE667DCD",
+    "rust/crates/actors/src/domain/kani_proofs.rs": "1B8E6785B888135993394B3C4CC9E9A6C544C0645466E5C71D67AF465B1CF462",
+    "rust/crates/actors/src/wire.rs": "5773FBB750C9FAB97F177C86FD816D3EAEC175C806E30AC4C8ADD07DF363BD77",
+    "rust/crates/actors/src/contract.rs": "735E6CE63A46319700A92C08C32E0AB1FFD35CB99630369BBB05C5C6F5B79275"
+  },
+  "module_path_fix": "Added only #[path = \"domain/kani_proofs.rs\"] before the existing cfg(kani) mod declaration in domain.rs; git diff is 1 insertion and no other selected-file changes.",
+  "original_snapshot_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "source_freeze_note": "Q checkout remains shared and dirty; this inventory binds the selected run to these hashes and current revision. Refresh before any later run."
+}

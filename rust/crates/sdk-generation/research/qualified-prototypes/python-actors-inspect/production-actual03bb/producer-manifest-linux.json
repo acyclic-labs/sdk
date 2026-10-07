@@ -143,38 +143,38 @@
   ],
   "compiled_producer": {
     "native_library": {
-      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\target-foundation\\debug\\deps\\acyclic_actors_uniffi.dll",
-      "sha256": "7e2fc8db22dd8942e884c6f1b03b8e2a85e5e307e1cfa3ee7a0b1a7f0a1c671c",
-      "bytes": 8678912
+      "path": "Q:\\sdk\\work\\sdkgen-main-actual03bb\\target-foundation-wsl\\release\\libacyclic_actors_uniffi.so",
+      "sha256": "0afb1bc87521161b04198a0bb58618601f9b4a2e58a2a67c396014c5d8033c44",
+      "bytes": 6532384
     }
   },
   "generated_python": [
     {
-      "path": "Q:\\sdk\\work\\python-actors-actual03bb-generated\\acyclic_actors.py",
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-production-actual03bb-linux-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors.py",
       "sha256": "d8bd547ec8478fc1c4d34baf101526819636f1e5abeddc827fbb8bd5cdc27412",
       "bytes": 88560
     },
     {
-      "path": "Q:\\sdk\\work\\python-actors-actual03bb-generated\\acyclic_actors_uniffi.py",
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-production-actual03bb-linux-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors_uniffi.py",
       "sha256": "c04f3f0a19b57abc900d8c647e59ab121e75549f8c79a3ede78f1e4be640d73e",
       "bytes": 73896
     }
   ],
   "wheel": {
-    "path": "Q:\\sdk\\work\\actors-uniffi-python-production-actual03bb-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
-    "sha256": "d5410e19fc76d6075fef8177244a327f9b5052e177d5103b26749d8cf8044e3f",
-    "bytes": 2970910
+    "path": "/mnt/q/sdk/work/actors-uniffi-python-production-actual03bb-linux-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+    "sha256": "2c0cc7e42c6ee8f9e0c69b1213b742c6f8a388b0c628627f8b205de237783418",
+    "bytes": 2293409
   },
   "uniffi_bindgen": "0.31.0",
   "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
   "python_patch_sha256": "ba9a79b23d3a32b3468507b6dbb8c6e740c172dec2a8724647be353fbc674920",
   "generator_patch_path": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\python-actors-inspect\\uniffi-python-typing.patch",
-  "platform": "windows-amd64",
+  "platform": "linux-wsl",
   "artifacts": {
     "wheel": {
-      "path": "Q:\\sdk\\work\\actors-uniffi-python-production-actual03bb-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
-      "sha256": "d5410e19fc76d6075fef8177244a327f9b5052e177d5103b26749d8cf8044e3f",
-      "bytes": 2970910
+      "path": "/mnt/q/sdk/work/actors-uniffi-python-production-actual03bb-linux-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+      "sha256": "2c0cc7e42c6ee8f9e0c69b1213b742c6f8a388b0c628627f8b205de237783418",
+      "bytes": 2293409
     }
   }
 }

@@ -1,0 +1,43 @@
+{
+  "producerWorkspace": "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+  "checks": {
+    "UInt64": "cursor uses 9007199254740993",
+    "ActorLimits": "public let fields; consumer constructs PositiveU64 wrappers",
+    "CodeSha256": "nominal public struct; short digest validator probe is in all8 consumer",
+    "PositiveU64": "nominal public struct; zero validator probe is in all8 consumer",
+    "SwiftPM": "PASS ActorsAll8ConformanceConsumer BuildOnly",
+    "ActorId": "nominal public struct; empty validator probe is in all8 consumer",
+    "StartCurrentHead": "StartCurrentHead marker with fileprivate init and public Start.currentHead() factory"
+  },
+  "generatedRoot": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-package-20261007\\generated",
+  "generatedSha256": {
+    "acyclic_actors_uniffi.modulemap": "5F7D09F8908EC3C7C8AD568B9DE1C91B60C39B69B04D5FC7A7904E0BD98604F5",
+    "acyclic_actors_uniffi.swift": "296705C7210FB0A7A64E5868659450A63E6088B8DA6FB0CF066C828CE36657D7",
+    "acyclic_actors.swift": "9D81F635076DA91AD9D3CEA1716A82108748B6E2EBCF7027B46E7694E19EBD46",
+    "acyclic_actors_uniffiFFI.h": "35F43F8644F0DBEC21F2F7DC9C869F0DD4F85629110187E5082EFDC8C817A7DF",
+    "acyclic_actorsFFI.h": "435BA9DCF83307602977C6A962C85EFFD39BF060454465F64D5968599AF8A4A3"
+  },
+  "nativeArtifact": "C:\\Users\\varun\\.codex\\swift-actors-cancellation-nominal-final-20261007-target\\release\\acyclic_actors_uniffi.dll",
+  "status": "BUILD_ONLY_PASS_RUNTIME_PENDING",
+  "generatorSource": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+  "producerFingerprint": "67E6EA4F1981872E440E1F9467993DC41911F044E3D298DA22EB34127DFC6713",
+  "packageRoot": "Q:\\sdk\\work\\swift-actors-cancellation-nominal-package-20261007\\consumer",
+  "schema": "acyclic.swift-nominal-producer-package-receipt/v1",
+  "sourceLock": "producer-source-final-nominal-20261007.lock.json",
+  "nativeArtifactSha256": "C1B4AE5EDCA834BFD39D5D027AC289F5D3434695E93DEB7FEC3CB752B24E7D5D",
+  "runtime": {
+    "qualification": "Do not claim until fresh fixture runtime and cancellation pass",
+    "windows": "NOT_RUN; task-owned fixture ports 65286/65287/65288 unavailable",
+    "macOS": "NOT_RUN"
+  },
+  "generatorSourceHashes": {
+    "uniffi_bindgen/src/bindings/swift/templates/Async.swift": "830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6",
+    "uniffi_bindgen/src/bindings/swift/templates/macros.swift": "5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4",
+    "uniffi_bindgen/src/bindings/swift/templates/Helpers.swift": "932944185A48F7C99C81E0A08C3F89304515D7C20D025F552875D8BB816A7E44",
+    "uniffi_bindgen/src/bindings/swift/templates/CustomType.swift": "30ECF288B0E70584214BF693A1E8EECF41DC2C3217E1BFA43767EEB785D66C84",
+    "uniffi_bindgen/src/bindings/swift/templates/EnumTemplate.swift": "9DAEEFAE4A0DAF832FD0D3AC9D376D882235130E5EDA01677B037F4DD22E562D",
+    "uniffi_bindgen/src/bindings/swift/gen_swift/mod.rs": "589B8FA6AF259FF12B29F4F00A62935BEA9FE37927905A78582BC86DB75C190C",
+    "uniffi_bindgen/src/bindings/swift/mod.rs": "37BBA61731E61B439D9DDB0DD2F9FD34EBF0B2005D52FAAE5081A28CDF7E2259",
+    "runner/src/main.rs": "450E0DAF89518F734E2DF933F49680DBC38D724CCBCDC1BF8F6DE09161ECF975"
+  }
+}

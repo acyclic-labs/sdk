@@ -1,0 +1,58 @@
+{
+  "schema": "uniffi-ruby-maintained-runtime-qualification.v1",
+  "generatedAt": "2026-10-07",
+  "scope": "task-owned Ruby and ffi runtime qualification for the maintained 0.31.0 source-patched generator; historical macOS receipt preserved",
+  "source": {
+    "repository": "sdk",
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "cargoPackage": "acyclic-actors-uniffi",
+    "cargoVersion": "0.2.0",
+    "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
+    "generator": "UniFFI 0.31.0 maintained source with ruby-generator-source.patch",
+    "sourcePatch": "ruby-generator-source.patch",
+    "sourcePatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "generatorBinarySha256": "E46814AEF975CE51750E42F41C0DD32C48DC8B94455FEE7FD654CFF124F9763F"
+  },
+  "windows": {
+    "runtime": {
+      "ruby": "4.0.7",
+      "ffi": "1.17.4-x64-mingw-ucrt",
+      "gemHome": "C:/Users/varun/AppData/Local/Temp/ruby-ffi-qualification-20261007-go-generator",
+      "install": "PASS: gem install ffi -v 1.17.4 --platform x64-mingw-ucrt --install-dir task-owned GEM_HOME --no-document"
+    },
+    "producer": {
+      "path": "rust/crates/actors-uniffi/target/debug/deps/acyclic_actors_uniffi.dll",
+      "sha256": "21CE3EC176FB9758F63382C14C21EED808C8D5B0CB42A07A83DD3742CA7C5342",
+      "bytes": 8952832
+    },
+    "generatedRubySha256": "651D403497FE6FA3913D16968A20FA04E9E78F0E41E4D55CFEB4AB1F3F9B8678",
+    "fixture": "task-owned local Node TLS/HTTP2 conformance fixture",
+    "allEight": "PASS: connect/create/update/inspect/inspect-request/add/remove/resume/checkpoint/invoke",
+    "fullU64": "PASS: subscription cursor 9007199254740993",
+    "typedErrors": "PASS: ActorId integer TypeError; u64 2**64 RangeError; wrong bearer BindingError::Service grpc_code=16",
+    "pendingCancellation": "PASS: Timeout::Error injected while InspectActor was pending; native future cleanup marker observed; one earlier run exited 0xC0000005 and is retained in terminal evidence"
+  },
+  "wsl": {
+    "runtime": {
+      "ruby": "3.0.2p107",
+      "rubygems": "3.3.5",
+      "ffi": "1.17.4-x86_64-linux-gnu (task-local unpack; FFI::VERSION=1.17.4)",
+      "nativeGemInstall": "BLOCKED: ffi 1.17.4 source install requires ruby-dev headers; sudo is not passwordless",
+      "precompiledGemInstall": "BLOCKED: RubyGems 3.3.5 is below ffi gem requirement 3.3.22; task-local unpack used"
+    },
+    "producerSha256": "39DA30217B596D830B108C3B3E74DDC9F78C281962DE6CFEFC3FD88B77A9A75B",
+    "generatedRubySha256": "BB142B5197A56CE8B2DC87BA249B8FA91A9AEF38CB7C1D6E97D4B7C5F436E18F",
+    "runtimeQualification": "UNQUALIFIED",
+    "reason": "Canonical fixture cargo build was blocked by shared WSL sccache/target state; a task-local fixture retry remained blocked in D state. The Windows localhost fixture was unreachable from WSL, producing BindingError::Transport. No WSL all-eight claim is made."
+  },
+  "candidate": {
+    "checkout": "Q:/sdk/work/sdkgen-main-port-current",
+    "sourceRevisionAtBuild": "c9ed465e4a34d5293c48cc7169255d7ba0ae5464",
+    "producerSha256": "665C69140A2F5AA3C937C6EFA58ECAD727DD5EF77BEADFB740583F2FD1D9F309",
+    "generatedRubySha256": "8290659C4AA19162E963C7B74DFE4ADE920C38141737EB5060495FA24912E1BF",
+    "runtimeQualification": "UNQUALIFIED",
+    "reason": "Maintained generator output for this candidate omitted constructors for re-exported domain types; all-eight probe stopped at ActorId NameError. No generated method or ABI mirror was added."
+  },
+  "historicalMacReceipt": "ruby-async-sourcefix-20261007-receipt.json",
+  "publish": false
+}

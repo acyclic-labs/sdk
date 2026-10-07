@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.language-package.qualification/v1",
+  "status": "PASS",
+  "operations": [
+    "create_actor",
+    "update_actor",
+    "inspect_actor_request",
+    "add_subscription",
+    "remove_subscription",
+    "resume_subscription",
+    "checkpoint_actor",
+    "invoke"
+  ],
+  "checks": [
+    "remote",
+    "service_error",
+    "pre-cancelled",
+    "in-flight-task-cancellation",
+    "server-abort-cleanup"
+  ],
+  "fixture_options_sha256": "4af26153c221bb07c0d0ccd22186654a4662ac50c17169403469fd1b9374a554",
+  "source_revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+  "source_inventory_sha256": "2a4a09d4dc5638e10d432ddb433315cec815dfe7ed5df2ea2fd60aabe7795b07",
+  "toolchain": {
+    "uniffi_bindgen": "0.31.0",
+    "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+    "python_patch_sha256": "ba9a79b23d3a32b3468507b6dbb8c6e740c172dec2a8724647be353fbc674920"
+  },
+  "artifacts": {
+    "wheel": {
+      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15.0_arm64.whl",
+      "sha256": "f917222d2ba982a935c55e04fa838b863e0e555f139fac6f9d0a57955b8c9693",
+      "bytes": 2011519
+    }
+  }
+}

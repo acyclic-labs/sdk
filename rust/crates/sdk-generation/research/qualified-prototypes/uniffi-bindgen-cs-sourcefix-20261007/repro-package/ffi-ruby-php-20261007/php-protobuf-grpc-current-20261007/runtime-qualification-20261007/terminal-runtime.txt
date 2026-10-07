@@ -1,0 +1,29 @@
+PHP runtime qualification (WSL, 2026-10-07)
+
+Environment:
+  PHP 8.1.2-1ubuntu2.26
+  Composer 2.10.3
+  google/protobuf v4.33.6 (Composer)
+  grpc/grpc 1.82.0 (Composer)
+  native protobuf extension 4.33.6
+  native grpc extension 1.82.2
+  fixture endpoint 127.0.0.1:33679, live PID 1568200
+
+Command:
+  php -d extension=/tmp/php-protobuf-runtime/protobuf-4.33.6/modules/protobuf.so -d extension=/tmp/php-grpc-runtime/grpc-1.82.2/modules/grpc.so actors-php-client.php
+
+Terminal result (safe uint64 boundary 9223372036854775807):
+RPC_PASS=CreateActor
+RPC_PASS=UpdateActor
+RPC_PASS=InspectActor
+U64_VALUE=9223372036854775807 OPTIONAL_PRESENT=1
+RPC_PASS=AddSubscription
+RPC_PASS=RemoveSubscription
+RPC_PASS=ResumeSubscription
+RPC_PASS=CheckpointActor
+RPC_PASS=InvokeActor
+UNAUTHENTICATED_STATUS_PASS=16
+SERVER_ABORT_STATUS_PASS=7
+CANCEL_STATUS_PASS=1
+
+Server events include received/sent for all eight methods, unauthenticated InspectActor, server_abort InspectActor, started InvokeActor, and cancelled InvokeActor. See server-events.jsonl.

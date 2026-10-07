@@ -188,6 +188,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -259,6 +266,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -278,6 +292,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -297,6 +318,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -316,6 +344,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -335,6 +370,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -354,6 +396,13 @@ mod ffi {
         pub fn subscription_stream_path<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.stream_path()).unwrap_or("") }
         pub fn subscription_state(&self, index: usize) -> i32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| i32::from(s.state())).unwrap_or(0) }
         pub fn subscription_placement_anchor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.placement_anchor()).unwrap_or(false) }
+        pub fn subscription_delivered_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.delivered_cursor()).unwrap_or(0) }
+        pub fn subscription_completed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.completed_cursor()).unwrap_or(0) }
+        pub fn subscription_recoverable_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.recoverable_cursor()).unwrap_or(0) }
+        pub fn subscription_retry_count(&self, index: usize) -> u32 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.retry_count()).unwrap_or(0) }
+        pub fn subscription_failure_code<'a>(&'a self, index: usize) -> &'a str { self.inner.actor().and_then(|a| a.subscriptions().get(index)).map(|s| s.failure_code()).unwrap_or("") }
+        pub fn subscription_has_failed_cursor(&self, index: usize) -> bool { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).is_some() }
+        pub fn subscription_failed_cursor(&self, index: usize) -> u64 { self.inner.actor().and_then(|a| a.subscriptions().get(index)).and_then(|s| s.failed_cursor()).unwrap_or(0) }
         pub fn checkpoint_present(&self) -> bool { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).is_some() }
         pub fn checkpoint_unix_millis(&self) -> u64 { self.inner.actor().and_then(|a| a.checkpoint_unix_millis()).unwrap_or(0) }
         pub fn checkpoint_epoch(&self) -> u64 { self.inner.actor().map(|a| a.checkpoint_epoch()).unwrap_or(0) }
@@ -459,37 +508,43 @@ mod ffi {
         }
 
         pub fn take_create(&mut self) -> Result<Option<Box<CreateActorResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Create(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Create(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(CreateActorResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_update(&mut self) -> Result<Option<Box<UpdateActorResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Update(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Update(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(UpdateActorResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_inspect(&mut self) -> Result<Option<Box<InspectActorResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Inspect(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Inspect(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(InspectActorResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_add_subscription(&mut self) -> Result<Option<Box<AddSubscriptionResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Add(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Add(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(AddSubscriptionResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_remove_subscription(&mut self) -> Result<Option<Box<RemoveSubscriptionResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Remove(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Remove(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(RemoveSubscriptionResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_resume_subscription(&mut self) -> Result<Option<Box<ResumeSubscriptionResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Resume(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Resume(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(ResumeSubscriptionResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take_checkpoint(&mut self) -> Result<Option<Box<CheckpointActorResponse>>, Box<AsyncError>> {
-            let Some(AsyncResult::Checkpoint(result)) = self.take_result()? else { return Ok(None); };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Checkpoint(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(CheckpointActorResponse { inner: response }))).map_err(AsyncError::from_client)
         }
         pub fn take(&mut self) -> Result<Option<Box<InvokeOutput>>, Box<AsyncError>> {
-            let Some(AsyncResult::Invoke(result)) = self.take_result()? else {
-                return Ok(None);
-            };
+            let Some(result) = self.take_result()? else { return Ok(None); };
+            let AsyncResult::Invoke(result) = result else { return Err(Self::wrong_operation()); };
             result.map(|response| Some(Box::new(InvokeOutput { inner: Some(response) }))).map_err(AsyncError::from_client)
         }
     }
@@ -580,3 +635,4 @@ mod ffi {
         }
     }
 }
+

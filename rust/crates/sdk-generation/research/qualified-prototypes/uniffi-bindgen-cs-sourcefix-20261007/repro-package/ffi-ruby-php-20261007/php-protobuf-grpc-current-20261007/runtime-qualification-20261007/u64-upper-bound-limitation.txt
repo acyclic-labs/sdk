@@ -1,0 +1,8 @@
+Unsigned uint64 upper-bound probe (same generated classes, PHP 8.1.2, google/protobuf 4.33.6 native extension)
+
+Input: setHandlerTimeoutMillis("18446744073709551615")
+Observed: Exception: Cannot convert '18446744073709551615' to integer in generated ActorLimits.php setter.
+
+Without the protobuf extension, the same live wire response decoded by the maintained pure-PHP runtime as -1 for the max uint64, while proto3 optional presence remained true. This is a PHP runtime representation limitation, not a producer or fixture schema mismatch.
+
+Qualification consequence: the PASS cohort uses the largest signed-safe uint64 value (9223372036854775807), and explicitly records this upper-bound limitation. The generated API remains int|string in PHPDoc, but current PHP 8.1 runtime paths do not preserve the full unsigned 64-bit range as a positive value.

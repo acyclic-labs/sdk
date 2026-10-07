@@ -1,0 +1,3 @@
+REQUEST_TYPE_PASS=Acyclic\Actors\V1\CreateActorRequest
+WRONG_REQUEST_REJECT_PASS=TypeError
+WRONG_NESTED_MESSAGE_REJECT_PASS=Given value is not an instance of Acyclic\Actors\V1\ActorLimits.

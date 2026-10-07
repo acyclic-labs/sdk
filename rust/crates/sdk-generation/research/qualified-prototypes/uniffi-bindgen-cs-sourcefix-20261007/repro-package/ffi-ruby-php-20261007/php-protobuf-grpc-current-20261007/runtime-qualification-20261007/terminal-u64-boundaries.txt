@@ -1,0 +1,19 @@
+Full uint64 boundary audit against the exact generated ActorLimits class (PHP 8.1.2, Composer google/protobuf v4.33.6):
+
+Native protobuf extension:
+  VALUE=0 CONSTRUCT=PASS WIRE_BYTES=0 ROUNDTRIP=0
+  VALUE=9223372036854775807 CONSTRUCT=PASS WIRE_BYTES=10 ROUNDTRIP=9223372036854775807
+  VALUE=9223372036854775808 CONSTRUCT=FAIL TYPE=Exception MESSAGE=Cannot convert '9223372036854775808' to integer
+  VALUE=18446744073709551615 CONSTRUCT=FAIL TYPE=Exception MESSAGE=Cannot convert '18446744073709551615' to integer
+
+Pure-PHP protobuf path:
+  VALUE=0 CONSTRUCT=PASS WIRE_BYTES=0 ROUNDTRIP=0
+  VALUE=9223372036854775807 CONSTRUCT=PASS WIRE_BYTES=10 ROUNDTRIP=9223372036854775807
+  VALUE=9223372036854775808 CONSTRUCT=PASS WIRE_BYTES=10 ROUNDTRIP=9223372036854775807
+  VALUE=18446744073709551615 CONSTRUCT=PASS WIRE_BYTES=10 ROUNDTRIP=9223372036854775807
+
+Service boundary:
+  ACTORS_PHP_U64=0 at 127.0.0.1:46181: all eight RPCs passed, U64_VALUE=0, optional presence true.
+  ACTORS_PHP_U64=18446744073709551615 at 127.0.0.1:43525 with pure-PHP protobuf: CreateActor and UpdateActor reached status OK, InspectActor decoded the max response incorrectly and failed the equality/presence assertion. Native protobuf cannot construct the max request at all.
+
+Conclusion: no tested maintained PHP runtime/library path preserves the full unsigned 64-bit range through construction, serialization, decode, and service boundary. Signed-safe values are qualified separately; the full-u64 gate remains FAIL.  Native protobuf response decode service probe, ACTORS_PHP_U64=18446744073709551615 at 127.0.0.1:45081: STATUS=0 VALUE=-1 HAS=true. The native extension preserves proto3 optional presence but not the unsigned numeric value.

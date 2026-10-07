@@ -1,0 +1,23 @@
+WINDOWS_RUNTIME=ruby 4.0.7; ffi 1.17.4-x64-mingw-ucrt; task-owned GEM_HOME
+WINDOWS_PRODUCER_SHA256=21CE3EC176FB9758F63382C14C21EED808C8D5B0CB42A07A83DD3742CA7C5342
+WINDOWS_GENERATED_RUBY_SHA256=651D403497FE6FA3913D16968A20FA04E9E78F0E41E4D55CFEB4AB1F3F9B8678
+WINDOWS_ALL8_OUTPUT=connect; create; update; inspect; inspect-request; add; remove; resume; checkpoint; RUBY_WINDOWS_GENERATED_ALL8_PASS
+WINDOWS_NEGATIVE_OUTPUT=RUBY_WINDOWS_NEGATIVE_ACTOR_ID_PASS=TypeError; RUBY_WINDOWS_NEGATIVE_U64_PASS=RangeError; RUBY_WINDOWS_NEGATIVE_SERVICE_PASS=AcyclicActorsUniffi::BindingError::Service grpc_code=16
+WINDOWS_PENDING_OUTPUT=RUBY_WINDOWS_PENDING_CANCEL_PASS=Timeout::Error:ruby Windows pending cancellation; RUBY_WINDOWS_PENDING_CANCEL_CLEANUP_PASS; EXIT=0
+WINDOWS_PENDING_PRIOR_ATTEMPT=Timeout::Error and cleanup marker followed by process exit -1073741819 (0xC0000005); retained as a prior runtime observation, current rerun exited 0.
+
+WSL_RUBY=ruby 3.0.2p107; RubyGems 3.3.5
+WSL_SOURCE_GEM_INSTALL_ERROR=mkmf.rb can't find header files for ruby; ruby-dev is required; sudo: a password is required
+WSL_PRECOMPILED_GEM_INSTALL_ERROR=ffi-1.17.4-x86_64-linux-gnu requires RubyGems >= 3.3.22, current 3.3.5
+WSL_TASK_LOCAL_FFI=unpacked ffi-1.17.4-x86_64-linux-gnu.gem; FFI::VERSION=1.17.4
+WSL_PRODUCER_SHA256=39DA30217B596D830B108C3B3E74DDC9F78C281962DE6CFEFC3FD88B77A9A75B
+WSL_GENERATED_RUBY_SHA256=BB142B5197A56CE8B2DC87BA249B8FA91A9AEF38CB7C1D6E97D4B7C5F436E18F
+WSL_FIXTURE_COMMAND=RUSTC_WRAPPER= CARGO_TARGET_DIR=/tmp/ruby-wsl-fixture-target CARGO_BUILD_JOBS=2 node fixture-normal.mjs
+WSL_FIXTURE_ERROR=AssertionError: sccache failed to set permissions for /mnt/c/.../target/debug/deps/...: No such file or directory; task-local retry remained blocked in D state and was stopped.
+WSL_WINDOWS_FIXTURE_CONNECT_ERROR=AcyclicActorsUniffi::BindingError::Transport(detail_message="transport error") because Windows localhost listener is not reachable from WSL.
+
+CANDIDATE_CHECKOUT=Q:/sdk/work/sdkgen-main-port-current
+CANDIDATE_SOURCE_REVISION_AT_BUILD=c9ed465e4a34d5293c48cc7169255d7ba0ae5464
+CANDIDATE_PRODUCER_SHA256=665C69140A2F5AA3C937C6EFA58ECAD727DD5EF77BEADFB740583F2FD1D9F309
+CANDIDATE_GENERATED_RUBY_SHA256=8290659C4AA19162E963C7B74DFE4ADE920C38141737EB5060495FA24912E1BF
+CANDIDATE_ERROR=uninitialized constant AcyclicActorsUniffi::ActorId (NameError); maintained output lacked re-exported domain constructors.

@@ -21,3 +21,13 @@ The archived message-only proto evidence remains unchanged and must not be used 
 ## Alef classification
 
 The current WSL Alef source adapter remains `SOURCE_ADAPTER_GENERATED_BUT_NOT_COMPILABLE` (88 errors). The errors cluster into shared adapter gaps: Arc ownership/borrow shape mismatches, missing `Default`/`Deserialize` semantic type support, repeated Vec PHP conversion, and metadata conversion reference/type mismatches. This is evidence about the maintained source adapter, not a change to the Rust producer or generated PHP contract.
+
+## Fresh Composer/native runtime qualification
+
+The fresh runtime cohort is recorded under `runtime-qualification-20261007/`. It installs Composer `google/protobuf v4.33.6` and `grpc/grpc 1.82.0`, builds PECL protobuf 4.33.6 and gRPC 1.82.2 extensions, and runs the generated client against a live descriptor-driven server using the exact current proto/descriptor above. All eight RPCs pass with bearer authentication; optional `uint64` presence, unauthenticated status 16, server status 7, and in-flight cancellation status 1 are evidenced in `terminal-runtime.txt` and `server-events.jsonl`.
+
+The runtime cohort intentionally records a PHP limitation: the largest signed-safe `uint64` value (`9223372036854775807`) round-trips, while the full unsigned maximum (`18446744073709551615`) is rejected by the current PHP 8.1 protobuf setter or decodes as `-1` in the pure-PHP path. Generated PHPDoc remains `int|string`; the current Rust descriptor has no nominal Rust ID-brand metadata, so no handwritten nominal wrapper was introduced. See `runtime-receipt.json` and `u64-upper-bound-limitation.txt`.
+
+`terminal-negative.txt` records nominal request and nested message rejection against the same generated extraction. There is no raw native handle in this generated client surface; semantic Rust ID branding remains unavailable because the producer descriptor has no brand metadata for its string/uint64 ID fields.
+
+The full unsigned-64 gate remains **FAIL**. `runtime-qualification-20261007/terminal-u64-boundaries.txt` tests `0`, `9223372036854775807`, and `18446744073709551615` through construction/round-trip and service boundary. Native PECL protobuf rejects the full maximum; pure-PHP protobuf clamps it and fails the live service assertion. Brick\Math 0.12.3 was tested as a maintained arbitrary-precision value type, but generated protobuf setters do not accept it as a wire integer. No ordinary alternate PHP CLI was available in WSL, and the maintained protobuf 64-bit path uses `intval()`. Therefore this cohort is runtime evidence with a signed-safe boundary and an explicit full-u64 failure, not full unsigned qualification.

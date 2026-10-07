@@ -5,33 +5,54 @@ Scope:
 - checkout: Q:\sdk\work\sdkgen-main-port-current
 - this receipt supersedes no historical evidence; the older actual03bb receipt remains historical.
 - all nineteen semantic roots are consumed from acyclic-actors; no Kotlin record mirror was authored.
+- semantic validation remains Rust-owned. The config selects nominal wrappers and names exported Rust validators; it contains no validation expressions or predicate strings.
 
 Producer identity:
 - facade Cargo.toml SHA-256: F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7
-- facade src/lib.rs SHA-256: 116288CF44F352BDC5C1B395AF66B7F230AEAC25F4F9E8C7C466F38375BF4A98
-- actors domain.rs SHA-256: C580E4657C1A26489E46C34E87DDD380ED80D8D2F9260D5BA77702B4571CDDBA
+- facade src/lib.rs SHA-256: FF1B1F97DB44CDB2228209C6F41C4B9FC212EBBE3D935293BA26E4B155D175A1
+- actors domain.rs SHA-256: 7CE9752CDFFFF0A8D3119AD2019BB9FA510D92DD0ED865D367512124BE667DCD
 - Cargo.lock SHA-256: 76CBBF63F05EE624982D0403AFCCD837D148ADCF0C2E22E786472324F3208B1E
-- Windows native producer: D5234D54B999FE6BA14BD9F202F40B12ACD1E3EC907012CF875BE7A0B826C72C
+- Windows native producer: Q:\sdk\work\sdkgen-main-port-current\target\debug\acyclic_actors_uniffi.dll
+- Windows native SHA-256: DC6AED8A0ADB5EC6E0C8F2F526126206355995584A109B3FCCA39576E8BE9062
+- the DLL was rebuilt from the current facade/domain sources and current Cargo.lock; no older native bytes were retagged.
+
+Rust-backed validator surface:
+- validate_actor_id(String) calls domain::ActorId::new and maps DomainError to BindingError.
+- validate_code_sha256(Vec<u8>) calls domain::CodeSha256::new and maps DomainError to BindingError.
+- validate_positive_u64(u64) calls domain::PositiveU64::new and maps DomainError to BindingError.
+- generated Kotlin factories call those exported functions through the native bridge; no semantic predicate is re-authored in Kotlin or TOML.
 
 Maintained generator policy:
 - base: UniFFI 0.31.0 source from the Cargo registry, copied to a task-local source archive
-- nominal patch SHA-256: B967FD1DE8875FB8CA26B4E34DB8A9DF6EDC2B4139D02958D53462BC9EA11845
-- opaque-constructor patch retained separately at generator-patches/uniffi-0.31.0-kotlin-opaque-constructors.patch
-- config: uniffi.nominal.toml (SHA-256: 8DF0403FBC151E87D91D4A7E9B129EEE16638D1BD3311989C3E6D3C1129505F7)
+- nominal patch SHA-256: 24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3
+- opaque-constructor patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
+- config: rust/crates/actors-uniffi/uniffi.nominal.toml (SHA-256: 15BF6B5E136EFF85FB72971B07BBE7C20433EFC5C93D06FAA781B239BBB0BA12)
 - task-local patched bindgen: Q:\sdk\work\actors-uniffi-generator-kotlin-nominal-20261007-v2\uniffi-0.31.0\uniffi-0.31.0\target\debug\uniffi-bindgen.exe
-- no global Cargo registry files were changed.
+- source archive and patched build are task-local; no global Cargo registry files were changed.
+- patch application check passed against a fresh copied UniFFI 0.31.0 source tree.
 
 Generated output:
-- output: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v2\uniffi
-- generated Kotlin SHA-256 values: 26C6611C89CA4CCDC5FCCECD311AC2DF9A88AC04AD985D2DB0697E63508D249D, DE26E52F2F3ACF2198F6E3396A77FEBEC76E1454F706789B6EC68C9E84E91A64
-- ActorId, CodeSha256, PositiveU64 are generated private-constructor Kotlin value classes with validating from(...) factories; no typealias declarations occur for these roots.
+- output: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v5\uniffi
+- acyclic_actors_uniffi.kt SHA-256: 929E86BB4834D78CAC300C0F19879D0BE5904CCF6E1C69A47703197B154AF0C7
+- acyclic_actors.kt SHA-256: 228A6CD2901792B0D025D31C9C855BA64A251A3AFBAB0084D032FA73FBE00BE0
+- ActorId, CodeSha256, PositiveU64 are generated private-constructor Kotlin value classes with Rust-backed from(...) factories; no typealias declarations occur for these roots.
+- generated native declarations contain validateActorId, validateCodeSha256, and validatePositiveU64.
 - generate_immutable_records=true produced val record properties.
 - Kotlin compile: Maven offline compile PASS.
-- nominal runtime probe: KOTLIN_NOMINAL_CUSTOM_TYPES_PASS
-- probe source: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v2\consumer-compile\src\main\kotlin\NominalCompileProbe.kt
+- runtime probe: KOTLIN_RUST_BACKED_NOMINAL_RUNTIME_PASS.
+- runtime probe source: Q:\sdk\work\actors-uniffi-current-nominal-kotlin-20261007-v5\consumer-compile\src\main\kotlin\NominalCompileProbe.kt
+- probe covered invalid empty ActorId, invalid 31-byte CodeSha256, invalid zero PositiveU64, valid values, and full-u64 9007199254740993.
+
+Rust checks:
+- cargo check --manifest-path rust/crates/actors-uniffi/Cargo.toml --locked --offline PASS.
+- cargo build --manifest-path rust/crates/actors-uniffi/Cargo.toml --lib --locked --offline PASS.
+- targeted domain test subscription_projection_keeps_canonical_current_head_rule PASS.
 
 CurrentHead:
-- current Rust source still declares CurrentHead(bool), and the generated Kotlin oneof therefore remains CurrentHead(Boolean).
-- Rust semantic projection rejects CurrentHead(false), covered by domain tests. A no-argument foreign CurrentHead constructor requires a Rust-owned validated marker custom type or unit-like semantic variant; this generator patch intentionally does not invent a hand-written foreign mirror.
+- current Rust source still declares CurrentHead(bool), and generated Kotlin oneof therefore remains CurrentHead(Boolean).
+- Rust semantic projection rejects CurrentHead(false), as covered by the targeted domain test.
+- A no-argument foreign CurrentHead constructor requires a Rust-owned validated marker custom type or unit-like semantic variant; this generator policy intentionally does not invent a handwritten foreign mirror or a Kotlin-side predicate.
+- the CurrentHead config section reserves nominal policy only; its Rust validator is intentionally absent until the domain owner lands the marker type.
 
-
+Cohort/provenance note:
+- this receipt records only the current integrated Windows native cohort and current generated Kotlin output. It does not assign this lock/source identity to any older macOS library or historical JAR.

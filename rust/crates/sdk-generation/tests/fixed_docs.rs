@@ -141,6 +141,7 @@ fn write_fixture_scenario_sources(root: &Path) {
         "rust/crates/actors/examples/transport-conformance.rs",
         "rust/crates/actors/examples/actors-typescript-consumer.rs",
         "rust/crates/stream/examples/http-conformance.rs",
+        "rust/crates/stream/examples/stream-typescript-consumer.rs",
         "rust/crates/filesystem/examples/embedded_workspace.rs",
     ] {
         let path = root.join(relative);
@@ -178,6 +179,16 @@ fn main() {
     println!("{}", "{\"validated\":true,\"request\":{\"code_sha256\":[17,17,17,17],\"home_region\":\"eu\",\"bindings\":[],\"limits\":{\"handler_timeout_millis\":1000,\"memory_bytes\":1024,\"checkpoint_bytes\":1024},\"subscriptions\":[],\"idempotency_key\":\"create-typescript-consumer\"}}");
 }
 "#,
+    )
+    .unwrap();
+    let path = root.join("rust/crates/stream/examples/stream-typescript-consumer.rs");
+    fs::write(
+        path,
+        r##"
+fn main() {
+    println!("{}", r#"{"request":{"path":"typescript/events","values":[[1]],"idempotency_key":[116],"read_limit":1},"append":{"start":0,"end":1,"tail":1},"tail":1,"records":[{"sequence":0,"value":[1]}]}"#);
+}
+"##,
     )
     .unwrap();
 }
@@ -849,6 +860,13 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
             .iter()
             .any(|scenario| scenario["id"] == "actors/typescript-consumer")
     );
+    assert!(
+        scenarios["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|scenario| scenario["id"] == "stream/typescript-consumer")
+    );
     let snippet = output.join("generated/scenarios/machines/typescript-consumer.ts");
     assert!(snippet.is_file());
     let snippet_source = fs::read_to_string(snippet).unwrap();
@@ -859,6 +877,11 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     let actors_snippet_source = fs::read_to_string(actors_snippet).unwrap();
     assert!(actors_snippet_source.contains("CreateActorRequestSchema"));
     assert!(actors_snippet_source.contains("homeRegion: \"eu\""));
+    let stream_snippet = output.join("generated/scenarios/stream/typescript-consumer.ts");
+    assert!(stream_snippet.is_file());
+    let stream_snippet_source = fs::read_to_string(stream_snippet).unwrap();
+    assert!(stream_snippet_source.contains("StreamClient.memory().bytes"));
+    assert!(stream_snippet_source.contains("typescript/events"));
     let projections: serde_json::Value = serde_json::from_slice(
         &fs::read(output.join("sdk-docs-scenario-projections.v1.json")).unwrap(),
     )

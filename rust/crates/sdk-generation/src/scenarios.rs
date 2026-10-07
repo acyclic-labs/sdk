@@ -32,6 +32,7 @@ pub enum ScenarioKind {
     ActorsUnary,
     ActorsTypescriptConsumer,
     StreamStreaming,
+    StreamTypescriptConsumer,
     FilesystemEmbedded,
     MachinesTypescriptConsumer,
 }
@@ -50,7 +51,7 @@ pub struct Scenario {
     pub features: &'static [&'static str],
 }
 
-/// The first five source-backed scenarios. More examples require an explicit
+/// The first six source-backed scenarios. More examples require an explicit
 /// registry entry and a matching receipt; Cargo example discovery alone is
 /// deliberately insufficient for publishing user-facing snippets.
 pub const SCENARIOS: &[Scenario] = &[
@@ -85,6 +86,17 @@ pub const SCENARIOS: &[Scenario] = &[
         operation: "tail",
         kind: ScenarioKind::StreamStreaming,
         mode: ScenarioMode::ExecuteWithEndpoint,
+        features: &[],
+    },
+    Scenario {
+        id: "stream/typescript-consumer",
+        family: "stream",
+        package: "acyclic-stream",
+        example: "stream-typescript-consumer",
+        source_path: "rust/crates/stream/examples/stream-typescript-consumer.rs",
+        operation: "memory-append-read",
+        kind: ScenarioKind::StreamTypescriptConsumer,
+        mode: ScenarioMode::ExecuteLocal,
         features: &[],
     },
     Scenario {
@@ -350,15 +362,87 @@ pub fn render_typescript(
         .filter(|execution| {
             matches!(
                 execution.scenario.kind,
-                ScenarioKind::MachinesTypescriptConsumer | ScenarioKind::ActorsTypescriptConsumer
+                ScenarioKind::MachinesTypescriptConsumer
+                    | ScenarioKind::ActorsTypescriptConsumer
+                    | ScenarioKind::StreamTypescriptConsumer
             )
         })
         .map(|execution| match execution.scenario.kind {
             ScenarioKind::MachinesTypescriptConsumer => render_machines_typescript(execution),
             ScenarioKind::ActorsTypescriptConsumer => render_actors_typescript(execution),
+            ScenarioKind::StreamTypescriptConsumer => render_stream_typescript(execution),
             _ => unreachable!("filtered scenario kind must have a TypeScript renderer"),
         })
         .collect()
+}
+
+fn render_stream_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
+    let value: serde_json::Value =
+        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
+            Error::Invalid(format!(
+                "scenario {} did not emit JSON: {error}",
+                execution.scenario.id
+            ))
+        })?;
+    let request = value
+        .get("request")
+        .ok_or_else(|| Error::Invalid("Stream scenario output has no request".into()))?;
+    let path = string_field(request, "path")?;
+    let values = required_field(request, "values")?;
+    let value_arrays = values
+        .as_array()
+        .ok_or_else(|| Error::Invalid("Stream request values are not an array".into()))?;
+    if value_arrays.is_empty() {
+        return Err(Error::Invalid("Stream request values are empty".into()));
+    }
+    let values_literal = value_arrays
+        .iter()
+        .map(|value| {
+            let _ = bytes_hex(value)?;
+            serde_json::to_string(value).map_err(|error| Error::Invalid(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    let idempotency_key = required_field(request, "idempotency_key")?;
+    let _ = bytes_hex(idempotency_key)?;
+    let idempotency_literal = serde_json::to_string(idempotency_key)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let read_limit = number_field(request, "read_limit")?;
+    let append = value
+        .get("append")
+        .ok_or_else(|| Error::Invalid("Stream scenario output has no append receipt".into()))?;
+    let append_tail = number_field(append, "tail")?;
+    let tail = number_field(&value, "tail")?;
+    let records = value
+        .get("records")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Invalid("Stream scenario output has no records".into()))?;
+    if records.len() != value_arrays.len() {
+        return Err(Error::Invalid(
+            "Stream read record count differs from request".into(),
+        ));
+    }
+    let record_values = records
+        .iter()
+        .map(|record| {
+            let bytes = required_field(record, "value")?;
+            let _ = bytes_hex(bytes)?;
+            serde_json::to_string(bytes).map_err(|error| Error::Invalid(error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .join(", ");
+    let source = format!(
+        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ StreamClient, idempotencyKey }} from \"@acyclic-labs/stream\";\n\nconst path = {path:?};\nconst values = [{values_literal}].map(value => Uint8Array.from(value));\nconst retry = idempotencyKey(Uint8Array.from({idempotency_literal}));\nconst stream = StreamClient.memory().bytes(path);\nconst append = await stream.appendBatch(values, {{ idempotencyKey: retry }});\nif (!append.ok || append.tail !== BigInt(\"{append_tail}\")) throw new Error(\"Rust append receipt parity failed\");\nconst tail = await stream.tail();\nif (tail !== BigInt(\"{tail}\")) throw new Error(\"Rust tail parity failed\");\nconst records = [];\nfor await (const record of stream.read({{ from: 0n, limit: {read_limit} }})) records.push(record.value);\nconst expected = [{record_values}].map(value => Uint8Array.from(value));\nif (records.length !== expected.length || records.some((record, index) => record.some((byte, offset) => byte !== expected[index][offset]))) throw new Error(\"Rust read parity failed\");\nconsole.log(JSON.stringify({{ tail: tail.toString(), records: records.length }}));\n",
+        execution.scenario.id, execution.stdout_sha256,
+    );
+    Ok(TypeScriptSnippet {
+        scenario_id: execution.scenario.id,
+        package: "@acyclic-labs/stream",
+        path: "generated/scenarios/stream/typescript-consumer.ts",
+        source_sha256: execution.source_sha256.clone(),
+        rust_output_sha256: execution.stdout_sha256.clone(),
+        source,
+    })
 }
 
 fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
@@ -710,12 +794,13 @@ mod tests {
 
     #[test]
     fn registry_contains_one_bounded_scenario_per_requested_family() {
-        assert_eq!(SCENARIOS.len(), 5);
+        assert_eq!(SCENARIOS.len(), 6);
         assert_eq!(SCENARIOS[0].kind, ScenarioKind::ActorsUnary);
         assert_eq!(SCENARIOS[1].kind, ScenarioKind::ActorsTypescriptConsumer);
         assert_eq!(SCENARIOS[2].kind, ScenarioKind::StreamStreaming);
-        assert_eq!(SCENARIOS[3].kind, ScenarioKind::FilesystemEmbedded);
-        assert_eq!(SCENARIOS[4].kind, ScenarioKind::MachinesTypescriptConsumer);
+        assert_eq!(SCENARIOS[3].kind, ScenarioKind::StreamTypescriptConsumer);
+        assert_eq!(SCENARIOS[4].kind, ScenarioKind::FilesystemEmbedded);
+        assert_eq!(SCENARIOS[5].kind, ScenarioKind::MachinesTypescriptConsumer);
         assert!(SCENARIOS.iter().all(|scenario| !scenario.id.is_empty()));
     }
 
@@ -738,7 +823,7 @@ mod tests {
             "../../../../research/machines-typescript-scenario-20261007/machines-typescript-consumer.output.json"
         );
         let execution = ScenarioExecution {
-            scenario: SCENARIOS[4],
+            scenario: SCENARIOS[5],
             source_sha256: "sha256:test-source".into(),
             stdout_sha256: digest_bytes(output.as_bytes()),
             stderr_sha256: digest_bytes(&[]),
@@ -803,5 +888,51 @@ mod tests {
         assert_eq!(snippets.len(), 2);
         assert_ne!(snippets[0].source, snippets[1].source);
         assert!(snippets[1].source.contains("homeRegion: \"us\""));
+    }
+
+    #[test]
+    fn stream_projection_is_rendered_from_rust_output() {
+        let output = r#"{"request":{"path":"typescript/events","values":[[123,34,107,105,110,100,34,58,34,99,114,101,97,116,101,100,34,125],[123,34,107,105,110,100,34,58,34,114,101,97,100,121,34,125]],"idempotency_key":[116,121,112,101,115,99,114,105,112,116,45,115,116,114,101,97,109],"read_limit":2},"append":{"start":0,"end":2,"tail":2},"tail":2,"records":[{"sequence":0,"value":[123,34,107,105,110,100,34,58,34,99,114,101,97,116,101,100,34,125]},{"sequence":1,"value":[123,34,107,105,110,100,34,58,34,114,101,97,100,121,34,125]}]}"#;
+        let execution = ScenarioExecution {
+            scenario: SCENARIOS[3],
+            source_sha256: "sha256:test-source".into(),
+            stdout_sha256: digest_bytes(output.as_bytes()),
+            stderr_sha256: digest_bytes(&[]),
+            stdout: output.into(),
+        };
+        let snippets = render_typescript(&[execution]).expect("Rust output should render");
+        assert_eq!(snippets.len(), 1);
+        assert!(snippets[0].source.contains("StreamClient.memory().bytes"));
+        assert!(snippets[0].source.contains("typescript/events"));
+        assert!(snippets[0].source.contains("Rust read parity failed"));
+        if let Some(path) = std::env::var_os("STREAM_SCENARIO_SNIPPET_OUTPUT") {
+            std::fs::write(path, snippets[0].source.as_bytes()).expect("write snippet receipt");
+        }
+    }
+
+    #[test]
+    fn stream_projection_changes_when_rust_output_changes() {
+        let output = r#"{"request":{"path":"typescript/events","values":[[1]],"idempotency_key":[116],"read_limit":1},"append":{"start":0,"end":1,"tail":1},"tail":1,"records":[{"sequence":0,"value":[1]}]}"#;
+        let changed = output.replace("typescript/events", "typescript/other");
+        let executions = [
+            ScenarioExecution {
+                scenario: SCENARIOS[3],
+                source_sha256: "sha256:source-a".into(),
+                stdout_sha256: digest_bytes(output.as_bytes()),
+                stderr_sha256: digest_bytes(&[]),
+                stdout: output.into(),
+            },
+            ScenarioExecution {
+                scenario: SCENARIOS[3],
+                source_sha256: "sha256:source-b".into(),
+                stdout_sha256: digest_bytes(changed.as_bytes()),
+                stderr_sha256: digest_bytes(&[]),
+                stdout: changed,
+            },
+        ];
+        let snippets = render_typescript(&executions).expect("both Rust outputs should render");
+        assert_eq!(snippets.len(), 2);
+        assert_ne!(snippets[0].source, snippets[1].source);
+        assert!(snippets[1].source.contains("typescript/other"));
     }
 }

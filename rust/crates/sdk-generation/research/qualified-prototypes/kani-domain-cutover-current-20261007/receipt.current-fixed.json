@@ -1,0 +1,55 @@
+{
+  "schema": "acyclic.kani-domain-cutover-receipt/v2",
+  "artifact": "kani-domain-cutover-current-20261007",
+  "status": "pass_selected_current_production_harnesses",
+  "source_checkout": "Q:/sdk/work/sdkgen-main-port-current",
+  "source_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+  "source_inventory": "audit/fixed-source-inventory.json",
+  "production_module": "contract::generated::domain",
+  "production_harness_module": "contract::generated::domain::kani_proofs",
+  "source_hashes": {
+    "rust/crates/actors/src/domain.rs": "7CE9752CDFFFF0A8D3119AD2019BB9FA510D92DD0ED865D367512124BE667DCD",
+    "rust/crates/actors/src/domain/kani_proofs.rs": "1B8E6785B888135993394B3C4CC9E9A6C544C0645466E5C71D67AF465B1CF462"
+  },
+  "module_path_fix": "Kani-only #[path] resolution attribute; no semantic algorithm changed",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "offline": true,
+    "jobs": 1,
+    "target": "/tmp/kani-domain-cutover-current-0093-fixed-positive"
+  },
+  "runs": [
+    {
+      "harness": "contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 100 failed",
+      "verification_time": "0.4726317s",
+      "raw_log": "audit/positive-u64-current-fixed-qualified-kani068.raw.txt",
+      "raw_log_sha256": "555EFF042EC7F41957DEEAAD261E207C5BFA34FA01649F0EAF049B7BF7F4AC14",
+      "theorem": "For every symbolic u64, PositiveU64 accepts exactly nonzero values and From<PositiveU64> for u64 preserves the value."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 141 failed",
+      "verification_time": "0.3404779s",
+      "raw_log": "audit/subscription-start-current-fixed-qualified-kani068.raw.txt",
+      "raw_log_sha256": "40AE28B61BFF8892C06AA944D62AB9F83A2E4EEFC406E6B83C93A4367AB2AAEA",
+      "theorem": "Every symbolic cursor u64 and the true CurrentHead oneof round-trip through the production conversion without changing variant or cursor value."
+    }
+  ],
+  "not_run": [
+    "subscription_start_preserves_cursor_and_current_head_presence",
+    "all other current Actors harnesses",
+    "long expected-revision harness"
+  ],
+  "solver_started": true,
+  "original_actors_solver": {
+    "pty": 17660,
+    "cbmc_pid": 1031718,
+    "action": "untouched"
+  }
+}

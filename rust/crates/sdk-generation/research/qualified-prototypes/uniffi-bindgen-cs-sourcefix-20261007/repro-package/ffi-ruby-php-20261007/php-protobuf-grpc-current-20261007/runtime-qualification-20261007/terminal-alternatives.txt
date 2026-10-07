@@ -1,0 +1,8 @@
+Maintained alternative probes (same generated current-source client):
+
+- Official PECL protobuf 4.33.6 native extension: tested 0, 9223372036854775807, and 18446744073709551615 construction/serialization/roundtrip. Full max fails in generated setter.
+- Official Composer google/protobuf v4.33.6 pure-PHP path: full max silently clamps to 9223372036854775807 on roundtrip; live max service response fails the expected value assertion.
+- Brick\Math BigInteger 0.12.3: preserves the decimal value itself, but generated ActorLimits::setHandlerTimeoutMillis() rejects the BigInteger object/value path; it is not integrated with google/protobuf wire encoding.
+- WSL apt has no PHP 8.2/8.3/8.4/8.5 CLI candidate. The maintained protobuf implementation branches on PHP_INT_SIZE and its 64-bit path uses intval(), so another ordinary 64-bit PHP runtime does not supply an unsigned representation by itself.
+
+No current Rust descriptor fields carry jstype=JS_STRING or nominal unsigned-ID metadata; adding such metadata would be a producer contract change, not a PHP-side workaround.The installed maintained source confirms GPBUtil.php checkUint64() uses intval($var) when PHP_INT_SIZE==8 (lines 133-143), explaining the observed clamp/rejection.

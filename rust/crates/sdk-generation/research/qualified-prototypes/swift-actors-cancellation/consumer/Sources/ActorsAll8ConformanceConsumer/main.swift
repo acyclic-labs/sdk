@@ -38,6 +38,28 @@ struct SwiftPostPatchAll8Consumer {
                           userInfo: [NSLocalizedDescriptionKey: "ACTORS_FIXTURE_OPTIONS is not UTF-8"])
         }
         let options = try JSONDecoder().decode(FixtureOptions.self, from: data)
+        do {
+            _ = try ActorId(value: "")
+            throw NSError(domain: "SwiftPostPatchAll8", code: 20,
+                          userInfo: [NSLocalizedDescriptionKey: "empty ActorId unexpectedly accepted"])
+        } catch is BindingError {
+            print("typed ActorId validator rejected empty input")
+        }
+        do {
+            _ = try CodeSha256(value: Data(repeating: 0, count: 31))
+            throw NSError(domain: "SwiftPostPatchAll8", code: 21,
+                          userInfo: [NSLocalizedDescriptionKey: "short CodeSha256 unexpectedly accepted"])
+        } catch is BindingError {
+            print("typed CodeSha256 validator rejected short input")
+        }
+        do {
+            _ = try PositiveU64(value: 0)
+            throw NSError(domain: "SwiftPostPatchAll8", code: 22,
+                          userInfo: [NSLocalizedDescriptionKey: "zero PositiveU64 unexpectedly accepted"])
+        } catch is BindingError {
+            print("typed PositiveU64 validator rejected zero")
+        }
+        let _ = try Start.currentHead()
         let client = try await connectActorsWithCa(
             endpoint: options.endpoint,
             token: options.token,
@@ -52,34 +74,35 @@ struct SwiftPostPatchAll8Consumer {
             checkpointBytes: PositiveU64(value: 8192)
         )
 
-        _ = try requireObservation(await client.inspectActor(actorId: actorID, cancellation: nil), label: "ordinary-inspect", actorID: options.actorId)
+        let inspect = try await client.inspectActor(request: InspectActorRequest(actorId: actorID), cancellation: nil)
+        _ = try requireObservation(inspect.actor, label: "ordinary-inspect", actorID: options.actorId)
         let spec = try SubscriptionSpec(
             subscriptionId: "swift-post-patch-subscription",
             streamPath: "events/input",
-            start: .cursor(cursor: 9007199254740993),
+            start: SubscriptionStart(start: .cursor(9007199254740993)),
             placementAnchor: false
         )
         let create = try CreateActorRequest(codeSha256: digest, homeRegion: "eu", bindings: [], limits: limits, subscriptions: [], idempotencyKey: "post-create")
-        _ = try requireObservation(await client.createActor(request: create, cancellation: nil), label: "create", actorID: options.actorId)
+        _ = try requireObservation((try await client.createActor(request: create, cancellation: nil)).actor, label: "create", actorID: options.actorId)
         let update = try UpdateActorRequest(actorId: actorID, codeSha256: digest, bindings: [], limits: limits, expectedConfigurationRevision: 0, idempotencyKey: "post-update")
-        _ = try requireObservation(await client.updateActor(request: update, cancellation: nil), label: "update", actorID: options.actorId)
+        _ = try requireObservation((try await client.updateActor(request: update, cancellation: nil)).actor, label: "update", actorID: options.actorId)
         let add = try AddSubscriptionRequest(actorId: actorID, subscription: spec, idempotencyKey: "post-add")
-        _ = try requireObservation(await client.addSubscription(request: add, cancellation: nil), label: "add", actorID: options.actorId)
+        _ = try requireObservation((try await client.addSubscription(request: add, cancellation: nil)).actor, label: "add", actorID: options.actorId)
         let resume = ResumeSubscriptionRequest(actorId: actorID, subscriptionId: "swift-post-patch-subscription", idempotencyKey: "post-resume")
-        _ = try requireObservation(await client.resumeSubscription(request: resume, cancellation: nil), label: "resume", actorID: options.actorId)
+        _ = try requireObservation((try await client.resumeSubscription(request: resume, cancellation: nil)).actor, label: "resume", actorID: options.actorId)
         let checkpoint = CheckpointActorRequest(actorId: actorID, idempotencyKey: "post-checkpoint")
-        let checkpointObservation = try requireObservation(await client.checkpointActor(request: checkpoint, cancellation: nil), label: "checkpoint", actorID: options.actorId)
+        let checkpointObservation = try requireObservation((try await client.checkpointActor(request: checkpoint, cancellation: nil)).actor, label: "checkpoint", actorID: options.actorId)
         precondition(checkpointObservation.checkpointEpoch == 9, "checkpoint epoch")
         let invoke = InvokeActorRequest(actorId: actorID, method: "POST", url: "/result", body: Data("{}".utf8), headers: [Header(name: "content-type", value: "application/json")])
         let response = try await client.invokeActor(request: invoke, cancellation: nil)
         precondition(response.status == 201, "invoke status")
         print("invoke: typed InvokeActorResponse status=\(response.status) headers=\(response.headers.count)")
         let remove = RemoveSubscriptionRequest(actorId: actorID, subscriptionId: "swift-post-patch-subscription", idempotencyKey: "post-remove")
-        _ = try requireObservation(await client.removeSubscription(request: remove, cancellation: nil), label: "remove", actorID: options.actorId)
+        _ = try requireObservation((try await client.removeSubscription(request: remove, cancellation: nil)).actor, label: "remove", actorID: options.actorId)
 
         let wrongClient = try await connectActorsWithCa(endpoint: options.endpoint, token: "wrong-token", caCertificate: Data(options.caCertificate.utf8), cancellation: nil)
         do {
-            _ = try await wrongClient.inspectActor(actorId: actorID, cancellation: nil)
+            _ = try await wrongClient.inspectActor(request: InspectActorRequest(actorId: actorID), cancellation: nil)
             throw NSError(domain: "SwiftPostPatchAll8", code: 11,
                           userInfo: [NSLocalizedDescriptionKey: "wrong token unexpectedly succeeded"])
         } catch let error as BindingError {

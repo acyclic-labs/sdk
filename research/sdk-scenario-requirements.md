@@ -10,6 +10,7 @@ that are present in the executable Rust output.
 | `actors/transport-conformance-unary` | `rust/crates/actors/examples/transport-conformance.rs` | endpoint | endpoint, HTTP endpoint, CA certificate, bearer token on stdin | transport receipt; no local TypeScript projection |
 | `actors/typescript-consumer` | `rust/crates/actors/examples/actors-typescript-consumer.rs` | local | canonical Rust `CreateActorRequest` values and validation result | generated Actors protobuf request encoder |
 | `stream/http-conformance-streaming` | `rust/crates/stream/examples/http-conformance.rs` | endpoint | declared stream qualification service | transport receipt; no local TypeScript projection |
+| `stream/typescript-consumer` | `rust/crates/stream/examples/stream-typescript-consumer.rs` | local | canonical Rust memory append/read values and retry identity | generated Stream memory consumer executed against local WASM |
 | `filesystem/embedded-workspace` | `rust/crates/filesystem/examples/embedded_workspace.rs` | local | self-contained Rust workspace fixture | local Rust behavior receipt |
 | `machines/typescript-consumer` | `rust/crates/machines/examples/machines-typescript-consumer.rs` | local | canonical Rust create request and page-size value | generated Machines provider consumer |
 

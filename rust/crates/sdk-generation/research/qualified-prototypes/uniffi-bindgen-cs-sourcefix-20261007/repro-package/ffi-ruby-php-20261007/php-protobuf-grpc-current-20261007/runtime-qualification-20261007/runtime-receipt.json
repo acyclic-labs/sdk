@@ -1,0 +1,85 @@
+{
+  "schema": "php-protobuf-grpc-runtime-qualification-20261007",
+  "status": "PASS_RUNTIME_SAFE_U64_WITH_FULL_UNSIGNED_LIMITATION",
+  "qualification_scope": "Fresh Composer-installed generated PHP client with native protobuf and gRPC extensions against a live descriptor-driven fixture generated from the exact current Rust Actors producer.",
+  "producer": {
+    "checkout": "Q:\\sdk\\work\\sdkgen-main-port-current",
+    "package": "acyclic-actors",
+    "version": "0.2.0",
+    "git_commit_at_cargo_invocation": "f8bf8daf64fae0c04366fd1e5326053dde3d4e9e",
+    "branch_head_after_invocation": "81eb6ef75df47223275e02f7c2ee0091e788fed5",
+    "rust_toolchain": "1.98.1",
+    "proto_sha256": "D568A12B4D07DCAFEF8502CAF61BCFA3E2BC514357D45A5291B4542E0D6B59DE",
+    "descriptor_sha256": "C565B7D1FA43B3E96FC068EC7DB687E504603A377E9E592D15033F15CD02E9E9",
+    "generated_client_sha256": "5213D816DDE169783808529445BBBE70FCA4554C2900677231BC2924F04A3162",
+    "service": "ActorsService",
+    "rpc_count": 8,
+    "rpcs": [
+      "CreateActor",
+      "UpdateActor",
+      "InspectActor",
+      "AddSubscription",
+      "RemoveSubscription",
+      "ResumeSubscription",
+      "CheckpointActor",
+      "InvokeActor"
+    ]
+  },
+  "consumer": {
+    "platform": "WSL Ubuntu",
+    "php": "8.1.2-1ubuntu2.26",
+    "composer": "2.10.3",
+    "composer_lock_sha256": "F8852DAC4E5BFFCF44D798601DABFB577C9596813DC74E0C195238EF8FFA957D",
+    "packages": {
+      "google/protobuf": "v4.33.6",
+      "grpc/grpc": "1.82.0"
+    },
+    "pecl_protobuf_source": "protobuf-4.33.6.tgz",
+    "pecl_protobuf_source_sha256": "4B1E2D13C2086D647BE6B6DD6648101D5CE36D83943834C724B0F399A4ECF836",
+    "protobuf_extension_sha256": "488D2A0ECF366B37067246709EBCAB9024A81A461C268916F4B426F0E4537873",
+    "pecl_grpc_source": "grpc-1.82.2.tgz",
+    "pecl_grpc_source_sha256": "D47CAFF81B13A8E04282313E43A9AD5846D95F17971C41193A35855DB4E2CF0F",
+    "grpc_extension_sha256": "F0EBB9411AFECEF9ED78E679B1947E8EECE325D6E9FB4B3FB8A95184A43A5F60",
+    "brick_math_probe": "Brick\\\\Math 0.12.3",
+    "brick_math_probe_lock_sha256": "446A40610D8D1BFF049AA65443E948DEDF2C34D310A58DCD1E4ED69559070B9F"
+  },
+  "fixture": {
+    "kind": "descriptor-driven local gRPC server",
+    "descriptor_input_sha256": "C565B7D1FA43B3E96FC068EC7DB687E504603A377E9E592D15033F15CD02E9E9",
+    "endpoint": "127.0.0.1:33679",
+    "pid": 1568200,
+    "bearer_metadata": "Bearer php-fixture-token",
+    "events_sha256": "C3AC13C6D087C837E724802F1CE1C9B94EB394FF45090711281CDEE0CB0678C8"
+  },
+  "checks": {
+    "generated_client_all_eight": "PASS: all eight generated request/response RPC methods completed with status OK",
+    "uint64_safe_boundary": "PASS: 9223372036854775807 serialized, decoded, and round-tripped",
+    "proto3_optional_presence": "PASS: optional checkpoint_unix_millis has presence after decode",
+    "unauthenticated": "PASS: missing bearer metadata returned gRPC status 16",
+    "server_abort": "PASS: fixture denied actor_id=error with gRPC status 7",
+    "in_flight_cancellation": "PASS: pending InvokeActor cancellation returned status 1 and server emitted cancelled event",
+    "unsigned_u64_upper_bound": "LIMITATION: current PHP 8.1 protobuf runtime rejects 18446744073709551615 in generated uint64 setter; pure-PHP decode represents that wire value as -1",
+    "semantic_branding": "LIMITATION: generated PHP has nominal message/request/response classes and int|string uint64 accessors, but the current Rust descriptor carries plain string/uint64 fields and no metadata for nominal Rust ID newtypes; no handwritten wrapper or contract mirror was added",
+    "nominal_request_types": "PASS: generated client rejected wrong request class with TypeError and nested setter rejected wrong message class",
+    "full_unsigned_u64_gate": "FAIL: no tested maintained PHP path preserves 18446744073709551615 through construction, serialization, decode, and service boundary",
+    "boundary_audit": "See terminal-u64-boundaries.txt: 0 and 9223372036854775807 pass; full max fails native construction and pure-PHP service decode",
+    "maintained_bigint_alternative": "FAIL: Brick\\\\Math BigInteger 0.12.3 preserves the value independently but generated google/protobuf setters reject it; no maintained wire integration",
+    "current_descriptor_uint64_metadata": "All current uint64 fields have jstype=0; no JS_STRING or nominal Rust ID-brand metadata",
+    "native_max_response_decode": "FAIL: live status 0 response carrying 18446744073709551615 decoded as -1, while proto3 optional presence remained true"
+  },
+  "durable_artifacts": {
+    "terminal": "terminal-runtime.txt",
+    "client_terminal": "terminal-client-safe.txt",
+    "server_events": "server-events.jsonl",
+    "client_source": "actors-php-client.php",
+    "fixture_source": "descriptor-fixture.py",
+    "u64_limitation": "u64-upper-bound-limitation.txt",
+    "negative_probes": "negative-probes.php",
+    "negative_terminal": "terminal-negative.txt",
+    "boundaries": "terminal-u64-boundaries.txt",
+    "alternatives": "terminal-alternatives.txt",
+    "boundary_script": "u64-boundaries.php",
+    "brick_probe": "brick-math-probe.php",
+    "native_decode_probe": "native-decode-max.php"
+  }
+}

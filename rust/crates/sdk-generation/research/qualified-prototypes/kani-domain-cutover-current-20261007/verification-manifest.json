@@ -1,7 +1,7 @@
 {
   "schema": "acyclic.kani-domain-cutover-manifest/v1",
   "artifact": "kani-domain-cutover-current-20261007",
-  "status": "prepared_not_run",
+  "status": "pass_selected_current_production_harnesses",
   "canonical_source": "Q:/sdk/work/sdkgen-main-port-current",
   "source_revision": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
   "source_inventory": "audit/current-source-inventory.json",
@@ -26,5 +26,14 @@
     "proof before source freeze",
     "historical 03bb receipt as evidence for current source"
   ],
-  "run_gate": "Freeze current canonical source, refresh inventory, compile-only check the prepared harness, then run one bounded Kani invocation after the existing Actors solver terminates."
+  "run_gate": "Freeze current canonical source, refresh inventory, compile-only check the prepared harness, then run one bounded Kani invocation after the existing Actors solver terminates.",
+  "blocking_receipt": "receipt.current-blocked.json",
+  "compile_blocker": "E0583 for mod kani_proofs: inline contract::domain resolves src/kani_proofs.rs while only src/domain/kani_proofs.rs exists",
+  "successful_receipt": "receipt.current-fixed.json",
+  "selected_harnesses": [
+    "contract::generated::domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
+    "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity"
+  ],
+  "prior_compile_blocked_receipt": "receipt.current-blocked.json",
+  "module_path_fix": "Added only #[path = \"domain/kani_proofs.rs\"] before the existing cfg(kani) module declaration"
 }

@@ -1,0 +1,33 @@
+{
+  "schema": "php-cohort-inventory-20261007",
+  "status": "EXCLUDED_FULL_UNSIGNED_U64",
+  "source_identity": {
+    "producer": "Q:\\sdk\\work\\sdkgen-main-port-current",
+    "proto_sha256": "D568A12B4D07DCAFEF8502CAF61BCFA3E2BC514357D45A5291B4542E0D6B59DE",
+    "descriptor_sha256": "C565B7D1FA43B3E96FC068EC7DB687E504603A377E9E592D15033F15CD02E9E9"
+  },
+  "alternatives": [
+    {
+      "runtime": "PHP 8.1.2-1ubuntu2.26 + PECL protobuf 4.33.6",
+      "native_source_sha256": "4B1E2D13C2086D647BE6B6DD6648101D5CE36D83943834C724B0F399A4ECF836",
+      "construction": {"0": "PASS", "9223372036854775807": "PASS", "9223372036854775808": "FAIL", "18446744073709551615": "FAIL"},
+      "service_response_max": "FAIL_VALUE_NEGATIVE_ONE_OPTIONAL_PRESENCE_TRUE"
+    },
+    {
+      "runtime": "Composer google/protobuf v4.33.6 pure PHP",
+      "construction_roundtrip_max": "PASS_WITH_SIGNED_MAX_CLAMP",
+      "service_response_max": "FAIL_VALUE_MISMATCH"
+    },
+    {
+      "runtime": "Brick\\Math 0.12.3 + generated google/protobuf setter",
+      "construction_max": "FAIL_NOT_ACCEPTED_BY_GENERATED_SETTER",
+      "wire_integration": "UNAVAILABLE"
+    }
+  ],
+  "qualified_subcohort": {
+    "scope": "all eight Actors RPCs, optional presence, auth/error statuses, cancellation, nominal request/message rejection",
+    "uint64_boundary": "9223372036854775807 only",
+    "full_unsigned_u64": "not qualified",
+    "evidence": "php-protobuf-grpc-current-20261007/runtime-qualification-20261007/"
+  }
+}

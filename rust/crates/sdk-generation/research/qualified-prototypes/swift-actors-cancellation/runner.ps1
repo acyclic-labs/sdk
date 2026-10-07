@@ -47,8 +47,8 @@ foreach ($name in $templates.Keys) {
 }
 $semanticGeneratorFiles = @{
     'uniffi_bindgen/src/bindings/swift/templates/CustomType.swift' = '30ECF288B0E70584214BF693A1E8EECF41DC2C3217E1BFA43767EEB785D66C84'
-    'uniffi_bindgen/src/bindings/swift/templates/EnumTemplate.swift' = 'C05A024CBF06479C8DE4832E251C131E02382A32B885837043E7074080E9BDA7'
-    'uniffi_bindgen/src/bindings/swift/gen_swift/mod.rs' = '589B8FA6AF259FF12B29F4F00A62935BEA9FE37927905A78582BC86DB75C190C'
+    'uniffi_bindgen/src/bindings/swift/templates/EnumTemplate.swift' = '9DAEEFAE4A0DAF832FD0D3AC9D376D882235130E5EDA01677B037F4DD22E562D'
+    'uniffi_bindgen/src/bindings/swift/gen_swift/mod.rs' = '15063058EE8779D11D6C86B9B3A07843AFBBF228CC007A2D2E2B0A626FAE7EF2'
     'uniffi_bindgen/src/bindings/swift/mod.rs' = '37BBA61731E61B439D9DDB0DD2F9FD34EBF0B2005D52FAAE5081A28CDF7E2259'
     'runner/src/main.rs' = '450E0DAF89518F734E2DF933F49680DBC38D724CCBCDC1BF8F6DE09161ECF975'
 }
@@ -127,8 +127,11 @@ if ($generatedSwift -notmatch 'public struct ActorLimits\s*:\s*Equatable') {
 if ($generatedSwift -match 'public var handlerTimeoutMillis') {
     throw 'Final producer emitted mutable ActorLimits fields; immutable qualification is blocked'
 }
-if ($generatedSwift -notmatch 'fileprivate case currentHead\(Bool') {
-    throw 'CurrentHead remains publicly forgeable in generated Swift'
+if ($generatedSwift -match 'case currentHead\(Bool') {
+    throw 'CurrentHead remains publicly forgeable as a raw Bool in generated Swift'
+}
+if ($generatedSwift -notmatch 'case currentHead\(StartCurrentHead') {
+    throw 'Generated Swift is missing the producer-validated CurrentHead payload'
 }
 if ($generatedSwift -notmatch 'public static func currentHead\(\) throws -> Start') {
     throw 'Generated Swift is missing the producer-validated CurrentHead factory'
@@ -141,7 +144,20 @@ $serviceSwift = Get-Content (Join-Path $generated 'acyclic_actors_uniffi.swift')
 $serviceMarker = 'public protocol ActorsClientProtocol'
 $serviceOffset = $serviceSwift.IndexOf($serviceMarker)
 if ($serviceOffset -lt 0) { throw 'Generated service Swift is missing the ActorsClient surface' }
-$swiftParts = @($semanticSwift, $serviceSwift.Substring($serviceOffset))
+$serviceBody = $serviceSwift.Substring($serviceOffset)
+$serviceBody = $serviceBody -creplace '\binitializationResult\b', 'serviceInitializationResult'
+$serviceBody = $serviceBody -creplace '\bInitializationResult\b', 'ServiceInitializationResult'
+$primitiveBridge = @()
+foreach ($name in @('FfiConverterInt32')) {
+    $needle = "fileprivate struct $name"
+    $startAt = $serviceSwift.IndexOf($needle)
+    if ($startAt -lt 0) { throw "Generated service Swift is missing $name" }
+    $startAt = $serviceSwift.LastIndexOf('#if swift(>=5.8)', $startAt)
+    $endAt = $serviceSwift.IndexOf('#if swift(>=5.8)', $startAt + 8)
+    if ($endAt -lt 0) { $endAt = $serviceSwift.IndexOf('private let UNIFFI_RUST_FUTURE_POLL_READY', $startAt) }
+    $primitiveBridge += $serviceSwift.Substring($startAt, $endAt - $startAt)
+}
+$swiftParts = @($semanticSwift, ($primitiveBridge -join "`n"), 'import acyclic_actors_uniffiFFI', $serviceBody)
 [IO.File]::WriteAllText((Join-Path $package 'Generated\AcyclicActors\Actors.swift'), ($swiftParts -join "`n"), [Text.UTF8Encoding]::new($false))
 Copy-Item "$generated\acyclic_actors_uniffiFFI.h" "$package\Generated\acyclic_actors_uniffiFFI\include\acyclic_actors_uniffiFFI.h" -Force
 Copy-Item "$generated\acyclic_actors_uniffi.modulemap" "$package\Generated\acyclic_actors_uniffiFFI\module.modulemap" -Force
