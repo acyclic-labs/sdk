@@ -425,11 +425,11 @@ export async function policyIdentity(name: string, version: string, digest: Uint
   return admitPolicyIdentity({ name, version, digest: Object.freeze([...digest]) });
 }
 
-async function admitPolicyIdentity(identity: MachineIdentityWire, detached = false): Promise<ComponentIdentity> {
-  // Detach the caller-owned identity before WASM initialization can yield.
-  // Providers may reuse and mutate the object while the shared Rust runtime
-  // is being acquired; admission must validate this exact observation.
-  const snapshot = detached ? identity : structuredClone(identity);
+/**
+ * Admit an identity snapshot. Callers own the argument: policyIdentity creates
+ * a fresh value, while validatePolicyIdentity snapshots its complete graph.
+ */
+async function admitPolicyIdentity(snapshot: MachineIdentityWire): Promise<ComponentIdentity> {
   let admitted: MachineIdentityWire;
   try {
     admitted = (await NativeContracts.create()).validate("machine_identity", snapshot);
@@ -2739,7 +2739,7 @@ async function validatePolicyIdentitySnapshot(identity: PolicyIdentity | Machine
       throw new TypeError("policy identity has unexpected fields");
     }
     if (!Array.isArray(identity.digest)) throw new TypeError("policy implementation digest must be an array");
-    return await admitPolicyIdentity(identity, true);
+    return await admitPolicyIdentity(identity);
   } finally {
     ancestors.delete(identity);
   }
