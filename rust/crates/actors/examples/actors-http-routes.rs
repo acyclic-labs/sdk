@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::fs::create_dir_all(&public_semantic)?;
             std::fs::write(
                 public_semantic.join("readonly.ts"),
-                render_readonly_semantic(&ts_rs::Config::from_env()),
+                render_readonly_semantic(&ts_rs::Config::default()),
             )?;
         }
         std::fs::write(output, source)?;

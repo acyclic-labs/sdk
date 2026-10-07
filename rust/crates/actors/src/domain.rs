@@ -1339,7 +1339,7 @@ pub fn typescript_export_names(config: &Config) -> Vec<String> {
 /// writes into the Rust source tree. `ts-rs` keeps dependency traversal and
 /// import paths derived from these Rust types.
 pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
-    let config = Config::from_env()
+    let config = Config::default()
         .with_out_dir(path.as_ref())
         .with_import_extension(Some("js"));
 
@@ -1389,7 +1389,7 @@ mod tests {
 
     #[test]
     fn typescript_export_names_follow_nested_ts_rs_metadata() {
-        let names = typescript_export_names(&Config::from_env());
+        let names = typescript_export_names(&Config::default());
 
         assert!(names.windows(2).all(|pair| pair[0] < pair[1]));
         for name in [
