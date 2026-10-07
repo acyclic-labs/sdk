@@ -176,24 +176,24 @@ test("parent publication reconciles one exact child after a lost acknowledgement
       return committed;
     },
   };
-  const runtime = Harness.builder(contracts).forkPreparer(preparer).forkPublisher(publisher)
+  const runtime = await Harness.builder(contracts).forkPreparer(preparer).forkPublisher(publisher)
     .grant("fork:publish").build();
   await expect(runtime.spawnFromReport(prepared)).rejects.toThrow("acknowledgement lost");
   expect(await runtime.reconcileSpawn(prepared)).toEqual(seed);
-  const advanced = Harness.builder(contracts).forkPreparer({ ...preparer,
+  const advanced = await Harness.builder(contracts).forkPreparer({ ...preparer,
     parentSnapshot: () => ({ parent: prepared.request.parent, revision: prepared.request.parent_revision + 1n }),
   }).forkPublisher(publisher).grant("fork:publish").build();
   expect(await advanced.reconcileSpawn(prepared)).toEqual(seed);
   expect(publications).toBe(1);
-  const narrowed = runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
+  const narrowed = await runtime.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
   expect(narrowed.components.forkPublisher).toBeUndefined();
   await expect(narrowed.reconcileSpawn(prepared)).rejects.toThrow("not bound");
   await expect(runtime.spawnFromReport({ ...prepared, request: { ...prepared.request,
     parent: { kind: "conversation", id: "wrong-parent" } } })).rejects.toThrow();
-  expect(() => Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+  await expect(Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
     parent: () => ({ kind: "conversation" as const, id: "wrong-parent" }) }).grant("fork:publish").build())
-    .toThrow("another parent");
-  const mismatched = Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
+    .rejects.toThrow("another parent");
+  const mismatched = await Harness.builder(contracts).forkPreparer(preparer).forkPublisher({ ...publisher,
     spawnFromReport: async () => ({ ...seed, child: { kind: "conversation" as const, id: "different-child" } }),
   }).grant("fork:publish").build();
   await expect(mismatched.spawnFromReport(prepared)).rejects.toThrow("another child seed");

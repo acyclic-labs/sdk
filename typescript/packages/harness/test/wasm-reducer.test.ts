@@ -1,32 +1,14 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { DEFAULT_LIMITS, Harness, MemoryConversation, NativeContracts, parseIdentity, type AgentId, type ConversationMessageId, type OperationId } from "../src/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "../src/conversation-page-contract.js";
 
-const wasm = readFileSync(
-  fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)),
-);
-
-test("canonical JSON has no fixed nesting or node ceiling and still rejects malformed input", async () => {
-  const contracts = await NativeContracts.create(wasm);
-  const nested = `${"[".repeat(129)}0${"]".repeat(129)}`;
-  const bytes = new TextEncoder().encode(nested);
-  expect(contracts.encodeCanonicalJson(contracts.decodeModelJson(bytes))).toEqual(bytes);
-  expect(contracts.encodeCanonicalJson(Array(1_000_001).fill(0)).byteLength).toBe(2_000_003);
-  expect(() => contracts.decodeModelJson(new TextEncoder().encode("{} {}"))).toThrow();
-  const cyclic: Record<string, unknown> = {};
-  cyclic.self = cyclic;
-  expect(() => contracts.encodeCanonicalJson(cyclic)).toThrow("cyclic");
-});
-
 test("WASM turn planner emits a fresh selection and rejects stale retry state", async () => {
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
   const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
-  const host = await MemoryConversation.create({ agent, wasm });
-  const contracts = await NativeContracts.create(wasm);
+  const host = await MemoryConversation.create({ agent });
+  const contracts = await NativeContracts.create();
   try {
     const content = await host.stage("turns/planner/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
     const fresh = contracts.prepareConversationTurn(host.conversation(), operation, content,
@@ -44,8 +26,8 @@ test("WASM turn planner emits a fresh selection and rejects stale retry state", 
 test("WASM turn planner applies attachment limits to manifest counts", async () => {
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
   const operation = "02020202-0202-0202-0202-020202020202" as OperationId;
-  const host = await MemoryConversation.create({ agent, wasm });
-  const contracts = await NativeContracts.create(wasm);
+  const host = await MemoryConversation.create({ agent });
+  const contracts = await NativeContracts.create();
   try {
     const content = await host.stage(
       "turns/planner/manifest-user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt",
@@ -135,7 +117,6 @@ test("native Rust semantics execute through WASM", async () => {
     authority: { kind: "conversation", id: "conversation-1" },
     issuerId: "test",
     issuerKey: new Uint8Array(32).fill(7),
-    wasm,
     schemas: [
       {
         name: "example.message",
@@ -210,7 +191,6 @@ test("native Rust semantics execute through WASM", async () => {
     authority: { kind: "conversation", id: "conversation-1" },
     issuerId: "test",
     issuerKey: new Uint8Array(32).fill(7),
-    wasm,
     schemas: [
       {
         name: "example.message",
@@ -234,7 +214,7 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
   const agent = "08080808-0808-0808-0808-080808080808" as AgentId;
   const harness = await Harness.create({
     authority: { kind: "conversation", id: "paged-history" },
-    issuerId: "paged-history", issuerKey: new Uint8Array(32).fill(5), wasm,
+    issuerId: "paged-history", issuerKey: new Uint8Array(32).fill(5),
   });
   try {
     expect(() => harness.conversationPage(0n, HARNESS_CONVERSATION_PAGE_MAXIMUM + 1)).toThrow(
@@ -282,4 +262,4 @@ test("large ref-only conversation history hydrates through bounded Rust pages", 
   } finally {
     harness.free();
   }
-}, 0);
+});

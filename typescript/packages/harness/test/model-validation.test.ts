@@ -133,13 +133,13 @@ test("declared context binding pins metadata and preserves the prior binding on 
   expect(() => builder.declaredContext({ ...snapshot,
     skills: [{ ...skill, name: "Invalid" }] })).toThrow();
   snapshot.skills = [];
-  await builder.build().run("go");
+  await (await builder.build()).run("go");
   const first = new TextDecoder().decode(admitted[0]);
   expect(first).toContain("Inspect files");
   expect(first).toContain("custom context");
   expect(first).not.toContain("SECRET BODY");
   builder.context({ async build() { return [{ role: "user", content: "replacement" }]; } });
-  await builder.build().run("go");
+  await (await builder.build()).run("go");
   const second = new TextDecoder().decode(admitted[1]);
   expect(second).toContain("replacement");
   expect(second).not.toContain("Inspect files");
@@ -169,7 +169,7 @@ test("native and WASM request construction preserve exact Unicode and paired too
 test("the actual task provider receives the admitted serialized input", async () => {
   const prompt = "é\0🦀\r\n";
   let calls = 0;
-  const runtime = Harness.builder(contracts).model({ provider: "mock", name: "exact", revision: "pinned", options: {} }, {
+  const runtime = await Harness.builder(contracts).model({ provider: "mock", name: "exact", revision: "pinned", options: {} }, {
     async *generate(request) {
       calls += 1;
       expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
@@ -218,7 +218,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
       for (const child of children) {
         const prompt = `notification ${depth}; task ${child}; identity ${child}; workspace ${child}; fresh scratch ${child} é\0🦀\r\n`;
         let calls = 0;
-        const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
+        const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
           .model(root.model, { async *generate(request) {
             calls++;
             const expected = prepareModelRequest({ model: root.model, tools,
@@ -249,7 +249,7 @@ test("tool results retain their pinned string schema and enforce the exact rende
   for (const length of [62, 63]) {
     const value = "x".repeat(length);
     let calls = 0;
-    const runtime = Harness.builder(contracts).limits({ render_bytes: 64 })
+    const runtime = await Harness.builder(contracts).limits({ render_bytes: 64 })
       .model({ provider: "mock", name: "bounded", revision: "1", options: {} }, {
         async *generate(request) {
           calls++;
@@ -316,7 +316,7 @@ test("inherited dispatch captures fresh pinned local files after builder constru
           : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }])] }, DEFAULT_LIMITS));
       yield { kind: "completed" as const, metadata: {} };
     }, async reconcile() { return undefined; } };
-    const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
+    const runtime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     for (const version of ["first", "later"]) {
       fresh = await stage("current.txt", version, new TextEncoder().encode(`${version} é\0🦀\r\n`), "text/plain");
@@ -331,7 +331,7 @@ test("inherited dispatch captures fresh pinned local files after builder constru
     expect(reads).toBe(2);
     prefixOnly = false;
     const denied = core.issueScopeForAgent(agent, "head-only", [core.fileReadCapability(head)]);
-    const deniedRuntime = Harness.builder(contracts).inheritedModelPrefix({ core, scope: denied, head, files })
+    const deniedRuntime = await Harness.builder(contracts).inheritedModelPrefix({ core, scope: denied, head, files })
       .content(content).context(context).model(model, provider).grant(volumeGrant).build();
     await expect(deniedRuntime.run("go")).rejects.toThrow();
     expect(calls).toBe(3);

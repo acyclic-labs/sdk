@@ -17,7 +17,7 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -1227,6 +1227,59 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
         _ => return Err(JsValue::from_str("unknown Harness identity kind")),
     };
     Ok(normalized)
+}
+
+/// Validates one aggregate identity with the same path-segment policy used by
+/// every Rust stream access. The returned spelling is unchanged so hosts can
+/// retain their branded string facade without reimplementing the policy.
+#[wasm_bindgen(js_name = validateAuthorityPathSegment)]
+pub fn validate_authority_path_segment(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+) -> Result<String, JsValue> {
+    let value = checked_js_string(value, "authority identity")?;
+    let authority = Authority {
+        kind: AggregateKind::Agent,
+        id: value.clone(),
+    };
+    authority.stream_path().map(|_| value).map_err(js_error)
+}
+
+/// Validates one component name with the canonical Rust byte and character
+/// policy. The field-specific error text remains a thin TypeScript concern.
+#[wasm_bindgen(js_name = validateComponentLabel)]
+pub fn validate_component_label(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+) -> Result<String, JsValue> {
+    let value = checked_js_string(value, "component label")?;
+    crate::contract::validate_component_label(&value, "component label")
+        .map(|_| value)
+        .map_err(js_error)
+}
+
+fn checked_js_string(value: JsValue, field: &str) -> Result<String, JsValue> {
+    let js_value: js_sys::JsString = value
+        .dyn_into()
+        .map_err(|_| JsValue::from_str(&format!("{field} must be a string")))?;
+    let length = js_value.length();
+    let mut index = 0;
+    while index < length {
+        let code_unit = js_value.char_code_at(index) as u32;
+        if (0xd800..=0xdbff).contains(&code_unit) {
+            let next = index + 1;
+            if next >= length || !(0xdc00..=0xdfff).contains(&(js_value.char_code_at(next) as u32))
+            {
+                return Err(JsValue::from_str(&format!("{field} is invalid")));
+            }
+            index += 2;
+        } else if (0xdc00..=0xdfff).contains(&code_unit) {
+            return Err(JsValue::from_str(&format!("{field} is invalid")));
+        } else {
+            index += 1;
+        }
+    }
+    js_value
+        .as_string()
+        .ok_or_else(|| JsValue::from_str(&format!("{field} must be a string")))
 }
 
 #[expect(
