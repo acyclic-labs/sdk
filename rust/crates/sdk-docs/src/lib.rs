@@ -239,7 +239,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         ));
     }
     let repository_root = canonical_repository_root(&input.repository_root)?;
-    let generated_sources = attest_generated_sources(&repository_root, &input.generated_sources)?;
+    let generated_sources = attest_generated_sources(&input.generated_sources)?;
     // Callers may discover rustdoc files through different filesystem traversals.
     // Normalize the order before hashing or projecting so the same inputs always
     // produce the same identity and family order.
@@ -305,8 +305,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             &krate,
         )?);
     }
-    let final_generated_sources =
-        attest_generated_sources(&repository_root, &input.generated_sources)?;
+    let final_generated_sources = attest_generated_sources(&input.generated_sources)?;
     if final_generated_sources != generated_sources {
         return Err(Error::Invalid(
             "generated source changed while projecting rustdoc".into(),
@@ -1070,10 +1069,8 @@ fn canonical_repository_root(path: &Path) -> Result<PathBuf, Error> {
 }
 
 fn attest_generated_sources(
-    repository_root: &Path,
     sources: &[GeneratedSource],
 ) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
-    canonical_repository_root(repository_root)?;
     let mut attested = HashMap::new();
     let mut logical_paths = HashSet::new();
     let mut physical_paths = HashSet::new();
@@ -1570,7 +1567,7 @@ mod tests {
             logical_path: PathBuf::from("generated/actors/wire.rs"),
             sha256: digest.clone(),
         };
-        let attested = attest_generated_sources(&repository_root, &[generated.clone()])
+        let attested = attest_generated_sources(&[generated.clone()])
             .expect("matching generated source should be attested");
         let repository_root = canonical_repository_root(&repository_root)
             .expect("repository fixture should have a canonical path");
@@ -1609,13 +1606,13 @@ mod tests {
 
         let mut bad_digest = generated.clone();
         bad_digest.sha256 = "0".repeat(64);
-        let error = attest_generated_sources(&repository_root, &[bad_digest])
+        let error = attest_generated_sources(&[bad_digest])
             .expect_err("incorrect generated digest must be rejected");
         assert!(error.to_string().contains("digest does not match"));
 
         let mut escaping = generated.clone();
         escaping.logical_path = PathBuf::from("../wire.rs");
-        let error = attest_generated_sources(&repository_root, &[escaping])
+        let error = attest_generated_sources(&[escaping])
             .expect_err("escaping generated logical path must be rejected");
         assert!(error
             .to_string()
@@ -1623,12 +1620,12 @@ mod tests {
 
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
-        let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
+        let error = attest_generated_sources(&[generated.clone(), duplicate])
             .expect_err("normalized duplicate logical paths must be rejected");
         assert!(error.to_string().contains("logical path is duplicated"));
 
         fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
-        let error = attest_generated_sources(&repository_root, &[generated])
+        let error = attest_generated_sources(&[generated])
             .expect_err("generated source mutation must invalidate attestation");
         assert!(error.to_string().contains("digest does not match"));
 
