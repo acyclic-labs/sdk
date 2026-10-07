@@ -17,7 +17,7 @@ import type * as Semantic from "./generated/semantic/actors/index.js";
 export type Operation = keyof typeof HTTP_ROUTES;
 
 export type ActorsRustClient = {
-  readonly [K in Operation]: (request: Uint8Array) => Promise<Uint8Array>;
+  readonly [K in Operation]: (request: Uint8Array, signal?: AbortSignal) => Promise<Uint8Array>;
 } & {
   readonly transport?: string;
 };
@@ -25,6 +25,10 @@ export type ActorsRustClient = {
 /** Bridge factory supplied by the generated WASM or native package. */
 export interface ActorsRustBinding {
   connect(endpoint: string, token: string): Promise<ActorsRustClient>;
+}
+
+export interface ActorsCallOptions {
+  readonly signal?: AbortSignal;
 }
 
 export interface ActorsOptions {
@@ -67,21 +71,22 @@ export class ActorsClient {
   }
 
   get transport(): Promise<string | undefined> { return this.#client.then(client => client.transport); }
-  createActor(request: ReadonlySemantic<Semantic.CreateActorRequest>): Promise<ReadonlySemantic<Semantic.CreateActorResponse>> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema); }
-  updateActor(request: ReadonlySemantic<Semantic.UpdateActorRequest>): Promise<ReadonlySemantic<Semantic.UpdateActorResponse>> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema); }
-  inspectActor(request: ReadonlySemantic<Semantic.InspectActorRequest>): Promise<ReadonlySemantic<Semantic.InspectActorResponse>> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema); }
-  addSubscription(request: ReadonlySemantic<Semantic.AddSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.AddSubscriptionResponse>> { return this.#call("addSubscription", AddSubscriptionRequestSchema, request, AddSubscriptionResponseSchema); }
-  removeSubscription(request: ReadonlySemantic<Semantic.RemoveSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.RemoveSubscriptionResponse>> { return this.#call("removeSubscription", RemoveSubscriptionRequestSchema, request, RemoveSubscriptionResponseSchema); }
-  resumeSubscription(request: ReadonlySemantic<Semantic.ResumeSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.ResumeSubscriptionResponse>> { return this.#call("resumeSubscription", ResumeSubscriptionRequestSchema, request, ResumeSubscriptionResponseSchema); }
-  checkpointActor(request: ReadonlySemantic<Semantic.CheckpointActorRequest>): Promise<ReadonlySemantic<Semantic.CheckpointActorResponse>> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema); }
-  invokeActor(request: ReadonlySemantic<Semantic.InvokeActorRequest>): Promise<ReadonlySemantic<Semantic.InvokeActorResponse>> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema); }
+  createActor(request: ReadonlySemantic<Semantic.CreateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.CreateActorResponse>> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema, options); }
+  updateActor(request: ReadonlySemantic<Semantic.UpdateActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.UpdateActorResponse>> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema, options); }
+  inspectActor(request: ReadonlySemantic<Semantic.InspectActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.InspectActorResponse>> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema, options); }
+  addSubscription(request: ReadonlySemantic<Semantic.AddSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.AddSubscriptionResponse>> { return this.#call("addSubscription", AddSubscriptionRequestSchema, request, AddSubscriptionResponseSchema, options); }
+  removeSubscription(request: ReadonlySemantic<Semantic.RemoveSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.RemoveSubscriptionResponse>> { return this.#call("removeSubscription", RemoveSubscriptionRequestSchema, request, RemoveSubscriptionResponseSchema, options); }
+  resumeSubscription(request: ReadonlySemantic<Semantic.ResumeSubscriptionRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.ResumeSubscriptionResponse>> { return this.#call("resumeSubscription", ResumeSubscriptionRequestSchema, request, ResumeSubscriptionResponseSchema, options); }
+  checkpointActor(request: ReadonlySemantic<Semantic.CheckpointActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.CheckpointActorResponse>> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema, options); }
+  invokeActor(request: ReadonlySemantic<Semantic.InvokeActorRequest>, options?: ActorsCallOptions): Promise<ReadonlySemantic<Semantic.InvokeActorResponse>> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema, options); }
 
-  async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O): Promise<Response> {
+  async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O, options?: ActorsCallOptions): Promise<Response> {
+    const encoded = toBinary(input, create(input, request as MessageShape<I>));
+    throwIfAborted(options?.signal);
     const client = await this.#client;
     return observed(this.#observer, "actors", operation, async sizes => {
-      const encoded = toBinary(input, create(input, request as MessageShape<I>));
       if (sizes) sizes.requestBytes = encoded.byteLength;
-      const response = await client[operation](encoded);
+      const response = await abortable(client[operation](encoded, options?.signal), options?.signal);
       if (sizes) sizes.responseBytes = response.byteLength;
       return normalizeSemantic(fromBinary(output, response), output) as Response;
     }) as Promise<Response>;
@@ -134,7 +139,7 @@ function nativeBinding(): ActorsRustBinding {
         // The browser-compatible WASM bridge is shipped with this package. A
         // native companion is preferred on Node, but a package install remains
         // usable when the optional platform artifact is not present.
-        if (error instanceof Error && /module|package|import/i.test(error.message)) {
+        if (isMissingOptionalNativePackage(error, `@acyclic-labs/actors-${platform}-${arch}`)) {
           return wasmBinding().connect(endpoint, token);
         }
         throw error;
@@ -146,7 +151,11 @@ function nativeBinding(): ActorsRustBinding {
       const inner = await Client.connect(endpoint, token);
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
-        return [operation, (request: Uint8Array) => nativeResult(inner[method](request))];
+        return [operation, (request: Uint8Array, signal?: AbortSignal) => {
+          const cancellation = nativeCancellation(module, signal);
+          return nativeResult(nativeResultWithAbort(inner[method](request, cancellation?.handle), signal))
+            .finally(() => cancellation?.cleanup());
+        }];
       }));
       return { ...client, transport: inner.transport } as ActorsRustClient;
     },
@@ -159,7 +168,7 @@ interface NativeActorsOperationResult {
 }
 
 type NativeActorsMethods = {
-  readonly [K in Operation as `${K}Result`]: (request: Uint8Array) => Promise<NativeActorsOperationResult>;
+  readonly [K in Operation as `${K}Result`]: (request: Uint8Array, cancellation?: { cancel(): void }) => Promise<NativeActorsOperationResult>;
 };
 
 interface NativeActorsClient extends NativeActorsMethods {
@@ -168,7 +177,19 @@ interface NativeActorsClient extends NativeActorsMethods {
 
 interface NativeActorsModule {
   readonly NativeActorsClient?: { connect(endpoint: string, token: string): Promise<NativeActorsClient> };
-  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string): Promise<NativeActorsClient> } };
+  readonly NativeActorsCancellation?: new () => { cancel(): void };
+  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string): Promise<NativeActorsClient> }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+}
+
+function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
+  if (signal === undefined) return undefined;
+  const Cancellation = module.NativeActorsCancellation ?? module.default?.NativeActorsCancellation;
+  if (Cancellation === undefined) throw new ActorsTransportError("native Actors companion does not export cancellation", "configuration");
+  const cancellation = new Cancellation();
+  const onAbort = () => cancellation.cancel();
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+  return { handle: cancellation, cleanup: () => signal.removeEventListener("abort", onAbort) };
 }
 
 async function nativeResult(result: Promise<NativeActorsOperationResult>): Promise<Uint8Array> {
@@ -189,10 +210,10 @@ function wasmBinding(): ActorsRustBinding {
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = snakeCase(operation);
-        return [operation, async (request: Uint8Array) => {
+        return [operation, async (request: Uint8Array, signal?: AbortSignal) => {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
           if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
-          return invoke.call(wasm, request) as Promise<Uint8Array>;
+          return abortable(invoke.call(wasm, request) as Promise<Uint8Array>, signal);
         }];
       }));
       return { ...client, transport: wasm.transport } as ActorsRustClient;
@@ -206,4 +227,33 @@ interface WasmActorsClient {
 
 function snakeCase(value: string): string {
   return value.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
+}
+
+function isMissingOptionalNativePackage(error: unknown, specifier: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(specifier) && /cannot find (?:package|module)/i.test(message);
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new ActorsTransportError("Actors operation cancelled", "cancelled");
+}
+
+async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return operation;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new ActorsTransportError("Actors operation cancelled", "cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); },
+    );
+  });
+}
+
+async function nativeResultWithAbort(result: Promise<NativeActorsOperationResult>, signal?: AbortSignal): Promise<NativeActorsOperationResult> {
+  return abortable(result, signal);
 }
