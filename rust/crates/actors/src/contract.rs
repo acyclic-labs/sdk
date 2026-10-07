@@ -64,7 +64,7 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 
 #[allow(
     unused_imports,
-    reason = "These generated Proto aliases are consumed by the native, WASM, and UniFFI bridges"
+    reason = "These generated Proto aliases are consumed by the native and WASM bridges"
 )]
 pub use generated::{
     ActorLimitsProto, ActorObservationProto, ActorState, AddSubscriptionRequestProto,

@@ -15,7 +15,7 @@ use ts_rs::{Config, ExportError, TS};
 
 #[cfg(kani)]
 #[path = "domain/formal_proofs.rs"]
-mod kani_proofs;
+mod formal_proofs;
 
 /// A non-empty Actor identity.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
