@@ -1,0 +1,17 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling kani-observation-u64-20261007 v0.1.0 (/tmp/kani-negative-20261007)
+error: failed to run custom build command for `kani-observation-u64-20261007 v0.1.0 (/tmp/kani-negative-20261007)`
+
+Caused by:
+  process didn't exit successfully: `/tmp/kani-negative-20261007/target/kani/debug/build/kani-observation-u64-20261007/f56da244bf2035e6/out/build_script_build` (exit status: 101)
+  --- stdout
+  cargo:rerun-if-changed=/tmp/kani-negative-20261007/../../../rust/crates/actors/src/generated/acyclic.actors.v1.rs
+
+  --- stderr
+
+  thread 'main' (659607) panicked at build.rs:9:50:
+  read production Actors wire source: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+error: Failed to execute cargo (exit status: 101). Found 0 compilation errors.
+TERMINAL_EXIT_CODE=101

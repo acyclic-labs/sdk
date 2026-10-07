@@ -963,6 +963,36 @@ mod tests {
     }
 
     #[test]
+    fn real_wasm_binding_rustdoc_retains_browser_owned_api_when_requested() {
+        let Some(path) = std::env::var_os("RUSTDOC_WASM_BINDING_FIXTURE") else {
+            return;
+        };
+        let owner = ApiOwner {
+            published_package: "acyclic-fs".into(),
+            rustdoc_package: "acyclic-fs-wasm".into(),
+            kind: ApiOwnerKind::WasmBinding,
+        };
+        let observation = observe_rustdoc(&path).unwrap();
+        assert_eq!(observation.format_version, FORMAT_VERSION);
+        assert_eq!(observation.crate_name, "acyclic_fs_wasm");
+        assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
+        assert_eq!(observation.target, "wasm32-unknown-unknown");
+        let items = extract_owned_api(
+            path,
+            &owner,
+            ProfileId("wasm-binding-no-defaults".into()),
+        )
+        .unwrap();
+        assert!(!items.is_empty());
+        assert!(items.iter().all(|item| {
+            item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"
+        }));
+        assert!(items.iter().any(|item| {
+            item.key.path.contains("Browser") || item.key.path.contains("browser")
+        }));
+    }
+
+    #[test]
     fn real_binding_projection_keeps_binding_only_types_when_requested() {
         let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
             return;
@@ -1079,6 +1109,10 @@ mod tests {
         let wasm = api_owner_for_package(&metadata, "acyclic-fs-wasm").unwrap();
         assert_eq!(wasm.published_package, "acyclic-fs");
         assert_eq!(wasm.kind, ApiOwnerKind::WasmBinding);
+        let plugin = api_owner_for_package(&metadata, "acyclic-plugin").unwrap();
+        assert_eq!(plugin.published_package, "acyclic-plugin");
+        assert_eq!(plugin.rustdoc_package, "acyclic-plugin");
+        assert_eq!(plugin.kind, ApiOwnerKind::PublishedRoot);
     }
 
     #[test]

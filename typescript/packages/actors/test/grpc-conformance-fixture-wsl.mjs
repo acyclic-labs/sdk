@@ -42,7 +42,6 @@ export function responseInitializer(method) {
 }
 
 export function inspectActorRequest(method, request) {
-  console.log(`METHOD ${method.name}`);
   if (method.name === "SubmitJob") {
     assert.equal(request.input.source.case, "object");
     assert.deepEqual([request.input.source.value.bucket, request.input.source.value.key], ["customer-input", "video/input.mp4"]);
@@ -50,19 +49,11 @@ export function inspectActorRequest(method, request) {
   }
   if (method.name === "InvokeActor") assert.equal(request.headers[0].value, "application/json");
   if (method.name === "AddSubscription") {
-    const start = request.subscription?.start?.start;
-    console.log(JSON.stringify({
-      method: method.name,
-      actorId: request.actorId,
-      subscriptionId: request.subscription?.subscriptionId,
-      streamPath: request.subscription?.streamPath,
-      startCase: start?.case,
-      cursor: start?.value?.toString?.(),
-      placementAnchor: request.subscription?.placementAnchor,
-    }));
+    assert.equal(request.actorId, CONFORMANCE_ACTOR_ID);
+    assert.equal(request.subscription.streamPath, "events/input");
+    assert.equal(request.subscription.start.start.value, 9007199254740993n);
   }
   if (method.name === "CheckpointActor") {
-    console.log(JSON.stringify({ checkpointActorId: request.actorId, checkpointIdempotencyKey: request.idempotencyKey }));
     assert.equal(request.actorId, CONFORMANCE_ACTOR_ID);
     assert.equal(request.idempotencyKey, "checkpoint-a");
   }
@@ -159,8 +150,8 @@ export async function startConformanceFixture({ onUnaryRequest } = {}) {
   server.on("session", session => session.on("error", handleExpectedConnectionReset));
   server.on("sessionError", handleExpectedConnectionReset);
   server.on("tlsClientError", handleExpectedConnectionReset);
-  await new Promise(resolve => server.listen(0, "localhost", resolve));
-  await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
+  await new Promise(resolve => server.listen(0, "0.0.0.0", resolve));
+  await new Promise(resolve => httpServer.listen(0, "0.0.0.0", resolve));
   const options = {
     endpoint: `https://localhost:${server.address().port}`,
     httpEndpoint: `http://localhost:${httpServer.address().port}`,

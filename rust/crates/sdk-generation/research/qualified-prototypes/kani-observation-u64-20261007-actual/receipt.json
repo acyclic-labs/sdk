@@ -1,0 +1,95 @@
+{
+  "absolute_prototype_path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-observation-u64-20261007-actual",
+  "status": "partial_actual_production_milestone",
+  "date": "2026-10-07",
+  "scope": "source-bound Kani checks over current acyclic-actors public validators",
+  "source_revision": "4e1c20296e4ecbfbb7aaee4db06158260a4092dd",
+  "working_tree_note": "The checkout had pre-existing in-progress Actors source edits; hashes below identify the exact files compiled.",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "cargo_kani": "/tmp/kani68/bin/cargo-kani",
+    "target": "/tmp/kani-actual-target-20261007 (Linux ext4)",
+    "offline": true
+  },
+  "production_source_inventory": {
+    "actors_manifest": {
+      "path": "rust/crates/actors/Cargo.toml",
+      "sha256": "2EF326D5073934EC169BB64FA3C7AAF79B7430EA1D619ADDD68E9F845E17840C"
+    },
+    "actors_lib": {
+      "path": "rust/crates/actors/src/lib.rs",
+      "sha256": "8A6808739A525FF0AA45CC5BD0CE1DCC2C5FF1C2A1A7C0F8BE536987303DC00E",
+      "functions_invoked": [
+        "acyclic_actors::validate_add_subscription",
+        "acyclic_actors::validate_create",
+        "acyclic_actors::validate_update"
+      ]
+    },
+    "actors_generated_wire": {
+      "path": "rust/crates/actors/src/generated/acyclic.actors.v1.rs",
+      "sha256": "11E3E11BA9952FAF8C316282D6D0D66BF364CB48E3C107F7077622F835B6AECB"
+    },
+    "contract_wire_lib": {
+      "path": "rust/crates/sdk-contract-wire/src/lib.rs",
+      "sha256": "04635D9A7B8269823EEA97398EB6E06AD1D37BA95144C3F412F939980F6F6290"
+    },
+    "prototype_manifest": {
+      "path": "Cargo.toml",
+      "sha256": "8D56569A66BE171EC240D67A04745A569CB8437FBB36CA55F3D2FD06016057FB"
+    },
+    "prototype_harness": {
+      "path": "src/bin/kani_actual_production.rs",
+      "sha256": "983F6794532FC17FAAAB5C17652929D90E4DC05D0EB472C65534ECDA21D828CD"
+    },
+    "prototype_lock": {
+      "path": "Cargo.lock",
+      "sha256": "1D853D4017702A696608ED89B28A38C18129A755361D5445A2A9A54736531EBE"
+    }
+  },
+  "properties": {
+    "production_validate_add_subscription_cursor": {
+      "status": "pass",
+      "mathematical_statement": "For every cursor in u64, with actor_id, idempotency_key, and SubscriptionSpec fields fixed to non-empty valid values and Start::Cursor(cursor), acyclic_actors::validate_add_subscription(request) = Ok(()).",
+      "production_function_invoked": "acyclic_actors::validate_add_subscription",
+      "raw_log": "audit/actual-production-cursor-kani068-ext4.raw.txt",
+      "terminal_exit": 0,
+      "checks": "SUMMARY ** 0 of 287 failed (4 unreachable)",
+      "verification_time": "1.162256s"
+    },
+    "production_validate_create_and_update_actor_limits": {
+      "status": "inconclusive_solver_blocked",
+      "mathematical_statement_attempted": "For symbolic full-width ActorLimits u64 fields and optional limits presence, validate_create/validate_update agrees with the production >0 predicate and absent limits are rejected.",
+      "production_functions_invoked": [
+        "acyclic_actors::validate_create",
+        "acyclic_actors::validate_update"
+      ],
+      "raw_log": "audit/actual-production-selected-kani068-ext4.raw.txt",
+      "terminal_exit": 1,
+      "blocking_observation": "CBMC remained in the actual production validator's std::collections::HashSet SipHash/fastrand unwind (observed through iteration 511) before reaching the selected assertions; no claim is made.",
+      "mount_diagnostic_log": "audit/actual-production-selected-kani068.raw.txt",
+      "mount_diagnostic": "The first ext4-independent run failed because ring/sccache could not chmod an object under /mnt/c; rerun used /tmp Linux ext4.",
+      "incompatible_toolchain_log": "audit/actual-production-selected.raw.txt",
+      "incompatible_toolchain": "The initial wrapper was Kani 0.67.0 with rustc 1.93.0 and rejected the production rust-version 1.98; no proof result."
+    }
+  },
+  "not_proven": [
+    "ActorLimits acceptance equivalence for validate_create or validate_update",
+    "Actor checkpoint/epoch/configuration revision projection",
+    "CreateActorResponse or UpdateActorResponse optional actor presence mapping",
+    "subscription delivered/completed/recoverable/failed_cursor response projection",
+    "arbitrary strings, transport behavior, wire cloning, or whole-message preservation"
+  ],
+  "source_binding_audit": {
+    "production_projection_function_invoked": false,
+    "reason": "Current Actors source inventory has no production project_* or selected-field accessor/projection function. The pass invokes an actual public production validator and actual generated production wire types; it is not a prototype-local duplicate algorithm.",
+    "mapping_identity_claim": false
+  },
+  "raw_evidence": [
+    "audit/actual-production-cursor-kani068-ext4.raw.txt",
+    "audit/actual-production-selected-kani068-ext4.raw.txt",
+    "audit/actual-production-selected-kani068.raw.txt",
+    "audit/actual-production-selected.raw.txt"
+  ]
+}

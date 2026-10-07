@@ -33,6 +33,13 @@ then returns `DocsData`. Call `write_bundle` to persist the data file, generated
 schema, and guarded release or preview version index. Published release data
 files are immutable; the index is validated and replaced atomically.
 
+The `rustdoc_profiles` module resolves binding ownership from exact Cargo
+metadata and projects target/feature-qualified Rustdoc receipts onto existing
+`DocsData` item IDs. Its `sdk-docs-profile-availability.v1` sidecar preserves
+binding package identity, published owner and versions, exact signatures, and
+Rust-derived native/browser capabilities without maintaining a second API
+catalog.
+
 Rustdoc source spans inside `repository_root` are emitted as stable
 repository-relative paths with normalized separators. A span whose physical
 file is outside that checkout requires a transient `BuildInput.generated_sources`

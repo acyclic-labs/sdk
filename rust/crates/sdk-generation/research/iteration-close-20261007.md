@@ -75,11 +75,26 @@ this loop.
   Production integration remains gated on
   actual executed qualification claims and producer-specific provenance: the
   earlier Python record used the Kotlin patch digest and is not qualified.
-- The corrected C# package has assembly identity Acyclic.Actors, Version=0.2.0.0.
-  Earlier all-operation results used the stale assembly and cannot qualify this
-  replacement; fresh installed-package runtime and cancellation checks are pending.
-- New symbolic u64/presence Kani runs reached the solver but timed out. They are
-  inconclusive, not proofs. Existing proof claims retain their recorded scope.
+- The rebuilt C# package targets net8 and has assembly identity Acyclic.Actors,
+  Version=0.2.0.0. A clean external net8 consumer passed all eight operations,
+  cancellation and negative type checks on Windows. Other platforms and the
+  final Actors producer remain separate qualification work.
+- Three symbolic u64/presence Kani prototype models passed, including a failing
+  mutation control. They invoke local model projections, not production
+  projection functions; production equivalence is not established.
+- Stream frozen commit 1a3ec9481b6d19722bbc23fbef1f34e52657b355 is clean and
+  saved remotely. Its exact installed archive (SHA256
+  bce8fb4bb97455ab462607c86cbb6e29522cd5bd66549ba9a39312a050350379)
+  passed independent public cancellation checks three times with zero open
+  sockets and zero unhandled errors. PR259 now points to this commit; its final
+  cheap CI run 37612671771 passed. GitHub's merge rule still reports the required
+  SDK Qualification context as expected; no merge has occurred. The old scratch cancellation failure loaded a stale
+  native binary and used an undrained socket observer; it is invalid evidence.
+- Machines type deduplication is signed commit
+  9711a5598bb9411b125a657b82516b9538614754: two files, net 54 authored lines
+  removed. Rust tsify declarations supply public domain unions; 27 Bun tests,
+  TypeScript compilation and Rust/WASM tests passed. Independent review remains
+  passed and PR264 is open on the remotely verified source branch.
 
 ## Next bounded milestones
 

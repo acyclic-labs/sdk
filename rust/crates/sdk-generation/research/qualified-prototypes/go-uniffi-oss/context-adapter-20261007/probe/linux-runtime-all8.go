@@ -24,7 +24,7 @@ func must[T any](v T, err error) T {
 }
 
 func main() {
-	raw := must(os.ReadFile(`/mnt/q/sdk/work/actors-uniffi-go-current-20261007/context-options-2-20261007.json`))
+	raw := must(os.ReadFile(`/mnt/q/sdk/work/actors-uniffi-go-current-20261007/context-options-normal-wsl-20261007.json`))
 	var opts runtimeOptions
 	must(struct{}{}, json.Unmarshal(raw, &opts))
 	actor := must(actors.NewActorId(opts.ActorID))

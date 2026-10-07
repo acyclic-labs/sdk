@@ -52,10 +52,11 @@ byte change during qualification fails the receipt. It also validates the
 source attestation before and after execution. The runner invokes `liveRebase` through the generated WASM module and through
 the installed N-API binding. Each call uses the same Rust-owned boundary
 parameter. A value is classified as `boundary_rejected` only when the runtime
-returns the exact Rust admission error or the exact wasm-bindgen JavaScript
-number type guard. Native errors that do not carry the canonical Rust
-admission message remain downstream errors, so a coercing native decoder
-cannot be mistaken for a typed boundary rejection.
+returns one of the two exact typed-boundary messages: `expected a finite integer
+in the u32 range` or `expected a JavaScript number`. The latter is emitted by
+the maintained WASM and N-API decoders for non-number JavaScript values. Any
+other conversion or policy string remains a downstream error, so stale or
+coercing native artifacts cannot be mistaken for a typed boundary rejection.
 
 The required matrix is:
 

@@ -1,28 +1,40 @@
-# Symbolic observation/revision Kani prototype
+# Kani observation `u64` projection prototype
 
-This is an isolated source-only prototype for the selected full-width wire-domain cohort. It is not a production proof receipt and does not alter the frozen Actors proof harness.
+This prototype is source-bound to the current production Actors generated wire
+module through `include!`: `rust/crates/actors/src/generated/acyclic.actors.v1.rs`.
+The harnesses use symbolic full-width `u64` values for subscription delivered,
+completed, recoverable, and optional failed cursors; optional checkpoint time;
+checkpoint epoch; actor configuration revision; and the Update expected
+configuration revision. They also cover optional actor presence in
+`CreateActorResponse` and `UpdateActorResponse`.
 
-The three harnesses quantify only these domains:
+The projection reads fields by reference and does not clone a whole wire value.
+Strings are initialized by defaults and are outside the mathematical claims;
+transport, serialization, service behavior, and arbitrary-string semantics are
+outside the claims as well.
 
-- `SubscriptionObservation.delivered_cursor`, `completed_cursor`, and `recoverable_cursor`: all `u64` values.
-- `SubscriptionObservation.failed_cursor`: `Option<u64>`, with symbolic presence.
-- `ActorObservation.checkpoint_unix_millis`: `Option<u64>`, with symbolic presence.
-- `ActorObservation.checkpoint_epoch` and `configuration_revision`: all `u64` values.
-- `UpdateActorRequest.expected_configuration_revision`: all `u64` values.
+The production source inventory contains generated wire types but no
+production `project_*` function. The theorem therefore checks the
+prototype-local projection against symbolic values in those actual production
+types. It does not claim identity with a production projection implementation.
+The negative audit mutates one local field mapping and records the resulting
+Kani failure in `audit/negative-delivered-cursor-proof.raw.txt`.
 
-Each harness fixes all unrelated IDs, strings, digest, enum, limits, bindings, and collections to known-valid values. The intended property is exact semantic accessor equality plus generated-wire round-trip equality, including `Option` presence. It does not claim universal validity of IDs, strings, aggregates, transport, FFI, generated SDKs, or packaging.
+## Environment
 
-## Reproduction
+The intended run uses Kani 0.68.0, CBMC 6.11, and nightly-2026-08-21. The
+cached Kani bundle and dependencies are on Linux ext4 under `/home/var`; run
+from a Linux-ext4 copy of this directory rather than the Windows/WSL drvfs
+mount. The source path remains the current checkout's generated Actors file.
 
-Use Kani 0.68.0, CBMC 6.11.0, nightly-2026-08-21, one job, and unwind 1. Run each harness in a separate invocation:
+## Run
 
-```text
-cargo-kani --manifest-path source/rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::subscription_observation_preserves_full_width_cursors_and_presence --exact --default-unwind 1 --harness-timeout 300 -Z unstable-options -j1
-cargo-kani --manifest-path source/rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::actor_observation_and_optional_response_preserve_u64_fields --exact --default-unwind 1 --harness-timeout 300 -Z unstable-options -j1
-cargo-kani --manifest-path source/rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::update_request_preserves_full_width_configuration_revision --exact --default-unwind 1 --harness-timeout 300 -Z unstable-options -j1
+```sh
+cargo kani --bin kani_observation --harness actor_projection_preserves_selected_u64_and_option_fields
+cargo kani --bin kani_observation --harness create_response_actor_optional_presence_is_preserved
+cargo kani --bin kani_observation --harness update_expected_revision_and_actual_projection_are_preserved
 ```
 
-The receipt records the observed runs. The explicit invocations, including a reduced clone-free subscription projection harness, remained in Cargo metadata access on the shared registry mount before harness checking. The earlier combined attempt reached CBMC only for the final update harness and was stopped during propositional reduction. No verification marker was produced. Therefore this prototype is an execution diagnostic and mathematical property design, not a successful qualification.
-
-No `target/`, Cargo cache, or generated binary is part of this research copy.
-
+The result is only conclusive when Kani reports `VERIFICATION SUCCESSFUL` for
+the source-bound harness. Cargo metadata, registry, mount, or toolchain
+failures are environment outcomes and are not proof results.

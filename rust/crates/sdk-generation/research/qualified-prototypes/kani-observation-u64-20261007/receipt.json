@@ -1,0 +1,144 @@
+{
+  "schema": "acyclic.sdk.kani-observation-u64-prototype.v1",
+  "prototype": "kani-observation-u64-20261007",
+  "absolute_prototype_path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\kani-observation-u64-20261007",
+  "status": "pass",
+  "source_revision": "4e1c20296e4ecbfbb7aaee4db06158260a4092dd",
+  "source_binding": "rust/crates/actors/src/generated/acyclic.actors.v1.rs via include!",
+  "source_worktree_sha256": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb",
+  "claims": {
+    "symbolic_full_u64": [
+      "SubscriptionObservation.delivered_cursor",
+      "SubscriptionObservation.completed_cursor",
+      "SubscriptionObservation.recoverable_cursor",
+      "SubscriptionObservation.failed_cursor Option presence and value",
+      "ActorObservation.checkpoint_unix_millis Option presence and value",
+      "ActorObservation.checkpoint_epoch",
+      "ActorObservation.configuration_revision",
+      "UpdateActorRequest.expected_configuration_revision"
+    ],
+    "optional_actor_presence": [
+      "CreateActorResponse.actor",
+      "UpdateActorResponse.actor and selected actual actor projection"
+    ],
+    "excluded": [
+      "arbitrary string semantics",
+      "transport",
+      "serialization",
+      "service behavior",
+      "whole-wire Clone"
+    ]
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11",
+    "rust": "nightly-2026-08-21",
+    "rustc": "1.100.0-nightly (8925ea358 2026-08-20)",
+    "kani_home": "/home/var/.kani/kani-0.68.0",
+    "cargo_kani_binary": "/tmp/kani68/bin/cargo-kani",
+    "cbmc_binary": "/home/var/.kani/kani-0.68.0/kani-0.68.0/bin/cbmc"
+  },
+  "source_inventory": [
+    {
+      "path": "rust/crates/actors/src/generated/acyclic.actors.v1.rs",
+      "role": "actual production generated wire source",
+      "sha256": "11e3e11ba9952faf8c316282d6d0d66bf364cb48e3c107f7077622f835b6aecb"
+    },
+    {
+      "path": "rust/crates/actors/src/generated/acyclic.actors.v1.tonic.rs",
+      "role": "production transport sibling excluded by build boundary",
+      "sha256": "36063b692ed0923d3137b0eac682b942e036e22c14714d6b0651752be335af98"
+    },
+    {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007/src/lib.rs",
+      "role": "prototype-local projection functions over production wire types",
+      "sha256": "d1b1245ee7b8370b8f05e6cbcda6c9279079bd4b30a7cd2ebb5080451290572c"
+    },
+    {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007/src/bin/kani_observation.rs",
+      "role": "Kani harnesses",
+      "sha256": "af001730a969c0268846af75bd4097eef1092c615e454cfcdaf86973e287250c"
+    },
+    {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007/build.rs",
+      "role": "source extraction boundary before transport include",
+      "sha256": "13181e8e9365b874ca6922af5f94310c8644151961ab80441f0dd0bc08f94ab9"
+    },
+    {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007/Cargo.toml",
+      "role": "offline prototype manifest",
+      "sha256": "193d021ada00479b0fa0322db3c1bb818261a362fb269f3ae04478379ee77280"
+    }
+  ],
+  "mathematical_properties": [
+    "For every symbolic full-width u64 tuple, local project_actor returns delivered_cursor, completed_cursor, recoverable_cursor, checkpoint_epoch, and configuration_revision equal to the corresponding fields of the actual production ActorObservation input.",
+    "For failed_cursor and checkpoint_unix_millis, local project_actor preserves Option discriminant and, when Some, the full symbolic u64 payload.",
+    "local project_create_response preserves CreateActorResponse.actor presence and, when present, its selected actor projection.",
+    "local project_update preserves UpdateActorRequest.expected_configuration_revision and UpdateActorResponse.actor presence plus the selected actual actor projection.",
+    "These are field-preservation theorems over actual generated production wire types; they do not assert equivalence to a production projection function."
+  ],
+  "production_projection_audit": {
+    "production_projection_function_invoked": false,
+    "result": "No production project_actor/project_subscription/projection function was found in the Actors source inventory; the proof invokes actual generated production wire types and uses prototype-local project_* functions.",
+    "mapping_identity_claim": false
+  },
+  "raw_runs": {
+    "directory": "audit",
+    "successful_runs_terminal_exit_code": 0,
+    "successful_logs": [
+      "audit/actor.raw.txt",
+      "audit/create.raw.txt",
+      "audit/update.raw.txt"
+    ],
+    "negative_log": "audit/negative-delivered-cursor-proof.raw.txt",
+    "negative_terminal_exit_code": 0,
+    "negative_verification_result": "FAILED",
+    "negative_failed_check": "projected_subscription.delivered_cursor == source_subscription.delivered_cursor",
+    "negative_summary": "The task-local mutation source.completed_cursor substituted for source.delivered_cursor; CBMC found 1 of 239 checks failed in 1.1433513s. cargo-kani returned terminal exit 0 despite VERIFICATION: FAILED, so receipt status is taken from the raw verification line."
+  },
+  "relocated_authoritative_run": {
+    "task_root": "/tmp/kani-authoritative-20261007/sdk/rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007",
+    "harness": "actor_projection_preserves_selected_u64_and_option_fields",
+    "log": "audit/authoritative-actor.raw.txt",
+    "terminal_exit_code": 0,
+    "checks": 245,
+    "failed": 0,
+    "verification": "SUCCESSFUL"
+  },
+  "execution": {
+    "host_source": "Windows checkout copied task-locally to WSL2 Linux ext4",
+    "task_root": "/tmp/kani-task-20261007/sdk/research/qualified-prototypes/kani-observation-u64-20261007",
+    "offline_dependencies": true,
+    "notes": [
+      "The build script extracts the current production generated wire prefix and removes the guarded tonic transport include.",
+      "The harnesses use reference projections and explicit mem::forget after assertions to exclude irrelevant generated-message destructor exploration.",
+      "Arbitrary strings, transport, serialization, service behavior, and whole-wire Clone are outside the proof claim."
+    ]
+  },
+  "runs": [
+    {
+      "harness": "actor_projection_preserves_selected_u64_and_option_fields",
+      "status": "PASS",
+      "checks": 245,
+      "failed": 0,
+      "unreachable": 2,
+      "verification_seconds": 0.90187705
+    },
+    {
+      "harness": "create_response_actor_optional_presence_is_preserved",
+      "status": "PASS",
+      "checks": 321,
+      "failed": 0,
+      "unreachable": 2,
+      "verification_seconds": 0.71174
+    },
+    {
+      "harness": "update_expected_revision_and_actual_projection_are_preserved",
+      "status": "PASS",
+      "checks": 319,
+      "failed": 0,
+      "unreachable": 2,
+      "verification_seconds": 0.6591724
+    }
+  ]
+}

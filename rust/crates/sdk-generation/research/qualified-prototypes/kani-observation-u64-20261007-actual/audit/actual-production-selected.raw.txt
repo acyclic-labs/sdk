@@ -1,0 +1,7 @@
+Kani Rust Verifier 0.67.0 (cargo plugin)
+error: rustc 1.93.0-nightly is not supported by the following packages:
+  acyclic-actors@0.2.0 requires rustc 1.98
+  acyclic-sdk-contract-options@0.1.0 requires rustc 1.98
+  acyclic-sdk-contract-wire@0.1.0 requires rustc 1.98
+
+error: Failed to execute cargo (exit status: 101). Found 0 compilation errors.
