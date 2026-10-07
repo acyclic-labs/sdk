@@ -166,17 +166,9 @@ export interface ActorsClient extends ActorsClientMethods {}
 /** Compatibility name retained while callers migrate to `ActorsClient`. */
 export class HttpActorsClient extends ActorsClient {}
 
-/**
- * Clone the public readonly semantic view at the wire boundary. Buf's
- * generated encoder intentionally accepts mutable Uint8Array/Array shapes;
- * cloning here keeps that implementation detail out of the public contract
- * and prevents callers from mutating an input while a Rust connection starts.
- */
+/** Snapshot the readonly semantic view before Buf's mutable wire encoder sees it. */
 function toWireSemantic(value: unknown): unknown {
-  if (value instanceof Uint8Array) return new Uint8Array(value);
-  if (Array.isArray(value)) return value.map(item => toWireSemantic(item));
-  if (value === null || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toWireSemantic(item)]));
+  return structuredClone(value);
 }
 
 function defaultBinding(): ActorsRustBinding {
@@ -213,7 +205,7 @@ function nativeBinding(): ActorsRustBinding {
         const method = `${operation}Result` as keyof NativeActorsMethods;
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
           const cancellation = nativeCancellation(module, signal);
-          return nativeResult(nativeResultWithAbort(inner[method](request, cancellation?.handle), signal))
+          return nativeResult(abortable(inner[method](request, cancellation?.handle), signal))
             .finally(() => cancellation?.cleanup());
         }];
       }));
@@ -248,101 +240,22 @@ interface NativeActorsModule extends Partial<ActorsNominalBinding> {
   }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
 }
 
-interface NativeTargetMetadata {
-  readonly artifacts?: readonly { readonly path?: string }[];
-}
-
-async function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): Promise<boolean> {
-  const artifacts = metadata.artifacts ?? [];
-  const names = artifacts.map(artifact => artifact.path?.split(/[\\/]/).pop() ?? "");
-  return (await nativeRuntimeArtifactNames()).some(name => names.includes(name));
-}
-
-type NativeMetadataModule = { readonly default?: NativeTargetMetadata } & NativeTargetMetadata;
+let nativeModulePromise: Promise<NativeActorsModule | undefined> | undefined;
 
 async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
-  let metadata: NativeTargetMetadata;
-  try {
-    // @ts-ignore generated native metadata is intentionally untracked
-    const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as NativeMetadataModule;
-    metadata = metadataModule.default ?? metadataModule;
-  } catch (error) {
-    if (isMissingNativeMetadata(error)) return loadNativeCompanion();
-    throw error;
-  }
-  if (!(await hasNativeArtifactForRuntime(metadata))) return loadNativeCompanion();
-  try {
-    // @ts-ignore generated N-API loader is optional in browser/WASM builds
-    return await import("../generated/native/binding.cjs") as unknown as NativeActorsModule;
-  } catch (error) {
-    if (isMissingNativeArtifact(error)) return undefined;
-    throw error;
-  }
-}
-
-/** Resolve the maintained optional N-API package for the current exact target. */
-async function loadNativeCompanion(): Promise<NativeActorsModule | undefined> {
-  const packageName = await nativeCompanionPackageName();
-  if (packageName === undefined) return undefined;
-  try {
-    // Native addons are CommonJS `.node` entrypoints.  Node's ESM loader
-    // rejects a direct dynamic import of that extension, while createRequire
-    // delegates to the maintained N-API loader and preserves the same package
-    // resolution/error identity for optional companions.
-    const { createRequire } = await import("node:module");
-    return createRequire(import.meta.url)(packageName) as NativeActorsModule;
-  } catch (error) {
-    if (isMissingNativePackage(error, packageName)) return undefined;
-    throw error;
-  }
-}
-
-async function nativeCompanionPackageName(): Promise<string | undefined> {
-  const names = await nativeRuntimeArtifactNames();
-  const artifact = names[0];
-  if (artifact === undefined) return undefined;
-  const target = artifact.slice("index.".length, -".node".length);
-  return `@acyclic-labs/actors-${target}`;
-}
-
-/**
- * Keep the preflight selector aligned with the maintained NAPI-RS loader that
- * is staged beside this metadata. In particular, Linux's GNU and musl names
- * are distinct artifacts; a prefix check would select a binary for the wrong
- * libc and turn a clean WASM fallback into a native load failure.
- */
-async function nativeRuntimeArtifactNames(): Promise<readonly string[]> {
-  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
-  if (process.platform === "linux") {
-    const libc = (await isMuslRuntime()) ? "musl" : "gnu";
-    const suffix = arch === "arm" ? (libc === "musl" ? "musleabihf" : "gnueabihf") : libc;
-    return [`index.linux-${arch}-${suffix}.node`];
-  }
-  if (process.platform === "win32") {
-    const config = process.config as { variables?: { shlib_suffix?: string; node_target_type?: string } } | undefined;
-    const flavor = config?.variables?.shlib_suffix === "dll.a" || config?.variables?.node_target_type === "shared_library" ? "gnu" : "msvc";
-    return [`index.win32-${arch}-${flavor}.node`];
-  }
-  if (process.platform === "darwin") return ["index.darwin-universal.node", `index.darwin-${arch}.node`];
-  return [`index.${process.platform}-${arch}.node`];
-}
-
-async function isMuslRuntime(): Promise<boolean> {
-  if (process.platform !== "linux") return false;
-  try {
-    const fs = await import("node:fs");
-    if (fs.readFileSync("/usr/bin/ldd", "utf8").includes("musl")) return true;
-  } catch { /* use the maintained report/ldd probes below */ }
-  const reportProcess = process as typeof process & { report?: { getReport?: () => { header?: { glibcVersionRuntime?: string }; sharedObjects?: readonly string[] } } };
-  const report = reportProcess.report?.getReport?.() as { header?: { glibcVersionRuntime?: string }; sharedObjects?: readonly string[] } | undefined;
-  if (report?.header?.glibcVersionRuntime) return false;
-  if (report?.sharedObjects?.some(path => /(?:^|[\\/])(libc\.musl-|ld-musl-)/.test(path))) return true;
-  try {
-    const childProcess = await import("node:child_process");
-    return childProcess.execFileSync("ldd", ["--version"], { encoding: "utf8" }).includes("musl");
-  } catch {
-    return false;
-  }
+  // @ts-ignore generated N-API loader is optional in browser/WASM builds
+  nativeModulePromise ??= import("../generated/native/binding.cjs")
+    .then(module => module as unknown as NativeActorsModule)
+    .catch(error => {
+      nativeModulePromise = undefined;
+      // The generated loader is the maintained target selector. Its aggregate
+      // error is fallback-safe only when every candidate failed because the
+      // candidate itself was absent; ABI, export, and dependency failures must
+      // remain visible instead of silently selecting WASM.
+      if (isExpectedNativeAbsence(error)) return undefined;
+      throw error;
+    });
+  return nativeModulePromise;
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
@@ -388,17 +301,25 @@ interface WasmActorsModule extends ActorsNominalBinding {
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
 }
 
+let wasmModulePromise: Promise<WasmActorsModule> | undefined;
+
 async function loadWasmModule(): Promise<WasmActorsModule> {
-  // @ts-ignore generated Rust WASM module is intentionally untracked
-  const module = await import("../generated/wasm/acyclic_actors_wasm.js") as unknown as WasmActorsModule;
-  if (isNodeRuntime()) {
-    const fs = await import("node:fs/promises");
-    const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
-    await module.default(bytes);
-  } else {
-    await module.default();
-  }
-  return module;
+  wasmModulePromise ??= (async () => {
+    // @ts-ignore generated Rust WASM module is intentionally untracked
+    const module = await import("../generated/wasm/acyclic_actors_wasm.js") as unknown as WasmActorsModule;
+    if (isNodeRuntime()) {
+      const fs = await import("node:fs/promises");
+      const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
+      await module.default(bytes);
+    } else {
+      await module.default();
+    }
+    return module;
+  })().catch(error => {
+    wasmModulePromise = undefined;
+    throw error;
+  });
+  return wasmModulePromise;
 }
 
 async function defaultNominalBinding(): Promise<ActorsNominalBinding> {
@@ -437,14 +358,31 @@ function snakeCase(value: string): string {
   return value.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
 }
 
-function isMissingNativeArtifact(error: unknown): boolean {
+function isExpectedNativeAbsence(error: unknown): boolean {
+  if (isMissingGeneratedLoader(error)) return true;
+  if (!errorMessage(error).startsWith("Cannot find native binding. ")) return false;
+  let cause = errorCause(error);
+  let foundCause = false;
+  while (cause !== undefined && cause !== null) {
+    foundCause = true;
+    if (!isMissingNativeCandidate(cause)) return false;
+    cause = errorCause(cause);
+  }
+  return foundCause;
+}
+
+function isMissingGeneratedLoader(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
+  const requested = firstLine.match(/^(?:ResolveMessage:\s*)?Cannot find module ['"]([^'"]+)['"]/i)?.[1];
   if (requested === undefined) return false;
+  if (requested === "../generated/native/binding.cjs") {
+    const importer = firstLine.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
+    return importer !== undefined && /[\\/]dist[\\/]client\.js$/i.test(importer);
+  }
   // Only the package's own generated loader is optional. Matching a path
   // suffix would incorrectly turn a broken transitive dependency into a
   // silent WASM fallback.
@@ -453,27 +391,41 @@ function isMissingNativeArtifact(error: unknown): boolean {
   return normalizeModulePath(requested) === normalizeModulePath(expected);
 }
 
-function isMissingNativeMetadata(error: unknown): boolean {
+function isMissingNativeCandidate(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
-  const message = error instanceof Error ? error.message : String(error);
+  const message = errorMessage(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
-  if (requested === undefined) return false;
-  let expected = new URL("../generated/native/native-targets.json", import.meta.url).pathname;
-  try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
-  return normalizeModulePath(requested) === normalizeModulePath(expected);
+  if (/^Unsupported (?:OS|architecture)\b/.test(firstLine)) return true;
+  if (code !== undefined && code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
+  if (!hasGeneratedLoaderRequireStack(message)) return false;
+  const requested = firstLine.match(/^Cannot find (?:module|package) ['"]([^'"]+)['"]/i)?.[1];
+  return requested !== undefined
+    && (/^\.\/index\.[^/]+\.(?:node|cjs)$/.test(requested) || /^@acyclic-labs\/actors-[^/]+(?:\/package\.json)?$/.test(requested));
 }
 
-function isMissingNativePackage(error: unknown, packageName: string): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
-  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
-  const message = error instanceof Error ? error.message : String(error);
-  const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  const requested = firstLine.match(/^Cannot find (?:package|module) ['"]([^'"]+)['"]/i)?.[1];
-  return requested === packageName;
+function hasGeneratedLoaderRequireStack(message: string): boolean {
+  const lines = message.split(/\r?\n/);
+  const marker = lines.findIndex(line => line.trim() === "Require stack:");
+  if (marker >= 0) {
+    const firstFrame = lines[marker + 1]?.trim().replace(/^-\s*/, "");
+    return firstFrame !== undefined && /[\\/]generated[\\/]native[\\/]binding\.cjs$/i.test(firstFrame);
+  }
+  // Bun reports the same provenance inline instead of emitting Node's
+  // `Require stack` block. Keep the source check equally narrow so a missing
+  // dependency from inside an optional companion still propagates.
+  const source = lines[0]?.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
+  return source !== undefined && /[\\/]generated[\\/]native[\\/]binding\.cjs$/i.test(source);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function errorCause(error: unknown): unknown {
+  return typeof error === "object" && error !== null && "cause" in error
+    ? (error as { readonly cause?: unknown }).cause
+    : undefined;
 }
 
 function normalizeModulePath(path: string): string {
@@ -508,8 +460,4 @@ async function abortable<T>(operation: Promise<T>, signal?: AbortSignal): Promis
       error => { signal.removeEventListener("abort", onAbort); reject(error); },
     );
   });
-}
-
-async function nativeResultWithAbort(result: Promise<NativeActorsOperationResult>, signal?: AbortSignal): Promise<NativeActorsOperationResult> {
-  return abortable(result, signal);
 }
