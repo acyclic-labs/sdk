@@ -105,7 +105,7 @@ async function main() {
     const napi = new NapiCli();
     const npmDir = join(temporary, "npm");
     await napi.createNpmDirs({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir });
-    await napi.artifacts({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir, outputDir: bundle });
+    await napi.artifacts({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir, outputDir: verifiedNative });
     const companionEntries = (await readdir(npmDir, { withFileTypes: true })).filter(entry => entry.isDirectory());
     if (companionEntries.length !== 1) fail(`NAPI-RS produced ${companionEntries.length} companion package directories`);
     const companionRoot = join(npmDir, companionEntries[0].name);
