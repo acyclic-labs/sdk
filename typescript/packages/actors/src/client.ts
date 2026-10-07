@@ -382,9 +382,7 @@ function isMissingGeneratedLoader(error: unknown): boolean {
   // Only the package's own generated loader is optional. Matching a path
   // suffix would incorrectly turn a broken transitive dependency into a
   // silent WASM fallback.
-  let expected = new URL("../generated/native/binding.cjs", import.meta.url).pathname;
-  try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
-  return normalizeModulePath(requested) === normalizeModulePath(expected);
+  return isOwnGeneratedLoader(requested);
 }
 
 function isMissingNativeCandidate(error: unknown): boolean {
@@ -405,13 +403,17 @@ function hasGeneratedLoaderRequireStack(message: string): boolean {
   const marker = lines.findIndex(line => line.trim() === "Require stack:");
   if (marker >= 0) {
     const firstFrame = lines[marker + 1]?.trim().replace(/^-\s*/, "");
-    return firstFrame !== undefined && /[\\/]generated[\\/]native[\\/]binding\.cjs$/i.test(firstFrame);
+    return firstFrame !== undefined && isOwnGeneratedLoader(firstFrame);
   }
   // Bun reports the same provenance inline instead of emitting Node's
   // `Require stack` block. Keep the source check equally narrow so a missing
   // dependency from inside an optional companion still propagates.
   const source = lines[0]?.match(/\sfrom ['"]([^'"]+)['"]$/i)?.[1];
-  return source !== undefined && /[\\/]generated[\\/]native[\\/]binding\.cjs$/i.test(source);
+  return source !== undefined && isOwnGeneratedLoader(source);
+}
+
+function isOwnGeneratedLoader(path: string): boolean {
+  return normalizeModulePath(path) === normalizeModulePath(new URL("../generated/native/binding.cjs", import.meta.url).href);
 }
 
 function errorMessage(error: unknown): string {
