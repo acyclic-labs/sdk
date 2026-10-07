@@ -537,23 +537,20 @@ impl Scheduler {
         capacity: &ResourceSnapshot,
         labels: &BTreeMap<String, String>,
     ) -> Vec<OperationId> {
+        // The full listing API amortizes shared-slot counting across all
+        // candidates. Single-task pulls use next_ready_for without this map.
         let mut owned = BTreeMap::<OperationId, u64>::new();
         for (id, state) in &self.operations {
-            if state.reservation.is_some() {
-                let Ok((root, _)) = self.session_root(*id) else {
-                    continue;
-                };
+            if state.reservation.is_some()
+                && let Ok((root, _)) = self.session_root(*id)
+            {
                 *owned.entry(root).or_default() += 1;
             }
         }
         self.operations
             .values()
             .filter(|operation| {
-                matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-                ) && self.dependencies_succeeded(operation)
-                    && !operation.cancellation_requested
+                self.resources_ready(operation, capacity, labels)
                     && self
                         .session_root(operation.spec.operation_id)
                         .is_ok_and(|(root, _)| {
@@ -562,18 +559,60 @@ impl Scheduler {
                                     owned.get(&root).copied().unwrap_or(0) < limits.active_tasks
                                 })
                         })
-                    && operation
-                        .spec
-                        .placement
-                        .iter()
-                        .all(|(key, value)| labels.get(key) == Some(value))
-                    && remaining_resources(operation).fits(capacity)
             })
             .map(|operation| operation.spec.operation_id)
             .collect()
     }
 
+    pub(crate) fn next_ready_for(
+        &self,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        self.ready_operations(capacity, labels, owner).next()
+    }
+
+    fn ready_operations<'a>(
+        &'a self,
+        capacity: &'a ResourceSnapshot,
+        labels: &'a BTreeMap<String, String>,
+        owner: Option<&'a Authority>,
+    ) -> impl Iterator<Item = OperationId> + 'a {
+        self.operations
+            .values()
+            .filter(move |operation| {
+                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+                    && self.resources_ready(operation, capacity, labels)
+                    && self
+                        .require_session_capacity(operation.spec.operation_id)
+                        .is_ok()
+            })
+            .map(|operation| operation.spec.operation_id)
+    }
+
+    fn resources_ready(
+        &self,
+        operation: &OperationState,
+        capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>,
+    ) -> bool {
+        matches!(
+            operation.phase,
+            OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+        ) && !operation.cancellation_requested
+            && self.dependencies_succeeded(operation)
+            && operation
+                .spec
+                .placement
+                .iter()
+                .all(|(key, value)| labels.get(key) == Some(value))
+            && remaining_resources_fit(operation, capacity)
+    }
+
     /// Subtracts active reservations for one placement from advertised capacity.
+    /// The result retains exactly the advertised resource keys; absent keys
+    /// still represent zero capacity.
     #[must_use]
     pub fn available_for(
         &self,
@@ -588,8 +627,9 @@ impl Scheduler {
             .filter(|reservation| reservation.placement == placement)
         {
             for (resource, quantity) in &reservation.admitted.0 {
-                let remaining = available.entry(resource.clone()).or_default();
-                *remaining = remaining.saturating_sub(*quantity);
+                if let Some(remaining) = available.get_mut(resource) {
+                    *remaining = remaining.saturating_sub(*quantity);
+                }
             }
         }
         ResourceSnapshot(available)
@@ -1377,21 +1417,36 @@ impl Scheduler {
     /// Returns operations made impossible by a terminal non-success dependency.
     #[must_use]
     pub fn blocked_by_dependencies(&self) -> Vec<OperationId> {
+        self.blocked_operations(None).collect()
+    }
+
+    pub(crate) fn next_blocked_by_dependencies(
+        &self,
+        owner: Option<&Authority>,
+    ) -> Option<OperationId> {
+        self.blocked_operations(owner).next()
+    }
+
+    fn blocked_operations<'a>(
+        &'a self,
+        owner: Option<&'a Authority>,
+    ) -> impl Iterator<Item = OperationId> + 'a {
         self.operations
             .values()
-            .filter(|operation| {
-                matches!(
-                    operation.phase,
-                    OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-                ) && operation.spec.dependencies.iter().any(|dependency| {
-                    self.operations.get(dependency).is_some_and(|state| {
-                        state.phase == OperationPhase::Terminal
-                            && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
+            .filter(move |operation| {
+                owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
+                    && matches!(
+                        operation.phase,
+                        OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
+                    )
+                    && operation.spec.dependencies.iter().any(|dependency| {
+                        self.operations.get(dependency).is_some_and(|state| {
+                            state.phase == OperationPhase::Terminal
+                                && !matches!(state.outcome, Some(Outcome::Succeeded(_)))
+                        })
                     })
-                })
             })
             .map(|operation| operation.spec.operation_id)
-            .collect()
     }
 
     /// Reads the immutable root session ceilings for an admitted task.
@@ -1511,15 +1566,21 @@ impl Scheduler {
     }
 }
 
-fn remaining_resources(operation: &OperationState) -> ResourceRequest {
-    let mut remaining = operation.spec.resources.0.clone();
-    if let Some(reservation) = &operation.reservation {
-        for (resource, admitted) in &reservation.admitted.0 {
-            let value = remaining.entry(resource.clone()).or_default();
-            *value = value.saturating_sub(*admitted);
-        }
-    }
-    ResourceRequest(remaining)
+fn remaining_resources_fit(operation: &OperationState, capacity: &ResourceSnapshot) -> bool {
+    operation
+        .spec
+        .resources
+        .0
+        .iter()
+        .all(|(resource, requested)| {
+            let admitted = operation
+                .reservation
+                .as_ref()
+                .and_then(|reservation| reservation.admitted.0.get(resource))
+                .copied()
+                .unwrap_or(0);
+            requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
+        })
 }
 
 /// Deterministic output of join/race/quorum/reduce inspection.
@@ -2842,6 +2903,96 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn single_pull_selection_preserves_partial_slots_and_advertised_resource_keys() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(1),
+            limits: SessionLimits {
+                active_tasks: 1,
+                total_tasks: 2,
+                depth: 1,
+                model_steps: 1,
+            },
+        })?;
+        let mut child = spec(id(2), Orchestration::Leaf)?;
+        child.parent = Some(ParentLink {
+            operation_id: id(1),
+            slot: "child".into(),
+        });
+        child.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 2)]));
+        child.placement = BTreeMap::from([("zone".into(), "a".into())]);
+        scheduler.apply(scheduler.declare(child)?)?;
+        let parent = Reservation {
+            id: "parent".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(1),
+            reservation: parent.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(1),
+            fence: (&parent).into(),
+        })?;
+        scheduler.apply(SchedulerEvent::WaitingForChildren {
+            operation_id: id(1),
+            fence: (&parent).into(),
+        })?;
+        let partial = Reservation {
+            id: "partial".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest(BTreeMap::from([("cpu".into(), 1)])),
+        };
+        scheduler.apply(SchedulerEvent::PartiallyAdmitted {
+            operation_id: id(2),
+            reservation: partial,
+        })?;
+        let mut other = spec(id(3), Orchestration::Leaf)?;
+        other.resources = ResourceRequest(BTreeMap::from([("cpu".into(), 1)]));
+        scheduler.apply(scheduler.declare(other)?)?;
+        // Existing reservations may name resources this worker no longer
+        // advertises. They must not expand its capacity projection with zero keys.
+        for value in 60..140 {
+            let mut declaration = spec(id(value), Orchestration::Leaf)?;
+            declaration.resources =
+                ResourceRequest(BTreeMap::from([(format!("retired-{value}"), 1)]));
+            let admitted = declaration.resources.clone();
+            scheduler.apply(scheduler.declare(declaration)?)?;
+            scheduler.apply(SchedulerEvent::Admitted {
+                operation_id: id(value),
+                reservation: Reservation {
+                    id: format!("held-{value}"),
+                    placement: "worker".into(),
+                    admitted,
+                },
+            })?;
+        }
+        let advertised = ResourceSnapshot(BTreeMap::from([("cpu".into(), 2)]));
+        let available = scheduler.available_for("worker", &advertised);
+        assert_eq!(
+            available,
+            ResourceSnapshot(BTreeMap::from([("cpu".into(), 1)]))
+        );
+        let labels = BTreeMap::from([("zone".into(), "a".into())]);
+        // Partial ownership already occupies the session's sole slot. Selection
+        // must finish that reservation using only its missing resource quantity.
+        assert_eq!(
+            scheduler.next_ready_for(&available, &labels, None),
+            Some(id(2))
+        );
+        assert_eq!(scheduler.ready_for(&available, &labels), vec![id(2), id(3)]);
+        assert_eq!(
+            scheduler.next_ready_for(&available, &BTreeMap::new(), None),
+            Some(id(3))
+        );
+        let less = ResourceSnapshot(BTreeMap::from([("cpu".into(), 0)]));
+        assert_eq!(scheduler.next_ready_for(&less, &labels, None), None);
         Ok(())
     }
 

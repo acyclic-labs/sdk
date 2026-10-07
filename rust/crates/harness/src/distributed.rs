@@ -1414,25 +1414,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.pull_for(worker, Some(owner)).await
     }
 
-    fn matches_pull_owner(&self, operation: OperationId, owner: Option<&Authority>) -> bool {
-        owner.is_none_or(|owner| {
-            self.scheduler
-                .operation(operation)
-                .is_some_and(|operation| operation.spec.owner.authority() == owner)
-        })
-    }
-
     async fn pull_for(&mut self, worker: &Worker, owner: Option<&Authority>) -> Result<WorkPull> {
         self.refresh().await?;
         if worker.id.trim().is_empty() {
             return Err(Error::Invalid("worker identity is empty".into()));
         }
-        if let Some(operation_id) = self
-            .scheduler
-            .blocked_by_dependencies()
-            .into_iter()
-            .find(|operation| self.matches_pull_owner(*operation, owner))
-        {
+        if let Some(operation_id) = self.scheduler.next_blocked_by_dependencies(owner) {
             self.apply(
                 operation_id,
                 IdempotencyKey::new(format!("dependency-rejected:{operation_id}"))?,
@@ -1447,9 +1434,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let available = self.scheduler.available_for(&worker.id, &worker.available);
         let Some(operation_id) = self
             .scheduler
-            .ready_for(&available, &worker.labels)
-            .into_iter()
-            .find(|operation| self.matches_pull_owner(*operation, owner))
+            .next_ready_for(&available, &worker.labels, owner)
         else {
             return Ok(WorkPull::Idle);
         };
