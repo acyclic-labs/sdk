@@ -3580,8 +3580,8 @@ mod tests {
             l_type: libc::c_short::try_from(libc::F_WRLCK)?,
             l_whence: libc::c_short::try_from(libc::SEEK_SET)?,
         };
-        // SAFETY: `region` outlives the call on the live descriptor.
         assert_eq!(
+            // SAFETY: `region` outlives the call on the live descriptor.
             unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const region) },
             0
         );
