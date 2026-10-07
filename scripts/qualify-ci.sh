@@ -419,6 +419,17 @@ case "$lane" in
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
     ;;
+  typescript)
+    # Pull requests and main pushes only; full runs cover this in the linux
+    # lane. check:generated compares fresh WASM against the committed bindings,
+    # so it runs before the build in `bun run test` rewrites them.
+    source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
+    bun install --frozen-lockfile
+    bun run check:generated
+    bun run test
+    ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \
       ! command -v pkg-config >/dev/null || ! pkg-config --exists fuse3; then

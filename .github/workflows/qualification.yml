@@ -122,6 +122,12 @@ jobs:
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['web'] }}
+      - name: Find typescript marker
+        if: env.FORCE != 'true'
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/typescript.json
+          key: ${{ fromJSON(steps.fingerprints.outputs.keys)['typescript'] }}
       - name: Find linux-arm64 marker
         if: env.FORCE != 'true'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
@@ -380,6 +386,12 @@ jobs:
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(needs.plan.outputs.keys)['web'] }}
+      - name: Record typescript
+        if: contains(fromJSON(steps.record.outputs.recorded), 'typescript')
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .qualification/typescript.json
+          key: ${{ fromJSON(needs.plan.outputs.keys)['typescript'] }}
       - name: Record linux-arm64
         if: contains(fromJSON(steps.record.outputs.recorded), 'linux-arm64')
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5

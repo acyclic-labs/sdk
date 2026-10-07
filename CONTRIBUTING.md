@@ -69,10 +69,26 @@ that set, so it lands together with the fixes in a follow-up PR instead of break
 Open a GitHub issue for regular bugs. For security vulnerabilities, follow
 [SECURITY.md](SECURITY.md) instead of filing a public issue.
 
-`.github/workflows/qualification.yml` is the only authored qualification graph.
-Its seven Linux, Linux ARM64, Windows, macOS, browser, coverage, and policy lanes
-run on Blacksmith and form a bounded graph of at most four concurrent matrix
-lanes. Every lane caps Cargo, CMake, Make, Rayon, and test parallelism at four
+`.github/workflows/qualification.yml` is the only authored qualification graph;
+`.github/qualification-lanes.json` lists its lanes, which run on Blacksmith and
+form a bounded graph of at most four concurrent matrix lanes. Pull requests and
+`main` pushes run the lanes scoped `core` or `both`, in parallel:
+
+- `gate`: `cargo nextest run --workspace --all-features --locked` (unit and
+  integration tests, without the ignored live-mount and fork/join suites) and
+  the standalone `sdk-docs` crate.
+- `policy`: `cargo clippy --workspace --all-targets --all-features --locked -- -D
+  warnings`, rustfmt, and the planner and preflight script tests.
+- `typescript`: `bun run check:generated` and `bun run test` (WASM and
+  TypeScript builds, type tests, package tests, and protocol contracts).
+
+Release, scheduled, and manual runs run the `full` and `both` lanes instead:
+coverage, policy (cargo-deny, rustdoc, feature sets, workflow lint), packaging
+on Linux, native suites on Linux ARM64 and macOS, Windows, musl, and browser.
+A lane whose observed inputs (see `ignored` in
+`scripts/plan-qualification.mjs`) already qualified is reused, so a pull request
+touching no TypeScript, WASM-compiled Rust, or generated bindings skips the
+`typescript` lane. Every lane caps Cargo, CMake, Make, Rayon, and test parallelism at four
 processes. The macOS runner is Blacksmith's smallest six-vCPU image but still uses
 only four processes. Blacksmith's colocated dependency/tool cache and sccache make
 cold and warm runs fast; Cargo target directories are never cached. Only `main`
