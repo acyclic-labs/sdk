@@ -95,6 +95,9 @@ pub struct ModelTaskCommand {
     pub selected_context: Option<SelectedModelContext>,
     /// Model/tool step allowance, bounded by retained task limits.
     pub max_steps: u32,
+    /// Caller-selected model output token budget; absent uses the stock default.
+    #[serde(default)]
+    pub max_output_tokens: Option<u32>,
 }
 
 /// A pinned revision in the existing tool registry, with schema-defined arguments.
@@ -427,6 +430,10 @@ where
                 binding.context.clone(),
             )
             .await?;
+        let execution = match input.max_output_tokens {
+            Some(maximum) => execution.with_max_output_tokens(maximum)?,
+            None => execution,
+        };
         let output = execution
             .execute(TurnInput {
                 operation_id: execution.operation_id(),

@@ -1007,6 +1007,12 @@ where
         self.operation_id
     }
 
+    /// Sets the output token budget without replacing task ownership or its journal.
+    pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
+        self.executor = self.executor.with_max_output_tokens(maximum)?;
+        Ok(self)
+    }
+
     /// Executes or reconciles using the bound journal and existing stock loop.
     pub async fn execute(&self, input: TurnInput) -> Result<TurnOutput> {
         if input.operation_id != self.operation_id {

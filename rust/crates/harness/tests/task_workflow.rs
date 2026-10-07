@@ -54,6 +54,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
 
 struct InterruptedModel {
+    output_tokens: AtomicU64,
     generated: AtomicUsize,
     reconciled: AtomicUsize,
 }
@@ -159,7 +160,11 @@ impl ToolProjection for InterruptedTool {
 }
 
 impl ModelProvider for InterruptedModel {
-    fn generate<'a>(&'a self, _: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, request: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        self.output_tokens.store(
+            u64::from(request.request().max_output_tokens.unwrap_or(0)),
+            Ordering::SeqCst,
+        );
         self.generated.fetch_add(1, Ordering::SeqCst);
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::Content {
@@ -742,6 +747,7 @@ async fn worker_restart_with_options(
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
+        output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
@@ -931,6 +937,7 @@ async fn worker_restart_with_options(
                         input: ModelContent::Text("hello".into()),
                         selected_context: None,
                         max_steps: 1,
+                        max_output_tokens: Some(8_192),
                     })
                 }
                 .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1582,6 +1589,9 @@ async fn worker_restart_with_options(
             assert_eq!(reader.read(result).await?, b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             if with_command {
+                if matches!(command, WorkerCommand::Model | WorkerCommand::PolicyModel) {
+                    assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
+                }
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
                     usize::from(matches!(
@@ -1777,6 +1787,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
     };
     let mut previous_lease = None;
     let model = Arc::new(InterruptedModel {
+        output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
