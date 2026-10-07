@@ -9,8 +9,8 @@ use crate::{
     runtime::DurableEffectObserver,
     store::StreamAggregate,
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{StreamClient, StreamProvider};
-use futures::future::BoxFuture;
 use std::sync::Arc;
 
 /// Resolves a pinned provider attempt into its owning conversation history.

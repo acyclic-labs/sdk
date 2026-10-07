@@ -35,14 +35,14 @@ const parentScratch: ResourceRevision = {
     volume: { ...privateVolume, id: "parent-private", owner: {
       kind: "agent", id: "11111111-1111-1111-1111-111111111111" as AgentId,
     } },
-    generation: { kind: "generation", provider: filesystem, key: [3], version: null },
+    generation: { kind: "generation", provider: filesystem, key: [4], version: null },
     paths: [],
   },
 };
 const childScratch: ResourceRevision = {
   kind: "private_volume", reference: {
     volume: privateVolume,
-    generation: { kind: "generation", provider: filesystem, key: [3], version: null },
+    generation: { kind: "generation", provider: filesystem, key: [5], version: null },
     paths: [],
   },
 };
@@ -246,7 +246,7 @@ test("fork preparation pins child allocation and bounded context before capture"
           generation: { kind: "generation", provider: filesystem, key: [2], version: null },
         } },
       },
-    }],
+    }, prepared.captures[2]!],
   })).rejects.toThrow();
   await expect(validateForkReport({
     ...prepared,
@@ -259,7 +259,7 @@ test("fork preparation pins child allocation and bounded context before capture"
 
 test("required capture failure never publishes a child; optional failures remain visible", async () => {
   const required = report();
-  await expect(forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, required.captures[1]!] }))
+  await expect(forkSeed({ ...required, captures: [{ kind: "unsupported", value: "not available" }, ...required.captures.slice(1)] }))
     .rejects.toThrow();
   const optional: ForkReport = {
     ...required,
@@ -285,7 +285,7 @@ test("required capture failure never publishes a child; optional failures remain
 
 test("project capture cannot retain the parent's project volume", async () => {
   const invalid = report();
-  await expect(forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }] }))
+  await expect(forkSeed({ ...invalid, captures: [invalid.captures[0]!, { kind: "captured", value: { source: parentProject, revision: parentProject } }, invalid.captures[2]!] }))
     .rejects.toThrow();
 });
 

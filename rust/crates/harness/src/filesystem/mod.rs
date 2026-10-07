@@ -34,8 +34,8 @@ use acyclic_fs::{
     PublicationReservation, TransactionCommit, Workspace, WorkspaceDirectoryPage, WorkspaceError,
     WorkspaceStat,
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},

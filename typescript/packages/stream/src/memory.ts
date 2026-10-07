@@ -1,5 +1,5 @@
 import { fromBinary } from "@bufbuild/protobuf";
-import { is_stream_error_code, projectMemoryResponse, WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { StreamErrorCode as WasmStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   ChildrenResponseSchema, ReadResponseSchema, TailResponseSchema,
@@ -15,12 +15,19 @@ import type {
 } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 
-/** Process-local adapter over the canonical Rust MemoryStream. */
-export class MemoryStreamProvider implements StreamProvider {
-  readonly #inner: Promise<WasmMemoryStream>;
+/** Shared projection over the canonical Rust provider ABI. */
+class RustStreamProvider implements StreamProvider {
+  readonly #inner: Promise<WasmStream>;
 
-  constructor() {
-    this.#inner = ensureStreamWasm().then(() => new WasmMemoryStream());
+  protected constructor(database?: { readonly name: string; readonly maximumCommands: number; readonly maximumJournalBytes: bigint }) {
+    if (database !== undefined && (typeof database.name !== "string" || database.name.length === 0
+      || !Number.isSafeInteger(database.maximumCommands) || database.maximumCommands <= 0 || database.maximumCommands > 0xffff_ffff
+      || typeof database.maximumJournalBytes !== "bigint" || database.maximumJournalBytes <= 0n || database.maximumJournalBytes > 0xffff_ffff_ffff_ffffn)) {
+      throw new StreamError("invalid_argument", "browser database and journal bounds must be positive and representable");
+    }
+    this.#inner = ensureStreamWasm().then(() => database === undefined
+      ? new WasmStream()
+      : WasmStream.openBrowser(database.name, database.maximumCommands, database.maximumJournalBytes));
   }
 
   async #dispatch(operation: string, request: Uint8Array): Promise<Uint8Array> {
@@ -84,7 +91,7 @@ export class MemoryStreamProvider implements StreamProvider {
     await validateWireRequest({ kind: "follow", path, from });
     if (signal?.aborted) return;
     const request = wireRequest({ kind: "follow", path, from });
-    let handle: Awaited<ReturnType<WasmMemoryStream["open_follow"]>>;
+    let handle: Awaited<ReturnType<WasmStream["open_follow"]>>;
     try { handle = await (await this.#inner).open_follow(request); }
     catch (error) { throw streamError(error, "follow"); }
     const close = () => handle.close();
@@ -182,4 +189,16 @@ function streamError(error: unknown, operation: string): Error {
 }
 function record(value: { sequence: bigint; value: Uint8Array; commitId: Uint8Array; committedAtMicros: bigint }): EncodedRecord {
   return { sequence: value.sequence, value: value.value, commitId: commitId(value.commitId), committedAtMicros: value.committedAtMicros };
+}
+
+/** Durable account-local provider using strict IndexedDB publication and Rust recovery. */
+export class BrowserStreamProvider extends RustStreamProvider {
+  constructor(name: string, options: { readonly maximumCommands?: number; readonly maximumJournalBytes?: bigint } = {}) {
+    super({ name, maximumCommands: options.maximumCommands ?? 65_536, maximumJournalBytes: options.maximumJournalBytes ?? 256n * 1024n * 1024n });
+  }
+}
+
+/** Process-local adapter over the canonical Rust MemoryStream. */
+export class MemoryStreamProvider extends RustStreamProvider {
+  constructor() { super(); }
 }

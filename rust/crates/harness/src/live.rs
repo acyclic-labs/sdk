@@ -1,7 +1,8 @@
 //! Live-only bounded execution for arbitrary Rust futures.
 
 use crate::{Admission, OperationId, Outcome};
-use futures::{StreamExt, stream, stream::BoxStream};
+use acyclic_stream::BoxProviderStream as BoxStream;
+use futures::{StreamExt, stream};
 use std::{
     collections::BTreeMap,
     future::Future,
@@ -87,7 +88,7 @@ impl TaskGroup {
     pub async fn spawn<T, F>(&self, future: F) -> TaskHandle<T>
     where
         T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
+        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
     {
         match self.try_spawn(future).await {
             Admission::Accepted(handle) => handle,
@@ -110,7 +111,7 @@ impl TaskGroup {
     pub async fn try_spawn<T, F>(&self, future: F) -> Admission<TaskHandle<T>>
     where
         T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
+        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
     {
         let id = OperationId::new();
         let semaphore = Arc::clone(&self.state.semaphore);
@@ -119,7 +120,7 @@ impl TaskGroup {
             group: Arc::clone(&self.state),
         };
         let (start, admitted) = oneshot::channel();
-        let join = tokio::spawn(async move {
+        let task = async move {
             let _guard = guard;
             let _ = admitted.await;
             match semaphore.acquire_owned().await {
@@ -128,7 +129,11 @@ impl TaskGroup {
                     message: "task group closed".into(),
                 },
             }
-        });
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let join = tokio::spawn(task);
+        #[cfg(target_arch = "wasm32")]
+        let join = tokio::task::spawn_local(task);
         {
             let mut admission = self
                 .state
@@ -203,7 +208,7 @@ impl TaskGroup {
     pub async fn spawn_many<T, F, I>(&self, futures: I) -> Vec<TaskHandle<T>>
     where
         T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
+        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
         I: IntoIterator<Item = F>,
     {
         stream::iter(futures)
@@ -216,7 +221,7 @@ impl TaskGroup {
     pub async fn admit_many<T, F, I>(&self, futures: I) -> Vec<Admission<TaskHandle<T>>>
     where
         T: Send + 'static,
-        F: Future<Output = T> + Send + 'static,
+        F: Future<Output = T> + acyclic_stream::ProviderTask + 'static,
         I: IntoIterator<Item = F>,
     {
         stream::iter(futures)

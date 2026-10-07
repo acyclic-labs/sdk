@@ -212,6 +212,19 @@ export interface BrowserNamedAttributeResult {
     work: BrowserWorkCounters;
 }
 
+export interface BrowserOperationReconcileOptions {
+    maximumGenerations: number;
+    maximumChanges: number;
+    maximumConflicts: number;
+}
+
+export interface BrowserOperationWindowLease {
+    workspaceId: Uint8Array;
+    leaseId: Uint8Array;
+    pinnedParent: Uint8Array;
+    expiresAtMillis: bigint;
+}
+
 export interface BrowserPromotionAdmission {
     status: "satisfied" | "planned" | "rejected";
     rejection: string | undefined;
@@ -432,7 +445,13 @@ export interface NameComponentResult {
 
 export type BrowserExtentPlanResult = { kind: "inline"; work: BrowserWorkCounters } | { kind: "sparse"; spans: BrowserExtentSpanResult[]; retainedAllocationBytes: bigint; work: BrowserWorkCounters };
 
+export type BrowserOperationWindowClose = { kind: "still-active"; remaining: number } | { kind: "already-closed" } | { kind: "reconcile"; ticket: Uint8Array; pinnedParent: Uint8Array; pendingParent: Uint8Array | undefined };
+
+export type BrowserOperationWindowPhase = { kind: "idle" } | { kind: "active"; pinnedParent: Uint8Array; pendingParent: Uint8Array | undefined; activeLeaseCount: number } | { kind: "reconciling"; ticket: Uint8Array; pinnedParent: Uint8Array; pendingParent: Uint8Array | undefined };
+
 export type BrowserPathBatch = string[];
+
+export type BrowserWorkspaceOperationClose = { kind: "still-active"; remaining: number } | { kind: "already-closed" } | { kind: "reconciled"; rebase: BrowserWorkspaceRebaseResult };
 
 export type TransactionOperation = { kind: "create-file"; path: string; bytes: Uint8Array } | { kind: "create-directory"; path: string } | { kind: "create-symbolic-link"; path: string; target: Uint8Array } | { kind: "create-special"; path: string; fileKind: "fifo" | "socket" | "mount-boundary" } | { kind: "create-device"; path: string; fileKind: "character-device" | "block-device"; major: number; minor: number } | { kind: "create-reparse-point"; path: string; payload: Uint8Array } | { kind: "remove"; path: string; expectedFileId: Uint8Array | undefined } | { kind: "rename"; source: string; destination: string; replace: boolean } | { kind: "hard-link"; source: string; destination: string } | { kind: "write"; path: string; offset: bigint; bytes: Uint8Array } | { kind: "set-metadata"; path: string; canonicalBytes: Uint8Array } | { kind: "resize"; path: string; logicalBytes: bigint } | { kind: "zero-range"; path: string; offset: bigint; length: bigint; allocated: boolean; extend: boolean } | { kind: "preallocate"; path: string; offset: bigint; length: bigint; keepSize: boolean } | { kind: "clone-range"; source: string; sourceOffset: bigint; destination: string; destinationOffset: bigint; length: bigint };
 
@@ -513,7 +532,7 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operation identity, clean
      * or read-only checkout, closure failure, cancellation, or bounded work.
      */
-    commit(operation_id: Uint8Array): Promise<BrowserCommitResult>;
+    commit(operation_id: Uint8Array, lease: BrowserOperationWindowLease | undefined): Promise<BrowserCommitResult>;
     /**
      * Creates an exact POSIX character or block device identity.
      *
@@ -1082,6 +1101,10 @@ export class BrowserFs {
      */
     openWorkspace(name: string): Promise<BrowserWorkspace>;
     /**
+     * Opens a coordinator on the exact persistent authority; construction acquires no lease.
+     */
+    operationWindows(): BrowserOperationWindowCoordinator;
+    /**
      * Restores authority only after authenticating a complete imported closure.
      *
      * # Errors
@@ -1183,6 +1206,43 @@ export class BrowserJoinPlan {
      * Target generation observed while planning.
      */
     readonly targetHead: Uint8Array;
+}
+
+/**
+ * Durable leases sharing the filesystem's exact `IndexedDB` authority.
+ */
+export class BrowserOperationWindowCoordinator {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Opens an overlapping lease through the shared Rust transition.
+     */
+    begin(workspace_id: Uint8Array, parent: Uint8Array, owner: string, now_millis: bigint, expires_at_millis: bigint, lease_id?: Uint8Array | null): Promise<BrowserOperationWindowLease>;
+    /**
+     * Closes a lease; the final closer owns reconciliation.
+     */
+    finish(lease: BrowserOperationWindowLease, now_millis: bigint): Promise<BrowserOperationWindowClose>;
+    /**
+     * Closes and completes deferred workspace reconciliation through the existing coordinator.
+     */
+    finishWorkspace(workspace: BrowserWorkspace, lease: BrowserOperationWindowLease, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceOperationClose>;
+    /**
+     * Inspects the current durable phase without acquiring authority.
+     */
+    inspect(workspace_id: Uint8Array): Promise<BrowserOperationWindowPhase>;
+    /**
+     * Coalesces an authenticated parent advance.
+     */
+    observeParent(workspace_id: Uint8Array, parent: Uint8Array): Promise<boolean>;
+    /**
+     * Recovers expired leases and interrupted reconciliation without rerunning external effects.
+     */
+    recoverWorkspace(workspace: BrowserWorkspace, now_millis: bigint, options: BrowserOperationReconcileOptions): Promise<BrowserWorkspaceRebaseResult | undefined>;
+    /**
+     * Extends the exact live lease; its previous publication permit is fenced.
+     */
+    renew(lease: BrowserOperationWindowLease, now_millis: bigint, expires_at_millis: bigint): Promise<BrowserOperationWindowLease>;
 }
 
 /**
@@ -1329,7 +1389,7 @@ export class BrowserTransaction {
     /**
      * Publishes the complete candidate through one idempotent head CAS.
      */
-    commit(): Promise<any>;
+    commit(lease: BrowserOperationWindowLease | undefined): Promise<any>;
     /**
      * Clones one complete regular file without copying its body.
      */
@@ -1619,6 +1679,7 @@ export interface InitOutput {
     readonly __wbg_browsergeneration_free: (a: number, b: number) => void;
     readonly __wbg_browsergitcompatrepository_free: (a: number, b: number) => void;
     readonly __wbg_browserjoinplan_free: (a: number, b: number) => void;
+    readonly __wbg_browseroperationwindowcoordinator_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfile_free: (a: number, b: number) => void;
     readonly __wbg_browserresolvedfiles_free: (a: number, b: number) => void;
     readonly __wbg_browserspeculation_free: (a: number, b: number) => void;
@@ -1635,7 +1696,7 @@ export interface InitOutput {
     readonly browsercheckout_checkpoint: (a: number) => any;
     readonly browsercheckout_cloneFileRange: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
     readonly browsercheckout_cloneFileRangeById: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
-    readonly browsercheckout_commit: (a: number, b: number, c: number) => any;
+    readonly browsercheckout_commit: (a: number, b: number, c: number, d: number) => any;
     readonly browsercheckout_createDevice: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly browsercheckout_createDirectory: (a: number, b: number, c: number) => any;
     readonly browsercheckout_createFile: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -1700,6 +1761,7 @@ export interface InitOutput {
     readonly browserfs_objectCacheStats: (a: number) => [number, number, number];
     readonly browserfs_openVolume: (a: number, b: number, c: number) => any;
     readonly browserfs_openWorkspace: (a: number, b: number, c: number) => any;
+    readonly browserfs_operationWindows: (a: number) => [number, number, number];
     readonly browserfs_restoreVolume: (a: number, b: any, c: number, d: number) => any;
     readonly browsergeneration_id: (a: number) => [number, number];
     readonly browsergeneration_listDirectory: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -1719,6 +1781,13 @@ export interface InitOutput {
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];
+    readonly browseroperationwindowcoordinator_begin: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: bigint, i: bigint, j: number, k: number) => any;
+    readonly browseroperationwindowcoordinator_finish: (a: number, b: any, c: bigint) => any;
+    readonly browseroperationwindowcoordinator_finishWorkspace: (a: number, b: number, c: any, d: bigint, e: any) => any;
+    readonly browseroperationwindowcoordinator_inspect: (a: number, b: number, c: number) => any;
+    readonly browseroperationwindowcoordinator_observeParent: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browseroperationwindowcoordinator_recoverWorkspace: (a: number, b: number, c: bigint, d: any) => any;
+    readonly browseroperationwindowcoordinator_renew: (a: number, b: any, c: bigint, d: bigint) => any;
     readonly browserresolvedfile_kind: (a: number) => [number, number];
     readonly browserresolvedfile_logicalBytes: (a: number) => bigint;
     readonly browserresolvedfile_metadataCanonicalBytes: (a: number) => [number, number, number, number];
@@ -1737,7 +1806,7 @@ export interface InitOutput {
     readonly browserspeculation_preemptForForeground: (a: number, b: bigint) => [number, number, number];
     readonly browserspeculation_replaceGeneration: (a: number, b: number, c: number) => [number, number, number];
     readonly browsertransaction_cloneRange: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
-    readonly browsertransaction_commit: (a: number) => any;
+    readonly browsertransaction_commit: (a: number, b: number) => any;
     readonly browsertransaction_copy: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_createDirAll: (a: number, b: number, c: number) => any;
     readonly browsertransaction_createDirectory: (a: number, b: number, c: number) => any;

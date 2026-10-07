@@ -10,6 +10,7 @@ use std::time::Instant;
 
 use acyclic_native_runtime::OwnershipAnchor;
 use async_trait::async_trait;
+#[cfg(test)]
 use bytes::Bytes;
 use fs2::FileExt as _;
 use futures::{StreamExt as _, stream};
@@ -18,11 +19,11 @@ use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, watch};
 
-use crate::wire_codec::{condition_from_wire, mutation_from_wire, optional_key};
+use crate::journal::{Command, decode_command, journal_command, replay};
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, MAX_COMMAND_BYTES, MAX_ITEMS, MemoryLimits, MemoryStream, ReadRequest,
+    IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest,
     RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
     UnixMillisClock,
 };
@@ -1421,139 +1422,6 @@ fn frame_checksum(length: &[u8; 4], command: &[u8]) -> [u8; 32] {
     hasher.update(length);
     hasher.update(command);
     hasher.finalize().into()
-}
-
-#[derive(Clone)]
-enum Command {
-    Append(AppendRequest),
-    Fork(ForkRequest),
-    Commit(CommitRequest),
-}
-
-async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
-    match command {
-        Command::Append(request) => provider.append(request).await.map(|_| ()),
-        Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(request) => provider.commit(request).await.map(|_| ()),
-    }
-}
-
-fn journal_command(command: &Command) -> JournalCommand {
-    let operation = match command {
-        Command::Append(request) => journal_command::Operation::Append(wire_append(request)),
-        Command::Fork(request) => journal_command::Operation::Fork(wire_fork(request)),
-        Command::Commit(request) => journal_command::Operation::Commit(wire_commit(request)),
-    };
-    JournalCommand {
-        operation: Some(operation),
-    }
-}
-
-fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
-    let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
-    match journal.operation.ok_or(StreamError::InvalidArgument)? {
-        journal_command::Operation::Append(request) => domain_append(request).map(Command::Append),
-        journal_command::Operation::Fork(request) => domain_fork(request).map(Command::Fork),
-        journal_command::Operation::Commit(request) => domain_commit(request).map(Command::Commit),
-    }
-}
-
-#[derive(Clone, PartialEq, prost::Message)]
-struct JournalCommand {
-    #[prost(oneof = "journal_command::Operation", tags = "1, 2, 5")]
-    operation: Option<journal_command::Operation>,
-}
-
-mod journal_command {
-    #[derive(Clone, PartialEq, prost::Oneof)]
-    pub(super) enum Operation {
-        #[prost(message, tag = "1")]
-        Append(crate::wire::AppendRequest),
-        #[prost(message, tag = "2")]
-        Fork(crate::wire::ForkRequest),
-        #[prost(message, tag = "5")]
-        Commit(crate::wire::CommitRequest),
-    }
-}
-
-fn wire_append(request: &AppendRequest) -> crate::wire::AppendRequest {
-    crate::wire::AppendRequest {
-        path: request.path.to_string(),
-        records: request.records.clone(),
-        if_tail: request.if_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    }
-}
-
-fn domain_append(request: crate::wire::AppendRequest) -> Result<AppendRequest, StreamError> {
-    Ok(AppendRequest {
-        path: StreamPath::new(request.path)?,
-        records: request.records,
-        if_tail: request.if_tail,
-        idempotency_key: optional_key(request.idempotency_key)?,
-    })
-}
-
-fn wire_fork(request: &ForkRequest) -> crate::wire::ForkRequest {
-    crate::wire::ForkRequest {
-        source: request.source.to_string(),
-        destination: request.destination.to_string(),
-        at_tail: request.at_tail,
-        idempotency_key: request
-            .idempotency_key
-            .as_ref()
-            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
-    }
-}
-
-fn domain_fork(request: crate::wire::ForkRequest) -> Result<ForkRequest, StreamError> {
-    Ok(ForkRequest {
-        source: StreamPath::new(request.source)?,
-        destination: StreamPath::new(request.destination)?,
-        at_tail: request.at_tail,
-        idempotency_key: optional_key(request.idempotency_key)?,
-    })
-}
-
-fn wire_commit(request: &CommitRequest) -> crate::wire::CommitRequest {
-    crate::wire::CommitRequest {
-        conditions: request
-            .conditions
-            .iter()
-            .cloned()
-            .map(crate::wire_codec::condition_wire)
-            .collect(),
-        mutations: request
-            .mutations
-            .iter()
-            .cloned()
-            .map(crate::wire_codec::mutation_wire)
-            .collect(),
-        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        deadline_unix_millis: None,
-    }
-}
-
-fn domain_commit(request: crate::wire::CommitRequest) -> Result<CommitRequest, StreamError> {
-    if request.conditions.len() > MAX_ITEMS || request.mutations.len() > MAX_ITEMS {
-        return Err(StreamError::LimitExceeded);
-    }
-    Ok(CommitRequest {
-        conditions: request
-            .conditions
-            .into_iter()
-            .map(condition_from_wire)
-            .collect::<Result<_, _>>()?,
-        mutations: request
-            .mutations
-            .into_iter()
-            .map(mutation_from_wire)
-            .collect::<Result<_, _>>()?,
-        idempotency_key: IdempotencyKey::new(request.idempotency_key)?,
-    })
 }
 
 #[cfg(test)]

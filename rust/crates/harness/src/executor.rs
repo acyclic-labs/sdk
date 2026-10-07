@@ -18,7 +18,8 @@ use crate::{
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
-use futures::{StreamExt as _, future::BoxFuture};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
@@ -180,7 +181,7 @@ impl ToolFailureKind {
 }
 
 /// Durable host services available to an executor; policy remains executor-owned.
-pub trait ExecutionJournal: Send + Sync {
+pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Implementations must scope sequences and retry keys by `operation_id`.
     /// Reads at most `maximum` records after the exclusive one-based sequence
     /// `after`. Zero starts at the first record. A provider may return a shorter
@@ -389,7 +390,7 @@ enum ToolCallProgress {
 }
 
 /// Complete replaceable turn loop. Implementations may own every policy decision.
-pub trait Executor: Send + Sync {
+pub trait Executor: acyclic_stream::ProviderPlatform {
     /// Executes or resumes one turn using only explicit durable host services.
     fn execute<'a>(
         &'a self,
@@ -1797,7 +1798,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
-        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             let request = request.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
@@ -1853,7 +1854,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
-        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             assert_eq!(
                 request.bytes(),
                 crate::contract::canonical_json_bytes(request.request()).unwrap_or_default()
@@ -1908,7 +1909,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             _: crate::model::PreparedModelRequest,
-        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(
                 (0..70)
@@ -2204,7 +2205,7 @@ mod tests {
         fn generate<'a>(
             &'a self,
             request: crate::model::PreparedModelRequest,
-        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+        ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
             self.0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

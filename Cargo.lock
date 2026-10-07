@@ -411,6 +411,7 @@ dependencies = [
  "h2",
  "hyper",
  "hyper-util",
+ "indexed_db_futures",
  "js-sys",
  "libc",
  "proptest",

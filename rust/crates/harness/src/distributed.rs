@@ -15,12 +15,13 @@ use crate::{
     wire,
     wire_codec::validate_protocol,
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, Stream,
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::{TryStreamExt as _, future::BoxFuture};
+use futures::TryStreamExt as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -171,7 +172,7 @@ pub trait DurableReducer: Send + Sync {
 /// Owner-bound store for staged scheduler aggregate and reducer results.
 /// Implementations must reconcile an identical operation/key/bytes retry to
 /// the same immutable reference and reject any conflicting retry.
-pub trait SchedulerPayloadStore: Send + Sync {
+pub trait SchedulerPayloadStore: acyclic_stream::ProviderPlatform {
     /// Stages JSON bytes before the coordinator publishes their reference.
     fn stage<'a>(
         &'a self,

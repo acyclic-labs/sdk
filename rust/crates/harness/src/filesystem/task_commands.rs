@@ -15,8 +15,8 @@ use crate::{
     workflow::WorkflowCommand,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::StreamProvider;
-use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
@@ -154,9 +154,9 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
 
 impl<P, A, O> TaskCommandHost for FilesystemTaskCommands<'_, P, A, O>
 where
-    P: StreamProvider + Send + Sync + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
+    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
+    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
 {
     fn execute<'a>(
         &'a self,
@@ -241,9 +241,9 @@ where
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
-    P: StreamProvider + Send + Sync + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
+    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
+    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
 {
     /// Checks only a retained passive wait. Never dispatches or reconciles a
     /// provider while the task has no execution reservation.

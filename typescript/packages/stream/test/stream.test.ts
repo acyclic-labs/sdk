@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { create, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
-import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, compareStreamPaths, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
@@ -202,7 +202,7 @@ describe("website Stream contract", () => {
     const oversized = new Uint8Array(StreamLimit.MAX_COMMAND_BYTES + 1);
     expect(validateAppendRequest(oversized)).toBe("limit_exceeded");
     expect(() => normalizeCommitRequest(oversized)).toThrow("limit_exceeded");
-    await expect(new WasmMemoryStream().dispatch("tail", oversized)).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(new WasmStream().dispatch("tail", oversized)).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(is_stream_error_code("limit_exceeded")).toBe(true);
     expect(is_stream_error_code("not_a_stream_error")).toBe(false);
   });
@@ -528,7 +528,7 @@ describe("website Stream contract", () => {
 
   test("closed Rust follow handles end before or during a pending read", async () => {
     await ensureStreamWasm();
-    const wasm = new WasmMemoryStream();
+    const wasm = new WasmStream();
     await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
     const closed = await wasm.open_follow(request);

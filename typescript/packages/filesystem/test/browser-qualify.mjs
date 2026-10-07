@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PAGES = ["browser-smoke.html", "browser-multitab.html"];
+const PAGES = ["browser-smoke.html", "browser-multitab.html", "browser-publication.html", "browser-publication.html?profile=opfs", "browser-stream.html", "../harness/test/browser-wire.html"];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
 const PAGE_DEADLINE_MS = 600_000;
@@ -27,6 +27,9 @@ const require = createRequire(import.meta.url);
 // import map uses the stable /node_modules URL; this table makes that URL
 // work with both isolated and hoisted installs.
 const dependencyRoots = new Map([
+  ["/stream/", resolve(root, "../stream")],
+  ["/harness/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
+  ["/harness/", resolve(root, "../harness")],
   ["/node_modules/@bufbuild/protobuf/", resolve(require.resolve("@bufbuild/protobuf"), "../../..")],
 ]);
 const types = {
@@ -125,8 +128,18 @@ async function launchChrome(profile) {
   const [port, path] = await until(Date.now() + 30_000, "Chrome DevTools endpoint", () => {
     if (chrome.exitCode !== null) throw new Error(`Chrome exited with ${chrome.exitCode}`);
     if (!existsSync(activePort)) return undefined;
-    const lines = readFileSync(activePort, "utf8").split("\n");
+    let lines;
+    try {
+      lines = readFileSync(activePort, "utf8").split("\n");
+    } catch (error) {
+      if (error.code === "EBUSY" || error.code === "ENOENT") return undefined;
+      throw error;
+    }
     return lines.length >= 2 && lines[1] !== "" ? lines : undefined;
+  }).catch(async (error) => {
+    if (chrome.exitCode === null) chrome.kill();
+    await exited;
+    throw error;
   });
   return { chrome, exited, endpoint: `ws://127.0.0.1:${port}${path.trim()}` };
 }
@@ -206,7 +219,7 @@ async function runPage(browser, observer, origin, page) {
       const evaluated = await browser.send(
         "Runtime.evaluate",
         {
-          expression: "(() => { const node = document.querySelector('#result'); return node === null ? null : { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
+          expression: "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()",
           returnByValue: true,
         },
         sessionId,
@@ -227,9 +240,11 @@ const pages = process.argv.length > 2 ? process.argv.slice(2) : PAGES;
 const server = await serve();
 const origin = `http://127.0.0.1:${server.address().port}`;
 const profile = mkdtempSync(join(tmpdir(), "acyclic-fs-browser-"));
-const { chrome, exited, endpoint } = await launchChrome(profile);
+let launched;
 let failed = false;
 try {
+  launched = await launchChrome(profile);
+  const { endpoint } = launched;
   const browser = await connect(endpoint);
   const observer = observe(browser);
   for (const page of pages) {
@@ -250,8 +265,10 @@ try {
   await browser.send("Browser.close").catch(() => {});
   browser.close();
 } finally {
-  if (chrome.exitCode === null) chrome.kill();
-  await exited;
+  if (launched !== undefined) {
+    if (launched.chrome.exitCode === null) launched.chrome.kill();
+    await launched.exited;
+  }
   server.close();
   // Chrome's helper processes can hold profile files briefly after the
   // browser itself exits; a profile that still cannot be removed is only

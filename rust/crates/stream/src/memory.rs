@@ -93,6 +93,17 @@ impl Default for MemoryStream {
 }
 
 impl MemoryStream {
+    pub(crate) async fn next_follow_record(
+        &self,
+        path: &StreamPath,
+        cursor: &mut HistoryCursor,
+    ) -> Result<Option<Record>, StreamError> {
+        let state = self.state.read().await;
+        let current = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        cursor.sync(current.history.as_ref(), current.tail);
+        Ok(cursor.next_record())
+    }
+
     #[cfg(feature = "local")]
     pub(crate) async fn recovery_limits(
         &mut self,
@@ -325,7 +336,8 @@ struct Replay {
     result: IdempotencyOutcome,
 }
 
-#[async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
     async fn inspect_idempotency(
         &self,
@@ -537,35 +549,27 @@ impl StreamProvider for MemoryStream {
                 HistoryCursor::new(stream.history.as_ref(), stream.tail, from),
             )
         };
-        let state = Arc::clone(&self.state);
+        let provider = self.clone();
         Ok(stream::unfold(
-            (state, path, receiver, cursor),
-            |(state, path, mut receiver, mut cursor)| async move {
+            (provider, path, receiver, cursor),
+            |(provider, path, mut receiver, mut cursor)| async move {
                 loop {
-                    let record = {
-                        let guard = state.read().await;
-                        if let Some(current) = guard.paths.get(&path) {
-                            cursor.sync(current.history.as_ref(), current.tail);
-                            Ok(cursor.next_record())
-                        } else {
-                            Err(StreamError::NotFound)
-                        }
-                    };
+                    let record = provider.next_follow_record(&path, &mut cursor).await;
                     let Some(record) = (match record {
                         Ok(record) => record,
                         Err(error) => {
-                            return Some((Err(error), (state, path, receiver, cursor)));
+                            return Some((Err(error), (provider, path, receiver, cursor)));
                         }
                     }) else {
                         if receiver.changed().await.is_err() {
                             return Some((
                                 Err(StreamError::Unavailable),
-                                (state, path, receiver, cursor),
+                                (provider, path, receiver, cursor),
                             ));
                         }
                         continue;
                     };
-                    return Some((Ok(record), (state, path, receiver, cursor)));
+                    return Some((Ok(record), (provider, path, receiver, cursor)));
                 }
             },
         )
@@ -830,7 +834,7 @@ struct HistoryWindow {
 /// Replaying the linked graph from its root for every item makes that workload
 /// quadratic.  The cursor indexes the initial graph once and then only walks
 /// the newly added batch suffix after each publication.
-struct HistoryCursor {
+pub(crate) struct HistoryCursor {
     root: Option<Arc<History>>,
     windows: Vec<HistoryWindow>,
     window: usize,
@@ -839,14 +843,18 @@ struct HistoryCursor {
 }
 
 impl HistoryCursor {
-    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
-        let mut cursor = Self {
+    pub(crate) fn at(next: u64) -> Self {
+        Self {
             root: None,
             windows: Vec::new(),
             window: 0,
             record: 0,
             next,
-        };
+        }
+    }
+
+    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
+        let mut cursor = Self::at(next);
         cursor.rebuild(history, tail);
         cursor
     }

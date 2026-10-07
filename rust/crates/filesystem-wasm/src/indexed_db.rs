@@ -35,14 +35,39 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::Blob;
 
-const DATABASE_VERSION: u32 = 3;
+const DATABASE_VERSION: u32 = 4;
 const OBJECTS: &str = "objects";
 const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
 const AUTHORITY_COMMITS: &str = "authority_commits";
 const AUTHORITY_OPERATIONS: &str = "authority_operations";
 const AUTHORITY_GATES: &str = "authority_gates";
+const OPERATION_WINDOWS: &str = "operation_windows";
+// Window state is control metadata, independent of the much larger immutable
+// object ceiling. This also bounds decode work before constructing Rust leases.
+const MAXIMUM_WINDOW_BYTES: u64 = 64 * 1024;
 const OBJECT_KEY_BYTES: u64 = 66;
+
+struct WindowEncoder {
+    bytes: Vec<u8>,
+    maximum: usize,
+}
+
+impl std::io::Write for WindowEncoder {
+    fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+        if input.len() > self.maximum.saturating_sub(self.bytes.len()) {
+            return Err(std::io::Error::other(
+                "operation window exceeds its storage bound",
+            ));
+        }
+        self.bytes.extend_from_slice(input);
+        Ok(input.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone, Copy)]
 struct ObjectBatchState {
@@ -467,6 +492,7 @@ impl IndexedDbObjectStore {
 /// idempotency resolution, commit insertion, and head publication. Commit
 /// payloads are stored as `Blob` handles so replay can inspect exact sizes
 /// before allocating their bodies.
+#[derive(Clone)]
 pub struct IndexedDbAuthorityStore {
     database: Database,
     maximum_payload_bytes: u64,
@@ -507,6 +533,117 @@ struct IndexedCommitRequest {
 }
 
 impl IndexedDbAuthorityStore {
+    async fn read_window(
+        &self,
+        transaction: &Transaction<'_>,
+        workspace: acyclic_fs::WorkspaceId,
+        prior: WorkCounters,
+        budget: Option<WorkBudget>,
+    ) -> AuthorityResult<Option<acyclic_fs::OperationWindowSnapshot>> {
+        let work = prior
+            .checked_add(authority_backend_read_work())
+            .map_err(|error| Self::failure(error.into(), prior))?;
+        if let Some(budget) = budget {
+            Self::admit(work, budget)?;
+        }
+        let store = transaction
+            .object_store(OPERATION_WINDOWS)
+            .map_err(|error| Self::backend(error, work))?;
+        let key = authority_key(AuthorityId::from_bytes(workspace.into_bytes()));
+        let value = store
+            .get::<JsValue, _, _>(key.as_str())
+            .primitive()
+            .map_err(|error| Self::backend(error, work))?
+            .await
+            .map_err(|error| Self::backend(error, work))?;
+        let Some(array) = value else {
+            return Ok(AuthorityReceipt { value: None, work });
+        };
+        let array = array.dyn_into::<Uint8Array>().map_err(|error| {
+            Self::corrupt(format!("invalid operation window buffer: {error:?}"), work)
+        })?;
+        let length = u64::from(array.length());
+        let maximum = self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES);
+        if length > maximum {
+            return Err(Self::failure(
+                AuthorityStoreError::PayloadTooLarge {
+                    observed: length,
+                    maximum,
+                },
+                work,
+            ));
+        }
+        let copy_work = WorkCounters {
+            bytes_copied: length,
+            // Conservatively admit JSON containers, strings and map nodes
+            // before parsing. An input byte can introduce at most one value;
+            // the retained control state and temporary copy fit this envelope.
+            allocation_operations: length.saturating_add(1),
+            peak_allocation_bytes: length.saturating_mul(128),
+            items_examined: length,
+            ..WorkCounters::default()
+        };
+        let work = work
+            .checked_add(copy_work)
+            .map_err(|error| Self::failure(error.into(), work))?;
+        if let Some(budget) = budget {
+            Self::admit(work, budget)?;
+        }
+        let snapshot: acyclic_fs::OperationWindowSnapshot =
+            serde_json::from_slice(&array.to_vec()).map_err(|error| Self::corrupt(error, work))?;
+        if !snapshot.is_valid_for(workspace) {
+            return Err(Self::corrupt("invalid operation window", work));
+        }
+        Ok(AuthorityReceipt {
+            value: Some(snapshot),
+            work,
+        })
+    }
+
+    async fn check_lease(
+        &self,
+        transaction: &Transaction<'_>,
+        authority_id: AuthorityId,
+        permit: PublicationPermit,
+        work: WorkCounters,
+        budget: WorkBudget,
+    ) -> AuthorityResult<bool> {
+        match permit {
+            PublicationPermit::Lease {
+                authority_id: permitted_authority,
+                workspace_id,
+                lease_id,
+                expires_at_millis,
+            } => {
+                let workspace = acyclic_fs::WorkspaceId::from_bytes(workspace_id);
+                let receipt = self
+                    .read_window(transaction, workspace, work, Some(budget))
+                    .await?;
+                let work = receipt.work;
+                let active = match receipt.value {
+                    Some(acyclic_fs::OperationWindowSnapshot {
+                        phase: acyclic_fs::OperationWindowPhase::Active { leases, .. },
+                        ..
+                    }) => leases
+                        .get(&acyclic_fs::OperationLeaseId::from_bytes(lease_id))
+                        .is_some_and(|lease| lease.expires_at_millis == expires_at_millis),
+                    _ => false,
+                };
+                let now = js_sys::Date::now()
+                    .to_string()
+                    .parse::<u64>()
+                    .map_err(|error| Self::backend(error, work))?;
+                let value = permitted_authority == authority_id.into_bytes()
+                    && acyclic_fs::kernel::volume_authority_id(workspace.volume_id())
+                        == authority_id
+                    && active
+                    && now < expires_at_millis;
+                Ok(AuthorityReceipt { value, work })
+            }
+            _ => Ok(AuthorityReceipt { value: false, work }),
+        }
+    }
+
     /// Opens one browser-local authority database.
     ///
     /// # Errors
@@ -529,6 +666,24 @@ impl IndexedDbAuthorityStore {
             database: open_database(database_name).await?,
             maximum_payload_bytes,
         })
+    }
+
+    fn payload_bytes(
+        &self,
+        commit: &ProposedCommit,
+        work: WorkCounters,
+    ) -> Result<u64, AuthorityFailure> {
+        let observed = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
+        if observed > self.maximum_payload_bytes {
+            return Err(Self::failure(
+                AuthorityStoreError::PayloadTooLarge {
+                    observed,
+                    maximum: self.maximum_payload_bytes,
+                },
+                work,
+            ));
+        }
+        Ok(observed)
     }
 
     fn failure(error: AuthorityStoreError, work: WorkCounters) -> AuthorityFailure {
@@ -1024,16 +1179,7 @@ impl IndexedDbAuthorityStore {
         cancellation: &CancellationToken,
         work: WorkCounters,
     ) -> Result<WorkCounters, AuthorityFailure> {
-        let payload_bytes = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
-        if payload_bytes > self.maximum_payload_bytes {
-            return Err(Self::failure(
-                AuthorityStoreError::PayloadTooLarge {
-                    observed: payload_bytes,
-                    maximum: self.maximum_payload_bytes,
-                },
-                work,
-            ));
-        }
+        let payload_bytes = self.payload_bytes(&commit, work)?;
         let gate_work = work
             .checked_add(authority_fixed_write_work(GATE_BYTES, 1))
             .map_err(|error| Self::failure(error.into(), work))?;
@@ -1287,12 +1433,86 @@ impl IndexedDbAuthorityStore {
     }
 }
 
+impl acyclic_fs::OperationWindowStore for IndexedDbAuthorityStore {
+    type Error = AuthorityStoreError;
+
+    async fn load(
+        &self,
+        workspace: acyclic_fs::WorkspaceId,
+    ) -> Result<Option<acyclic_fs::OperationWindowSnapshot>, Self::Error> {
+        let transaction = self
+            .database
+            .transaction([OPERATION_WINDOWS])
+            .build()
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        self.read_window(&transaction, workspace, WorkCounters::default(), None)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+    }
+
+    async fn compare_and_swap(
+        &self,
+        workspace: acyclic_fs::WorkspaceId,
+        expected_revision: u64,
+        replacement: acyclic_fs::OperationWindowSnapshot,
+    ) -> Result<bool, Self::Error> {
+        if !replacement.is_valid_for(workspace)
+            || expected_revision.checked_add(1) != Some(replacement.revision)
+        {
+            return Err(AuthorityStoreError::Corrupt(
+                "invalid window replacement".to_owned(),
+            ));
+        }
+        let maximum = usize::try_from(self.maximum_payload_bytes.min(MAXIMUM_WINDOW_BYTES))
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        let mut encoder = WindowEncoder {
+            bytes: Vec::with_capacity(maximum),
+            maximum,
+        };
+        serde_json::to_writer(&mut encoder, &replacement)
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        let encoded = encoder.bytes;
+        let transaction = self
+            .database
+            .transaction([OPERATION_WINDOWS])
+            .with_mode(TransactionMode::Readwrite)
+            .with_options(strict_transaction_options())
+            .build()
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        if self
+            .read_window(&transaction, workspace, WorkCounters::default(), None)
+            .await
+            .map_err(|failure| failure.error)?
+            .value
+            .map_or(0, |s| s.revision)
+            != expected_revision
+        {
+            return Ok(false);
+        }
+        let store = transaction
+            .object_store(OPERATION_WINDOWS)
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        let key = authority_key(AuthorityId::from_bytes(workspace.into_bytes()));
+        store
+            .put(JsValue::from(Uint8Array::from(encoded.as_slice())))
+            .with_key(key.as_str())
+            .primitive()
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?
+            .await
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| AuthorityStoreError::Rejected(error.to_string()))?;
+        Ok(true)
+    }
+}
+
 async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenError> {
     Database::open(database_name)
         .with_version(DATABASE_VERSION)
         .with_on_upgrade_needed(|event, database| {
-            // Only a new database is created here: one of any other schema
-            // version is refused rather than converted.
             if event.old_version() > 0.5 {
                 return Err(indexed_db_futures::error::Error::from(js_sys::Error::new(
                     "unsupported Acyclic IndexedDB filesystem schema version",
@@ -1305,6 +1525,7 @@ async fn open_database(database_name: &str) -> Result<Database, IndexedDbOpenErr
                 AUTHORITY_COMMITS,
                 AUTHORITY_OPERATIONS,
                 AUTHORITY_GATES,
+                OPERATION_WINDOWS,
             ] {
                 database.create_object_store(store).build()?;
             }
@@ -1572,15 +1793,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         cancellation
             .check()
             .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let payload_bytes = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
-        if payload_bytes > self.maximum_payload_bytes {
-            return Err(AuthorityFailure::before_work(
-                AuthorityStoreError::PayloadTooLarge {
-                    observed: payload_bytes,
-                    maximum: self.maximum_payload_bytes,
-                },
-            ));
-        }
+        let payload_bytes = self.payload_bytes(&commit, WorkCounters::default())?;
         let work = authority_fixed_read_work(HEAD_BYTES);
         Self::admit(work, budget)?;
         let transaction = self
@@ -1590,6 +1803,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 AUTHORITY_COMMITS,
                 AUTHORITY_OPERATIONS,
                 AUTHORITY_GATES,
+                OPERATION_WINDOWS,
             ])
             .with_mode(TransactionMode::Readwrite)
             .with_options(strict_transaction_options())
@@ -1624,6 +1838,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                 work,
             });
         }
+        let mut work = work
+            .checked_add(authority_fixed_read_work(GATE_BYTES))
+            .map_err(|error| Self::failure(error.into(), work))?;
+        Self::admit(work, budget)?;
         let gate = Self::read_gate(&transaction, &key, cancellation, work).await?;
         let admitted = match permit {
             PublicationPermit::Reservation {
@@ -1636,7 +1854,13 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
                     && reserved_head == expected
             }
             PublicationPermit::Unrestricted => gate.active.is_none(),
-            PublicationPermit::Lease { .. } => false,
+            permit @ PublicationPermit::Lease { .. } => {
+                let receipt = self
+                    .check_lease(&transaction, authority_id, permit, work, budget)
+                    .await?;
+                work = receipt.work;
+                gate.active.is_none() && receipt.value
+            }
         };
         if !admitted {
             return Ok(AuthorityReceipt {

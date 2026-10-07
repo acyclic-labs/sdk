@@ -20,7 +20,7 @@ use crate::{
         ToolResult,
     },
 };
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
@@ -72,7 +72,7 @@ const CODING_TOOLS: &[(&str, &str)] = &[
 ];
 
 /// Single host boundary implementing the complete public coding tool vocabulary.
-pub trait CodingToolHost: Send + Sync {
+pub trait CodingToolHost: acyclic_stream::ProviderPlatform {
     /// Returns the pinned contract implemented by this host for a stock tool.
     /// The factory checks its name and registers its exact revision and schemas;
     /// a generic catch-all schema must not be silently invented by the runtime.
@@ -878,7 +878,8 @@ mod tests {
             fn generate<'a>(
                 &'a self,
                 _: crate::model::PreparedModelRequest,
-            ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+            ) -> acyclic_stream::BoxProviderStream<'a, Result<crate::model::ModelEvent>>
+            {
                 Box::pin(futures::stream::empty())
             }
             fn reconcile<'a>(

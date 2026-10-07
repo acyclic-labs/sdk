@@ -150,8 +150,8 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
 /// not carry a URL parser; token and response-bound policy stay Rust-owned.
 #[wasm_bindgen(js_name = validateTransportOptions)]
 pub fn validate_transport_options(
-    #[wasm_bindgen(unchecked_param_type = "string")] token: JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "string")] token: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
     let token = token.as_string().ok_or_else(|| {
         js_error(
@@ -166,7 +166,7 @@ pub fn validate_transport_options(
         )
     })?;
     if token.chars().all(is_js_whitespace)
-        || token.as_bytes().len() > 8192
+        || token.len() > 8192
         || token
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0'))
@@ -206,12 +206,12 @@ fn is_js_whitespace(character: char) -> bool {
 /// called, including custom TypeScript providers.
 #[wasm_bindgen(js_name = validatePageSize)]
 pub fn validate_page_size(
-    #[wasm_bindgen(unchecked_param_type = "number")] value: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number")] value: &JsValue,
 ) -> Result<(), JsValue> {
     let value = value
         .as_f64()
         .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
-    if !public::is_safe_integer(value) || value < 1.0 || value > MAX_PAGE_SIZE as f64 {
+    if !public::is_safe_integer(value) || value < 1.0 || value > f64::from(MAX_PAGE_SIZE) {
         return Err(js_error(
             "invalid-page-size",
             "machine page limit must be 1..=256",

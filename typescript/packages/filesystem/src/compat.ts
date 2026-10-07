@@ -307,7 +307,9 @@ export interface OperationWindowCoordinator {
     owner: string,
     nowMillis: bigint,
     expiresAtMillis: bigint,
+    leaseId?: Uint8Array,
   ): Promise<OperationWindowLease>;
+  renew(lease: OperationWindowLease, nowMillis: bigint, expiresAtMillis: bigint): Promise<OperationWindowLease>;
   observeParent(workspaceId: WorkspaceIdentity, parent: GenerationIdentity): Promise<boolean>;
   finish(lease: OperationWindowLease, nowMillis: bigint): Promise<OperationWindowClose>;
   inspect(workspaceId: WorkspaceIdentity): Promise<OperationWindowPhase>;

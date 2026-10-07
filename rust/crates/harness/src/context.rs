@@ -7,7 +7,7 @@ use crate::{
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -353,7 +353,7 @@ impl ContextSource for DurableContextProvider {
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
-pub trait ContextSource: Send + Sync {
+pub trait ContextSource: acyclic_stream::ProviderPlatform {
     /// Resolves model-visible messages for the current step.
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
@@ -517,7 +517,7 @@ pub struct ContextInput {
 }
 
 /// Replaceable ordered context transformation.
-pub trait ContextStage: Send + Sync {
+pub trait ContextStage: acyclic_stream::ProviderPlatform {
     /// Stable stage name used for diagnostics and composition.
     fn name(&self) -> &str;
 

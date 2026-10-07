@@ -8,15 +8,14 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     resources::{GenerationRef, ProviderRef},
 };
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
-use std::{future::Future, pin::Pin};
-
 /// Borrowed asynchronous result returned by content-provider extension hooks.
-pub type ContentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+pub type ContentFuture<'a, T> = BoxFuture<'a, T>;
 /// A freshly authorized content grant paired with its residency verifier.
 pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 
@@ -869,18 +868,12 @@ impl PrivateDirectoryPage {
 }
 
 /// Provider boundary that authenticates and reads immutable content refs.
-pub trait ContentResidencyVerifier: Send + Sync {
+pub trait ContentResidencyVerifier: acyclic_stream::ProviderPlatform {
     /// Resolves and checks the exact referenced file version.
-    fn verify<'a>(
-        &'a self,
-        reference: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>>;
 
     /// Reads exact verified bytes for schema validation at an admission boundary.
-    fn read<'a>(
-        &'a self,
-        _reference: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+    fn read<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "content byte resolution is unavailable".into(),
@@ -952,7 +945,7 @@ pub trait ContentResidencyVerifier: Send + Sync {
 /// Owner-bound publication. Implementations retain the staged immutable version
 /// before returning its ref and authenticate the original writer internally.
 /// The runtime checks the returned ref and digest again before using it.
-pub trait ContentPublisher: Send + Sync {
+pub trait ContentPublisher: acyclic_stream::ProviderPlatform {
     /// Exact writable volume represented by this bound provider handle.
     fn volume(&self) -> &VolumeRef;
 
@@ -964,13 +957,13 @@ pub trait ContentPublisher: Send + Sync {
         bytes: &'a [u8],
         media_type: &'a str,
         display_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Result<FileRef>> + Send + 'a>>;
+    ) -> BoxFuture<'a, Result<FileRef>>;
 }
 
 /// Resolves an owner-mediated reader when a volume has not been explicitly
 /// bound. Implementations authenticate the caller's current read grant at
 /// resolution time; knowing a volume or file ref is not authorization.
-pub trait ContentMountResolver: Send + Sync {
+pub trait ContentMountResolver: acyclic_stream::ProviderPlatform {
     /// Lazily opens the owner for one exact ref and returns its independently
     /// verified caller grant. Each call must reauthenticate the current scope.
     fn mount<'a>(&'a self, reference: &'a FileRef) -> ContentFuture<'a, Result<ContentMount>>;
@@ -1071,7 +1064,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         expected_generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
         maximum_entries: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<PrivateDirectoryPage>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<PrivateDirectoryPage>> {
         Box::pin(async move {
             self.directory_owner(volume, granted_prefix, path)
                 .await?
@@ -1093,7 +1086,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         granted_prefix: &'a str,
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
-    ) -> Pin<Box<dyn Future<Output = Result<(FileRef, Vec<u8>)>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<(FileRef, Vec<u8>)>> {
         Box::pin(async move {
             self.directory_owner(volume, granted_prefix, path)
                 .await?
@@ -1102,17 +1095,11 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         })
     }
 
-    fn verify<'a>(
-        &'a self,
-        reference: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.owner(reference).await?.verify(reference).await })
     }
 
-    fn read<'a>(
-        &'a self,
-        reference: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move { self.owner(reference).await?.read(reference).await })
     }
 
@@ -1120,7 +1107,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         &'a self,
         reference: &'a FileRef,
         item_count: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
         Box::pin(async move {
             self.owner(reference)
                 .await?
@@ -1134,7 +1121,7 @@ impl ContentResidencyVerifier for CompositeContentVerifier {
         reference: &'a FileRef,
         item_count: u32,
         limits: &'a Limits,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             verified_attachment_manifest(self, reference, item_count, limits).await?;
             Ok(())
@@ -1890,10 +1877,7 @@ mod tests {
             bytes: Vec<u8>,
         }
         impl ContentResidencyVerifier for StaticContent {
-            fn verify<'a>(
-                &'a self,
-                reference: &'a FileRef,
-            ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+            fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
                 Box::pin(async move {
                     if reference == &self.file {
                         Ok(())
@@ -1902,10 +1886,7 @@ mod tests {
                     }
                 })
             }
-            fn read<'a>(
-                &'a self,
-                reference: &'a FileRef,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+            fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
                 Box::pin(async move {
                     if reference != &self.file {
                         return Err(Error::NotFound("file".into()));
@@ -1917,7 +1898,7 @@ mod tests {
                 &'a self,
                 _reference: &'a FileRef,
                 _item_count: u32,
-            ) -> Pin<Box<dyn Future<Output = Result<Vec<Attachment>>> + Send + 'a>> {
+            ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
                 // A provider's parsed list must not replace the pinned bytes.
                 Box::pin(async { Ok(Vec::new()) })
             }
@@ -1995,13 +1976,7 @@ mod tests {
             fn mount<'a>(
                 &'a self,
                 reference: &'a FileRef,
-            ) -> Pin<
-                Box<
-                    dyn Future<Output = Result<(ContentGrant, Arc<dyn ContentResidencyVerifier>)>>
-                        + Send
-                        + 'a,
-                >,
-            > {
+            ) -> ContentFuture<'a, Result<ContentMount>> {
                 Box::pin(async move {
                     if reference.volume() != &self.volume {
                         return Err(Error::Unauthorized("foreign volume was not granted".into()));

@@ -43,7 +43,7 @@ export function adaptTransaction(
       requirePositiveInteger(maximumConflicts, "maximum transaction conflicts");
       return decodeRebase(await raw.rebase(maximumConflicts));
     },
-    async commit() { return parseWorkspaceCommit(await raw.commit()); },
+    async commit(lease) { return parseWorkspaceCommit(await raw.commit(lease)); },
     async close(): Promise<void> {},
   };
 }

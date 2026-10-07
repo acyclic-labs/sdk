@@ -13,10 +13,9 @@ use crate::resources::{
     ArtifactRef, CheckpointRef, ContextRef, GenerationRef, ProviderRef, ResourceRef, StreamRef,
 };
 use crate::{AgentId, Capabilities, Error, OperationId, Result};
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::{future::Future, pin::Pin};
 
 /// Largest portable count representable by the contract.
 pub const MAX_FORK_AGENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
@@ -108,11 +107,10 @@ impl InheritedConversationPrefix {
 }
 
 /// Provider-owned asynchronous fence guarding one fork publication.
-pub type ForkFenceFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Box<dyn ForkPublicationGuard>>> + Send + 'a>>;
+pub type ForkFenceFuture<'a> = BoxFuture<'a, Result<Box<dyn ForkPublicationGuard>>>;
 
 /// One exact provider's admission barrier for state prepared before publication.
-pub trait ForkSeedVerifier: Send + Sync {
+pub trait ForkSeedVerifier: acyclic_stream::ProviderPlatform {
     /// Identity of the provider whose resources this verifier can prove.
     fn provider(&self) -> &ProviderRef;
     /// Maximum aggregate descriptor bytes verified for this provider during
@@ -121,10 +119,7 @@ pub trait ForkSeedVerifier: Send + Sync {
         MAX_FORK_REFERENCE_BYTES
     }
     /// Checks every selected revision owned by this provider.
-    fn verify<'a>(
-        &'a self,
-        seed: &'a ForkSeed,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+    fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>>;
     /// Acquires the child-private provider's durable write fence before any
     /// fork verification reads its mutable head. Only that provider implements
     /// this hook; all other provider verifiers remain read-only.
@@ -137,10 +132,7 @@ pub trait ForkSeedVerifier: Send + Sync {
     }
     /// Reads a complete, pinned attachment manifest from this provider. The
     /// composite admission barrier checks membership across provider borders.
-    fn read_manifest<'a>(
-        &'a self,
-        _manifest: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+    fn read_manifest<'a>(&'a self, _manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fork attachment manifest reader is not bound".into(),
@@ -148,17 +140,11 @@ pub trait ForkSeedVerifier: Send + Sync {
         })
     }
     /// Proves one immutable member is resident at its owning provider.
-    fn verify_file<'a>(
-        &'a self,
-        _file: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify_file<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async { Err(Error::Unsupported("fork file verifier is not bound".into())) })
     }
     /// Checks a cross-provider boundary claim, if this provider issues one.
-    fn verify_boundary<'a>(
-        &'a self,
-        _boundary: &'a AttestedBoundary,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify_boundary<'a>(&'a self, _boundary: &'a AttestedBoundary) -> BoxFuture<'a, Result<()>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "provider does not attest fork boundaries".into(),
@@ -170,9 +156,9 @@ pub trait ForkSeedVerifier: Send + Sync {
 /// An exact provider-owned write fence retained through Stream publication or
 /// reconciliation. Dropping this handle intentionally does not release the
 /// durable gate after an indeterminate append.
-pub trait ForkPublicationGuard: Send + Sync {
+pub trait ForkPublicationGuard: acyclic_stream::ProviderPlatform {
     /// Idempotently releases the exact fence after a terminal publication result.
-    fn release<'a>(&'a self) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+    fn release<'a>(&'a self) -> BoxFuture<'a, Result<()>>;
 }
 
 /// Exhaustive provider dispatcher. A seed cannot be admitted when any exact
@@ -546,10 +532,7 @@ impl ForkSeedVerifier for ContentForkVerifier {
         &self.provider
     }
 
-    fn verify<'a>(
-        &'a self,
-        seed: &'a ForkSeed,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             seed.validate()?;
             if seed.child_private_volume.provider() == &self.provider
@@ -579,10 +562,7 @@ impl ForkSeedVerifier for ContentForkVerifier {
         })
     }
 
-    fn read_manifest<'a>(
-        &'a self,
-        manifest: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+    fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
         Box::pin(async move {
             if manifest.volume().provider() != &self.provider {
                 return Err(Error::Unauthorized(
@@ -593,10 +573,7 @@ impl ForkSeedVerifier for ContentForkVerifier {
         })
     }
 
-    fn verify_file<'a>(
-        &'a self,
-        file: &'a FileRef,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             if file.volume().provider() != &self.provider {
                 return Err(Error::Unauthorized(
@@ -632,10 +609,7 @@ impl ForkSeedVerifier for StreamHistoryForkVerifier {
         &self.provider
     }
 
-    fn verify<'a>(
-        &'a self,
-        seed: &'a ForkSeed,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    fn verify<'a>(&'a self, seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             seed.validate()?;
             for capture in &seed.resources {
@@ -878,7 +852,7 @@ impl ForkPreparation {
 /// Provider-neutral owner boundary for an idempotent multi-resource fork
 /// preparation. Each provider reports its own capture result; this trait does
 /// not imply a cross-provider atomic snapshot.
-pub trait ForkPreparer: Send + Sync {
+pub trait ForkPreparer: acyclic_stream::ProviderPlatform {
     /// Exact immutable parent projection this preparer was constructed from.
     /// A later parent revision requires a newly bound preparer.
     fn parent_snapshot(&self) -> (&Authority, u64);
@@ -895,7 +869,7 @@ pub trait ForkPreparer: Send + Sync {
 /// Provider-owned capture of one selected revision during parent-controlled
 /// fork preparation. Implementations must reconcile retries by the request's
 /// stable operation ID and never substitute a different source revision.
-pub trait ForkCaptureProvider: Send + Sync {
+pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
     /// Exact provider identity whose resource revisions this adapter owns.
     fn provider(&self) -> &ProviderRef;
 
@@ -1789,17 +1763,11 @@ mod tests {
             &self.provider
         }
 
-        fn verify<'a>(
-            &'a self,
-            _seed: &'a ForkSeed,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify<'a>(&'a self, _seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
-        fn verify_file<'a>(
-            &'a self,
-            file: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 if file.volume().provider() != &self.provider {
                     return Err(Error::Unauthorized("wrong manifest provider".into()));
@@ -1808,10 +1776,7 @@ mod tests {
             })
         }
 
-        fn read_manifest<'a>(
-            &'a self,
-            manifest: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>> {
+        fn read_manifest<'a>(&'a self, manifest: &'a FileRef) -> BoxFuture<'a, Result<Vec<u8>>> {
             Box::pin(async move {
                 if manifest.volume().provider() != &self.provider {
                     return Err(Error::Unauthorized("wrong manifest provider".into()));
@@ -1906,17 +1871,11 @@ mod tests {
             &self.0
         }
 
-        fn verify<'a>(
-            &'a self,
-            _seed: &'a ForkSeed,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify<'a>(&'a self, _seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
-        fn verify_file<'a>(
-            &'a self,
-            file: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify_file<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 if file.volume().provider() != &self.0 {
                     return Err(Error::Unauthorized("wrong file provider".into()));
@@ -1931,17 +1890,11 @@ mod tests {
             &self.0
         }
 
-        fn verify<'a>(
-            &'a self,
-            _seed: &'a ForkSeed,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify<'a>(&'a self, _seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
-        fn verify_file<'a>(
-            &'a self,
-            _file: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify_file<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Err(Error::NotFound("pinned file".into())) })
         }
     }
@@ -1951,17 +1904,11 @@ mod tests {
             &self.provider
         }
 
-        fn verify<'a>(
-            &'a self,
-            _seed: &'a ForkSeed,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify<'a>(&'a self, _seed: &'a ForkSeed) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
         }
 
-        fn verify_file<'a>(
-            &'a self,
-            _file: &'a FileRef,
-        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        fn verify_file<'a>(&'a self, _file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 self.count.fetch_add(1, Ordering::Relaxed);
                 Ok(())

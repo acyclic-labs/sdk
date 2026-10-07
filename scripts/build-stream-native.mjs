@@ -180,6 +180,10 @@ function pathFromArtifact(output, artifactPath) {
   return candidate;
 }
 
+/**
+ * @param {string} output
+ * @param {{ expectedTarget?: string }} options
+ */
 async function assertBundle(output, { expectedTarget } = {}) {
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);

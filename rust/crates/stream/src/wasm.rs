@@ -8,7 +8,7 @@ use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::{Arc, Mutex};
+use std::{rc::Rc, sync::Mutex};
 use tsify::{Ts, Tsify};
 use wasm_bindgen::{JsCast, prelude::*};
 
@@ -105,15 +105,15 @@ fn check_command_size(input: &[u8]) -> Result<(), JsValue> {
     }
 }
 
-/// Stateful browser provider backed by the canonical Rust memory provider.
+/// Browser ABI over canonical Rust memory or durable providers.
 ///
 /// Unary operations use `dispatch(operation, request_bytes)` and return the
 /// corresponding protobuf response bytes. `read` and `children` return arrays
 /// of encoded stream response messages because protobuf streams have no single
 /// finite response envelope.
 #[wasm_bindgen]
-pub struct WasmMemoryStream {
-    provider: MemoryStream,
+pub struct WasmStream {
+    provider: Box<dyn StreamProvider>,
 }
 
 struct FollowState {
@@ -127,10 +127,10 @@ struct FollowState {
 /// always signal a pending call and promptly release its cursor.
 #[wasm_bindgen]
 pub struct WasmFollow {
-    state: Arc<FollowState>,
+    state: Rc<FollowState>,
 }
 
-async fn dispatch_commit(provider: &MemoryStream, input: &[u8]) -> Result<Vec<u8>, JsValue> {
+async fn dispatch_commit(provider: &dyn StreamProvider, input: &[u8]) -> Result<Vec<u8>, JsValue> {
     let request = decode::<wire::CommitRequest>(input)?;
     let deadline_unix_millis = request.deadline_unix_millis;
     let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
@@ -145,13 +145,34 @@ async fn dispatch_commit(provider: &MemoryStream, input: &[u8]) -> Result<Vec<u8
 }
 
 #[wasm_bindgen]
-impl WasmMemoryStream {
+impl WasmStream {
     #[wasm_bindgen(constructor)]
     #[must_use]
     pub fn new() -> Self {
         Self {
-            provider: MemoryStream::default(),
+            provider: Box::new(MemoryStream::default()),
         }
+    }
+
+    /// Opens the canonical Rust provider on one durable `IndexedDB` journal.
+    #[wasm_bindgen(js_name = openBrowser)]
+    pub async fn open_browser(
+        name: String,
+        maximum_commands: u32,
+        maximum_journal_bytes: u64,
+    ) -> Result<WasmStream, JsValue> {
+        let limits = crate::BrowserStreamLimits {
+            commands: u64::from(maximum_commands),
+            journal_bytes: maximum_journal_bytes,
+            ..Default::default()
+        };
+        Ok(Self {
+            provider: Box::new(
+                crate::BrowserStream::open(&name, limits)
+                    .await
+                    .map_err(js_error)?,
+            ),
+        })
     }
 
     /// Executes one finite unary operation over canonical protobuf bytes.
@@ -200,7 +221,7 @@ impl WasmMemoryStream {
                 let response = self.provider.fork(request).await.map_err(js_error)?;
                 wire_codec::fork_receipt_to_wire(&response).encode_to_vec()
             }
-            "commit" => dispatch_commit(&self.provider, input).await?,
+            "commit" => dispatch_commit(self.provider.as_ref(), input).await?,
             "read_commit" => {
                 let request = decode::<wire::ReadCommitRequest>(input)?;
                 let commit_id = <[u8; 32]>::try_from(request.commit_id.as_ref())
@@ -275,7 +296,7 @@ impl WasmMemoryStream {
         let stream = self.provider.follow(path, from).await.map_err(js_error)?;
         let (cancel, _) = tokio::sync::watch::channel(false);
         Ok(WasmFollow {
-            state: Arc::new(FollowState {
+            state: Rc::new(FollowState {
                 stream: Mutex::new(Some(stream)),
                 cancel,
             }),

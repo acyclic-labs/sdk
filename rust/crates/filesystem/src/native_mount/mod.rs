@@ -3301,10 +3301,11 @@ mod tests {
             )?],
             limits,
         )?;
-        std::fs::rename(
-            destination.join("renamed.bin"),
-            destination.join("moved.bin"),
-        )?;
+        rename_as_a_user_would(
+            &destination.join("renamed.bin"),
+            &destination.join("moved.bin"),
+        )
+        .map_err(|error| std::io::Error::other(format!("second host rename: {error}")))?;
         std::fs::write(destination.join("renamed.bin"), b"replacement")?;
         capture_watch_batch(
             &mut checkout,

@@ -23,7 +23,7 @@ use crate::{
     runtime::ContentBindings,
 };
 use acyclic_objects::v2::{ObjectsProvider, wire};
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

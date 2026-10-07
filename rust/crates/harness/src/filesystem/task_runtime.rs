@@ -23,8 +23,8 @@ use crate::{
     workflow::{MachineRegistry, MachineStatus, WorkflowCommand},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock, UnixMillisClock};
-use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// command identity through the existing journaled provider APIs. A ready result
 /// certifies that no uncertain dispatch remains; pending retains durable wait
 /// state rather than a future. This trait does not provide an effects ledger.
-pub trait TaskCommandHost: Send + Sync {
+pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
     /// Executes or reconciles a retained command under the exact task lease.
     fn execute<'a>(
         &'a self,
@@ -186,9 +186,9 @@ impl InteractionRouter for TaskJournalInteractions {
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
-    P: StreamProvider + Send + Sync + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
+    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
+    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
 {
     /// Uses one Stream provider for admission, accounting and both journals.
     /// Root admission always includes immutable session ceilings atomically.
@@ -1160,9 +1160,9 @@ pub struct FilesystemTaskExecution<P, A, O> {
 
 impl<P, A, O> FilesystemTaskExecution<P, A, O>
 where
-    P: StreamProvider + Send + Sync + 'static,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
+    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
+    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
 {
     /// Stable task-namespaced turn identity to use in `TurnInput` after reopen.
     #[must_use]
