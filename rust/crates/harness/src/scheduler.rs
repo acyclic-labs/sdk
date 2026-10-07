@@ -2264,6 +2264,7 @@ mod tests {
                 operation_id,
                 attempt_id,
                 step,
+                request_digest,
                 ..
             } = event
             {
@@ -2272,6 +2273,15 @@ mod tests {
                     .is_some_and(|op| op.cancellation_requested)
                 {
                     assert!(!accepted, "cancelled owner charged work: {event:?}");
+                }
+                if let Some(retained) = scheduler
+                    .model_claims
+                    .get(operation_id)
+                    .and_then(|claims| claims.attempts.get(attempt_id))
+                    .and_then(|steps| steps.get(step))
+                    && retained != request_digest
+                {
+                    assert!(!accepted, "changed request accepted as retry: {event:?}");
                 }
                 if accepted {
                     let existing = scheduler
