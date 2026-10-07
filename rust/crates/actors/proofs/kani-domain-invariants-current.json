@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.kani-proof/v1",
-  "captured_at": "2026-10-07T02:02:16Z",
+  "captured_at": "2026-10-07T02:48:23Z",
   "status": "proved",
   "source": {
     "revision": "371bb4170e16aca973176b6756a261ee5add7297",
@@ -9,7 +9,7 @@
       "rust\\crates\\actors\\src\\codegen.rs": "2D1EAA668AEC337FE159C1791C958655ACB0B807FEF9206ED1E2CB17B925BBC3",
       "rust\\crates\\actors\\src\\contract.rs": "BA1F52D0C30E11FD7C0203FE7C2DA1F057874828F18DF61528DC53D838587ABD",
       "rust\\crates\\actors\\src\\contract_definitions.rs": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA",
-      "rust\\crates\\actors\\src\\domain.rs": "FABCAF54CB8274425873C5FBA1B288E071C211C15718207AE552D0BC093B1195",
+      "rust\\crates\\actors\\src\\domain.rs": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
       "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "85251C6AB16FEE0F62F938681C466037D44AE5622E2788AB72F86C4BA6D9A689",
       "rust\\crates\\actors\\src\\grpc.rs": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
       "rust\\crates\\actors\\src\\http.rs": "FD04B1D37B4D9F75256373EFC232FC0030CC0BA32CB3974390A7081AC81BF675",
@@ -107,8 +107,8 @@
     "jobs": 1
   },
   "evidence": {
-    "log": "runner-validation-10-final.log",
-    "log_sha256": "F1DC3C325C17718073EF1C9448712F1BE3A57C6F48C9B8B299CA0A8772BDB367"
+    "log": "kani-domain-invariants-current.log",
+    "log_sha256": "4668F76AFACD7007D5A280A8F167635A23063F42BEFE25FE5F749C6693AE42A6"
   },
   "verification_policy": {
     "summary": "Manual Harness Summary: Complete - 10 successfully verified harnesses, 0 failures, 10 total",

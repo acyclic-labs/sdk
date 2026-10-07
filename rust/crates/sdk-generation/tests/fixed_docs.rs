@@ -381,7 +381,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         serde_json::from_slice(&fs::read(first.join("generation-manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["tool"]["id"], "sdk-docs-library");
     assert_eq!(manifest["family"], "acyclic_actors");
-    assert_eq!(manifest["tool"]["version"], "0.2.0");
+    assert_eq!(manifest["tool"]["version"], "0.1.0");
     assert_eq!(manifest["tool"]["channel"], "preview");
     assert!(manifest["tool"].get("args").is_none());
     assert!(
@@ -603,12 +603,12 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     .unwrap();
     fs::write(
         root.join("rust/crates/actors/Cargo.toml"),
-        "[package]\nname = \"acyclic-actors\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\n",
+        "[package]\nname = \"acyclic-actors\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\nbuild = \"build.rs\"\n",
     )
     .unwrap();
     fs::write(
         root.join("rust/crates/actors/src/lib.rs"),
-        "//! The executable Rust source for the Actors family.\n\npub fn visible() {}\n",
+        "//! The executable Rust source for the Actors family.\n\ninclude!(concat!(env!(\"OUT_DIR\"), \"/rust/fixture.generated.rs\"));\n\npub static GENERATED_DESCRIPTOR: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/rust/fixture.generated.bin\"));\n\npub fn visible() {}\n",
     )
     .unwrap();
     fs::write(
@@ -617,7 +617,10 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     )
     .unwrap();
     for (path, contents) in [
-        ("rust/crates/actors/build.rs", "fn main() {}\n"),
+        (
+            "rust/crates/actors/build.rs",
+            "use std::{env, fs, path::PathBuf};\n\nfn main() {\n    let out = PathBuf::from(env::var_os(\"OUT_DIR\").unwrap()).join(\"rust\");\n    fs::create_dir_all(&out).unwrap();\n    fs::write(out.join(\"fixture.generated.rs\"), \"pub fn generated_visible() {}\\n\").unwrap();\n    fs::write(out.join(\"fixture.generated.bin\"), b\"fixture descriptor\\n\").unwrap();\n}\n",
+        ),
         ("rust/crates/actors/README.md", "Actors\n"),
         (
             "rust/crates/sdk-docs/Cargo.toml",
@@ -676,7 +679,9 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     git(&root, &["commit", "--quiet", "-m", "fixture"]);
 
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
+    let cache = sandbox.join("cache");
     let result = command(binary, "generate", &root, None, &output, "release")
+        .env("CARGO_TARGET_DIR", &cache)
         .env("RUSTC", root.join("missing-rustc.exe"))
         .env("RUSTDOC", root.join("missing-rustdoc.exe"))
         .env("RUSTFLAGS", "--cfg injected_compiler_override")
@@ -713,7 +718,33 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
             .join("generated/typescript/actors/types.ts")
             .is_file()
     );
-    let drift = run(binary, "drift", &root, None, &output, "release");
+    assert!(
+        output
+            .join("generated/acyclic_actors/rust/fixture.generated.rs")
+            .is_file()
+    );
+    assert!(
+        output
+            .join("generated/acyclic_actors/rust/fixture.generated.bin")
+            .is_file()
+    );
+    let generated_source = output.join("generated/acyclic_actors/rust/fixture.generated.rs");
+    let generated_source_bytes = fs::read(&generated_source).unwrap();
+    fs::write(&generated_source, b"tampered generated source\n").unwrap();
+    let drift = command(binary, "drift", &root, None, &output, "release")
+        .env("CARGO_TARGET_DIR", &cache)
+        .output()
+        .unwrap();
+    assert!(!drift.status.success());
+    assert_eq!(
+        fs::read(&generated_source).unwrap(),
+        b"tampered generated source\n"
+    );
+    fs::write(&generated_source, generated_source_bytes).unwrap();
+    let drift = command(binary, "drift", &root, None, &output, "release")
+        .env("CARGO_TARGET_DIR", &cache)
+        .output()
+        .unwrap();
     assert!(
         drift.status.success(),
         "{}",

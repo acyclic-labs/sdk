@@ -44,12 +44,65 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
+use napi::bindgen_prelude::{
+    Array, AsyncTask, BigInt, Buffer, Error, FromNapiValue, PromiseRaw, Result, Status,
+    ToNapiValue,
+};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// A JavaScript number accepted at the N-API boundary as an exact `u32`.
+///
+/// N-API's built-in `u32` conversion can coerce fractional, negative, and
+/// overflowing JavaScript numbers. This binding-only wrapper checks the
+/// representation before the canonical Rust policy receives the value. Zero
+/// remains valid here so the Rust core retains ownership of positive-bound
+/// policy for operations that require it.
+#[napi(transparent, object_from_js = false, object_to_js = false)]
+pub struct NapiU32(u32);
+
+impl NapiU32 {
+    fn into_inner(self) -> u32 {
+        self.0
+    }
+}
+
+fn validate_napi_u32(number: f64) -> Result<u32> {
+    if !number.is_finite() || number.fract() != 0.0 || number < 0.0 || number > u32::MAX as f64 {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "expected a finite integer in the u32 range",
+        ));
+    }
+    Ok(number as u32)
+}
+
+fn read_napi_u32(env: napi::sys::napi_env, value: napi::sys::napi_value) -> Result<u32> {
+    let mut number = 0.0_f64;
+    napi::check_status!(unsafe { napi::sys::napi_get_value_double(env, value, &mut number) })?;
+    validate_napi_u32(number)
+}
+
+impl FromNapiValue for NapiU32 {
+    unsafe fn from_napi_value(
+        env: napi::sys::napi_env,
+        value: napi::sys::napi_value,
+    ) -> Result<Self> {
+        Ok(Self(read_napi_u32(env, value)?))
+    }
+}
+
+impl ToNapiValue for NapiU32 {
+    unsafe fn to_napi_value(
+        env: napi::sys::napi_env,
+        value: Self,
+    ) -> Result<napi::sys::napi_value> {
+        <u32 as ToNapiValue>::to_napi_value(env, value.0)
+    }
+}
 
 #[napi]
 #[allow(clippy::needless_pass_by_value)]
@@ -3522,10 +3575,13 @@ impl NativeWorkspaceGraph {
     pub async fn ancestors(
         &self,
         workspace_id: Buffer,
-        maximum: u32,
+        maximum: NapiU32,
     ) -> Result<Vec<NativeWorkspaceLineageRecord>> {
         self.inner
-            .ancestors(WorkspaceId::from_bytes(fixed_16(&workspace_id)?), maximum)
+            .ancestors(
+                WorkspaceId::from_bytes(fixed_16(&workspace_id)?),
+                maximum.into_inner(),
+            )
             .await
             .map(|records| {
                 records
@@ -7897,6 +7953,23 @@ mod tests {
         assert_eq!(facts.architecture, std::env::consts::ARCH);
         assert!(facts.local);
         assert!(facts.native_watch);
+    }
+
+    #[test]
+    fn napi_u32_boundary_rejects_non_exact_numbers_before_core_policy() -> Result<()> {
+        assert_eq!(validate_napi_u32(0.0)?, 0);
+        assert_eq!(validate_napi_u32(u32::MAX as f64)?, u32::MAX);
+        for value in [
+            -1.0,
+            0.5,
+            (u32::MAX as f64) + 1.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert!(validate_napi_u32(value).is_err(), "accepted invalid value {value}");
+        }
+        Ok(())
     }
 
     #[tokio::test]

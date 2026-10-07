@@ -29,6 +29,10 @@ impl BucketName {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    fn from_validated(value: String) -> Self {
+        Self(value)
+    }
 }
 
 impl AsRef<str> for BucketName {
@@ -96,6 +100,10 @@ impl ObjectKey {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    fn from_validated(value: String) -> Self {
+        Self(value)
+    }
 }
 
 impl AsRef<str> for ObjectKey {
@@ -155,6 +163,10 @@ impl IdempotencyKey {
     /// Consumes the wrapper and returns its validated string.
     pub fn into_string(self) -> String {
         self.0
+    }
+
+    fn from_validated(value: String) -> Self {
+        Self(value)
     }
 }
 
@@ -314,6 +326,18 @@ pub enum Precondition {
     IfMatch(Etag),
 }
 
+impl Precondition {
+    fn from_validated(value: wire::Preconditions) -> Self {
+        match value.condition {
+            Some(wire::preconditions::Condition::IfAbsent(true)) => Self::IfAbsent,
+            Some(wire::preconditions::Condition::IfMatch(value)) => {
+                Self::IfMatch(Etag::from_validated(value))
+            }
+            _ => unreachable!("request validator admitted an invalid precondition"),
+        }
+    }
+}
+
 impl TryFrom<wire::Preconditions> for Precondition {
     type Error = Error;
 
@@ -339,6 +363,313 @@ impl From<Precondition> for wire::Preconditions {
         };
         Self {
             condition: Some(condition),
+        }
+    }
+}
+
+/// A typed streaming object upload header.
+///
+/// The generated header remains the transport form. This façade keeps the
+/// bucket, key, metadata, precondition, and retry identity values validated by
+/// the canonical upload-header validator before they reach a provider.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PutObjectHeader {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    metadata: Option<ObjectMetadata>,
+    preconditions: Option<Precondition>,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl PutObjectHeader {
+    /// Creates an upload header for one validated bucket and object key.
+    pub fn new(bucket: BucketName, object_key: ObjectKey) -> Self {
+        Self {
+            bucket,
+            object_key,
+            metadata: None,
+            preconditions: None,
+            mutation: None,
+        }
+    }
+
+    /// Adds validated representation metadata to the upload.
+    pub fn with_metadata(mut self, metadata: ObjectMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Adds an atomic current-value condition to the upload.
+    pub fn with_precondition(mut self, precondition: Precondition) -> Self {
+        self.preconditions = Some(precondition);
+        self
+    }
+
+    /// Adds a caller retry identity to the upload.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns optional validated representation metadata.
+    pub fn metadata(&self) -> Option<&ObjectMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Returns the optional atomic condition.
+    pub fn precondition(&self) -> Option<&Precondition> {
+        self.preconditions.as_ref()
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::PutObjectHeader> for PutObjectHeader {
+    type Error = Error;
+
+    fn try_from(value: wire::PutObjectHeader) -> Result<Self, Self::Error> {
+        request::put_stream_digest(&value)?;
+        let wire::PutObjectHeader {
+            bucket,
+            object_key,
+            metadata,
+            preconditions,
+            mutation,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            metadata: metadata.map(ObjectMetadata::from_validated),
+            preconditions: preconditions.map(Precondition::from_validated),
+            mutation: mutation.map(|value| IdempotencyKey::from_validated(value.idempotency_key)),
+        })
+    }
+}
+
+impl From<PutObjectHeader> for wire::PutObjectHeader {
+    fn from(value: PutObjectHeader) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            metadata: value.metadata.map(Into::into),
+            preconditions: value.preconditions.map(Into::into),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A typed object read request with explicit optional range and ETag filters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GetObjectRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    range: Option<ByteSelection>,
+    if_match: Option<Etag>,
+    if_none_match: Option<Etag>,
+}
+
+impl GetObjectRequest {
+    /// Creates a read request for one validated bucket and object key.
+    pub fn new(bucket: BucketName, object_key: ObjectKey) -> Self {
+        Self {
+            bucket,
+            object_key,
+            range: None,
+            if_match: None,
+            if_none_match: None,
+        }
+    }
+
+    /// Adds a validated inclusive or suffix byte selection.
+    pub fn with_range(mut self, range: ByteSelection) -> Self {
+        self.range = Some(range);
+        self
+    }
+
+    /// Adds a validated current ETag filter.
+    pub fn with_if_match(mut self, etag: Etag) -> Self {
+        self.if_match = Some(etag);
+        self
+    }
+
+    /// Adds a validated nonmatching ETag filter.
+    pub fn with_if_none_match(mut self, etag: Etag) -> Self {
+        self.if_none_match = Some(etag);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the optional validated byte selection.
+    pub fn range(&self) -> Option<ByteSelection> {
+        self.range
+    }
+
+    /// Returns the optional current ETag filter.
+    pub fn if_match(&self) -> Option<&Etag> {
+        self.if_match.as_ref()
+    }
+
+    /// Returns the optional nonmatching ETag filter.
+    pub fn if_none_match(&self) -> Option<&Etag> {
+        self.if_none_match.as_ref()
+    }
+}
+
+impl TryFrom<wire::GetObjectRequest> for GetObjectRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::GetObjectRequest) -> Result<Self, Self::Error> {
+        use prost::Message;
+        request::validate_binary("objects/get", &value.encode_to_vec(), 0)?;
+        let wire::GetObjectRequest {
+            bucket,
+            object_key,
+            range,
+            if_match,
+            if_none_match,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            range: range.map(ByteSelection::try_from).transpose()?,
+            if_match: (!if_match.is_empty()).then(|| Etag::from_validated(if_match)),
+            if_none_match: (!if_none_match.is_empty())
+                .then(|| Etag::from_validated(if_none_match)),
+        })
+    }
+}
+
+impl From<GetObjectRequest> for wire::GetObjectRequest {
+    fn from(value: GetObjectRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            range: value.range.map(Into::into),
+            if_match: value.if_match.map(Etag::into_string).unwrap_or_default(),
+            if_none_match: value
+                .if_none_match
+                .map(Etag::into_string)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+/// A typed object metadata read request with explicit optional ETag filters.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeadObjectRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    if_match: Option<Etag>,
+    if_none_match: Option<Etag>,
+}
+
+impl HeadObjectRequest {
+    /// Creates a metadata request for one validated bucket and object key.
+    pub fn new(bucket: BucketName, object_key: ObjectKey) -> Self {
+        Self {
+            bucket,
+            object_key,
+            if_match: None,
+            if_none_match: None,
+        }
+    }
+
+    /// Adds a validated current ETag filter.
+    pub fn with_if_match(mut self, etag: Etag) -> Self {
+        self.if_match = Some(etag);
+        self
+    }
+
+    /// Adds a validated nonmatching ETag filter.
+    pub fn with_if_none_match(mut self, etag: Etag) -> Self {
+        self.if_none_match = Some(etag);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the optional current ETag filter.
+    pub fn if_match(&self) -> Option<&Etag> {
+        self.if_match.as_ref()
+    }
+
+    /// Returns the optional nonmatching ETag filter.
+    pub fn if_none_match(&self) -> Option<&Etag> {
+        self.if_none_match.as_ref()
+    }
+}
+
+impl TryFrom<wire::HeadObjectRequest> for HeadObjectRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::HeadObjectRequest) -> Result<Self, Self::Error> {
+        use prost::Message;
+        request::validate_binary("objects/head", &value.encode_to_vec(), 0)?;
+        let wire::HeadObjectRequest {
+            bucket,
+            object_key,
+            if_match,
+            if_none_match,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            if_match: (!if_match.is_empty()).then(|| Etag::from_validated(if_match)),
+            if_none_match: (!if_none_match.is_empty())
+                .then(|| Etag::from_validated(if_none_match)),
+        })
+    }
+}
+
+impl From<HeadObjectRequest> for wire::HeadObjectRequest {
+    fn from(value: HeadObjectRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            if_match: value.if_match.map(Etag::into_string).unwrap_or_default(),
+            if_none_match: value
+                .if_none_match
+                .map(Etag::into_string)
+                .unwrap_or_default(),
         }
     }
 }
@@ -1125,6 +1456,67 @@ mod tests {
             mutation: None,
         };
         assert!(DeleteObjectRequest::try_from(invalid).is_err());
+    }
+
+    #[test]
+    fn typed_object_requests_round_trip_presence_and_ranges() {
+        let bucket = BucketName::try_from("customer.inputs").unwrap();
+        let object_key = ObjectKey::try_from("artifact").unwrap();
+        let metadata = ObjectMetadata::try_from(wire::ObjectMetadata {
+            content_type: "application/octet-stream".into(),
+            user: [("x-owner".into(), "customer".into())].into(),
+            ..Default::default()
+        })
+        .unwrap();
+        let put = PutObjectHeader::new(bucket.clone(), object_key.clone())
+            .with_metadata(metadata)
+            .with_precondition(Precondition::IfMatch(Etag::try_from("etag-1").unwrap()))
+            .with_idempotency_key(IdempotencyKey::try_from("put-1").unwrap());
+        let put_wire = wire::PutObjectHeader::from(put.clone());
+        assert_eq!(PutObjectHeader::try_from(put_wire), Ok(put));
+
+        let get = GetObjectRequest::new(bucket.clone(), object_key.clone())
+            .with_range(ByteSelection::bytes(2, None).unwrap())
+            .with_if_match(Etag::try_from("etag-1").unwrap())
+            .with_if_none_match(Etag::try_from("etag-2").unwrap());
+        let get_wire = wire::GetObjectRequest::from(get.clone());
+        assert_eq!(GetObjectRequest::try_from(get_wire), Ok(get));
+
+        let head = HeadObjectRequest::new(bucket, object_key)
+            .with_if_none_match(Etag::try_from("etag-2").unwrap());
+        let head_wire = wire::HeadObjectRequest::from(head.clone());
+        assert_eq!(HeadObjectRequest::try_from(head_wire), Ok(head));
+    }
+
+    #[test]
+    fn typed_object_requests_reject_invalid_wire_values() {
+        assert!(PutObjectHeader::try_from(wire::PutObjectHeader {
+            bucket: None,
+            object_key: "artifact".into(),
+            metadata: None,
+            preconditions: None,
+            mutation: None,
+        })
+        .is_err());
+        assert!(GetObjectRequest::try_from(wire::GetObjectRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            object_key: "artifact".into(),
+            range: Some(wire::ByteRange { selection: None }),
+            if_match: String::new(),
+            if_none_match: String::new(),
+        })
+        .is_err());
+        assert!(HeadObjectRequest::try_from(wire::HeadObjectRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            object_key: "artifact".into(),
+            if_match: "etag\0bad".into(),
+            if_none_match: String::new(),
+        })
+        .is_err());
     }
 
     #[test]

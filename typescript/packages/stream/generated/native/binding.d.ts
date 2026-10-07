@@ -53,8 +53,14 @@ export declare class NativeStreamClient {
 export declare class NativeStreamFollow {
   /** Returns the next canonical `ReadResponse`, or an empty result at end/close. */
   nextResult(): Promise<NativeStreamNextResult>
-  /** Cancels this cursor and releases its transport stream. */
-  close(): void
+  /**
+   * Cancels this cursor and waits for its transport stream to be released.
+   *
+   * A pending `nextResult` call is woken by the cancellation token and
+   * releases its transport stream when that call returns. A cursor cannot
+   * be reopened after it has been cancelled.
+   */
+  close(): Promise<void>
 }
 
 /** Typed connection result used by generated wrappers. */

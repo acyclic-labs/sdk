@@ -57,14 +57,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          RELEASE_TAG: acyclic-v${{ steps.release.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          count=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
+          run=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/release-acyclic.yml/runs" \
             -f head_sha="$SOURCE_SHA" -f status=success -F per_page=100 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success" and (.event == "workflow_dispatch" or .event == "release"))] | length')
-          test "$count" -gt 0
+            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .head_branch == env.RELEASE_TAG and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | if length == 0 then empty else sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv end')
+          read -r run_id run_attempt <<<"$run"
+          test -n "$run_id" && test -n "$run_attempt"
+          qualification=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
+            --jq 'any(.jobs[]; ((.name | endswith("SDK Qualification")) or (.name | endswith("Full SDK qualification"))) and .conclusion == "success")')
+          test "$qualification" = true
+          artifact="packages-linux-${run_id}-${run_attempt}"
+          artifact_present=$(ARTIFACT="$artifact" gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq 'any(.artifacts[]; .name == env.ARTIFACT and .expired == false)')
+          test "$artifact_present" = true
       - name: Bundle exact publication source
         shell: bash
         run: git bundle create "$RUNNER_TEMP/cargo-publication.bundle" "$GITHUB_REF"

@@ -70,20 +70,30 @@ jobs:
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
 
-      - name: Download exact successful qualification artifact
+      - name: Download exact release qualification artifact
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          RELEASE_TAG: acyclic-v${{ steps.release.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           run=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/release-acyclic.yml/runs" \
             -f head_sha="$SOURCE_SHA" -f status=success -F per_page=100 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success" and (.event == "workflow_dispatch" or .event == "release"))] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
+            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .head_branch == env.RELEASE_TAG and .conclusion == "success" and (.event == "push" or .event == "workflow_dispatch"))] | if length == 0 then empty else sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv end')
           read -r run_id run_attempt <<<"$run"
           test -n "$run_id" && test -n "$run_attempt"
+          qualification=$(gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt/jobs?per_page=100" \
+            --jq 'any(.jobs[]; ((.name | endswith("SDK Qualification")) or (.name | endswith("Full SDK qualification"))) and .conclusion == "success")')
+          test "$qualification" = true
           artifact="packages-linux-${run_id}-${run_attempt}"
+          artifact_present=$(ARTIFACT="$artifact" gh api --method GET \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" \
+            --jq 'any(.artifacts[]; .name == env.ARTIFACT and .expired == false)')
+          test "$artifact_present" = true
+          printf 'RELEASE_RUN_ID=%s\nRELEASE_RUN_ATTEMPT=%s\n' "$run_id" "$run_attempt" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/qualified"
           gh run download "$run_id" --name "$artifact" --dir "$RUNNER_TEMP/qualified"
           test -f "$RUNNER_TEMP/qualified/typescript/QUALIFICATION.json"
@@ -113,16 +123,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ steps.release.outputs.source_sha }}
+          RELEASE_TAG: acyclic-v${{ steps.release.outputs.version }}
           VERSION: ${{ steps.release.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          run=$(gh api --method GET \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/release-acyclic.yml/runs" \
-            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=20 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success")] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
-          read -r run_id run_attempt <<<"$run"
-          test -n "$run_id" && test -n "$run_attempt"
+          run_id="${RELEASE_RUN_ID:?missing exact release qualification run id}"
+          run_attempt="${RELEASE_RUN_ATTEMPT:?missing exact release qualification run attempt}"
           universal="$RUNNER_TEMP/qualified-plugin"
           mkdir -p "$universal"
           gh run download "$run_id" --name acyclic-universal --dir "$universal"

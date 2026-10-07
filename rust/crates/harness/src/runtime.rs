@@ -822,6 +822,9 @@ pub trait DurableTaskHost: Send + Sync {
         task_id: TaskId,
         operation_id: OperationId,
     ) -> BoxFuture<'a, Result<Outcome<Value>>> {
+        if task_id.into_bytes() == operation_id.into_bytes() {
+            return self.wait_outcome(task_id);
+        }
         Box::pin(async move {
             let mut delay_ms = 50_u64;
             loop {
@@ -1035,6 +1038,9 @@ pub trait TaskStateProvider: Send + Sync {
         task_id: TaskId,
         operation_id: OperationId,
     ) -> BoxFuture<'a, Result<Outcome<Value>>> {
+        if task_id.into_bytes() == operation_id.into_bytes() {
+            return self.wait_outcome(task_id);
+        }
         Box::pin(async move {
             let mut delay_ms = 50_u64;
             loop {
@@ -1976,9 +1982,14 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
                 }
                 Outcome::Failed { message } => Ok(Outcome::Failed { message }),
                 Outcome::Cancelled => Ok(Outcome::Cancelled),
-                Outcome::Indeterminate { operation_id } => {
-                    Ok(Outcome::Indeterminate { operation_id })
-                }
+                Outcome::Indeterminate {
+                    operation_id: returned_operation_id,
+                } if returned_operation_id == operation_id => Ok(Outcome::Indeterminate {
+                    operation_id: returned_operation_id,
+                }),
+                Outcome::Indeterminate { .. } => Err(Error::Conflict(
+                    "durable host returned another operation identity".into(),
+                )),
             },
         }
     }
@@ -7699,6 +7710,7 @@ mod tests {
         event_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
         cancel_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
         outcome_operations: Arc<std::sync::Mutex<Vec<OperationId>>>,
+        outcome: Outcome<Value>,
     }
 
     impl TaskStateProvider for DistinctTaskOperationProvider {
@@ -7738,7 +7750,8 @@ mod tests {
                 .lock()
                 .expect("outcome operation recorder is not poisoned")
                 .push(operation_id);
-            Box::pin(async { Ok(Some(Outcome::Cancelled)) })
+            let outcome = self.outcome.clone();
+            Box::pin(async move { Ok(Some(outcome)) })
         }
 
         fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
@@ -7816,6 +7829,7 @@ mod tests {
             event_operations: Arc::clone(&event_operations),
             cancel_operations: Arc::clone(&cancel_operations),
             outcome_operations: Arc::clone(&outcome_operations),
+            outcome: Outcome::Cancelled,
         });
         let task = RuntimeTask::<Value>::Durable {
             task_id,
@@ -7860,6 +7874,93 @@ mod tests {
                 .expect("cancel operation recorder is not poisoned"),
             vec![operation_id]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_runtime_rejects_wrong_indeterminate_identity() -> Result<()> {
+        let task_id = TaskId::from_bytes([10; 16]);
+        let operation_id = OperationId::from_bytes([20; 16]);
+        let provider = Arc::new(DistinctTaskOperationProvider {
+            task_id,
+            operation_id,
+            event_operations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            cancel_operations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            outcome_operations: Arc::new(std::sync::Mutex::new(Vec::new())),
+            outcome: Outcome::Indeterminate {
+                operation_id: OperationId::from_bytes([21; 16]),
+            },
+        });
+        let task = RuntimeTask::<Value>::Durable {
+            task_id,
+            operation_id,
+            host: provider,
+            output_schema: serde_json::json!({}),
+            extensions: None,
+        };
+        assert!(matches!(
+            task.result().await,
+            Err(Error::Conflict(message))
+                if message == "durable host returned another operation identity"
+        ));
+        Ok(())
+    }
+
+    struct LegacyWaitProvider {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl TaskStateProvider for LegacyWaitProvider {
+        fn policy_identity(&self) -> Option<ComponentIdentity> {
+            None
+        }
+
+        fn observe_admission<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            Box::pin(async { Err(Error::Unsupported("legacy wait test provider".into())) })
+        }
+
+        fn resume_scope<'a>(
+            &'a self,
+            _task_id: TaskId,
+            _operation_id: OperationId,
+        ) -> BoxFuture<'a, Result<RuntimeScope>> {
+            Box::pin(async { Err(Error::Unsupported("legacy wait test provider".into())) })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Err(Error::Conflict("polling path used".into())) })
+        }
+
+        fn wait_outcome<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(Outcome::Succeeded(serde_json::json!(11))) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("legacy wait test provider".into())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn equal_identity_wait_preserves_legacy_provider_override() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let provider = LegacyWaitProvider {
+            calls: Arc::clone(&calls),
+        };
+        let identity = OperationId::from_bytes([44; 16]);
+        assert_eq!(
+            provider
+                .wait_outcome_for(TaskId::from_bytes([44; 16]), identity)
+                .await?,
+            Outcome::Succeeded(serde_json::json!(11))
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

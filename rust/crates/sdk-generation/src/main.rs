@@ -1,5 +1,7 @@
 use depinfo::RustcDepInfo;
-use sdk_docs::{BuildInput, Channel, DocsData, GENERATOR_VERSION, build_data, write_bundle};
+use sdk_docs::{
+    BuildInput, Channel, DocsData, GENERATOR_VERSION, GeneratedSource, build_data, write_bundle,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -106,6 +108,7 @@ struct PinnedToolchain {
 struct RustdocInput {
     paths: Vec<PathBuf>,
     markdown_dependencies: Vec<PathBuf>,
+    generated_sources: Vec<GeneratedSource>,
     _cache_lock: Option<RustdocCacheLock>,
     toolchain: Option<PinnedToolchainRecord>,
 }
@@ -949,6 +952,239 @@ fn resolve_dep_info_path(dependency: PathBuf, dependency_root: &Path) -> PathBuf
     }
 }
 
+fn resolve_dep_info_path_with_roots(
+    dependency: PathBuf,
+    checkout_root: &Path,
+    target_root: &Path,
+) -> io::Result<PathBuf> {
+    if dependency.is_absolute() {
+        return Ok(dependency);
+    }
+    let checkout_path = checkout_root.join(&dependency);
+    let target_path = target_root.join(&dependency);
+    let checkout_exists = fs::symlink_metadata(&checkout_path).is_ok();
+    let target_exists = fs::symlink_metadata(&target_path).is_ok();
+    match (checkout_exists, target_exists) {
+        (true, false) => Ok(checkout_path),
+        (false, true) => Ok(target_path),
+        (false, false) => Ok(checkout_path),
+        (true, true) => {
+            let checkout_canonical = canonical(&checkout_path)?;
+            let target_canonical = canonical(&target_path)?;
+            if checkout_canonical == target_canonical {
+                Ok(checkout_path)
+            } else {
+                Err(io::Error::other(format!(
+                    "rustdoc dep-info path is ambiguous between checkout and target: {}",
+                    dependency.display()
+                )))
+            }
+        }
+    }
+}
+
+fn generated_out_dir(
+    dep_info: &RustcDepInfo,
+    dep_info_target: &Path,
+    owner: &RustdocOwner,
+) -> io::Result<Option<PathBuf>> {
+    let values: Vec<&Option<String>> = dep_info
+        .env
+        .iter()
+        .filter(|(name, _)| name == "OUT_DIR")
+        .map(|(_, value)| value)
+        .collect();
+    if values.len() > 1 {
+        return Err(io::Error::other(format!(
+            "rustdoc dep-info contains multiple OUT_DIR values for {}",
+            owner.package
+        )));
+    }
+    let Some(value) = values.first().copied() else {
+        return Ok(None);
+    };
+    let value = value.as_ref().ok_or_else(|| {
+        io::Error::other(format!(
+            "rustdoc dep-info contains an unset OUT_DIR for {}",
+            owner.package
+        ))
+    })?;
+    let target = canonical(dep_info_target)?;
+    let raw_out_dir = Path::new(value);
+    reject_reparse_ancestors(raw_out_dir, true)?;
+    let out_dir = canonical(raw_out_dir)?;
+    reject_reparse_ancestors(&out_dir, true)?;
+    if !out_dir.is_dir() {
+        return Err(io::Error::other(format!(
+            "rustdoc OUT_DIR is not a directory: {}",
+            out_dir.display()
+        )));
+    }
+    let relative = out_dir.strip_prefix(&target).map_err(|_| {
+        io::Error::other(format!(
+            "rustdoc OUT_DIR escapes its dep-info target: {}",
+            out_dir.display()
+        ))
+    })?;
+    let components: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    if components.len() != 4
+        || components[0] != "debug"
+        || components[1] != "build"
+        || components[3] != "out"
+        || !components[2].starts_with(&format!("{}-", owner.package))
+        || components[2].len() <= owner.package.len() + 1
+    {
+        return Err(io::Error::other(format!(
+            "rustdoc OUT_DIR is not the declared build output for {}: {}",
+            owner.package,
+            out_dir.display()
+        )));
+    }
+    Ok(Some(out_dir))
+}
+
+fn path_has_owner_out_dir(path: &Path, target: &Path, owner: &RustdocOwner) -> bool {
+    let Ok(relative) = path.strip_prefix(target) else {
+        return false;
+    };
+    let components: Vec<String> = relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    components.windows(4).any(|window| {
+        window[0] == "debug"
+            && window[1] == "build"
+            && window[2].starts_with(&format!("{}-", owner.package))
+            && window[3] == "out"
+    })
+}
+
+fn generated_sources_for_owner(
+    config: &Config,
+    dep_info: &RustcDepInfo,
+    dep_info_target: &Path,
+    json_target: &Path,
+    owner: &RustdocOwner,
+) -> io::Result<Vec<GeneratedSource>> {
+    let Some(dep_out) = generated_out_dir(dep_info, dep_info_target, owner)? else {
+        let target = canonical(dep_info_target)?;
+        for dependency in &dep_info.files {
+            let path = resolve_dep_info_path_with_roots(
+                dependency.clone(),
+                &config.root,
+                dep_info_target,
+            )?;
+            reject_reparse_ancestors(&path, true)?;
+            let path = canonical(&path)?;
+            if path_has_owner_out_dir(&path, &target, owner) {
+                return Err(io::Error::other(format!(
+                    "rustdoc dep-info references generated output without OUT_DIR for {}",
+                    owner.package
+                )));
+            }
+        }
+        return Ok(Vec::new());
+    };
+    let dep_target = canonical(dep_info_target)?;
+    let json_target = canonical(json_target)?;
+    let relative_out = dep_out
+        .strip_prefix(&dep_target)
+        .map_err(|_| io::Error::other("validated rustdoc OUT_DIR is outside its target"))?;
+    let json_out = json_target.join(relative_out);
+    reject_reparse_ancestors(&json_out, true)?;
+    let json_out = canonical(&json_out)?;
+    if !json_out.starts_with(&json_target) || !json_out.is_dir() {
+        return Err(io::Error::other(format!(
+            "matching rustdoc JSON OUT_DIR is invalid: {}",
+            json_out.display()
+        )));
+    }
+
+    let mut declared = BTreeSet::new();
+    let mut generated_files = Vec::new();
+    for dependency in &dep_info.files {
+        let path =
+            resolve_dep_info_path_with_roots(dependency.clone(), &config.root, dep_info_target)?;
+        reject_reparse_ancestors(&path, true)?;
+        let path = canonical(&path)?;
+        if !path_has_owner_out_dir(&path, &dep_target, owner) {
+            continue;
+        }
+        if !path.starts_with(&dep_out) || path == dep_out {
+            return Err(io::Error::other(format!(
+                "rustdoc dep-info generated path escapes OUT_DIR: {}",
+                path.display()
+            )));
+        }
+        let relative = path
+            .strip_prefix(&dep_out)
+            .map_err(|_| io::Error::other("generated path escapes OUT_DIR"))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !declared.insert(relative.clone()) {
+            return Err(io::Error::other(format!(
+                "rustdoc dep-info declares generated path more than once for {}",
+                owner.package
+            )));
+        }
+        let relative_path = Path::new(&relative);
+        let json_file = json_out.join(relative_path);
+        reject_reparse_ancestors(&json_file, true)?;
+        let json_file = canonical(&json_file)?;
+        if !json_file.starts_with(&json_out) || !json_file.is_file() {
+            return Err(io::Error::other(format!(
+                "matching rustdoc JSON generated file is invalid: {}",
+                json_file.display()
+            )));
+        }
+        let dep_file = hash_file(&path, relative.clone())?;
+        let json_hash = hash_file(&json_file, relative.clone())?;
+        if dep_file.sha256 != json_hash.sha256 || dep_file.bytes != json_hash.bytes {
+            return Err(io::Error::other(format!(
+                "rustdoc generated file differs between lanes: {relative}"
+            )));
+        }
+        generated_files.push((relative, path, json_file, dep_file));
+    }
+    generated_files.sort_by(|left, right| left.0.cmp(&right.0));
+
+    let output_root = (config.operation == "generate")
+        .then(|| canonical(&config.output))
+        .transpose()?;
+    let mut generated_sources = Vec::with_capacity(generated_files.len());
+    for (relative, source, json_file, file) in generated_files {
+        let logical_path = PathBuf::from(format!("generated/{}/{}", owner.crate_name, relative));
+        if let Some(output_root) = &output_root {
+            let destination = output_root.join(&logical_path);
+            if !destination.starts_with(output_root) {
+                return Err(io::Error::other("generated output escapes generation root"));
+            }
+            if let Some(parent) = destination.parent() {
+                reject_reparse_ancestors(parent, false)?;
+                fs::create_dir_all(parent)?;
+                reject_reparse_ancestors(parent, true)?;
+            }
+            reject_reparse_ancestors(&destination, false)?;
+            fs::copy(&source, &destination)?;
+            let copied_hash = hash_file(&destination, relative.clone())?;
+            if copied_hash.sha256 != file.sha256 || copied_hash.bytes != file.bytes {
+                return Err(io::Error::other(format!(
+                    "copied generated file changed while staging: {relative}"
+                )));
+            }
+        }
+        generated_sources.push(GeneratedSource {
+            physical_path: json_file,
+            logical_path,
+            sha256: file.sha256,
+        });
+    }
+    Ok(generated_sources)
+}
+
 fn reject_unsupported_make_escapes(path: &Path) -> io::Result<()> {
     let display = path.to_string_lossy();
     if display.contains(r"\#") || display.contains(r"\:") {
@@ -1042,6 +1278,50 @@ fn validate_rustdoc_data(data: &DocsData, owners: &[RustdocOwner]) -> io::Result
         return Err(io::Error::other(format!(
             "rustdoc input families do not match release/cargo-crates.json: expected {expected:?}, got {actual:?}"
         )));
+    }
+    Ok(())
+}
+
+fn validate_generated_artifacts(
+    artifacts: &[FileHash],
+    generated_sources: &[GeneratedSource],
+    owners: &[RustdocOwner],
+) -> io::Result<()> {
+    let mut expected = BTreeMap::new();
+    for source in generated_sources {
+        let logical = source.logical_path.to_string_lossy().replace('\\', "/");
+        if expected
+            .insert(logical.clone(), source.sha256.as_str())
+            .is_some()
+        {
+            return Err(io::Error::other(format!(
+                "generated source logical path is duplicated: {logical}"
+            )));
+        }
+    }
+    for (logical, sha256) in &expected {
+        let artifact = artifacts.iter().find(|artifact| &artifact.path == logical);
+        let Some(artifact) = artifact else {
+            return Err(io::Error::other(format!(
+                "generated source artifact is missing: {logical}"
+            )));
+        };
+        if artifact.sha256 != *sha256 {
+            return Err(io::Error::other(format!(
+                "generated source artifact changed: {logical}"
+            )));
+        }
+    }
+    for owner in owners {
+        let prefix = format!("generated/{}/", owner.crate_name);
+        for artifact in artifacts {
+            if artifact.path.starts_with(&prefix) && !expected.contains_key(&artifact.path) {
+                return Err(io::Error::other(format!(
+                    "generated source artifact is not declared by current rustdoc: {}",
+                    artifact.path
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -1293,6 +1573,7 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
     let tools = pinned_toolchain()?;
     let mut paths = Vec::with_capacity(owners.len());
     let mut markdown_dependencies = Vec::new();
+    let mut generated_sources = Vec::new();
     for owner in owners {
         let json = json_target
             .join("doc")
@@ -1344,6 +1625,14 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
                 dep_info.display()
             )));
         }
+        let parsed_dep_info = read_dep_info(&dep_info)?;
+        generated_sources.extend(generated_sources_for_owner(
+            config,
+            &parsed_dep_info,
+            &dep_info_target,
+            &json_target,
+            owner,
+        )?);
         markdown_dependencies.extend(rustdoc_markdown_dependencies(
             &dep_info,
             &config.root,
@@ -1356,6 +1645,7 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
     Ok(RustdocInput {
         paths,
         markdown_dependencies,
+        generated_sources,
         _cache_lock: Some(cache_lock),
         toolchain,
     })
@@ -1372,6 +1662,7 @@ fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rustd
             Ok(RustdocInput {
                 paths,
                 markdown_dependencies: Vec::new(),
+                generated_sources: Vec::new(),
                 _cache_lock: None,
                 toolchain: None,
             })
@@ -1466,6 +1757,7 @@ fn generate(config: &Config) -> io::Result<()> {
         source_sha256: Some(source_sha256.clone()),
         repository_root: config.root.clone(),
         rustdoc_files: rustdoc_paths,
+        generated_sources: rustdoc_input.generated_sources.clone(),
         mark_latest: false,
     };
     let data = build_data(&input).map_err(io::Error::other)?;
@@ -1570,6 +1862,7 @@ fn drift(config: &Config) -> io::Result<()> {
         return Err(io::Error::other("fixed documentation stage drift detected"));
     }
     let artifacts = collect_outputs(&config.output)?;
+    validate_generated_artifacts(&artifacts, &rustdoc_input.generated_sources, &owners)?;
     if manifest.artifacts != artifacts || manifest.artifacts_sha256 != tree_digest(&artifacts) {
         return Err(io::Error::other("generated output drift detected"));
     }
@@ -1714,6 +2007,40 @@ mod tests {
         assert_eq!(
             resolve_dep_info_path(PathBuf::from("rust/crates/actors/README.md"), root,),
             root.join("rust/crates/actors/README.md")
+        );
+    }
+
+    #[test]
+    fn generated_artifact_hash_must_match_current_rustdoc_source() {
+        let owners = vec![RustdocOwner {
+            package: "acyclic-actors".into(),
+            version: "0.1.0".into(),
+            crate_name: "acyclic_actors".into(),
+            target_kind: "lib".into(),
+            target_name: "acyclic_actors".into(),
+            package_root: PathBuf::from("rust/crates/actors"),
+        }];
+        let generated = GeneratedSource {
+            physical_path: PathBuf::from("json-target/rust/generated.rs"),
+            logical_path: PathBuf::from("generated/acyclic_actors/rust/generated.rs"),
+            sha256: "sha256:current".into(),
+        };
+        let unchanged = vec![FileHash {
+            path: "generated/acyclic_actors/rust/generated.rs".into(),
+            sha256: "sha256:current".into(),
+            bytes: 7,
+        }];
+        assert!(validate_generated_artifacts(&unchanged, &[generated.clone()], &owners).is_ok());
+
+        let changed = vec![FileHash {
+            sha256: "sha256:stale".into(),
+            ..unchanged[0].clone()
+        }];
+        let error = validate_generated_artifacts(&changed, &[generated], &owners).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("generated source artifact changed")
         );
     }
 }

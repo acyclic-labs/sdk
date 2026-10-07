@@ -21,6 +21,7 @@ fn build_preview(root: PathBuf, rustdoc_json: PathBuf) -> Result<DocsData, Error
         source_sha256: None,
         repository_root: root,
         rustdoc_files: vec![rustdoc_json],
+        generated_sources: Vec::new(),
         mark_latest: false,
     })
 }
@@ -31,6 +32,26 @@ items, docs, source spans, reexports, and same-crate public documentation links,
 then returns `DocsData`. Call `write_bundle` to persist the data file, generated
 schema, and guarded release or preview version index. Published release data
 files are immutable; the index is validated and replaced atomically.
+
+Rustdoc source spans inside `repository_root` are emitted as stable
+repository-relative paths with normalized separators. A span whose physical
+file is outside that checkout requires a transient `BuildInput.generated_sources`
+entry. Each [`GeneratedSource`](src/lib.rs) entry identifies the exact physical
+file, a relative logical path such as `generated/actors/wire.rs`, and its
+SHA-256 digest (with or without the `sha256:` prefix). The library canonicalizes
+the physical file, rejects symlink or reparse-point paths, rejects absolute or
+escaping logical paths, rejects duplicate mappings, and verifies the digest
+before projection and again after projection. The resulting `SourceSpan.path`
+uses the logical path while retaining Rustdoc's line and column coordinates;
+generated-source inputs are transient and do not add fields to the v1 output
+schema.
+
+Crate-root `//!` documentation becomes a guide at the crate path. Public module
+documentation becomes a guide at that module's Rust path; its title is the
+first level-one Markdown heading, falling back to the final path component.
+Public item comments, reexports, and same-crate Rustdoc links remain attached to
+their projected API items, with reexported definitions using the effective
+definition's documentation when the reexport has none.
 
 The publication root contains `sdk-docs-versions.v1.json` and its
 `sdk-docs-versions.v1.schema.json`. The index's `latest` entry is always the

@@ -1479,7 +1479,9 @@ impl From<InvokeActorResponse> for wire::InvokeActorResponse {
 /// writes into the Rust source tree. `ts-rs` keeps dependency traversal and
 /// import paths derived from these Rust types.
 pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
-    let config = Config::from_env().with_out_dir(path.as_ref());
+    let config = Config::from_env()
+        .with_out_dir(path.as_ref())
+        .with_import_extension(Some("js"));
 
     macro_rules! export_roots {
         ($($root:ty),+ $(,)?) => {
@@ -1489,6 +1491,8 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
 
     export_roots!(
         PositiveU64,
+        ErrorCode,
+        ServiceError,
         CreateActorRequest,
         UpdateActorRequest,
         InspectActorRequest,
@@ -1520,6 +1524,24 @@ mod tests {
             ActorId::new("  ".into()).map(|value| value.as_str().to_owned()),
             Ok(String::from("  "))
         );
+    }
+
+    #[test]
+    fn typescript_export_includes_error_roots_with_esm_imports() {
+        let output = std::env::temp_dir().join(format!(
+            "acyclic-actors-typescript-export-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&output);
+
+        export_typescript(&output).expect("Actors TypeScript export should succeed");
+
+        let service_error =
+            std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
+        assert!(service_error.contains("from \"./ErrorCode.js\""));
+        assert!(output.join("actors/ErrorCode.ts").is_file());
+
+        std::fs::remove_dir_all(output).expect("remove temporary export");
     }
 
     #[test]

@@ -1,21 +1,21 @@
 # Releasing Acyclic
 
-All release tags must be annotated tags at the same qualified commit on `main`.
-There is no staging registry or `next` promotion step.
+All release tags must be annotated tags at the same commit on `main`. There is
+no staging registry or `next` promotion step. **Release Acyclic** performs the
+full SDK Qualification as a required reusable workflow before it assembles any
+release artifacts.
 
-1. Merge the release commit, manually dispatch **SDK Qualification** for that
-   exact commit, and wait for the full run to succeed (every job, not only the
-   required check).
-2. Push `acyclic-v<VERSION>`. **Release Acyclic** builds and certifies every
-   platform binary, assembles the universal plugin, and creates the GitHub
-   release.
-3. Push `npm-v<VERSION>` at the same commit. **Publish npm release** downloads
-   the exact successful SDK qualification and universal-plugin artifacts,
-   verifies their source commit and bytes, and publishes all packages in the
-   order defined by [`npm-packages.json`](npm-packages.json).
-4. Push `cargo-v<VERSION>` at the same commit. **Publish Cargo release** imports
-   the exact qualified source bundle and publishes crates in the order defined
-   by [`cargo-crates.json`](cargo-crates.json).
+1. Merge the release commit and push `acyclic-v<VERSION>` at that exact commit.
+   **Release Acyclic** builds and certifies every platform binary, runs the full
+   SDK Qualification for the tagged source, assembles the universal plugin, and
+   creates the GitHub release. Wait for every job to succeed.
+2. Push `npm-v<VERSION>` at the same commit. **Publish npm release** locates the
+   exact successful **Release Acyclic** caller run, verifies its full SDK
+   Qualification job and artifacts, and publishes all packages in the order
+   defined by [`npm-packages.json`](npm-packages.json).
+3. Push `cargo-v<VERSION>` at the same commit. **Publish Cargo release** locates
+   that same qualified release run and publishes crates in the order defined by
+   [`cargo-crates.json`](cargo-crates.json).
 
 Both publishers are idempotent. npm requires identical registry integrity.
 The npm publisher also verifies that `latest` points at the release version,

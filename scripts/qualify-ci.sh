@@ -11,7 +11,7 @@ target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
 
 full_qualification="${FORCE:-false}"
 case "${GITHUB_EVENT_NAME:-}" in
-  release|workflow_call|workflow_dispatch|schedule) full_qualification=true ;;
+  release|workflow_dispatch|schedule) full_qualification=true ;;
 esac
 
 # Independent builds run beside the main test build in their own target
@@ -166,6 +166,27 @@ case "$lane" in
       git fetch --no-tags origin main
       git merge-base --is-ancestor "$head" FETCH_HEAD || {
         echo 'release source is not part of main' >&2
+        exit 1
+      }
+      range="${head}^..$head"
+      allow_webflow=true
+    elif [[ "${GITHUB_REF:-}" =~ ^refs/tags/acyclic-v ]] &&
+         [[ "${FORCE:-false}" == true ]] &&
+         [[ "${GITHUB_EVENT_NAME:-}" == "push" ||
+            "${GITHUB_EVENT_NAME:-}" == "workflow_call" ]]; then
+      # A release workflow calls qualification before publishing. Reusable
+      # workflows retain the caller's tag ref but may not retain its push
+      # payload, so bind to the checked-out commit and main ancestry.
+      if [[ "${GITHUB_EVENT_NAME:-}" == "push" ]]; then
+        event_head="$(jq -er '.after' "$GITHUB_EVENT_PATH")"
+        [[ "$head" == "$event_head" ]] || {
+          echo 'checked-out source does not match the tag push head' >&2
+          exit 1
+        }
+      fi
+      git fetch --no-tags origin main
+      git merge-base --is-ancestor "$head" FETCH_HEAD || {
+        echo 'tag source is not part of main' >&2
         exit 1
       }
       range="${head}^..$head"

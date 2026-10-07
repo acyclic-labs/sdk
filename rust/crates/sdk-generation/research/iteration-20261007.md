@@ -19,3 +19,11 @@ Clean qualification checkout beca729ca71803c30cb90886e27a77ec2e596020 built real
 The first retry rejected a reused partial output directory; the subsequent fresh output reached the provenance failure above. Later retries must use a new output and the same warm caches, after a clean signed source snapshot.
 
 Next milestones: verify generated-source provenance and full clean generation/drift, qualify installed Actors TypeScript against that bundle, finish release-only full qualification wiring, update PR252 and restack PR254, obtain required review and merge dependency-complete PRs normally. No registry publishing, production deployment, auto-merge or website merge.
+
+## Generation provenance and qualification follow-up
+
+Root verified Actors 66/66, Harness 186/186, Objects 28/28, and qualification planner 19/19. Ten Kani harnesses were rerun after the TypeScript exporter-only change; current receipt source closure and accepted log hash were independently verified. SDKdocs generated-source projection tests passed 25/25. Stream declarations were regenerated through maintained N-API tooling and now expose asynchronous close.
+
+Generated-source provenance now maps actual JSON-lane compiler outputs to stable bundled paths, checks paired compiler lanes, hashes before/after projection, and keeps drift side-effect free. Independent review added comparison of current generated logical paths/hashes to existing bundle artifacts. Full generation remains unqualified: the release fixture found relative dep-info source paths incorrectly resolved against the cache rather than compiler checkout cwd; owner is repairing this concrete failure. Preview fixture passed. No completed all-eleven-family bundle or installed TypeScript qualification is claimed.
+
+Release publisher review fixed the exact caller job-name predicate. PR252 remains review-required; PR254 checks pass. No coordinator merge has occurred in this loop. All pending work remains active; website consumption and publishing are outside this loop.

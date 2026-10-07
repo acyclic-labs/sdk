@@ -11,6 +11,8 @@ cat >"$work/bin/jq" <<'EOF'
 set -euo pipefail
 if [[ "$*" == *'.release.tag_name'* ]]; then
   printf '%s\n' "${FAKE_RELEASE_TAG:-v1.2.3}"
+elif [[ "$*" == *'.after'* ]]; then
+  printf '%s\n' "${FAKE_HEAD:-release-head}"
 else
   exit 2
 fi
@@ -120,6 +122,21 @@ run_release valid webflow 0
 grep -q 'web-flow.gpg' "$work/valid/curl.log"
 grep -q 'gpg.format=openpgp' "$work/valid/git.log"
 grep -q 'detect --source .' "$work/valid/gitleaks.log"
+
+make_case reusable-tag
+(
+  cd "$root"
+  SDK_TEMP_DIR="$work/reusable-tag/temp" SDK_ARTIFACT_DIR="$work/reusable-tag/artifacts" \
+    TOOLS_DIR="$work/reusable-tag/tools" GITHUB_EVENT_NAME=workflow_call \
+    GITHUB_REF=refs/tags/acyclic-v1.2.3 GITHUB_EVENT_PATH="$work/reusable-tag/event.json" \
+    FAKE_GIT_MODE=valid FAKE_GIT_LOG="$work/reusable-tag/git.log" \
+    FAKE_CURL_LOG="$work/reusable-tag/curl.log" FAKE_SHA256_LOG="$work/reusable-tag/sha256.log" \
+    FAKE_GPG_LOG="$work/reusable-tag/gpg.log" FAKE_GITLEAKS_LOG="$work/reusable-tag/gitleaks.log" \
+    FORCE=true PATH="$work/bin:$PATH" bash scripts/qualify-ci.sh preflight
+)
+grep -q 'refs/remotes/origin/main' "$work/reusable-tag/git.log" ||
+  grep -q 'origin main' "$work/reusable-tag/git.log"
+grep -q 'web-flow.gpg' "$work/reusable-tag/curl.log"
 
 make_case wrong-tag
 cat >"$work/wrong-tag/event.json" <<'EOF'

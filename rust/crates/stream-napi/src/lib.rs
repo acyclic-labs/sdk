@@ -372,7 +372,11 @@ impl NativeStreamFollow {
                 // error is yielded together with its cursor so the next poll
                 // can retry the active endpoint. Keep that cursor alive unless
                 // this handle was explicitly closed or cancelled.
-                if self.state.closed.load(Ordering::Acquire) || self.state.token.is_cancelled() {
+                if self.state.closed.load(Ordering::Acquire) {
+                    records.take();
+                    return Ok(NativeStreamNextResult::end());
+                }
+                if self.state.token.is_cancelled() {
                     records.take();
                 }
                 Ok(NativeStreamNextResult::failure(error))
@@ -906,6 +910,14 @@ mod tests {
     use std::task::Poll;
     use std::time::Duration;
 
+    struct DropSentinel(Arc<AtomicBool>);
+
+    impl Drop for DropSentinel {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn cancellation_error(
         result: std::result::Result<(), NativeStreamErrorMetadata>,
     ) -> NativeStreamErrorMetadata {
@@ -975,8 +987,12 @@ mod tests {
     #[tokio::test]
     async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
         let polled = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
         let stream_polled = Arc::clone(&polled);
+        let stream_dropped = Arc::clone(&dropped);
+        let sentinel = DropSentinel(stream_dropped);
         let records: acyclic_stream::RecordStream = Box::pin(futures::stream::poll_fn(move |_| {
+            let _sentinel = &sentinel;
             stream_polled.store(true, Ordering::SeqCst);
             Poll::Pending
         }));
@@ -1004,8 +1020,10 @@ mod tests {
             .is_err());
 
         follow.close().await;
+        assert!(dropped.load(Ordering::SeqCst));
         let first = first.await.expect("first follow task panicked").expect("first read failed");
-        assert_eq!(first.error.expect("first read omitted cancellation").code, "cancelled");
+        assert!(first.value.is_none());
+        assert!(first.error.is_none());
         let second = second.await.expect("second follow task panicked").expect("second read failed");
         assert!(second.value.is_none());
         assert!(second.error.is_none());

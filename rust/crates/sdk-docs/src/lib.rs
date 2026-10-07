@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 mod public_api;
 
@@ -61,6 +61,22 @@ pub struct SourceSpan {
     pub begin_column: usize,
     pub end_line: usize,
     pub end_column: usize,
+}
+
+/// A compiler-reported source file that was generated outside the repository
+/// checkout and copied into the documentation bundle by the caller.
+///
+/// The physical path is attested by its exact bytes before it can satisfy a
+/// Rustdoc source span. The logical path is the repository-relative path under
+/// which the caller bundles those bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedSource {
+    /// The exact physical file reported by Rustdoc, before canonicalization.
+    pub physical_path: PathBuf,
+    /// The relative path at which the caller includes the file in its source bundle.
+    pub logical_path: PathBuf,
+    /// A SHA-256 digest, optionally prefixed with `sha256:`.
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
@@ -146,6 +162,8 @@ pub struct BuildInput {
     pub source_sha256: Option<String>,
     pub repository_root: PathBuf,
     pub rustdoc_files: Vec<PathBuf>,
+    /// Generated Rust sources whose external Rustdoc spans may be projected.
+    pub generated_sources: Vec<GeneratedSource>,
     pub mark_latest: bool,
 }
 
@@ -220,6 +238,8 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "captured snapshots and release tags require a trusted source manifest digest".into(),
         ));
     }
+    let repository_root = canonical_repository_root(&input.repository_root)?;
+    let generated_sources = attest_generated_sources(&repository_root, &input.generated_sources)?;
     // Callers may discover rustdoc files through different filesystem traversals.
     // Normalize the order before hashing or projecting so the same inputs always
     // produce the same identity and family order.
@@ -278,7 +298,19 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             )));
         }
         format_versions.insert(krate.format_version);
-        families.push(build_family(&input.repository_root, path, &krate)?);
+        families.push(build_family(
+            &repository_root,
+            &generated_sources,
+            path,
+            &krate,
+        )?);
+    }
+    let final_generated_sources =
+        attest_generated_sources(&repository_root, &input.generated_sources)?;
+    if final_generated_sources != generated_sources {
+        return Err(Error::Invalid(
+            "generated source changed while projecting rustdoc".into(),
+        ));
     }
     families.sort_by(|a, b| a.slug.cmp(&b.slug));
     if families.windows(2).any(|pair| pair[0].slug == pair[1].slug) {
@@ -664,7 +696,12 @@ fn merge_version_index(
     Ok(index)
 }
 
-fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Result<Family, Error> {
+fn build_family(
+    repository_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    json_path: &Path,
+    krate: &Crate,
+) -> Result<Family, Error> {
     let root_item = krate.index.get(&krate.root).ok_or_else(|| {
         Error::Invalid(format!(
             "{} does not contain its declared rustdoc root item",
@@ -771,7 +808,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             source: item
                 .span
                 .as_ref()
-                .map(|span| source_span(repository_root, span))
+                .map(|span| source_span_at_root(repository_root, generated_sources, span))
                 .transpose()?,
             reexport,
             reexport_target,
@@ -1021,32 +1058,159 @@ fn collect_public_use_occurrences(
     Ok(())
 }
 
-fn source_span(repository_root: &Path, span: &rustdoc_types::Span) -> Result<SourceSpan, Error> {
-    let repository_root = repository_root.canonicalize().map_err(|error| {
+fn canonical_repository_root(path: &Path) -> Result<PathBuf, Error> {
+    let root = path.canonicalize().map_err(|error| {
         Error::Invalid(format!(
             "cannot resolve rustdoc source root {}: {error}",
-            repository_root.display()
+            path.display()
         ))
     })?;
+    reject_reparse_ancestors(&root)?;
+    Ok(root)
+}
+
+fn attest_generated_sources(
+    repository_root: &Path,
+    sources: &[GeneratedSource],
+) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
+    canonical_repository_root(repository_root)?;
+    let mut attested = HashMap::new();
+    let mut logical_paths = HashSet::new();
+    let mut physical_paths = HashSet::new();
+    for source in sources {
+        let logical_path = normalize_generated_logical_path(&source.logical_path)?;
+        let logical_key = if cfg!(windows) {
+            logical_path.to_ascii_lowercase()
+        } else {
+            logical_path.clone()
+        };
+        if !logical_paths.insert(logical_key) {
+            return Err(Error::Invalid(format!(
+                "generated source logical path is duplicated: {logical_path}"
+            )));
+        }
+        reject_reparse_ancestors(&source.physical_path)?;
+        let physical_path = source.physical_path.canonicalize().map_err(|error| {
+            Error::Invalid(format!(
+                "cannot resolve generated source {}: {error}",
+                source.physical_path.display()
+            ))
+        })?;
+        reject_reparse_ancestors(&physical_path)?;
+        let metadata = fs::symlink_metadata(&physical_path)?;
+        if !metadata.is_file() {
+            return Err(Error::Invalid(format!(
+                "generated source is not a regular file: {}",
+                physical_path.display()
+            )));
+        }
+        let physical_key = if cfg!(windows) {
+            physical_path.to_string_lossy().to_ascii_lowercase()
+        } else {
+            physical_path.to_string_lossy().into_owned()
+        };
+        if !physical_paths.insert(physical_key) {
+            return Err(Error::Invalid(format!(
+                "generated source physical path is duplicated: {}",
+                physical_path.display()
+            )));
+        }
+        let bytes = fs::read(&physical_path)?;
+        validate_generated_sha256(&source.sha256)?;
+        if !generated_sha256_matches(&source.sha256, &bytes) {
+            return Err(Error::Invalid(format!(
+                "generated source digest does not match {}",
+                physical_path.display()
+            )));
+        }
+        attested.insert(
+            physical_path.clone(),
+            GeneratedSource {
+                physical_path,
+                logical_path: PathBuf::from(logical_path),
+                sha256: source.sha256.clone(),
+            },
+        );
+    }
+    Ok(attested)
+}
+
+fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
+    let raw = path.to_string_lossy().replace('\\', "/");
+    if raw.is_empty() || raw.contains(':') {
+        return Err(Error::Invalid(format!(
+            "generated source logical path must be relative: {raw:?}"
+        )));
+    }
+    let mut components = Vec::new();
+    for component in Path::new(&raw).components() {
+        match component {
+            Component::Normal(component) => {
+                components.push(component.to_string_lossy().into_owned())
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(Error::Invalid(format!(
+                    "generated source logical path escapes its bundle root: {raw:?}"
+                )));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(Error::Invalid(format!(
+            "generated source logical path must not be empty: {raw:?}"
+        )));
+    }
+    Ok(components.join("/"))
+}
+
+fn validate_generated_sha256(value: &str) -> Result<(), Error> {
+    let digest = value.strip_prefix("sha256:").unwrap_or(value);
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::Invalid(format!(
+            "generated source digest must be a SHA-256 value: {value:?}"
+        )));
+    }
+    Ok(())
+}
+
+fn generated_sha256_matches(expected: &str, bytes: &[u8]) -> bool {
+    expected
+        .strip_prefix("sha256:")
+        .unwrap_or(expected)
+        .eq_ignore_ascii_case(&sha256_hex(bytes))
+}
+
+fn source_span_at_root(
+    repository_root: &Path,
+    generated_sources: &HashMap<PathBuf, GeneratedSource>,
+    span: &rustdoc_types::Span,
+) -> Result<SourceSpan, Error> {
     let source_path = if span.filename.is_absolute() {
         span.filename.clone()
     } else {
         repository_root.join(&span.filename)
     };
+    reject_reparse_ancestors(&source_path)?;
     let source_path = source_path.canonicalize().map_err(|error| {
         Error::Invalid(format!(
             "cannot resolve rustdoc source span {}: {error}",
             span.filename.display()
         ))
     })?;
-    let relative = source_path.strip_prefix(&repository_root).map_err(|_| {
-        Error::Invalid(format!(
-            "rustdoc source span escapes its source root: {}",
-            span.filename.display()
-        ))
-    })?;
+    let path = if let Ok(relative) = source_path.strip_prefix(&repository_root) {
+        normalize_path(relative)
+    } else {
+        let generated = generated_sources.get(&source_path).ok_or_else(|| {
+            Error::Invalid(format!(
+                "rustdoc source span escapes its source root without an attested generated source: {}",
+                span.filename.display()
+            ))
+        })?;
+        normalize_path(&generated.logical_path)
+    };
     Ok(SourceSpan {
-        path: normalize_path(relative),
+        path,
         begin_line: span.begin.0,
         begin_column: span.begin.1,
         end_line: span.end.0,
@@ -1379,6 +1543,97 @@ mod tests {
     fn slug_and_title_are_deterministic() {
         assert_eq!(slugify("sdk_stream"), "sdk-stream");
         assert_eq!(titleize("sdk-stream"), "Sdk Stream");
+    }
+
+    #[test]
+    fn generated_source_spans_require_attestation_and_preserve_lines() {
+        let suffix = std::process::id();
+        let repository_root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-root-{suffix}"
+        ));
+        let external_root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-external-{suffix}"
+        ));
+        let _ = fs::remove_dir_all(&repository_root);
+        let _ = fs::remove_dir_all(&external_root);
+        fs::create_dir_all(repository_root.join("src")).expect("repository root should be writable");
+        fs::create_dir_all(&external_root).expect("external source root should be writable");
+
+        let inside = repository_root.join("src/inside.rs");
+        fs::write(&inside, b"pub struct Inside;\n").expect("checkout source should be writable");
+        let external = external_root.join("wire.rs");
+        let bytes = b"pub struct Wire;\n";
+        fs::write(&external, bytes).expect("generated source should be writable");
+        let digest = sha256_hex(bytes);
+        let generated = GeneratedSource {
+            physical_path: external.clone(),
+            logical_path: PathBuf::from("generated/actors/wire.rs"),
+            sha256: digest.clone(),
+        };
+        let attested = attest_generated_sources(&repository_root, &[generated.clone()])
+            .expect("matching generated source should be attested");
+        let repository_root = canonical_repository_root(&repository_root)
+            .expect("repository fixture should have a canonical path");
+
+        let external_span = rustdoc_types::Span {
+            filename: external.clone(),
+            begin: (7, 3),
+            end: (8, 9),
+        };
+        let projected = source_span_at_root(&repository_root, &attested, &external_span)
+            .expect("attested generated source should project");
+        assert_eq!(projected.path, "generated/actors/wire.rs");
+        assert_eq!(projected.begin_line, 7);
+        assert_eq!(projected.begin_column, 3);
+        assert_eq!(projected.end_line, 8);
+        assert_eq!(projected.end_column, 9);
+
+        let checkout_span = rustdoc_types::Span {
+            filename: PathBuf::from("src/inside.rs"),
+            begin: (1, 1),
+            end: (1, 18),
+        };
+        let checkout_projection = source_span_at_root(&repository_root, &attested, &checkout_span)
+            .expect("checkout source should take precedence over generated mappings");
+        assert_eq!(checkout_projection.path, "src/inside.rs");
+
+        let error = source_span_at_root(
+            &repository_root,
+            &HashMap::new(),
+            &external_span,
+        )
+        .expect_err("unattested external source must be rejected");
+        assert!(error
+            .to_string()
+            .contains("without an attested generated source"));
+
+        let mut bad_digest = generated.clone();
+        bad_digest.sha256 = "0".repeat(64);
+        let error = attest_generated_sources(&repository_root, &[bad_digest])
+            .expect_err("incorrect generated digest must be rejected");
+        assert!(error.to_string().contains("digest does not match"));
+
+        let mut escaping = generated.clone();
+        escaping.logical_path = PathBuf::from("../wire.rs");
+        let error = attest_generated_sources(&repository_root, &[escaping])
+            .expect_err("escaping generated logical path must be rejected");
+        assert!(error
+            .to_string()
+            .contains("escapes its bundle root"));
+
+        let mut duplicate = generated.clone();
+        duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
+        let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
+            .expect_err("normalized duplicate logical paths must be rejected");
+        assert!(error.to_string().contains("logical path is duplicated"));
+
+        fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
+        let error = attest_generated_sources(&repository_root, &[generated])
+            .expect_err("generated source mutation must invalidate attestation");
+        assert!(error.to_string().contains("digest does not match"));
+
+        fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
+        fs::remove_dir_all(&external_root).expect("external fixture should be removed");
     }
 
     #[test]
@@ -1721,6 +1976,7 @@ mod tests {
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path.clone()],
+            generated_sources: Vec::new(),
             mark_latest: false,
         };
         let data = build_data(&input).expect("inherited local trait fixture should build");
@@ -2254,6 +2510,7 @@ mod tests {
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path],
+            generated_sources: Vec::new(),
             mark_latest: false,
         };
         let first = build_data(&input).expect("typed fixture should build");
