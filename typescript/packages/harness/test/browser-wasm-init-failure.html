@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Harness automatic WASM initialization retry</title>
+<body data-result="pending">
+<script type="module">
+try {
+  const originalFetch = globalThis.fetch;
+  let failed = false;
+  globalThis.fetch = (input, init) => {
+    const url = new URL(input.url ?? input, location.href);
+    if (!failed && url.pathname.endsWith("acyclic_harness_wasm_bg.wasm")) {
+      failed = true;
+      return Promise.reject(new Error("simulated first WASM fetch failure"));
+    }
+    return originalFetch(input, init);
+  };
+  try {
+    await import("../dist/rust-policy.js?first=1");
+    throw new Error("first automatic WASM initialization unexpectedly succeeded");
+  } catch (error) {
+    if (!String(error?.message ?? error).includes("simulated first WASM fetch failure")) throw error;
+  }
+  globalThis.fetch = originalFetch;
+  const policy = await import("../dist/rust-policy.js?retry=1");
+  policy.validateComponentLabel("browser-retry");
+  document.body.dataset.result = failed ? "passed" : "failed: fetch was not intercepted";
+} catch (error) {
+  document.body.dataset.result = `failed: ${error.message}`;
+}
+</script>

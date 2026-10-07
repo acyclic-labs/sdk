@@ -1,4 +1,4 @@
-import { WasmReducer, type InitInput } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
   ApplyResponseSchema,
@@ -148,7 +148,6 @@ export interface HarnessOptions {
   readonly authority: Authority;
   readonly issuerId: string;
   readonly issuerKey: Uint8Array;
-  readonly wasm?: InitInput;
   readonly schemas?: readonly ExtensionSchema[];
 }
 
@@ -185,7 +184,7 @@ export class Harness {
 
   /** Initializes the shared Rust core and creates an empty aggregate. */
   static async create(options: HarnessOptions): Promise<Harness> {
-    const contracts = await NativeContracts.create(options.wasm);
+    const contracts = await NativeContracts.create();
     const key = options.issuerKey;
     if (key.byteLength !== 32) throw new Error("issuerKey must contain exactly 32 bytes");
     return new Harness(
@@ -202,7 +201,7 @@ export class Harness {
     ) {
       throw new Error("snapshot authority does not match expected authority");
     }
-    const contracts = await NativeContracts.create(options.wasm);
+    const contracts = await NativeContracts.create();
     if (options.issuerKey.byteLength !== 32) {
       throw new Error("issuerKey must contain exactly 32 bytes");
     }

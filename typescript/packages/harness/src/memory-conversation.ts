@@ -27,7 +27,6 @@ export interface MemoryConversationOptions {
   readonly conversationId?: string;
   readonly issuerId?: string;
   readonly issuerKey?: Uint8Array;
-  readonly wasm?: Parameters<typeof Harness.create>[0]["wasm"];
 }
 
 /** A local default with the same ref-only admission order as a durable host. */
@@ -61,7 +60,6 @@ export class MemoryConversation {
     const core = await Harness.create({
       authority, issuerId: options.issuerId ?? "local-harness",
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
-      ...(options.wasm === undefined ? {} : { wasm: options.wasm }),
     });
     let limits: Limits;
     const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;

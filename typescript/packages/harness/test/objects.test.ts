@@ -1,12 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { Harness, NativeContracts, TaskDefinition, type AgentId } from "../src/index.js";
 import { create } from "@bufbuild/protobuf";
 import { MemoryObjectsV2, CreateBucketRequestSchema, DeleteObjectRequestSchema, GetObjectRequestSchema } from "@acyclic-labs/objects/v2";
 import { ObjectContentStore, type ObjectVolumeRef } from "../src/objects.js";
 
-const wasm = readFileSync(fileURLToPath(new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url)));
 const contracts = await NativeContracts.create();
 const owner = "10101010-1010-1010-1010-101010101010" as AgentId;
 const reader = "11111111-1111-1111-1111-111111111111" as AgentId;
@@ -20,7 +17,7 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
   };
   const authority = await Harness.create({
     authority: { kind: "conversation", id: crypto.randomUUID() },
-    issuerId: "objects-test", issuerKey: crypto.getRandomValues(new Uint8Array(32)), wasm,
+    issuerId: "objects-test", issuerKey: crypto.getRandomValues(new Uint8Array(32)),
   });
   const ownerScope = authority.issueScopeForAgent(owner, "owner", [
     authority.volumeCapability(volume, "read"), authority.volumeCapability(volume, "write"),
@@ -82,7 +79,7 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
   await expect(store.stage("upload-1", "notes/one.txt", new TextEncoder().encode("other"),
     "text/plain", "one.txt")).rejects.toThrow();
   const foreign = await Harness.create({ authority: { kind: "conversation", id: crypto.randomUUID() },
-    issuerId: "foreign", issuerKey: crypto.getRandomValues(new Uint8Array(32)), wasm });
+    issuerId: "foreign", issuerKey: crypto.getRandomValues(new Uint8Array(32)) });
   const foreignScope = foreign.issueScopeForAgent(reader, "foreign", [foreign.volumeCapability(volume, "read")]);
   await expect(ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider,
     authority: foreign, ownerScope, scope: foreignScope, maximumBytes: 4_096 })).rejects.toThrow();

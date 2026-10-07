@@ -4,7 +4,7 @@ import type {
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
-  InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
+  WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
@@ -156,10 +156,10 @@ export class NativeContracts {
 
   /**
    * Initialize once before using synchronous contract methods. Shares the one
-   * guarded WASM instance, so a second, different module is rejected.
+   * guarded package WASM instance shared by every Harness facade.
    */
-  static async create(module?: InitInput): Promise<NativeContracts> {
-    await ensureHarnessWasm(module);
+  static async create(): Promise<NativeContracts> {
+    await ensureHarnessWasm();
     if (NativeContracts.#instance === undefined) {
       const native: NativeExports = wasm;
       assertHarnessWasmExports(native);
