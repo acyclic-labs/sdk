@@ -136,6 +136,15 @@ export async function startConformanceFixture() {
     },
   });
   const server = createSecureServer({ key: identity.key, cert: identity.certificate }, adapter);
+  const handleExpectedConnectionReset = error => {
+    if (error?.code === "ECONNRESET") return;
+    if (error?.code === "ERR_HTTP2_ERROR" && error?.message === "Protocol error") return;
+    throw error;
+  };
+  server.on("connection", socket => socket.on("error", handleExpectedConnectionReset));
+  server.on("session", session => session.on("error", handleExpectedConnectionReset));
+  server.on("sessionError", handleExpectedConnectionReset);
+  server.on("tlsClientError", handleExpectedConnectionReset);
   await new Promise(resolve => server.listen(0, "localhost", resolve));
   await new Promise(resolve => httpServer.listen(0, "localhost", resolve));
   const options = {

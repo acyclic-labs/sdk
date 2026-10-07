@@ -1,7 +1,7 @@
 //! Rust-owned UniFFI metadata for the Actors client.
 //!
-//! This first vertical slice exposes nominal semantic values, an explicit
-//! cancellation handle, client connection, and `inspect_actor`. All request
+//! This facade exposes nominal semantic values, an explicit cancellation
+//! handle, client connection, and all eight Actors operations. All request
 //! construction, validation, transport selection, response conversion, and
 //! cancellation remain in `acyclic-actors`.
 
@@ -40,8 +40,13 @@ pub enum BindingError {
 }
 
 fn domain_error(error: domain::DomainError) -> BindingError {
-    BindingError::Semantic {
-        detail_message: error.to_string(),
+    match error {
+        domain::DomainError::Contract(error) => BindingError::Contract {
+            detail_message: error.to_string(),
+        },
+        error => BindingError::Semantic {
+            detail_message: error.to_string(),
+        },
     }
 }
 
@@ -761,6 +766,21 @@ fn actors_client(inner: client::Client) -> Arc<ActorsClient> {
     Arc::new(ActorsClient {
         inner: Arc::new(inner),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_domain_contract_errors_retain_contract_category() {
+        let error = domain::PositiveU64::new(0).expect_err("zero is not positive");
+
+        assert!(matches!(
+            domain_error(error),
+            BindingError::Contract { .. }
+        ));
+    }
 }
 
 
