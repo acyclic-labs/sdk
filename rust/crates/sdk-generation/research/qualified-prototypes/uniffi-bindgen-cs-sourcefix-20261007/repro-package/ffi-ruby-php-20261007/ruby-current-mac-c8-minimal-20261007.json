@@ -1,0 +1,41 @@
+{
+  "schema": "uniffi-ruby-maintained-runtime-qualification.v3",
+  "generatedAt": "2026-10-07",
+  "scope": "current sdkgen-actors-c8-minimal macOS Ruby producer audit; historical PRIMARY macOS artifacts are preserved",
+  "status": "UNQUALIFIED_CURRENT_SOURCE",
+  "source": {
+    "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "revisionObserved": "737775737a54c31c1d50b11c677ca9ae900b45b2",
+    "cargoPackage": "acyclic-actors-uniffi",
+    "cargoVersion": "0.2.0",
+    "cargoLockSha256": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+    "manifestSha256": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+    "facadeLibSha256": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+    "domainSha256": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+    "generator": "UniFFI 0.31.0 maintained source with Ruby async source patch",
+    "sourcePatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "patchedGeneratorBinarySha256": "25CB83303028D27699901E84706268B794BFEFBAFDBF13391F9FEE49475DB5E2"
+  },
+  "artifacts": {
+    "native": {"remotePath": "/tmp/ruby-candidate-mac-c8-minimal-20261007/release/libacyclic_actors_uniffi.dylib", "sha256": "15C00202420752EA3FA0D12FCE93FF3CA64CDDED17DC2370F9CA76BF16600B32"},
+    "patchedGeneratedRubyRecords": {"remotePath": "/tmp/ruby-candidate-mac-c8-patched-generated-20261007/acyclic_actors.rb", "sha256": "CD362BB5BF01D39CAF02B7B8B58FCC7E34209B7B46645F38F37E87E7312710CB"},
+    "patchedGeneratedRubyFfi": {"remotePath": "/tmp/ruby-candidate-mac-c8-patched-generated-20261007/acyclic_actors_uniffi.rb", "sha256": "4FB67EC1C8DB11F7CB53037ADC616FC8AAD83B15ED30FC8C5CA8048AF8145485"},
+    "patchedGenerator": {"remotePath": "/tmp/ruby-candidate-mac-c8-rubygen-20261007/release/actors-uniffi-bindgen", "sha256": "25CB83303028D27699901E84706268B794BFEFBAFDBF13391F9FEE49475DB5E2"}
+  },
+  "runtime": {"host": "ivar", "os": "macOS 15.6 arm64", "ruby": "2.6.10p210", "rubygems": "3.0.3.1", "ffi": "pending task-local install"},
+  "checks": {
+    "generatorBuild": "PASS",
+    "nativeProducerBuild": "PASS",
+    "generatedFfiSyntax": "PASS",
+    "generatedRecordsSyntax": "FAIL: acyclic_actors.rb:1664 and 1668 emit v. for tuple custom fields in Start; subsequent parser errors cascade",
+    "allEight": "NOT_RUN: generated records are syntactically invalid",
+    "fullU64": "NOT_RUN",
+    "cancellation": "NOT_RUN",
+    "currentHeadTrueOnly": "BLOCKED: Start::CurrentHead custom marker emits unnamed field and invalid Ruby",
+    "readonlyNominal": "BLOCKED: Ruby output has ActorLimits/ActorObservation/Binding but no ActorId/CodeSha256/PositiveU64 nominal classes",
+    "negativeChecks": "NOT_RUN"
+  },
+  "blocker": "The current producer re-exports custom types from acyclic-actors. Maintained Ruby generation treats ActorId/CodeSha256/PositiveU64 as primitives and emits invalid accessors for tuple enum custom fields. Completing this scope requires the coordinated producer facade/metadata change or a maintained Ruby generator metadata change; this receipt does not relabel historical qualification.",
+  "historicalPrimaryReceipt": "ruby-async-sourcefix-20261007-receipt.json",
+  "publish": false
+}

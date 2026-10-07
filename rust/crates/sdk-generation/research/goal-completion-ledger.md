@@ -341,3 +341,41 @@ Formal expected-revision solver remains verified live; compile-only c8 audit is
 not a completed theorem. All16 useful subagent slots are assigned. Goal remains active.
 
 GitHub recovered: draft PR267 https://github.com/acyclic-labs/sdk/pull/267 created and attached. Verified head7cef9472f2fb69aa5c2cdf9cf394774025ee7985 and isDraft=true. Initial statusCheckRollup/run list empty; no CI result claimed. No merge.
+
+## Canonical binding reuse and cross-platform review — 2026-10-07
+
+Previous goal turn progressed: created draft PR267 and pushed source checkpoints.
+This iteration verified all16agents active, PR267 exact7cef stilldraft/no reportedCI.
+All3Filesystemcommits have valid signatures. Actors c8..779 commits are unsigned;
+a signedcoherent review tree and exactsource artifact rebuild remain required.
+
+Filesystem canonical reuse prototype bd1b19d0e0821d57809835452714fe53137aa430 is
+signed and remotelyverified on codex/filesystem-enum-prototype. Root challenged
+external-type failures as insufficient evidence of an OSS gap. Subsequent probes
+proved canonical optional Tsify/serde/NAPI derives, including Strum discriminant
+passthrough. Maintained NAPI3.10.5 generateTypeDef merges allcore/bindingmetadata:
+canonical FileKind/FilePayloadKind declarations appear once without a custom
+renderer. Owner is integrating this into PR267;7cef package is historical.
+
+Actors review confirmed actualNode fileURL WASM initialization failure and Linux
+GNU/musl mismatch. Owner fixed both atb320; reviewer qualified installed779 package:
+WSL all8grpcweb/realabort active0, macOS normaldefaultgrpcweb, exactlibcselector,
+Windows nativegetter and all8, semantic nestedoptional/oneof andreadonlytypes.
+Facade operations nowdescriptor-derived. Root further found publicbrandedinputs
+stillrequirecasts despitehiddenNAPIvalidators; Rust-backed publicfactories are
+assigned. Custom29lineNodefacadegeneration is being moved toRustentrypoint to
+match approved architecture. Oldsource/artifactreceipts remainboundoriginalheads.
+
+Docs CLI review found absolute manifest paths and overscoped sourcewalker,
+potentialstaleRustdoc acceptedatunchangedcrateversion, immutablepreviewrewrites.
+Relocation/sourcebinding/previewrelease fixes assigned; no reproducibility claim.
+Stream reviewer found actualcapturedargv manifests similarlyembedabsolute paths;
+normalizedpublishedidentity/externalrawdiagnostics nowimplemented and6focusedtests
+pass, but actualsignedallplatform cold/cache/relocation artifacts remain pending.
+
+Recovery artifacts uploaded to existingunpublished draftbackup-rust-sdk-docs-20261005:
+asset619087767 acyclic-fs-0.2.0.tgz1982214bytes remoteAPI SHA256143af0b1be845410e2047a8ff11c457fcce3eba592cbf1f08b7b6d7753ed1c1d;
+asset619087758 fs-native-archive-current-c8-independent-20261007b.tgz9514990bytes remoteAPI SHA25610c70e8f15b9ebef52ed58c384484906bcca7a54470e4d9dd5a375d208991b27;
+asset619087764 filesystem-7cef-backup-20261007.json explicitlydiagnosticWindowscohort.
+Draftstatusverifiedtrue; no release/registrypublication. DiskcurrentlyC229.9GiB/Q303GiBfree.
+No newmerge. Goal active, broadlanguage/streaming/docs/sourcecoverage stillincomplete.

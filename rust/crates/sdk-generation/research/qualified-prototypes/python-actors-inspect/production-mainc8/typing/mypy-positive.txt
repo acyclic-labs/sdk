@@ -1,0 +1,3 @@
+/mnt/q/sdk/work/python-actors-c8-generated-current/actors_c8/acyclic_actors.py:348: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+/mnt/q/sdk/work/python-actors-c8-generated-current/actors_c8/acyclic_actors_uniffi.py:350: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+Success: no issues found in 1 source file

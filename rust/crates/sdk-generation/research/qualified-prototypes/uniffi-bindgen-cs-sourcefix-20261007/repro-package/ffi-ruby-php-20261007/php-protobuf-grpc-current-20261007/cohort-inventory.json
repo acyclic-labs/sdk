@@ -10,7 +10,12 @@
     {
       "runtime": "PHP 8.1.2-1ubuntu2.26 + PECL protobuf 4.33.6",
       "native_source_sha256": "4B1E2D13C2086D647BE6B6DD6648101D5CE36D83943834C724B0F399A4ECF836",
-      "construction": {"0": "PASS", "9223372036854775807": "PASS", "9223372036854775808": "FAIL", "18446744073709551615": "FAIL"},
+      "construction": {
+        "0": "PASS",
+        "9223372036854775807": "PASS",
+        "9223372036854775808": "FAIL",
+        "18446744073709551615": "FAIL"
+      },
       "service_response_max": "FAIL_VALUE_NEGATIVE_ONE_OPTIONAL_PRESENCE_TRUE"
     },
     {
@@ -29,5 +34,20 @@
     "uint64_boundary": "9223372036854775807 only",
     "full_unsigned_u64": "not qualified",
     "evidence": "php-protobuf-grpc-current-20261007/runtime-qualification-20261007/"
-  }
+  },
+  "decision_basis": "All maintained alternatives were executed against the Rust-owned current descriptor and live Actors service. The exclusion is caused by the full unsigned-u64 service boundary, not missing PHP tooling.",
+  "pinned_runtime_matrix": [
+    "php 8.1.2-1ubuntu2.26",
+    "PECL protobuf 4.33.6",
+    "grpc/grpc 1.82.0",
+    "native grpc extension 1.82.2",
+    "Composer google/protobuf v4.33.6",
+    "Brick\\Math 0.12.3"
+  ],
+  "boundary_failures": [
+    "native PECL construction rejects 2^63 and u64 max",
+    "native live max response decodes as -1 while optional presence remains true",
+    "pure-PHP generated setter clamps max to signed max",
+    "Brick\\Math preserves max but generated protobuf setter rejects it and has no wire integration"
+  ]
 }

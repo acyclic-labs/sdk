@@ -1,0 +1,4 @@
+[bindings.csharp]
+access_modifier = "public"
+namespace = "Acyclic.Actors"
+cdylib_name = "acyclic_actors_uniffi"

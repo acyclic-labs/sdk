@@ -1,0 +1,11 @@
+/mnt/q/sdk/work/python-actors-c8-generated-current/actors_c8/acyclic_actors.py:348: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+/mnt/q/sdk/work/python-actors-c8-generated-current/actors_c8/acyclic_actors_uniffi.py:350: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:8: error: Incompatible types in assignment (expression has type "CodeSha256", variable has type "ActorId")  [assignment]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:9: error: Incompatible types in assignment (expression has type "ActorId", variable has type "CodeSha256")  [assignment]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:10: error: Incompatible types in assignment (expression has type "ActorId", variable has type "PositiveU64")  [assignment]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:12: error: Argument "handler_timeout_millis" to "ActorLimits" has incompatible type "int"; expected "PositiveU64"  [arg-type]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:15: error: Argument 1 to "CURRENT_HEAD" has incompatible type "bool"; expected "CurrentHeadMarker"  [arg-type]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:16: error: Argument 1 to "CURSOR" has incompatible type "str"; expected "int"  [arg-type]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:18: error: Argument "capability" to "Binding" has incompatible type "None"; expected "str"  [arg-type]
+rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py:24: error: "ActorLimits" has no attribute "memory_bytes"  [attr-defined]
+Found 8 errors in 1 file (checked 1 source file)

@@ -1,0 +1,142 @@
+{
+    "version": "1.1.404",
+    "time": "1791386138661",
+    "generalDiagnostics": [
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Type \"CodeSha256\" is not assignable to declared type \"ActorId\"\n  \"CodeSha256\" is not assignable to \"ActorId\"",
+            "range": {
+                "start": {
+                    "line": 7,
+                    "character": 29
+                },
+                "end": {
+                    "line": 7,
+                    "character": 68
+                }
+            },
+            "rule": "reportAssignmentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Type \"ActorId\" is not assignable to declared type \"CodeSha256\"\n  \"ActorId\" is not assignable to \"CodeSha256\"",
+            "range": {
+                "start": {
+                    "line": 8,
+                    "character": 33
+                },
+                "end": {
+                    "line": 8,
+                    "character": 62
+                }
+            },
+            "rule": "reportAssignmentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Type \"ActorId\" is not assignable to declared type \"PositiveU64\"\n  \"ActorId\" is not assignable to \"PositiveU64\"",
+            "range": {
+                "start": {
+                    "line": 9,
+                    "character": 33
+                },
+                "end": {
+                    "line": 9,
+                    "character": 62
+                }
+            },
+            "rule": "reportAssignmentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal[1]\" cannot be assigned to parameter \"handler_timeout_millis\" of type \"PositiveU64\" in function \"__init__\"\n  \"Literal[1]\" is not assignable to \"PositiveU64\"",
+            "range": {
+                "start": {
+                    "line": 11,
+                    "character": 27
+                },
+                "end": {
+                    "line": 11,
+                    "character": 28
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal[False]\" cannot be assigned to parameter \"value1\" of type \"CurrentHeadMarker\" in function \"__init__\"\n  \"Literal[False]\" is not assignable to \"CurrentHeadMarker\"",
+            "range": {
+                "start": {
+                    "line": 14,
+                    "character": 75
+                },
+                "end": {
+                    "line": 14,
+                    "character": 80
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['not a cursor']\" cannot be assigned to parameter \"value1\" of type \"int\" in function \"__init__\"\n  \"Literal['not a cursor']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 15,
+                    "character": 71
+                },
+                "end": {
+                    "line": 15,
+                    "character": 85
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"None\" cannot be assigned to parameter \"capability\" of type \"str\" in function \"__init__\"\n  \"None\" is not assignable to \"str\"",
+            "range": {
+                "start": {
+                    "line": 17,
+                    "character": 31
+                },
+                "end": {
+                    "line": 17,
+                    "character": 35
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/negative.py",
+            "severity": "error",
+            "message": "Cannot assign to attribute \"memory_bytes\" for class \"ActorLimits\"\n  Attribute \"memory_bytes\" is unknown",
+            "range": {
+                "start": {
+                    "line": 23,
+                    "character": 16
+                },
+                "end": {
+                    "line": 23,
+                    "character": 28
+                }
+            },
+            "rule": "reportAttributeAccessIssue"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 8,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 0.983
+    }
+}
+

@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-07",
+  "source": {
+    "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
+    "baseRevision": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+    "version": "0.1.3",
+    "uniffiCompatibility": "0.31.0",
+    "license": "MIT",
+    "licenseSha256": "6018AC579E866FCF510135FD6352F5DC421B73C6FED258DAD56110DAFA006FB4",
+    "focusedPatch": "generator-source-nominal-validator-current-main-20261007.patch",
+    "focusedPatchSha256": "9DF8FF21298EA1067441C01712A6418046A66134B6A4162C83324CB8DD2E833E",
+    "focusedPatchBytes": 58624,
+    "goldenPatch": "generator-source-and-goldens-nominal-validator-current-main-20261007.patch",
+    "goldenPatchSha256": "43265A4AD1175AFD33608BB467C8D1AE06C51E378DADD3F5CD345F1D0FAA1A42",
+    "goldenPatchBytes": 170681
+  },
+  "architecture": {
+    "semanticAuthority": "Rust domain/custom-type constructors",
+    "generatorScope": "generic Dart code generation only",
+    "duplicatedSemanticPredicates": false,
+    "handwrittenActorsModels": false,
+    "handwrittenOperationList": false,
+    "validatorCallouts": "optional configured Rust exports",
+    "readonlyPolicy": "generic recursive wrapper",
+    "ffiBuffer": "generic UniFFI scaffolding buffer lowering"
+  },
+  "qualification": {
+    "tests": "225 unit; 21 golden",
+    "receipt": "dart-production-c8-current-main-receipt-20261007.json",
+    "archive": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-current-main-v3-20261007.zip",
+    "recipe": "dart-maintained-generator-integration-recipe-20261007.md"
+  },
+  "streamingGap": {
+    "actorsHasLiveServerStream": false,
+    "actorsHasDartStreamSurface": false,
+    "qualifiedCancellation": "in-flight unary request with server active=0",
+    "requiredNextEvidence": [
+      "live event source and boundary",
+      "ordered event delivery",
+      "cursor/current-head start",
+      "reconnect or terminal errors",
+      "caller cancellation during active stream",
+      "server abort cleanup",
+      "backpressure or bounded buffering",
+      "typed stream errors",
+      "active resource zero on Windows/Linux/macOS"
+    ]
+  }
+}

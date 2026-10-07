@@ -1,0 +1,116 @@
+{
+  "schema": "csharp-current-source-cohort/v1",
+  "status": "QUALIFIED_LINUX_CURRENT_SOURCE",
+  "generatedUtc": "2026-10-07",
+  "producer": {
+    "checkout": "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+    "revision": "03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1",
+    "domainSource": "rust/crates/actors/src/domain.rs",
+    "domainSha256": "3279EA5C58674440142622F0A606AA8C984EABB82DD9B04D23E2C43CA9C81EAD",
+    "cargoLock": "Cargo.lock",
+    "cargoLockSha256": "B7186EB4D99F8EFFF2A121EA404764ABD15F0295DC79F7A01DA2D5A74F4FCA2A",
+    "native": "rust/crates/actors-uniffi/target-current/libacyclic_actors_uniffi.so",
+    "nativeSha256": "38C69BA21D0012739DE719C32391A8FDD9CE28D68D14AC2DE9613073AFCAB235"
+  },
+  "generator": {
+    "source": "uniffi-bindgen-cs-sourcefix-20261007",
+    "binary": "/tmp/cs-generator-current/release/uniffi-bindgen-cs",
+    "sha256": "59a191f74bec339c37be15ab70b0bf638578665b33a057c2d6ba5171298d7f55",
+    "toolchain": "1.98.1"
+  },
+  "managed": {
+    "source": "merged-current-token.cs",
+    "sha256": "174CB5A7A05476003DB8E7BD1A29022F9A8F1FA2AEE5C05261CFC3260A9AA7E6",
+    "assembly": "Acyclic.Actors.Current03bb.Token.dll",
+    "assemblySha256": "6006E67F65BD355AC1ED5F095822FF6E7B91CD0FA724492A48118355E911AA95",
+    "framework": "net8.0",
+    "sdk": "8.0.425"
+  },
+  "roots": {
+    "count": 19,
+    "names": [
+      "PositiveU64",
+      "ErrorCode",
+      "ServiceError",
+      "CreateActorRequest",
+      "UpdateActorRequest",
+      "InspectActorRequest",
+      "AddSubscriptionRequest",
+      "RemoveSubscriptionRequest",
+      "ResumeSubscriptionRequest",
+      "CheckpointActorRequest",
+      "InvokeActorRequest",
+      "CreateActorResponse",
+      "UpdateActorResponse",
+      "InspectActorResponse",
+      "AddSubscriptionResponse",
+      "RemoveSubscriptionResponse",
+      "ResumeSubscriptionResponse",
+      "CheckpointActorResponse",
+      "InvokeActorResponse"
+    ]
+  },
+  "checks": {
+    "all8": {
+      "result": "PASS",
+      "terminal": "all8-terminal.log",
+      "operations": [
+        "CreateActor",
+        "UpdateActor",
+        "InspectActor",
+        "AddSubscription",
+        "RemoveSubscription",
+        "ResumeSubscription",
+        "CheckpointActor",
+        "InvokeActor"
+      ],
+      "fixture": "all8-fixture-options.json"
+    },
+    "fullUnsignedU64": {
+      "result": "PASS",
+      "max": "18446744073709551615",
+      "terminal": "full-u64-terminal.log",
+      "serviceBoundary": [
+        "ActorLimits.HandlerTimeoutMillis",
+        "ActorLimits.MemoryBytes",
+        "ActorLimits.CheckpointBytes",
+        "Start.Cursor",
+        "CreateActor",
+        "UpdateActor"
+      ]
+    },
+    "cancellation": {
+      "result": "PASS",
+      "terminal": "cancellation-terminal.log",
+      "iterations": 3,
+      "fixture": "pending-fixture-options.json",
+      "serverState": "started=3,aborted=3,active=0",
+      "asyncMap": "baseline=0,pending=1,after=0"
+    },
+    "negativeCompilation": {
+      "result": "EXPECTED_FAILURES",
+      "terminal": "negative-build.log",
+      "diagnostics": [
+        "CS1729 raw ActorsClient constructor",
+        "CS8852 readonly Header.Name",
+        "CS0029 Header to ActorLimits",
+        "CS1503 Header to ActorId"
+      ]
+    }
+  },
+  "platform": {
+    "linux": {
+      "nativeArtifact": "38C69BA21D0012739DE719C32391A8FDD9CE28D68D14AC2DE9613073AFCAB235",
+      "result": "QUALIFIED"
+    },
+    "windows": {
+      "result": "HISTORICAL_ONLY",
+      "reason": "no current 03bb native DLL"
+    },
+    "macos": {
+      "result": "HISTORICAL_ONLY",
+      "reason": "no current 03bb native dylib"
+    }
+  },
+  "provenance": "Fresh current producer/generator/source/managed/native identities are bound above; historical Windows/macOS receipts are not relabeled."
+}

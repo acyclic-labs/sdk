@@ -1,0 +1,7 @@
+Current-source C# qualification is bound to producer revision 03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1. The producer has two UniFFI components (acyclic_actors domain roots and acyclic_actors_uniffi facade/client); generation was run once per component with the current patched generator, then merged by retaining the domain serialization/runtime and facade client/async component plus both RustBuffer symbol families. This source artifact is intentionally source-only.
+
+Fresh Linux cohort: current Rust cdylib, current generated merged C# source, managed build, and installed task-local .NET 8 runtime all ran together. All eight Actors operations passed, full uint64 max passed through ActorLimits and Start.Cursor at service boundary, and three in-flight cancellations returned the caller CancellationToken while fixture state reached started=3, aborted=3, active=0 and async map returned to zero each time.
+
+Negative external compilation against the same managed assembly reported CS1729 for a forged two-argument ActorsClient raw handle, CS8852 for mutation of record Header.Name, CS0029 for Header assigned to ActorLimits, and CS1503 for Header passed where ActorId string was required.
+
+Windows and macOS native artifacts from older cohorts remain historical and are not relabeled current. This cohort is Linux native only; no generic .NET or macOS/Windows native qualification is asserted here.

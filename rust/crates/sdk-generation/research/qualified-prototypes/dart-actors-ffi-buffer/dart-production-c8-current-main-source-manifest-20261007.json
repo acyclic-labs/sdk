@@ -1,11 +1,10 @@
 {
   "date": "2026-10-07",
-  "candidate": {
+  "producer": {
     "root": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
-    "head": "737775737a54c31c1d50b11c677ca9ae900b45b2",
-    "headMessage": "Document native Actors trust root option",
+    "head": "799214a1ecf8ac67998a3a3de61653081cbbd573",
+    "headMessage": "Preserve workspace package metadata",
     "gitStatus": [
-      " M Cargo.lock",
       " M rust/crates/actors-uniffi/Cargo.toml",
       " M rust/crates/actors-uniffi/src/lib.rs",
       "?? research/",
@@ -15,11 +14,11 @@
       "?? typescript/packages/actors/research/"
     ],
     "sourceFiles": {
+      "Cargo.lock": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
       "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
-      "rust/crates/actors-uniffi/src/lib.rs": "C1AD6B61B170882BC0AB05770D98918DAFB56945D465F709084149A55C14920A",
-      "rust/crates/actors/src/domain.rs": "80B5268F5FD56703B05B51F586C827051FD04B0A48D34B4C75B07D7CD6613A10",
-      "Cargo.lock": "667F0C498F90DD32613CD4D9F41689E980AD0B0F783AC077DD0A5B91983F08E7",
-      "rust/crates/actors-uniffi/uniffi.nominal.toml": "42B2C246C83F0EEE9D29754B4094A6603B508B9A277B9AF2A233B487D82D391C"
+      "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+      "rust/crates/actors-uniffi/uniffi.nominal.toml": "DBA608C44ED4875990FC2B290A28DA49922F0431CD0DD66C4741AF48262C7B67",
+      "rust/crates/actors/src/domain.rs": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF"
     },
     "ffiBufferPatch": "producer-actors-uniffi-ffi-buffer-current-main-20261007.patch",
     "ffiBufferPatchSha256": "8425403FC0A35BCFBFE417DF3768E677063F49D6C4B1848F1BB95AEC09366B3E"
@@ -34,46 +33,61 @@
     "sourcePatchSha256": "9DF8FF21298EA1067441C01712A6418046A66134B6A4162C83324CB8DD2E833E",
     "sourceAndGoldensPatch": "generator-source-and-goldens-nominal-validator-current-main-20261007.patch",
     "sourceAndGoldensPatchSha256": "43265A4AD1175AFD33608BB467C8D1AE06C51E378DADD3F5CD345F1D0FAA1A42",
-    "tests": "225 unit; 21 golden"
+    "tests": {
+      "unit": 225,
+      "golden": 21
+    }
   },
   "package": {
-    "root": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-final-20261007",
+    "root": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-clean-20261007",
+    "archive": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-current-main-v3-20261007.zip",
+    "archiveBytes": 33619675,
+    "archiveSha256": "B65804F0EB4441333CFF2652257972B9B7606F88E44CD715EFBE510D131A7FBF",
     "files": {
-      "probe-cancel.dart": "40B9AFE384B2FBF97605FD6C660ED1347E4650CB63EFC95C9D2FA6AA190CEB13",
-      "pubspec.yaml": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
-      "dart-domain.toml": "B6A853F94E35225B9F740EA8A7450A74E98A3C5F74BEF7F243D7975E68A28B46",
-      "pubspec.lock": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
-      "dart-facade.toml": "DF32CB3E5CD8E9DFB68A8333D674F1E0C2F2DB676CC1FE74DBC95D0137364E81",
-      "generated/acyclic_actors.dart": "00518B93C5E850B1F279318A70FB7D704B5A85917B50197AB2F554993C56F52F",
-      "generated/acyclic_actors_uniffi.dart": "D284FAAA8D23C039DDC3E34B68EFA205A510B8F9B5FA6087F0D186E9C6E6F443",
-      "probe-all8.dart": "04694C98215970F783CBDA9A3F057CFD91E75D28781541662AB59A1752B617B1",
-      "probe-static-negative.dart": "EB7416CE7E6C3EB5D237A00C434FD0096C84E0F77A516DBF12E8AAD69084BC93",
-      "uniffi.nominal.toml": "819F591E389606E93B93FB72C707DC94F446BE370B5DA38B9556A30C27142535"
-    },
-    "archive": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-final-20261007.zip",
-    "archiveBytes": 33614986,
-    "archiveSha256": "D38327EDBAF2135C4FF70B568FCC120997A1A331616EC3AA07F120DD3E1C16CD"
+      "generatedDomain": "44C0097CD9D9F23596F65B0D3E8F56166152FE543EC8C5962E3A579B3AAF5F9E",
+      "generatedFacade": "EF64AA53CA8289BE3910FA7037B4FA42F49C220BDE38C0B53254C105DCD0F9E0",
+      "pubspec": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
+      "pubspecLock": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+      "dartDomainConfig": "5944078F83095D4A0D1E451B301A25B35DDEDCE4EF39030F11F433BC4B0E546C",
+      "dartFacadeConfig": "265CE703364318B622DD35ED41419FB57F20307A471A9E1E19034D1A6E2C610F",
+      "uniffiNominalConfig": "819F591E389606E93B93FB72C707DC94F446BE370B5DA38B9556A30C27142535",
+      "probeAll8": "9F05E284E683C4C33D4F2593E6078B4C5E7AE91CE6E6FF2CC4E1861DAA7303AB",
+      "probeCancel": "40B9AFE384B2FBF97605FD6C660ED1347E4650CB63EFC95C9D2FA6AA190CEB13",
+      "probeStaticNegative": "EB7416CE7E6C3EB5D237A00C434FD0096C84E0F77A516DBF12E8AAD69084BC93"
+    }
   },
   "native": {
-    "native/windows-x64/acyclic_actors_uniffi.dll": {
-      "bytes": 8722432,
-      "sha256": "9BF600BC29521DB617D29F8FAE7105012EC39D84F1D6C50E6AAFA8845FF3C61B"
+    "windows": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-clean-20261007\\native\\windows-x64\\acyclic_actors_uniffi.dll",
+      "bytes": 8727040,
+      "sha256": "10825224D987E6F4ED7D521B961512EC8D0DD5376AD10F6C656565A058EC2EB5"
     },
-    "native/macos-arm64/libacyclic_actors_uniffi.dylib": {
-      "bytes": 16390272,
-      "sha256": "539914AE33A0CFBAC11258AF0BAD16D5EE0EA1AF204C94FC4B6CF4011D25E5AD"
+    "linux": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-clean-20261007\\native\\linux-x64\\libacyclic_actors_uniffi.so",
+      "bytes": 105089360,
+      "sha256": "2590A1565F44B34EF8846148AE10E976399A7E1480770FB49FCC43B3CD2C6224"
     },
-    "native/linux-x64/libacyclic_actors_uniffi.so": {
-      "bytes": 105062368,
-      "sha256": "216F4FCB0EADC93E537EA75F96E5C16E4C37C9A1B72A0BAE24E737D7D42F00F6"
+    "macosIvar": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-clean-20261007\\native\\macos-arm64\\libacyclic_actors_uniffi.dylib",
+      "bytes": 16415408,
+      "sha256": "2E2A1DBBC3810E3E9E02072334B2A7CCA90AF1D858B0B54C90B3F40B4E3379F6"
     }
   },
   "runtime": {
-    "windows": "all8 PASS; cancellation PASS; analyzer PASS",
-    "wslLinux": "all8 PASS; cancellation PASS; analyzer PASS",
-    "ivarMacOS": "all8 PASS; cancellation PASS; analyzer PASS"
+    "windows": "analyzer/all8/cancel PASS; static int->PositiveU64 rejected",
+    "wslLinux": "analyzer/all8/cancel PASS; static int->PositiveU64 rejected",
+    "macosIvar": "analyzer/all8/cancel PASS; static int->PositiveU64 rejected"
   },
-  "semantic": {
+  "semanticRoots": {
+    "records": 24,
+    "enums": 3,
+    "oneofVariants": 2,
+    "nominalCustomTypes": [
+      "ActorId",
+      "CodeSha256",
+      "CurrentHeadMarker",
+      "PositiveU64"
+    ],
     "operations": [
       "create",
       "update",
@@ -90,9 +104,11 @@
       "UInt64 BigInt 0, 2^63, 2^64-1",
       "missing/null presence",
       "readonly generated collections",
-      "nominal ActorId/CodeSha256/PositiveU64 wrappers",
+      "Rust-backed nominal validators",
+      "CurrentHeadMarker true-only constructor",
       "in-flight cancellation with server active=0"
-    ],
-    "currentHead": "Current producer exposes SubscriptionStart.CurrentHead(bool); Rust projection accepts true only. No Dart-only false predicate is added; false remains rejected by Rust projection."
-  }
+    ]
+  },
+  "receipt": "dart-production-c8-current-main-receipt-20261007.json",
+  "audit": "dart-production-c8-current-main-semantic-audit-20261007.md"
 }

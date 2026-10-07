@@ -1,0 +1,65 @@
+{
+  "schema": "acyclic.rust-uniffi.python-mainc8.producer-manifest.v1",
+  "qualification_status": "windows_current_source_pass_linux_ivar_pending",
+  "source_revision": "75404e290d0da674d91c43e643fccaa6ba536bff",
+  "source_checkout": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+  "source_inventory_sha256": "626A77764FD6C65597C9E8307B50930158720FB602BAA77ED1E6485D221298E1",
+  "source_inventory_path": "Q:\\sdk\\work\\python-actors-c8-source-inventory-75404.txt",
+  "generator": {
+    "version": "uniffi_bindgen 0.31.0",
+    "upstream_revision": "309762f55db3f0548194a9ceba3027fa64b18a93",
+    "archive_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+    "typing_patch_sha256": "BA9A79B23D3A32B3468507B6DBB8C6E740C172DEC2A8724647BE353FBC674920",
+    "nominal_readonly_patch_sha256": "C0801B933A8DECE57AA542AFBBCA293E297644F2880E4A189BB3864F8FA8E099",
+    "config_sha256": "DBA608C44ED4875990FC2B290A28DA49922F0431CD0DD66C4741AF48262C7B67"
+  },
+  "artifacts": {
+    "native": {
+      "path": "Q:\\sdk\\work\\actors-c8-check3\\debug\\deps\\acyclic_actors_uniffi.dll",
+      "sha256": "C94976109BD4654715F26E7EF698638431DD0718B01993D4213E13D4253AB7FF",
+      "bytes": 8722432
+    },
+    "generated_python": [
+      {"path": "Q:\\sdk\\work\\python-actors-c8-generated-current\\acyclic_actors.py", "sha256": "DF0377E2FB6CF2177D18A7FABCED3DC336D32A0072E081527BA38E32B802B5A1", "bytes": 93955},
+      {"path": "Q:\\sdk\\work\\python-actors-c8-generated-current\\acyclic_actors_uniffi.py", "sha256": "FAB28910E264560C55BE2A79E5551F1EF6678987BECE6FF27A75694BE66FDA91", "bytes": 79479}
+    ],
+    "wheels": [
+      {"platform": "windows-x64", "path": "Q:\\sdk\\work\\actors-uniffi-python-mainc8-wheel-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-any.whl", "sha256": "D87C1A9980FED556C69CE122F0D80B79F346FBC6668809963FF5731C3AC018D6", "bytes": 2984614}
+    ]
+  },
+  "semantic_roots": ["ActorId", "CodeSha256", "PositiveU64", "Binding", "ActorLimits", "SubscriptionStart", "SubscriptionSpec", "SubscriptionState", "ActorState", "SubscriptionObservation", "ActorObservation", "CreateActorRequest", "UpdateActorRequest", "InspectActorRequest", "AddSubscriptionRequest", "RemoveSubscriptionRequest", "ResumeSubscriptionRequest", "CheckpointActorRequest", "InvokeActorRequest/Response"],
+  "typing": {
+    "positive": "PASS: mypy 1.17.1 and Pyright 1.1.404 zero diagnostics",
+    "negative": "PASS: both checkers reported eight deliberate brand/presence/oneof/readonly errors",
+    "mypy_positive": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/mypy-positive.txt",
+    "mypy_negative": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/mypy-negative.txt",
+    "pyright_positive": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/pyright-positive.json",
+    "pyright_negative": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/typing/pyright-negative.json"
+  },
+  "runtime": {
+    "rust_backed_validation": "PASS: invalid ActorId, CodeSha256, PositiveU64, CurrentHeadMarker rejected",
+    "readonly_records": "PASS: frozen ActorLimits assignment rejected",
+    "installed_windows": "PASS: fresh isolated venv installed wheel with --no-index --no-deps --force-reinstall",
+    "installed_wheel_site_package": "Q:\\sdk\\work\\actors-uniffi-python-mainc8-wheel-20261007\\venv\\Lib\\site-packages\\acyclic_actors_uniffi",
+    "all_eight_remote": "PASS",
+    "in_flight_task_cancel": "PASS: three pending asyncio.Task.cancel iterations",
+    "server_abort_cleanup": "PASS: three iterations observed active=0 after each abort; continuation map final=0"
+  },
+  "fixture": {
+    "all_eight_options": "Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json",
+    "pending_options": "Q:\\sdk\\work\\root-pending-actors-fixture-options.json",
+    "all_eight_runner": "Q:\\sdk\\work\\actors-uniffi-python-mainc8-wheel-20261007\\remote-mainc8.py",
+    "cancellation_runner": "Q:\\sdk\\work\\actors-uniffi-python-mainc8-wheel-20261007\\pending-mainc8.py",
+    "all_eight_log": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/installed-windows-all8.log",
+    "all_eight_log_sha256": "4EB7619B1C1C0EB1F1E29149EDB1EB9DB3C993F7FE8E2994CE23CFCAA5692F39",
+    "cancellation_log": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/production-mainc8/installed-windows-cancellation.log",
+    "cancellation_log_sha256": "A23F211790143EAD4D53B93B17AAD34C2C4B53AC8E72EF45CF65E1010DF9F1F5"
+  },
+  "notes": ["This receipt is current mainc8 evidence only; historical 03bb receipts are not retagged.", "Linux WSL and macOS ivar rebuild/install receipts are still pending for this producer identity.", "No publish, deploy, merge, or full-vendor checkout was performed."]
+}
+
+
+
+
+
+

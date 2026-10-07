@@ -3,65 +3,62 @@ Date: 2026-10-07
 
 Scope:
 - producer checkout: Q:\sdk\work\sdkgen-actors-c8-minimal
-- observed producer HEAD at qualification: 84a508449ea247297a0170db67377dd65a1baa41
-- this receipt is current-cohort evidence and does not retag older native resources.
-- only maintained source/config/patch files were added under actors-uniffi; peer changes were preserved.
+- frozen observed producer HEAD for this receipt: 77997805785e8a61f1bf7580ca273e992caee740
+- source closure includes the maintained uncommitted actors-uniffi facade/config/patch files; peer changes were preserved.
+- native artifacts were rebuilt after the producer advanced from the earlier 84a508/799214 cohort; older bytes are not retagged.
+- no merge, publish, deployment, or global registry mutation.
 
 Producer/source identity:
+- Rust toolchain: 1.98.1 (rust-toolchain.toml)
+- UniFFI bindgen source: task-local patched 0.31.0 archive; no global Cargo registry mutation.
 - facade Cargo.toml SHA-256: F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7
-- facade src/lib.rs SHA-256: C1AD6B61B170882BC0AB05770D98918DAFB56945D465F709084149A55C14920A
-- actors domain.rs SHA-256: 80B5268F5FD56703B05B51F586C827051FD04B0A48D34B4C75B07D7CD6613A10
+- facade src/lib.rs SHA-256: CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E
+- actors domain.rs SHA-256: E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF
 - Cargo.lock SHA-256: 7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206
-- Windows native DLL SHA-256: 1D0A5E8C0A7B8AC43756A4DE738DF5EC8CAD27EF065614D77CBE072D85B9117F
-- DLL was rebuilt after the latest domain marker and lock changes; source timestamps are later than the previous stale DLL.
+- producer config SHA-256: DBA608C44ED4875990FC2B290A28DA49922F0431CD0DD66C4741AF48262C7B67
+- nominal patch SHA-256: 24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3
+- opaque constructor patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
 
-Rust-owned semantic validators:
+Rust-owned semantic policy:
 - validate_actor_id calls domain::ActorId::new.
 - validate_code_sha256 calls domain::CodeSha256::new.
 - validate_positive_u64 calls domain::PositiveU64::new.
-- validate_current_head calls CurrentHeadMarker::try_from and rejects false.
-- all validators map canonical DomainError values to BindingError; no Kotlin/TOML predicate duplicates these rules.
+- validate_current_head and validate_current_head_marker call CurrentHeadMarker::try_from; false is rejected.
+- Kotlin config contains no semantic predicate strings; generated factories call Rust validators.
+- CurrentHeadMarker is a Rust custom type with true-only conversion and bool wire representation. Generated Kotlin exposes a private-constructor value class and CurrentHead.Start carries CurrentHeadMarker, so false cannot be forged through the public surface.
 
-CurrentHead marker:
-- the domain now uses CurrentHeadMarker for the true-only oneof payload while retaining bool wire encoding.
-- the marker has a Rust UniFFI custom_type conversion: lower always emits true and lift rejects false.
-- generated Kotlin exposes private-constructor CurrentHeadMarker.value class with Rust-backed from(Boolean).
-- the generated Start.CurrentHead payload is CurrentHeadMarker, so false cannot be forged through the public Kotlin surface.
-
-Maintained generator policy:
-- UniFFI source: pinned 0.31.0 task-local archive.
-- nominal patch SHA-256: 24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3
-- opaque constructor patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
-- producer config SHA-256: 819F591E389606E93B93FB72C707DC94F446BE370B5DA38B9556A30C27142535
-- no global Cargo registry files were modified.
-
-Generated package:
-- generated output: Q:\sdk\work\actors-uniffi-actors-c8-nominal-20261007-v3\uniffi
-- acyclic_actors_uniffi.kt SHA-256: C1B0AB3AE1BEAFF3BA8FB780E0F4F5A770A0DCD2755C8732C3FD784CB62039DA
+Generated binding:
+- generated output: Q:\sdk\work\actors-uniffi-actors-c8-nominal-20261007-v5\uniffi\uniffi
+- acyclic_actors_uniffi.kt SHA-256: 1CD56E445E1762ECF7215E6111F9DF5FFDAE2AE355E9ED5049FD16147E01B2BD
 - acyclic_actors.kt SHA-256: 6608950F1B34A259C22AFCBDEAA19EFAAF1C23AEFA3031EB98291F8E2EC88A15
-- Kotlin value classes: ActorId, CodeSha256, PositiveU64, and CurrentHeadMarker.
-- generated records use val properties; no semantic typealias remains for these nominal roots.
-- generated validators are validateActorId, validateCodeSha256, validatePositiveU64, and validateCurrentHead.
+- nominal Kotlin roots: ActorId, CodeSha256, PositiveU64, CurrentHeadMarker; all use private constructors and val properties.
+- generated records are immutable (`val`); no handwritten record mirror is used.
 
-Installed Windows JAR:
+Exact native resources (all built from the same source hashes and Cargo.lock above):
+- Windows x86_64 DLL resource SHA-256: 8601E37B58020E7C5F2E6ADF6445D59679002D78018FA95B14E3F7B09DCFEDE9
+- Linux x86_64 SO resource SHA-256: 3CB9E1D0B77919044104763758B9DB115F214A6FE9C94E254804D7171050768E
+- macOS arm64 release dylib before relocatability fix SHA-256: 4D24F3E155B5546B52F6F34A88316A5BD2C5FFD8BEB4C564064CAB8FC697A427
+- macOS arm64 packaged dylib after install_name_tool @loader_path fix SHA-256: 2C0764676E410016D3E97DFEEE42DF9342826D927747C3675EFD0EF96F547825
+- macOS package image is the same release build with only loader-path metadata made relocatable; `otool -L` shows @rpath self identity and system libraries.
+- macOS native load probe with ctypes: DLOPEN_PASS.
+
+Installed JAR:
 - path: Q:\sdk\work\actors-uniffi-actors-c8-nominal-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar
-- JAR SHA-256: AA0B8F33F9E96F533783251CEDE47D4B562397CE8030E8781E8D015C0AAE1FB6
-- resource: win32-x86-64/acyclic_actors_uniffi.dll
-- resource DLL SHA-256: 1D0A5E8C0A7B8AC43756A4DE738DF5EC8CAD27EF065614D77CBE072D85B9117F
-- Maven package with Kotlin 1.9.21, coroutines 1.8.0, JNA 5.15.0, and JVM target 17: PASS.
+- JAR SHA-256: C394AC6A30F0ED07654F34A8B42359E729B3E759C4240E04B5EC3ED799141AD8
+- standard JNA resources present: win32-x86-64/acyclic_actors_uniffi.dll, linux-x86-64/libacyclic_actors_uniffi.so, darwin-aarch64/libacyclic_actors_uniffi.dylib.
+- Maven package: Kotlin 1.9.21, coroutines 1.8.0, JNA 5.15.0, JVM target 17: PASS.
 
-Qualification results:
-- Rust cargo check and lib build offline: PASS.
+Qualification:
+- Rust cargo build offline with Rust 1.98.1 and locked dependency set: PASS on Windows, WSL/Linux, and macOS rebuilds.
 - installed JAR all-eight request-constructor shape: KOTLIN_ALL8_NOMINAL_COMPILE_SHAPE_PASS.
-- installed JAR Rust-backed nominal runtime: KOTLIN_RUST_BACKED_NOMINAL_RUNTIME_PASS.
-- invalid empty ActorId, 31-byte CodeSha256, zero PositiveU64, and CurrentHeadMarker(false): rejected.
-- full-u64 PositiveU64 value 9007199254740993: PASS.
-- coroutine cancellation forwarded to Rust CancellationHandle: KOTLIN_COROUTINE_CANCELLATION_FORWARD_PASS.
-- external negative consumer compile: expected FAIL; private nominal constructors, forged handle paths, and UInt/ULong mismatch were rejected.
+- Windows installed-JAR runtime: KOTLIN_RUST_BACKED_NOMINAL_RUNTIME_PASS; KOTLIN_COROUTINE_CANCELLATION_FORWARD_PASS; server cancellation callback observed and handle cancelled.
+- WSL/Linux installed-JAR runtime: same all-eight, nominal runtime, and coroutine cancellation receipts.
+- full legal unsigned coverage in probe: PositiveU64 1, 2^63 (9223372036854775808), and ULong.MAX_VALUE; cursor 9007199254740993 and ULong.MAX_VALUE; zero rejected.
+- invalid empty ActorId, 31-byte CodeSha256, zero PositiveU64, and CurrentHeadMarker(false): rejected through Rust-backed factories.
+- external negative Kotlin consumer compile: expected failure; private constructors, forged NoHandle/UniffiWithHandle paths, and Boolean-for-ULong mismatch rejected (NEGATIVE_COMPILE_EXIT=1).
+- macOS JVM runtime was unavailable on ivar (no Java runtime); native macOS image load was verified independently after relocatability fix.
 
-Platform/provenance boundary:
-- this receipt qualifies only the freshly rebuilt Windows resource and matching JAR.
-- no Linux or macOS bytes were assigned this source/lock identity; those require separate same-cohort rebuilds before cross-platform admission.
-
-Current qualification is source/package complete for Windows nominal policy, with cross-platform native parity still pending.
+Provenance boundary:
+- all three native resources were rebuilt from the frozen producer source hashes and exact Cargo.lock above; no stale platform byte was assigned this cohort.
+- the JAR keeps standard JNA resource roots and Rust-derived package identity.
 

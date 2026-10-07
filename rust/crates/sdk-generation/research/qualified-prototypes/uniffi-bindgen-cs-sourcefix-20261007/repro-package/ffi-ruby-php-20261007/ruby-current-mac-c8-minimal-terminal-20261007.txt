@@ -1,0 +1,21 @@
+Current macOS Ruby producer audit — 2026-10-07
+Host: ivar / macOS 15.6 arm64 / Ruby 2.6.10p210 / RubyGems 3.0.3.1
+Checkout: Q:/sdk/work/sdkgen-actors-c8-minimal
+Revision observed: 737775737a54c31c1d50b11c677ca9ae900b45b2
+Native producer SHA256: 15C00202420752EA3FA0D12FCE93FF3CA64CDDED17DC2370F9CA76BF16600B32
+Patched generator binary SHA256: 25CB83303028D27699901E84706268B794BFEFBAFDBF13391F9FEE49475DB5E2
+Generated acyclic_actors.rb SHA256: CD362BB5BF01D39CAF02B7B8B58FCC7E34209B7B46645F38F37E87E7312710CB
+Generated acyclic_actors_uniffi.rb SHA256: 4FB67EC1C8DB11F7CB53037ADC616FC8AAD83B15ED30FC8C5CA8048AF8145485
+
+native build: PASS
+maintained Ruby async generator build: PASS
+acyclic_actors_uniffi.rb syntax: PASS
+acyclic_actors.rb syntax: FAIL
+  line 1664: self.write_U64(v.)
+  line 1668: self.write_TypeCurrentHeadMarker(v.)
+  root cause: current Rust tuple enum fields have no Ruby field name for the maintained template
+
+Generated roots observed: ActorLimits, ActorObservation, Binding, SubscriptionStart.
+Missing nominal classes observed: ActorId, CodeSha256, PositiveU64, CurrentHeadMarker.
+all8/full-u64/cancellation/current-head/readonly-negative probes: NOT RUN because generated records are invalid Ruby.
+Historical PRIMARY macOS receipt remains unchanged.
