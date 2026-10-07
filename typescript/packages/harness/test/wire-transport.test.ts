@@ -31,7 +31,6 @@ import {
   type OperationEvent,
   TerminalAdmissionError,
   WireError,
-  Harness,
   type JsonlChannel,
   type HttpFetcher,
 } from "../src/index.js";

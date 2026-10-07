@@ -71,9 +71,9 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
 
 impl<P, A, O> FilesystemWorkflowJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Binds one task workflow to its exact worker lease. Publications atomically
     /// compare the coordinator tail and workflow tail on the same Stream provider.
@@ -502,9 +502,9 @@ where
 
 impl<P, A, O> WorkflowJournal for FilesystemWorkflowJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn task_binding(&self) -> Option<(crate::TaskId, crate::scheduler::LeaseFence)> {
         self.owner.as_ref().map(TaskJournalOwner::task_binding)

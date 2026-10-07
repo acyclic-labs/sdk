@@ -107,8 +107,8 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
 
 impl<A, O> SchedulerPayloadStore for FilesystemSchedulerPayloadStore<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn stage<'a>(
         &'a self,
@@ -171,8 +171,8 @@ impl<A, O> FilesystemContentVerifier<A, O> {
 
 impl<A, O> ContentResidencyVerifier for FilesystemContentVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn list_private_directory<'a>(
         &'a self,
@@ -297,8 +297,8 @@ where
 
 impl<A, O> FilesystemContentVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Lazily lists another agent's private directory under this reader's
     /// signed, owner-delegated subtree grant. Pagination pins one generation.
@@ -401,8 +401,8 @@ struct FilesystemForkPublicationGuard<A, O> {
 
 impl<A, O> ForkPublicationGuard for FilesystemForkPublicationGuard<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn release<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -443,8 +443,8 @@ impl<A, O> FilesystemForkVerifier<A, O> {
 
 impl<A, O> ForkSeedVerifier for FilesystemForkVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn provider(&self) -> &ProviderRef {
         &self.host.provider
@@ -897,8 +897,8 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
 
 impl<A, O> ProjectMergeVerifier for FilesystemProjectMergeVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {

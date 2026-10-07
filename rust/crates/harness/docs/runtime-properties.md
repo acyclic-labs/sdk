@@ -38,6 +38,18 @@ correctness proofs. No machine-checked proof is supplied by this table.
 
 | Unpublished execution payloads cannot block reconciliation with different bytes at the same logical position. | The stock staging helper binds the physical upload identity to the exact content digest; fenced journal append claims retain logical authority. | Immutable files, collision-resistant digests, linearizable Stream transactions and honest provider reconciliation. The test explicitly hands off a quiescent in-process provider; arbitrary external effects require their own quiescence proof. | `stock_model_publication_faults_reconcile_after_provider_reopen` exercises pre-commit failure and lost acknowledgements with visible/hidden receipts. It retains the reservation on failure, reopens real local providers, and observes one generate/one reconcile without a second charge. The pre-commit case failed with an orphaned-file identity conflict before this fix. Further tool and model-start publication windows remain open. |
 
+## Shared provider boundary audit
+
+Filesystem task commands, execution/workflow journals, content and approval
+adapters use the existing provider traits and platform future alias. The native
+Stream and storage traits already require `Send + Sync`; repeating those bounds
+on every adapter prevented browser-local providers without strengthening native
+safety. Removing the duplicate bounds and using the same future alias for merge
+receipt verification preserves native requirements and permits the Filesystem
+adapter to compile with `wasm,filesystem`. Strict compilation of that optional
+adapter is separate from the standard `wasm` build and does not prove full
+browser task execution or cross-tab runtime recovery.
+
 ## Remaining implementation gates
 
 Caller-selected task/session and payload budgets remain enforced. Generic workflow and

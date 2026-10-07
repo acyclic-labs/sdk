@@ -970,8 +970,8 @@ fn validate_capture(selection: &ForkSelection, capture: &Capture) -> Result<()> 
 
 impl<A, O> ForkPreparer for FilesystemForkPreparer<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn parent_snapshot(&self) -> (&Authority, u64) {
         (self.parent.authority(), self.parent.revision())

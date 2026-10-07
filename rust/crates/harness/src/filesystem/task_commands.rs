@@ -154,9 +154,9 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
 
 impl<P, A, O> TaskCommandHost for FilesystemTaskCommands<'_, P, A, O>
 where
-    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
-    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
-    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn execute<'a>(
         &'a self,
@@ -241,9 +241,9 @@ where
 
 impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
 where
-    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
-    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
-    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Checks only a retained passive wait. Never dispatches or reconciles a
     /// provider while the task has no execution reservation.

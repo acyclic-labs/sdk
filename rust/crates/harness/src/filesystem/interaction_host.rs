@@ -34,9 +34,9 @@ pub struct FilesystemInteractionHost<P, A, O> {
 
 impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn inspect<'a>(
         &'a self,
@@ -99,9 +99,9 @@ where
 
 impl<P, A, O> FilesystemInteractionHost<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Binds the exact conversation authority and an agent-private content owner.
     #[allow(

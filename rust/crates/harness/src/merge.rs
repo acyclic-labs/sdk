@@ -12,7 +12,6 @@ use crate::{
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin};
 
 /// Stable provider-owned identity of one inspected conflict region. Its bytes
 /// are deliberately opaque to Harness; a provider validates every selection.
@@ -261,10 +260,7 @@ impl ProjectMergeReceipt {
 /// No reducer replay needs access to the live Filesystem head.
 pub trait ProjectMergeVerifier: acyclic_stream::ProviderPlatform {
     /// Verifies the immutable provider join before publication to history.
-    fn verify<'a>(
-        &'a self,
-        receipt: &'a ProjectMergeReceipt,
-    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+    fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>>;
 }
 
 #[cfg(test)]

@@ -83,8 +83,8 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
 
 impl<A, O> ProjectWorkspaceProvider for FilesystemProjectWorkspaces<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn provider(&self) -> &ProviderRef {
         &self.host.provider
@@ -160,8 +160,8 @@ struct FilesystemProjectJoinPlan<A, O> {
 
 impl<A, O> ProjectJoinPlan for FilesystemProjectJoinPlan<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn source_generation(&self) -> &GenerationRef {
         &self.source

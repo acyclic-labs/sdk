@@ -186,9 +186,9 @@ impl InteractionRouter for TaskJournalInteractions {
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
 where
-    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
-    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
-    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Uses one Stream provider for admission, accounting and both journals.
     /// Root admission always includes immutable session ceilings atomically.
@@ -1160,9 +1160,9 @@ pub struct FilesystemTaskExecution<P, A, O> {
 
 impl<P, A, O> FilesystemTaskExecution<P, A, O>
 where
-    P: StreamProvider + acyclic_stream::ProviderPlatform + 'static,
-    A: AsyncAuthorityStore + acyclic_stream::ProviderPlatform + 'static,
-    O: AsyncObjectStore + acyclic_stream::ProviderPlatform + 'static,
+    P: StreamProvider + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Stable task-namespaced turn identity to use in `TurnInput` after reopen.
     #[must_use]

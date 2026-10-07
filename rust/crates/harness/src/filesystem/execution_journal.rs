@@ -222,9 +222,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum_payload_bytes: u64,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         owner.validate_storage(&verifier, maximum_payload_bytes)?;
         let mut journal = Self::new(
@@ -258,9 +258,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         summary: &mut ExecutionSummary,
     ) -> Result<()>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let (owner, _) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
@@ -290,9 +290,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         command: OperationId,
     ) -> Result<()>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("quiescence requires a task-owned execution journal".into())
@@ -315,9 +315,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         event: ExecutionEvent,
     ) -> Result<bool>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         self.require_operation(operation_id)?;
         if claim_id.is_empty() {
@@ -382,9 +382,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum_payload_bytes: u64,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         Self::new_with_schemas(
             stream,
@@ -408,9 +408,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum_payload_bytes: u64,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         if volume.class() != VolumeClass::AgentPrivate
             || volume.provider() != &host.provider
@@ -467,9 +467,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         private_volume: VolumeRef,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         if let Some((owner, _)) = &self.owner {
             owner.require_interaction_grant()?;
@@ -525,9 +525,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         responder: &Scope,
     ) -> Result<()>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         self.verifier.verify(responder)?;
         if !responder
@@ -645,9 +645,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum: u32,
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         self.require_operation(operation_id)?;
         validate_execution_page(after, maximum)?;
@@ -702,8 +702,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
 
     async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
     where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let refs: Vec<&FileRef> = match event {
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
@@ -744,9 +744,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
 
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn verify<'a>(
         &'a self,
@@ -791,9 +791,9 @@ where
 
 impl<P, A, O> ExecutionJournal for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn replay<'a>(
         &'a self,
