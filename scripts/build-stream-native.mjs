@@ -165,16 +165,30 @@ function splitRustflags(value) {
   const flags = [];
   let current = "";
   let quote = null;
+  const appendEscaped = (index) => {
+    const next = value[index + 1];
+    if (next === undefined) return false;
+    if (next === "\\" || next === '"' || next === "'" || /\s/u.test(next)) {
+      current += next;
+      return true;
+    }
+    current += "\\";
+    return false;
+  };
   for (let index = 0; index < value.length; index += 1) {
     const character = value[index];
     if (quote !== null) {
       if (character === quote) quote = null;
-      else if (character === "\\" && index + 1 < value.length) current += value[++index];
+      else if (character === "\\") {
+        if (appendEscaped(index)) index += 1;
+      }
       else current += character;
     } else if (character === "'" || character === '"') quote = character;
     else if (/\s/u.test(character)) {
       if (current.length > 0) { flags.push(current); current = ""; }
-    } else if (character === "\\" && index + 1 < value.length) current += value[++index];
+    } else if (character === "\\") {
+      if (appendEscaped(index)) index += 1;
+    }
     else current += character;
   }
   if (quote !== null) throw new Error("RUSTFLAGS contains an unterminated quote");
@@ -191,6 +205,21 @@ export function deterministicRustflags(sourceRoot, targetDir, target, { plain = 
   ];
   if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
   return flags.join("\x1f");
+}
+
+export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
+  const priorRustflags = envValue("RUSTFLAGS");
+  const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
+  process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
+  delete process.env.RUSTFLAGS;
+  try {
+    return await operation();
+  } finally {
+    if (priorRustflags === null) delete process.env.RUSTFLAGS;
+    else process.env.RUSTFLAGS = priorRustflags;
+    if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
+    else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
+  }
 }
 
 function targetEnvName(target, suffix) {
@@ -403,8 +432,14 @@ function normalizeToolPath(value, context) {
 
 function normalizeFlagValue(value, context) {
   if (typeof value !== "string") return value;
-  const withToolIdentity = value.replace(/(-C(?:\s+)?linker=)([^\s\u001f]+)/gu, (_match, prefix, linker) => `${prefix}${normalizeToolPath(linker, context)}`);
-  return normalizedPath(withToolIdentity, context);
+  const normalizeSegment = (segment, encoded) => {
+    const withToolIdentity = encoded
+      ? segment.replace(/(-C(?:\s+)?linker=)(.+)$/u, (_match, prefix, linker) => `${prefix}${normalizeToolPath(linker, context)}`).replace(/^linker=(.+)$/u, (_match, linker) => `linker=${normalizeToolPath(linker, context)}`)
+      : segment.replace(/(-C(?:\s+)?linker=)([^\s\u001f]+)/gu, (_match, prefix, linker) => `${prefix}${normalizeToolPath(linker, context)}`);
+    return normalizedPath(withToolIdentity, context);
+  };
+  const encoded = value.includes("\x1f");
+  return encoded ? value.split("\x1f").map(segment => normalizeSegment(segment, true)).join("\x1f") : normalizeSegment(value, false);
 }
 
 export function normalizeBuildInputs(value, { targetDir, outputDir }) {
@@ -687,80 +722,65 @@ async function build(options) {
   const revision = sourceRevision();
   const source = await sourceSnapshot();
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
-  const priorRustflags = envValue("RUSTFLAGS");
-  const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
-  process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(root, targetDir, options.target, { plain: priorRustflags, encoded: priorEncodedRustflags });
-  delete process.env.RUSTFLAGS;
-  const restoreRustflags = () => {
-    if (priorRustflags === null) delete process.env.RUSTFLAGS;
-    else process.env.RUSTFLAGS = priorRustflags;
-    if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
-    else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
-  };
-  let attestedInputs;
-  try {
-    attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
-  } catch (error) {
-    restoreRustflags();
-    throw error;
-  }
-  const rootManifest = await rootPackageJson();
-  const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
-  if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
-    restoreRustflags();
-    throw new Error(`loaded @napi-rs/cli ${attestedInputs.generator.version} does not match package.json ${expectedGeneratorVersion}`);
-  }
-  await mkdir(output, { recursive: true });
-  const temporary = await mkdtemp(resolve(tmpdir(), "acyclic-stream-napi-package-"));
-  const packagePath = resolve(temporary, `${randomUUID()}.json`);
-  await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
-  const runNapiBuild = async () => {
-    const { NapiCli } = await import("@napi-rs/cli");
-    const buildResult = await new NapiCli().build({
-      cwd: root,
-      packageJsonPath: packagePath,
-      manifestPath: resolve(root, manifestRelative),
-      outputDir: output,
-      target: options.target,
-      targetDir,
-      platform: true,
-      jsPackageName: packageManifest.name,
-      jsBinding: "binding.cjs",
-      dts: "binding.d.ts",
-      release: true,
-    });
-    await buildResult.task;
-    // NAPI's transaction helper can leave dot-prefixed recovery entries on
-    // mounted filesystems after commit. They are not published artifacts.
-    for (const entry of await readdir(output, { withFileTypes: true })) {
-      if (entry.name.startsWith(".")) await rm(resolve(output, entry.name), { recursive: true, force: true });
+  const attestedInputs = await withDeterministicRustflags(root, targetDir, options.target, async () => {
+    const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+    const rootManifest = await rootPackageJson();
+    const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
+    if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
+      throw new Error(`loaded @napi-rs/cli ${attestedInputs.generator.version} does not match package.json ${expectedGeneratorVersion}`);
     }
-  };
-  let rustcCapture = await createRustcInvocationCapture();
-  try {
-    // Remove only the two provenance files this command owns. Any other
-    // pre-existing entry is rejected by bundleArtifacts rather than hidden.
-    await rm(resolve(output, generationManifestName), { force: true });
-    await rm(resolve(output, "native-targets.json"), { force: true });
-    // Staging and checking a previously qualified bundle must work from the
-    // clean publication assembly directory, which has no workspace dev
-    // dependencies. Load NAPI-RS only for the build command.
-    await runNapiBuild();
+    await mkdir(output, { recursive: true });
+    const temporary = await mkdtemp(resolve(tmpdir(), "acyclic-stream-napi-package-"));
+    const packagePath = resolve(temporary, `${randomUUID()}.json`);
+    await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
+    const runNapiBuild = async () => {
+      const { NapiCli } = await import("@napi-rs/cli");
+      const buildResult = await new NapiCli().build({
+        cwd: root,
+        packageJsonPath: packagePath,
+        manifestPath: resolve(root, manifestRelative),
+        outputDir: output,
+        target: options.target,
+        targetDir,
+        platform: true,
+        jsPackageName: packageManifest.name,
+        jsBinding: "binding.cjs",
+        dts: "binding.d.ts",
+        release: true,
+      });
+      await buildResult.task;
+      // NAPI's transaction helper can leave dot-prefixed recovery entries on
+      // mounted filesystems after commit. They are not published artifacts.
+      for (const entry of await readdir(output, { withFileTypes: true })) {
+        if (entry.name.startsWith(".")) await rm(resolve(output, entry.name), { recursive: true, force: true });
+      }
+    };
+    let rustcCapture = await createRustcInvocationCapture();
     try {
-      attestedInputs.linker.actual = await rustcCapture.read(options.target);
-    } catch (error) {
-      if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
-      await rustcCapture.close();
-      execFileSync("cargo", ["clean", "--package", "acyclic-stream-napi", "--release", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
-      rustcCapture = await createRustcInvocationCapture();
+      // Remove only the two provenance files this command owns. Any other
+      // pre-existing entry is rejected by bundleArtifacts rather than hidden.
+      await rm(resolve(output, generationManifestName), { force: true });
+      await rm(resolve(output, "native-targets.json"), { force: true });
+      // Staging and checking a previously qualified bundle must work from the
+      // clean publication assembly directory, which has no workspace dev
+      // dependencies. Load NAPI-RS only for the build command.
       await runNapiBuild();
-      attestedInputs.linker.actual = await rustcCapture.read(options.target);
+      try {
+        attestedInputs.linker.actual = await rustcCapture.read(options.target);
+      } catch (error) {
+        if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
+        await rustcCapture.close();
+        execFileSync("cargo", ["clean", "--package", "acyclic-stream-napi", "--release", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+        rustcCapture = await createRustcInvocationCapture();
+        await runNapiBuild();
+        attestedInputs.linker.actual = await rustcCapture.read(options.target);
+      }
+    } finally {
+      await rustcCapture.close();
+      await rm(temporary, { recursive: true, force: true });
     }
-  } finally {
-    restoreRustflags();
-    await rustcCapture.close();
-    await rm(temporary, { recursive: true, force: true });
-  }
+    return attestedInputs;
+  });
   await assertSourceSnapshot(source);
   if (sourceRevision() !== revision) throw new Error("Stream native source changed during native build");
   const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: output });

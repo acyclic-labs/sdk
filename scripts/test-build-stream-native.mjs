@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, linkerInputs, normalizeBuildInputs, sourceSnapshot } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, linkerInputs, normalizeBuildInputs, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -119,6 +119,11 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
   assert.equal(flags.at(-1), "link-arg=/Brepro");
   assert.ok(flags.some(flag => flag.includes("--remap-path-prefix=C:/agent checkout/sdk=/__acyclic_stream_source")));
   assert.ok(flags.some(flag => flag.includes("--remap-path-prefix=C:/cargo target=/__acyclic_stream_target")));
+
+  const windowsPath = deterministicRustflags("C:/src", "C:/target", undefined, {
+    plain: "-C link-arg=\"C:\\Program Files\\SDK\\link.exe\"",
+  }).split("\x1f");
+  assert.deepEqual(windowsPath.slice(0, 2), ["-C", "link-arg=C:\\Program Files\\SDK\\link.exe"]);
 });
 
 test("native qualification rejects build input identity mutations", () => {
@@ -191,6 +196,7 @@ test("native qualification normalizes host paths in published build inputs", () 
   llvm.linker.actual.linker = "C:/LLVM/bin/lld-link.exe";
   llvm.linker.actual.args = ["--crate-name", "acyclic_stream_napi", "-Clinker=C:/LLVM/bin/lld-link.exe"];
   llvm.environment.RUSTFLAGS = "-C linker=C:/LLVM/bin/lld-link.exe";
+  llvm.environment.CARGO_ENCODED_RUSTFLAGS = "-C\x1flinker=C:/LLVM/bin/lld-link.exe";
   const normalizedLlvm = normalizeBuildInputs(llvm, {
     targetDir: "C:/runner/_work/target-stream-native",
     outputDir: "C:/runner/_work/native-bundle",
@@ -199,6 +205,7 @@ test("native qualification normalizes host paths in published build inputs", () 
   assert.equal(normalizedLlvm.linker.actual.linker, "<toolchain-path>/LLVM/bin/lld-link.exe");
   assert.equal(normalizedLlvm.linker.actual.args.at(-1), "-Clinker=<toolchain-path>/LLVM/bin/lld-link.exe");
   assert.equal(normalizedLlvm.environment.RUSTFLAGS, "-C linker=<toolchain-path>/LLVM/bin/lld-link.exe");
+  assert.equal(normalizedLlvm.environment.CARGO_ENCODED_RUSTFLAGS, "-C\x1flinker=<toolchain-path>/LLVM/bin/lld-link.exe");
 });
 
 test("native qualification keeps raw producer paths in an external receipt", () => {
@@ -227,6 +234,72 @@ test("native qualification adds stable Rust path remapping flags", () => {
     deterministicRustflags("D:/agent/two", "D:/agent/two/target", undefined, { plain: null, encoded: null }).split("\x1f"),
     ["--remap-path-prefix=D:/agent/two=/__acyclic_stream_source", "--remap-path-prefix=D:/agent/two/target=/__acyclic_stream_target"],
   );
+});
+
+test("native qualification preserves Windows separators in plain Rustflags", () => {
+  const flags = deterministicRustflags("C:/src", "C:/target", undefined, {
+    plain: "-C linker=C:\\runner\\_work\\target\\lld-link.exe",
+  }).split("\x1f");
+  assert.deepEqual(flags.slice(0, 2), ["-C", "linker=C:\\runner\\_work\\target\\lld-link.exe"]);
+});
+
+test("native qualification restores Rustflags when setup fails", async () => {
+  const priorRustflags = process.env.RUSTFLAGS;
+  const priorEncoded = process.env.CARGO_ENCODED_RUSTFLAGS;
+  process.env.RUSTFLAGS = "-C opt-level=2";
+  delete process.env.CARGO_ENCODED_RUSTFLAGS;
+  await assert.rejects(
+    withDeterministicRustflags("C:/src", "C:/target", undefined, async () => {
+      assert.equal(process.env.RUSTFLAGS, undefined);
+      assert.match(process.env.CARGO_ENCODED_RUSTFLAGS, /__acyclic_stream_source/u);
+      throw new Error("capture setup failed");
+    }),
+    /capture setup failed/,
+  );
+  assert.equal(process.env.RUSTFLAGS, "-C opt-level=2");
+  assert.equal(process.env.CARGO_ENCODED_RUSTFLAGS, undefined);
+  if (priorRustflags === undefined) delete process.env.RUSTFLAGS;
+  else process.env.RUSTFLAGS = priorRustflags;
+  if (priorEncoded === undefined) delete process.env.CARGO_ENCODED_RUSTFLAGS;
+  else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncoded;
+});
+
+test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-edge-test-"));
+  const node = process.execPath.replaceAll("\\", "/");
+  const marker = resolve(directory, "args.json").replaceAll("\\", "/");
+  const rustcSource = resolve(directory, "rustc.mjs");
+  const rustcCommand = resolve(directory, process.platform === "win32" ? "rustc.cmd" : "rustc");
+  const driverCommand = resolve(directory, "driver.cmd");
+  const priorWrapper = process.env.RUSTC_WRAPPER;
+  delete process.env.RUSTC_WRAPPER;
+  const args = [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "--remap-path-prefix=C:/Program Files/SDK=/__source", "-C", "link-arg=C:/a&b/x.dll", "-C", "link-arg=C:/a!b/y.dll"];
+  try {
+    await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)));\n`);
+    if (process.platform === "win32") await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
+      await chmod(rustcCommand, 0o700);
+    }
+    const capture = await createRustcInvocationCapture();
+    try {
+      if (process.platform === "win32") {
+        const quote = value => `"${value.replaceAll('"', '""')}"`;
+        await writeFile(driverCommand, `@echo off\r\ncall ${quote(capture.wrapper)} ${args.map(quote).join(" ")}\r\nexit /b %errorlevel%\r\n`);
+        execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/v:off", "/s", "/c", "call", driverCommand], { stdio: "inherit" });
+      } else execFileSync(capture.wrapper, args, { stdio: "inherit" });
+      const observed = await capture.read("x86_64-pc-windows-msvc");
+      assert.ok(observed.args.includes(args[4]));
+      assert.ok(observed.args.includes(args[6]));
+      assert.ok(observed.args.includes(args[8]));
+    } finally {
+      await capture.close();
+    }
+  } finally {
+    if (priorWrapper === undefined) delete process.env.RUSTC_WRAPPER;
+    else process.env.RUSTC_WRAPPER = priorWrapper;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("native qualification records explicit and implicit rustc linkers through a delegated wrapper", async () => {
