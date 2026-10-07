@@ -30,6 +30,27 @@ const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
 const READ_PAGE_SIZE: u32 = 1_024;
+const MAX_CACHED_INTENTS: usize = 64;
+
+type RetainedIntent = ([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId);
+
+/// Rebuildable location only; the event and all semantic facts remain in the
+/// coordinator journal. Reads always verify this location against that source.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IntentLocation {
+    key: String,
+    revision: u64,
+    event_digest: [u8; 32],
+    commit_id: [u8; 32],
+}
+
+fn intent_location_path(key: &str) -> String {
+    format!(
+        "harness/v2/coordinator/intent-locations/{}",
+        blake3::hash(key.as_bytes()).to_hex()
+    )
+}
 fn validate_child_page_request(
     parent: OperationId,
     after_slot: Option<&str>,
@@ -292,7 +313,7 @@ pub struct DistributedCoordinator<P> {
     scheduler: Scheduler,
     revision: u64,
     last_committed_at_ms: u64,
-    intents: BTreeMap<String, ([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)>,
+    intents: BTreeMap<String, RetainedIntent>,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
     payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
@@ -386,6 +407,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     self.content_verifier.verify(&spec.state).await?;
                 }
                 self.verify_published_result(&event).await?;
+                self.ensure_intent_location(IntentLocation {
+                    key: key.clone(),
+                    revision,
+                    event_digest: digest,
+                    commit_id: *record.commit_id.as_bytes(),
+                })
+                .await?;
                 self.apply_committed(
                     (revision, record.commit_id),
                     operation_id,
@@ -397,6 +425,127 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
         }
         Ok(())
+    }
+
+    async fn read_intent_location(&self, key: &str) -> Result<Option<IntentLocation>> {
+        IdempotencyKey::new(key.to_owned())?;
+        let stream = self.client.stream(intent_location_path(key))?;
+        let records = match stream.read(0, 2).await {
+            Ok(records) => records.try_collect::<Vec<_>>().await?,
+            Err(StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage(
+                "intent location must contain one immutable record".into(),
+            ));
+        };
+        let location: IntentLocation = serde_json::from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if record.sequence != 0
+            || location.key != key
+            || location.revision == 0
+            || crate::contract::canonical_json_bytes(&location)?.as_slice() != record.value.as_ref()
+        {
+            return Err(Error::Storage("intent location identity differs".into()));
+        }
+        Ok(Some(location))
+    }
+
+    async fn ensure_intent_location(&self, location: IntentLocation) -> Result<()> {
+        if let Some(existing) = self.read_intent_location(&location.key).await? {
+            return if existing == location {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "coordinator history repeats an idempotency key or index differs".into(),
+                ))
+            };
+        }
+        let bytes = crate::contract::canonical_json_bytes(&location)?;
+        let physical = stream_key(&format!(
+            "intent-location:{}",
+            blake3::hash(&bytes).to_hex()
+        ))?;
+        let outcome = self
+            .client
+            .stream(intent_location_path(&location.key))?
+            .append_batch(vec![Bytes::from(bytes)], Some(0), Some(physical))
+            .await;
+        match outcome {
+            Ok(AppendOutcome::Committed(receipt))
+                if receipt.start == 0 && receipt.end == 1 && receipt.tail == 1 =>
+            {
+                Ok(())
+            }
+            Ok(AppendOutcome::TailConflict { .. }) | Err(StreamError::Unavailable) => {
+                match self.read_intent_location(&location.key).await? {
+                    Some(existing) if existing == location => Ok(()),
+                    Some(_) => Err(Error::Conflict(
+                        "intent location publication differs".into(),
+                    )),
+                    None => Err(Error::Storage(
+                        "intent location publication is unavailable".into(),
+                    )),
+                }
+            }
+            Ok(AppendOutcome::Committed(_)) => {
+                Err(Error::Storage("intent location receipt differs".into()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn cache_intent(&mut self, key: String, intent: RetainedIntent) {
+        self.intents.insert(key, intent);
+        if self.intents.len() > MAX_CACHED_INTENTS {
+            let oldest = self
+                .intents
+                .iter()
+                .min_by_key(|(_, value)| value.2)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                self.intents.remove(&oldest);
+            }
+        }
+    }
+
+    async fn retained_intent(&mut self, key: &str) -> Result<Option<RetainedIntent>> {
+        if let Some(intent) = self.intents.get(key) {
+            return Ok(Some(intent.clone()));
+        }
+        let Some(location) = self.read_intent_location(key).await? else {
+            return Ok(None);
+        };
+        // A concurrent host may have indexed a later commit. It is outside this
+        // projection's snapshot; the coordinator tail CAS still fences writes.
+        if location.revision > self.revision {
+            return Ok(None);
+        }
+        let records = self
+            .stream
+            .read(location.revision - 1, 1)
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage("intent source record is absent".into()));
+        };
+        let (revision, operation, source_key, digest, _, event) = decode(&record.value)?;
+        if record.sequence != location.revision - 1
+            || revision != location.revision
+            || record.commit_id.as_bytes() != &location.commit_id
+            || source_key != key
+            || digest != location.event_digest
+            || scheduler_event_operation(&event) != operation
+        {
+            return Err(Error::Storage(
+                "intent location differs from coordinator source".into(),
+            ));
+        }
+        let intent = (digest, event, revision, record.commit_id);
+        self.cache_intent(key.to_owned(), intent.clone());
+        Ok(Some(intent))
     }
 
     /// Binds the owner-controlled staging boundary for joins, quorums and reducers.
@@ -883,7 +1032,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             },
         ];
         self.refresh().await?;
-        if self.session_intent(&keys, &events)? {
+        if self.session_intent(&keys, &events).await? {
             return Ok(CoordinatorApply::Replayed);
         }
         let mut projected = self.scheduler.clone();
@@ -934,7 +1083,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             Err(StreamError::IdempotencyMismatch) => {
                 self.refresh().await?;
-                if self.session_intent(&keys, &events)? {
+                if self.session_intent(&keys, &events).await? {
                     return Ok(CoordinatorApply::Replayed);
                 }
                 return Err(Error::Conflict("session retry identity reused".into()));
@@ -945,25 +1094,30 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
-    fn session_intent(&self, keys: &[String; 2], events: &[SchedulerEvent; 2]) -> Result<bool> {
+    async fn session_intent(
+        &mut self,
+        keys: &[String; 2],
+        events: &[SchedulerEvent; 2],
+    ) -> Result<bool> {
         let mut retained = 0;
         let mut previous: Option<(u64, acyclic_stream::CommitId)> = None;
         for (key, event) in keys.iter().zip(events) {
-            if let Some((digest, existing, revision, commit_id)) = self.intents.get(key) {
-                if existing != event
-                    || digest
+            if let Some((digest, existing, revision, commit_id)) = self.retained_intent(key).await?
+            {
+                if &existing != event
+                    || &digest
                         != blake3::hash(&crate::contract::canonical_json_bytes(event)?).as_bytes()
                 {
                     return Err(Error::Conflict("session retry identity reused".into()));
                 }
                 if let Some((prior, envelope)) = previous
-                    && (prior.checked_add(1) != Some(*revision) || envelope != *commit_id)
+                    && (prior.checked_add(1) != Some(revision) || envelope != commit_id)
                 {
                     return Err(Error::Conflict(
                         "session declaration is not one atomic envelope".into(),
                     ));
                 }
-                previous = Some((*revision, *commit_id));
+                previous = Some((revision, commit_id));
                 retained += 1;
             }
         }
@@ -996,17 +1150,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             AppendOutcome::TailConflict { .. } => (CoordinatorApply::Replayed, None),
         };
         self.refresh().await?;
-        if !self.session_intent(keys, events)? {
+        if !self.session_intent(keys, events).await? {
             return Err(Error::Conflict(
                 "session append conflicted without its complete intent".into(),
             ));
         }
         if let Some((envelope, start)) = receipt
-            && keys
-                .first()
-                .and_then(|key| self.intents.get(key))
+            && self
+                .retained_intent(&keys[0])
+                .await?
                 .is_none_or(|(_, _, revision, commit_id)| {
-                    *commit_id != envelope || revision.checked_sub(1) != Some(start)
+                    commit_id != envelope || revision.checked_sub(1) != Some(start)
                 })
         {
             return Err(Error::Storage(
@@ -1062,8 +1216,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let canonical = crate::contract::canonical_json_bytes(&event)?;
         let digest = *blake3::hash(&canonical).as_bytes();
-        if let Some((existing_digest, existing, ..)) = self.intents.get(key) {
-            return if existing_digest == &digest && existing == &event {
+        if let Some((existing_digest, existing, ..)) = self.retained_intent(key).await? {
+            return if existing_digest == digest && existing == event {
                 // A retained accounting receipt is not an execution permit.
                 // Revalidate the exact owner and cancellation state on retry.
                 self.replay_intent(&event)
@@ -1207,9 +1361,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     return Err(Error::Storage("invalid coordinator append receipt".into()));
                 }
                 self.refresh().await?;
-                match self.intents.get(key) {
+                match self.retained_intent(key).await? {
                     Some((committed_digest, committed, ..))
-                        if committed_digest == digest && committed == event =>
+                        if &committed_digest == digest && &committed == event =>
                     {
                         self.replay_intent(event)?;
                         Ok(if receipt.start == revision - 1 {
@@ -1225,9 +1379,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             AppendOutcome::TailConflict { actual_tail } => {
                 self.refresh().await?;
-                match self.intents.get(key) {
+                match self.retained_intent(key).await? {
                     Some((committed_digest, committed, ..))
-                        if committed_digest == digest && committed == event =>
+                        if &committed_digest == digest && &committed == event =>
                     {
                         self.replay_intent(event)
                     }
@@ -1340,7 +1494,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
     ) -> Result<bool> {
         self.refresh().await?;
-        if self.replay_orchestration(parent, idempotency_key.as_str(), false)? {
+        if self
+            .replay_orchestration(parent, idempotency_key.as_str(), false)
+            .await?
+        {
             return Ok(true);
         }
         let expected_revision = self
@@ -1391,7 +1548,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
-        if self.replay_orchestration(parent, idempotency_key.as_str(), true)? {
+        if self
+            .replay_orchestration(parent, idempotency_key.as_str(), true)
+            .await?
+        {
             return Ok(CoordinatorApply::Replayed);
         }
         let state = self
@@ -1478,8 +1638,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok(serde_json::Value::Array(assembled))
     }
 
-    fn replay_orchestration(&self, parent: OperationId, key: &str, reduced: bool) -> Result<bool> {
-        let Some((_, event, ..)) = self.intents.get(key) else {
+    async fn replay_orchestration(
+        &mut self,
+        parent: OperationId,
+        key: &str,
+        reduced: bool,
+    ) -> Result<bool> {
+        let Some((_, event, ..)) = self.retained_intent(key).await? else {
             return Ok(false);
         };
         if let SchedulerEvent::Orchestrated {
@@ -1487,7 +1652,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             reducer,
             ..
         } = event
-            && *operation_id == parent
+            && operation_id == parent
             && reducer.is_some() == reduced
         {
             Ok(true)
@@ -1546,8 +1711,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.scheduler.apply(event.clone())?;
         self.revision = revision;
         self.last_committed_at_ms = committed_at_ms;
-        self.intents
-            .insert(key, (digest, event, revision, commit_id));
+        self.cache_intent(key, (digest, event, revision, commit_id));
         Ok(())
     }
 }
@@ -1731,6 +1895,200 @@ mod tests {
         armed: std::sync::atomic::AtomicBool,
         entered: tokio::sync::Notify,
         release: tokio::sync::Notify,
+    }
+
+    #[tokio::test]
+    async fn intent_locations_rebuild_legacy_history_and_replay_evicted_atomic_session()
+    -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let root = OperationId::from_bytes([1; 16]);
+        let root_spec = spec(root, 0)?;
+        let limits = crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 2,
+            depth: 1,
+            model_steps: 1,
+        };
+        let key = "legacy-atomic-root";
+        let config_key = format!("session:{root}:{}", blake3::hash(key.as_bytes()).to_hex());
+        let events = [
+            SchedulerEvent::Declared {
+                spec: Box::new(root_spec.clone()),
+            },
+            SchedulerEvent::SessionConfigured {
+                operation_id: root,
+                limits,
+            },
+        ];
+        let mut records = Vec::new();
+        for (offset, (intent_key, event)) in [key, config_key.as_str()]
+            .into_iter()
+            .zip(&events)
+            .enumerate()
+        {
+            let canonical = crate::contract::canonical_json_bytes(event)?;
+            records.push(Bytes::from(encode(
+                offset as u64 + 1,
+                root,
+                intent_key,
+                *blake3::hash(&canonical).as_bytes(),
+                canonical,
+                offset as u64 + 10,
+            )));
+        }
+        let source = client.stream(COORDINATOR_PATH)?;
+        source
+            .append_batch(records, Some(0), Some(stream_key(key)?))
+            .await?;
+        assert!(client.bounds(&intent_location_path(key)).await.is_err());
+        // Concurrent rebuilds retain one exact location without semantic writes.
+        let (first, second) = tokio::join!(
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)),
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
+        );
+        let mut coordinator = first?;
+        let second = second?;
+        assert_eq!(coordinator.scheduler(), second.scheduler());
+        assert_eq!(client.bounds(&intent_location_path(key)).await?.tail, 1);
+        for identity in 2..=81u8 {
+            declare(
+                &mut coordinator,
+                spec(OperationId::from_bytes([identity; 16]), 0)?,
+                &format!("intent-eviction-{identity}"),
+            )
+            .await?;
+            assert!(coordinator.intents.len() <= MAX_CACHED_INTENTS);
+        }
+        assert!(!coordinator.intents.contains_key(key));
+        assert!(!coordinator.intents.contains_key(&config_key));
+        assert_eq!(source.bounds().await?.tail, 82);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("intent-cache-test", [9; 32], owner.clone());
+        let scope = issuer.root(
+            "declare",
+            Capabilities::new(["operation:declare", "operation:observe"]),
+        );
+        let verifier = issuer.verifier();
+        assert_eq!(
+            coordinator
+                .declare_session(
+                    &owner,
+                    &scope,
+                    &verifier,
+                    root_spec.clone(),
+                    limits,
+                    IdempotencyKey::new(key)?
+                )
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        assert!(
+            coordinator
+                .declare_session(
+                    &owner,
+                    &scope,
+                    &verifier,
+                    root_spec.clone(),
+                    crate::scheduler::SessionLimits {
+                        model_steps: 2,
+                        ..limits
+                    },
+                    IdempotencyKey::new(key)?
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(source.bounds().await?.tail, 82);
+        drop(coordinator);
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(reopened.intents.len(), MAX_CACHED_INTENTS);
+        assert_eq!(
+            reopened
+                .declare_session(
+                    &owner,
+                    &scope,
+                    &verifier,
+                    root_spec,
+                    limits,
+                    IdempotencyKey::new(key)?
+                )
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        assert_eq!(source.bounds().await?.tail, 82);
+        // A duplicate outside the cache is still invalid durable history, even
+        // when its event would merely repeat identical configured limits.
+        let canonical = crate::contract::canonical_json_bytes(&events[1])?;
+        source
+            .append_batch(
+                vec![Bytes::from(encode(
+                    83,
+                    root,
+                    &config_key,
+                    *blake3::hash(&canonical).as_bytes(),
+                    canonical,
+                    reopened.last_committed_at_ms + 1,
+                ))],
+                Some(82),
+                None,
+            )
+            .await?;
+        assert!(matches!(reopened.refresh().await, Err(Error::Conflict(_))));
+        assert_eq!(reopened.revision, 82);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn intent_locations_reject_forged_or_extended_projection_records() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let operation = OperationId::from_bytes([87; 16]);
+        declare(&mut coordinator, spec(operation, 0)?, "projection-source").await?;
+        let source = client.stream(COORDINATOR_PATH)?;
+        let location = IntentLocation {
+            key: "forged-location".into(),
+            revision: 1,
+            event_digest: [1; 32],
+            commit_id: [2; 32],
+        };
+        client
+            .stream(intent_location_path(&location.key))?
+            .append_batch(
+                vec![Bytes::from(crate::contract::canonical_json_bytes(
+                    &location,
+                )?)],
+                Some(0),
+                None,
+            )
+            .await?;
+        assert!(matches!(
+            coordinator.retained_intent(&location.key).await,
+            Err(Error::Storage(_))
+        ));
+        let valid = coordinator
+            .read_intent_location("projection-source")
+            .await?
+            .ok_or_else(|| Error::NotFound("valid intent location".into()))?;
+        client
+            .stream(intent_location_path(&valid.key))?
+            .append_batch(
+                vec![Bytes::from(crate::contract::canonical_json_bytes(&valid)?)],
+                Some(1),
+                None,
+            )
+            .await?;
+        assert!(
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier))
+                .await
+                .is_err()
+        );
+        assert_eq!(source.bounds().await?.tail, 1);
+        Ok(())
     }
 
     impl ContentResidencyVerifier for PausedChildVerifier {
@@ -2835,6 +3193,8 @@ mod tests {
         inner: MemoryStream,
         lose_ack: std::sync::atomic::AtomicBool,
         hide_receipt: std::sync::atomic::AtomicBool,
+        location_fault: std::sync::atomic::AtomicU8,
+        hide_location_read: std::sync::atomic::AtomicBool,
     }
 
     #[async_trait::async_trait]
@@ -2868,7 +3228,27 @@ mod tests {
             &self,
             request: acyclic_stream::AppendRequest,
         ) -> std::result::Result<AppendOutcome, StreamError> {
+            let location = request
+                .path
+                .as_str()
+                .starts_with("harness/v2/coordinator/intent-locations/");
+            let fault = if location {
+                self.location_fault
+                    .swap(0, std::sync::atomic::Ordering::SeqCst)
+            } else {
+                0
+            };
+            if fault == 1 {
+                return Err(StreamError::Unavailable);
+            }
             let outcome = self.inner.append(request).await?;
+            if fault >= 2 {
+                if fault == 3 {
+                    self.hide_location_read
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                return Err(StreamError::Unavailable);
+            }
             if matches!(outcome, AppendOutcome::Committed(_))
                 && self
                     .lose_ack
@@ -2888,6 +3268,16 @@ mod tests {
             &self,
             request: acyclic_stream::ReadRequest,
         ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            if request
+                .path
+                .as_str()
+                .starts_with("harness/v2/coordinator/intent-locations/")
+                && self
+                    .hide_location_read
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StreamError::Unavailable);
+            }
             self.inner.read(request).await
         }
         async fn follow(
@@ -2924,6 +3314,8 @@ mod tests {
                 inner: MemoryStream::default(),
                 lose_ack: std::sync::atomic::AtomicBool::new(true),
                 hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
+                location_fault: std::sync::atomic::AtomicU8::new(0),
+                hide_location_read: std::sync::atomic::AtomicBool::new(false),
             }));
             let mut coordinator =
                 DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
@@ -2973,6 +3365,47 @@ mod tests {
                 CoordinatorApply::Replayed
             );
             assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 2);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn intent_projection_faults_recover_without_another_semantic_append() -> Result<()> {
+        for fault in [1, 2, 3] {
+            let client = StreamClient::new(Arc::new(LostSessionAck {
+                inner: MemoryStream::default(),
+                lose_ack: std::sync::atomic::AtomicBool::new(false),
+                hide_receipt: std::sync::atomic::AtomicBool::new(false),
+                location_fault: std::sync::atomic::AtomicU8::new(fault),
+                hide_location_read: std::sync::atomic::AtomicBool::new(false),
+            }));
+            let mut coordinator =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let operation = OperationId::from_bytes([89; 16]);
+            let original = spec(operation, 0)?;
+            let first = declare(&mut coordinator, original.clone(), "projection-fault").await;
+            if fault == 2 {
+                first?;
+            } else {
+                assert!(matches!(first, Err(Error::Storage(_))));
+                assert_eq!(coordinator.revision, 0);
+                assert!(coordinator.scheduler().operation(operation).is_none());
+            }
+            assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, 1);
+            coordinator.refresh().await?;
+            assert_eq!(coordinator.revision, 1);
+            assert_eq!(
+                declare(&mut coordinator, original, "projection-fault").await?,
+                CoordinatorApply::Replayed
+            );
+            assert_eq!(client.bounds(COORDINATOR_PATH).await?.tail, 1);
+            assert_eq!(
+                client
+                    .bounds(&intent_location_path("projection-fault"))
+                    .await?
+                    .tail,
+                1
+            );
         }
         Ok(())
     }
