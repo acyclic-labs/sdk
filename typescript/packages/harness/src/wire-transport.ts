@@ -131,10 +131,16 @@ export class JsonlWireTransport implements WireTransport {
     await validateResume(resume);
     const channel = await this.open(signal);
     const source = channel[Symbol.asyncIterator]();
-    await channel.write(clientFrameJson({ case: "handshake", value: this.negotiation }));
-    const first = await source.next();
-    if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
-    await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
+    try {
+      await channel.write(clientFrameJson({ case: "handshake", value: this.negotiation }));
+      const first = await source.next();
+      if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
+      await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
+    } catch (error) {
+      // A rejected setup returns no connection, so nothing else can close it.
+      await Promise.resolve().then(() => channel.close()).catch(() => undefined);
+      throw error;
+    }
     const connection = new FramedConnection(source, line => channel.write(line), () => channel.close(), this.negotiation);
     await channel.write(clientFrameJson({ case: "resume", value: resume }));
     return connection;
@@ -167,12 +173,6 @@ export class WebSocketWireTransport implements WireTransport {
     socket.addEventListener("message", onMessage);
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
-    await waitForOpen(socket, signal);
-    const source = incoming[Symbol.asyncIterator]();
-    socket.send(clientFrameJson({ case: "handshake", value: this.negotiation }));
-    const first = await source.next();
-    if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
-    await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
     const close = () => {
       socket.removeEventListener("message", onMessage);
       socket.removeEventListener("close", onClose);
@@ -180,6 +180,18 @@ export class WebSocketWireTransport implements WireTransport {
       socket.close(1000, "client closed");
       incoming.end();
     };
+    const source = incoming[Symbol.asyncIterator]();
+    try {
+      await waitForOpen(socket, signal);
+      socket.send(clientFrameJson({ case: "handshake", value: this.negotiation }));
+      const first = await source.next();
+      if (first.done) throw new WireError(ErrorCode.UNSUPPORTED, "missing handshake response");
+      await validateHandshake(this.negotiation, handshakeFromFrame(parseServerFrame(first.value)));
+    } catch (error) {
+      // A rejected setup returns no connection, so nothing else can close it.
+      close();
+      throw error;
+    }
     const connection = new FramedConnection(source, async line => socket.send(line), close, this.negotiation);
     socket.send(clientFrameJson({ case: "resume", value: resume }));
     return connection;
