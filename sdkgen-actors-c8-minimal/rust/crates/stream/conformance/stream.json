@@ -1,0 +1,19 @@
+{
+  "schema": "acyclic.stream.conformance.v2",
+  "cases": [
+    "path-validation-and-permanent-parent-creation",
+    "atomic-batch-and-contiguous-zero-based-sequences",
+    "tail-cas-conflict-is-data-and-mutates-nothing",
+    "exact-idempotency-replay-and-argument-mismatch",
+    "native-idempotency-inspection-of-success-and-conflict",
+    "immutable-prefix-fork-and-independent-suffixes",
+    "finite-read-and-gapless-follow-handoff",
+    "fixed-snapshot-direct-child-listing",
+    "complete-history-remains-readable-from-zero",
+    "atomic-optimistic-multi-path-commit",
+    "fork-with-records-extends-the-new-path-in-one-commit",
+    "commit-conflict-mutates-nothing",
+    "absent-tail-condition-is-a-replayable-conflict",
+    "immutable-commit-envelope-read"
+  ]
+}

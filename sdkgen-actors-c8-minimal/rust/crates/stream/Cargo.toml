@@ -1,0 +1,84 @@
+[package]
+name = "acyclic-stream"
+version = "0.2.0"
+edition.workspace = true
+rust-version = "1.92"
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Hierarchical append-only Streams contract, clients, and local provider"
+readme = "README.md"
+documentation = "https://docs.rs/acyclic-stream"
+keywords = ["streams", "events", "grpc"]
+categories = ["api-bindings", "data-structures"]
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[example]]
+name = "http-conformance"
+required-features = ["http"]
+
+[[example]]
+name = "local-contention"
+required-features = ["local"]
+
+[features]
+default = ["grpc"]
+grpc = ["dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost"]
+http = ["dep:reqwest"]
+local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
+wasm = ["dep:serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
+
+[dependencies]
+async-trait.workspace = true
+bytes.workspace = true
+futures.workspace = true
+h2 = { version = "0.4.19", optional = true }
+hyper = { version = "1.11.0", default-features = false, optional = true }
+fs2 = { workspace = true, optional = true }
+prost.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["sync", "time"] }
+tonic = { workspace = true, optional = true }
+tonic-prost = { workspace = true, optional = true }
+uuid.workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = { version = "0.2.175", optional = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
+serde = { workspace = true, optional = true }
+serde-wasm-bindgen = { workspace = true, optional = true }
+tsify = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+tracing.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
+hyper-util.workspace = true
+rcgen = "0.14.10"
+tempfile = "3.27.0"
+tokio = { version = "1.48.0", features = ["macros", "rt", "test-util"] }
+tokio-stream.workspace = true
+tower.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

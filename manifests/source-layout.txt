@@ -1,0 +1,4 @@
+producer/Cargo.toml is the exact current producer manifest.
+producer/remote-fixture/Cargo.toml is the exact current TLS fixture manifest.
+sdkgen-actors-c8-minimal/rust/crates/stream and native-runtime are exact canonical dependency sources.
+The root workspace manifest is a minimal build wrapper retaining canonical workspace dependency versions while selecting only these exact members.

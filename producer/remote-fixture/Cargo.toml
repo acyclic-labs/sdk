@@ -1,0 +1,19 @@
+[package]
+name = "actors-stream-tls-fixture"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+acyclic-stream = { path = "../../sdkgen-actors-c8-minimal/rust/crates/stream", features = ["grpc"] }
+async-trait = "0.1.89"
+bytes = "1.10.1"
+futures = "0.3.31"
+rcgen = "0.14.10"
+tokio = { version = "1.48.0", features = ["fs", "macros", "net", "rt", "sync", "time"] }
+tokio-stream = { version = "0.1.18", features = ["net"] }
+tonic = { version = "0.14.2", features = ["tls-ring"] }

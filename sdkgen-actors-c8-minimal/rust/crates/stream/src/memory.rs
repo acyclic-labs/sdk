@@ -1,0 +1,2160 @@
+//! Single-lock deterministic reference state machine; no durability or availability claim.
+
+use std::{
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    ops::Bound,
+    sync::Arc,
+};
+
+use async_trait::async_trait;
+use bytes::Bytes;
+use futures::{StreamExt as _, stream};
+use prost::Message;
+use sha2::{Digest, Sha256};
+use tokio::sync::{RwLock, watch};
+
+#[cfg(feature = "local")]
+mod snapshot;
+
+use crate::{
+    AppendOutcome, AppendReceipt, AppendRequest, Child, ChildStream, ChildrenPage,
+    ChildrenPageRequest, ChildrenRequest, CommitCondition, CommitConflict, CommitId,
+    CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope, CommittedFork,
+    CommittedMutation, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
+    IdempotencyOutcome, MAX_COMMAND_BYTES, MAX_ITEMS, MAX_RECORD_BYTES, ReadRequest, Record,
+    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
+    UnixMillisClock,
+};
+
+/// Explicit fail-closed process-memory ceilings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MemoryLimits {
+    /// Maximum created paths, including implicit parents.
+    pub paths: usize,
+    /// Maximum unique retained path bytes.
+    pub path_bytes: usize,
+    /// Maximum unique committed records.
+    pub records: usize,
+    /// Maximum unique retained payload bytes.
+    pub payload_bytes: usize,
+    /// Maximum immutable commit envelopes.
+    pub commits: usize,
+    /// Maximum indefinitely retained replay identities. New identities fail
+    /// closed at capacity; an admitted identity is never forgotten or reused.
+    pub idempotency_results: usize,
+}
+
+impl Default for MemoryLimits {
+    fn default() -> Self {
+        Self {
+            paths: 100_000,
+            path_bytes: 64 * 1024 * 1024,
+            records: 1_000_000,
+            payload_bytes: 256 * 1024 * 1024,
+            commits: 1_000_000,
+            idempotency_results: 1_000_000,
+        }
+    }
+}
+
+/// A retention clock that never advances.
+#[cfg(target_arch = "wasm32")]
+struct StoppedClock;
+
+#[cfg(target_arch = "wasm32")]
+impl UnixMillisClock for StoppedClock {
+    fn now_unix_millis(&self) -> u64 {
+        0
+    }
+}
+
+#[cfg(test)]
+const RETENTION_MILLIS: u64 = crate::MIN_IDEMPOTENCY_RETENTION_SECS * 1000;
+
+/// Deterministic process-local provider. It retains each idempotency result and committed
+/// envelope indefinitely within explicit capacity limits. It deliberately claims
+/// no crash recovery; `LocalStream` supplies persistence when enabled.
+#[derive(Clone)]
+pub struct MemoryStream {
+    state: Arc<RwLock<State>>,
+    limits: MemoryLimits,
+    /// The trusted clock that deadlines are checked against.
+    clock: Arc<dyn UnixMillisClock>,
+    /// Clock whose sampled commit time is recorded in each new record.
+    commit_clock: Arc<dyn UnixMillisClock>,
+    /// Legacy journal clock; retained outcomes no longer expire.
+    retention: Arc<dyn UnixMillisClock>,
+}
+
+impl Default for MemoryStream {
+    fn default() -> Self {
+        Self::new(MemoryLimits::default())
+    }
+}
+
+impl MemoryStream {
+    #[cfg(feature = "local")]
+    pub(crate) async fn recovery_limits(
+        &mut self,
+        live: MemoryLimits,
+        maximum_commands: usize,
+    ) -> Result<(), StreamError> {
+        let state = self.state.read().await;
+        // Old journals could admit new outcomes after timed eviction. Recovery
+        // retains every surviving snapshot outcome plus at most one outcome and
+        // envelope per bounded journal command. Live admission keeps its limits.
+        self.limits = MemoryLimits {
+            commits: state
+                .commits
+                .len()
+                .checked_add(maximum_commands)
+                .ok_or(StreamError::Capacity)?
+                .max(live.commits),
+            idempotency_results: state
+                .replays
+                .len()
+                .checked_add(maximum_commands)
+                .ok_or(StreamError::Capacity)?
+                .max(live.idempotency_results),
+            ..live
+        };
+        Ok(())
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) fn finish_recovery(&mut self, live: MemoryLimits) {
+        self.limits = live;
+    }
+
+    /// Constructs one bounded independent provider.
+    #[must_use]
+    pub fn new(limits: MemoryLimits) -> Self {
+        // A browser has no system clock std can read; a page-lived provider
+        // there retains everything, within its capacity.
+        #[cfg(target_arch = "wasm32")]
+        let retention: Arc<dyn UnixMillisClock> = Arc::new(StoppedClock);
+        #[cfg(not(target_arch = "wasm32"))]
+        let retention: Arc<dyn UnixMillisClock> = Arc::new(SystemUnixMillisClock);
+        Self::new_with_clocks(limits, Arc::new(SystemUnixMillisClock), retention)
+    }
+
+    /// Constructs a provider with an injected trusted clock.
+    #[must_use]
+    pub fn new_with_clock(limits: MemoryLimits, clock: Arc<dyn UnixMillisClock>) -> Self {
+        Self::new_with_clocks(limits, Arc::clone(&clock), clock)
+    }
+
+    /// Constructs a provider with the legacy journal clock kept separate from
+    /// the trusted deadline clock. Clock samples never evict retry outcomes.
+    #[must_use]
+    pub(crate) fn new_with_clocks(
+        limits: MemoryLimits,
+        clock: Arc<dyn UnixMillisClock>,
+        retention: Arc<dyn UnixMillisClock>,
+    ) -> Self {
+        Self::new_with_commit_clock(limits, Arc::clone(&clock), retention, clock)
+    }
+
+    pub(crate) fn new_with_commit_clock(
+        limits: MemoryLimits,
+        clock: Arc<dyn UnixMillisClock>,
+        retention: Arc<dyn UnixMillisClock>,
+        commit_clock: Arc<dyn UnixMillisClock>,
+    ) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(State::default())),
+            limits,
+            clock,
+            commit_clock,
+            retention,
+        }
+    }
+
+    /// Takes the state and samples the legacy journal clock. Time never frees
+    /// an admitted retry identity or its immutable envelope.
+    async fn mutate(&self) -> (tokio::sync::RwLockWriteGuard<'_, State>, u64) {
+        let state = self.state.write().await;
+        let now = self.retention.now_unix_millis();
+        (state, now)
+    }
+
+    async fn commit_inner(
+        &self,
+        mut request: CommitRequest,
+        deadline_unix_millis: Option<u64>,
+    ) -> Result<CommitOutcome, StreamError> {
+        normalize_commit(&mut request)?;
+        validate_commit_shape(&request)?;
+        let digest = commit_digest(&request);
+        let (mut state, now) = self.mutate().await;
+        if let Some(result) = replay_commit(&state, &request.idempotency_key, digest)? {
+            return Ok(result);
+        }
+        if deadline_unix_millis.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
+            return Err(StreamError::DeadlineElapsed);
+        }
+        admit_replay(&state, Some(&request.idempotency_key), self.limits)?;
+        let conflicts = commit_conflicts(&state, &request.conditions);
+        if !conflicts.is_empty() {
+            let result = CommitOutcome::Conflict(conflicts);
+            retain(
+                &mut state,
+                now,
+                None,
+                Some(request.idempotency_key),
+                digest,
+                IdempotencyOutcome::Commit(result.clone()),
+            );
+            return Ok(result);
+        }
+        validate_commit_authority(&state, &request)?;
+        if reserve_coordinated(&state, &request, self.limits).is_err() {
+            recount(&mut state);
+            reserve_coordinated(&state, &request, self.limits)?;
+        }
+        let commit_id = next_commit_id(&mut state, digest)?;
+        let before = request
+            .mutations
+            .iter()
+            .filter_map(|mutation| match mutation {
+                CommitMutation::Fork { source, .. } => state
+                    .paths
+                    .get(source)
+                    .map(|stream| (source.clone(), (stream.history.clone(), stream.tail))),
+                CommitMutation::Append { .. } => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let committed_at_micros = state
+            .last_committed_at_micros
+            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+        let mutations = apply_coordinated(
+            &mut state,
+            &request.mutations,
+            &before,
+            commit_id,
+            committed_at_micros,
+        )?;
+        let envelope = CommittedEnvelope {
+            commit_id,
+            mutations,
+        };
+        let result = CommitOutcome::Committed(envelope.clone());
+        state.last_committed_at_micros = committed_at_micros;
+        retain(
+            &mut state,
+            now,
+            Some(envelope),
+            Some(request.idempotency_key),
+            digest,
+            IdempotencyOutcome::Commit(result.clone()),
+        );
+        Ok(result)
+    }
+}
+
+#[derive(Default)]
+struct State {
+    paths: BTreeMap<StreamPath, PathState>,
+    commits: BTreeMap<CommitId, CommittedEnvelope>,
+    replays: BTreeMap<Bytes, Replay>,
+    /// Snapshot receipt inventory, preserving the existing local disk format.
+    retained: VecDeque<Retained>,
+    path_bytes: usize,
+    /// Records and payload bytes retained, each counted once however many
+    /// paths share it; an upper bound between [`recount`]s.
+    record_count: usize,
+    payload_bytes: usize,
+    decision: u64,
+    /// High-water mark survives trimming, deletion, and snapshot restoration.
+    last_committed_at_micros: u64,
+    hierarchy_version: CommitId,
+}
+
+impl Drop for State {
+    fn drop(&mut self) {
+        // Forks and appends form a shared DAG. Dropping a long, uniquely owned
+        // History chain through Arc's default destructor consumes one stack
+        // frame per ancestor, so tear down the graph from its roots iteratively.
+        let mut pending = self
+            .paths
+            .values_mut()
+            .filter_map(|path| path.history.take())
+            .collect::<Vec<_>>();
+        while let Some(node) = pending.pop() {
+            if let Ok(history) = Arc::try_unwrap(node) {
+                match history {
+                    History::Batch { parent, .. } => pending.extend(parent),
+                    History::Prefix { source, .. } => pending.extend(source),
+                }
+            }
+        }
+    }
+}
+
+/// One snapshot entry. `until` is legacy disk metadata, never an eviction rule.
+#[cfg_attr(
+    not(feature = "local"),
+    allow(dead_code, reason = "only local snapshots read the retained fields")
+)]
+struct Retained {
+    until: u64,
+    replay: Option<Bytes>,
+    commit: Option<CommitId>,
+}
+
+struct PathState {
+    history: Option<Arc<History>>,
+    tail: u64,
+    changed: watch::Sender<u64>,
+}
+
+enum History {
+    Batch {
+        parent: Option<Arc<Self>>,
+        records: Arc<[Record]>,
+    },
+    Prefix {
+        source: Option<Arc<Self>>,
+        tail: u64,
+    },
+}
+
+#[derive(Clone)]
+struct Replay {
+    digest: [u8; 32],
+    result: IdempotencyOutcome,
+}
+
+#[async_trait]
+impl StreamProvider for MemoryStream {
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        let state = self.state.read().await;
+        Ok(state
+            .replays
+            .get(idempotency_key.as_bytes())
+            .map(|replay| IdempotencyObservation {
+                idempotency_key,
+                request_digest: replay.digest,
+                outcome: replay.result.clone(),
+            }))
+    }
+
+    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        let state = self.state.read().await;
+        state
+            .paths
+            .get(&path)
+            .map(|stream| stream.tail)
+            .ok_or(StreamError::NotFound)
+    }
+
+    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+        let state = self.state.read().await;
+        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+        Ok(StreamBounds { tail: stream.tail })
+    }
+
+    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        validate_records(&request.records)?;
+        validate_append_size(&request)?;
+        let digest = append_digest(&request);
+        let (mut state, now) = self.mutate().await;
+        if let Some(result) = replay_append(&state, request.idempotency_key.as_ref(), digest)? {
+            return Ok(result);
+        }
+        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        let actual_tail = state.paths.get(&request.path).map_or(0, |path| path.tail);
+        if request
+            .if_tail
+            .is_some_and(|expected| expected != actual_tail)
+        {
+            let result = AppendOutcome::TailConflict { actual_tail };
+            retain(
+                &mut state,
+                now,
+                None,
+                request.idempotency_key,
+                digest,
+                IdempotencyOutcome::Append(result.clone()),
+            );
+            return Ok(result);
+        }
+        if reserve_append(&state, &request.path, &request.records, self.limits).is_err() {
+            recount(&mut state);
+            reserve_append(&state, &request.path, &request.records, self.limits)?;
+        }
+        let commit_id = next_commit_id(&mut state, digest)?;
+        let committed_at_micros = state
+            .last_committed_at_micros
+            .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
+        let fact = crate::preparation::append_fact(
+            request.path.clone(),
+            actual_tail,
+            request.records,
+            commit_id,
+            committed_at_micros,
+        )?;
+        let records = &fact.records;
+        ensure_path(&mut state, &request.path, commit_id);
+        let resulting_tail = {
+            let stream = state
+                .paths
+                .get_mut(&request.path)
+                .ok_or(StreamError::Unavailable)?;
+            stream.history = Some(Arc::new(History::Batch {
+                parent: stream.history.clone(),
+                records: Arc::from(records.clone()),
+            }));
+            stream.tail = fact.tail;
+            stream.changed.send_replace(stream.tail);
+            stream.tail
+        };
+        state.record_count += records.len();
+        state.payload_bytes += records
+            .iter()
+            .map(|record| record.value.len())
+            .sum::<usize>();
+        let receipt = AppendReceipt {
+            start: actual_tail,
+            end: resulting_tail,
+            tail: resulting_tail,
+            commit_id,
+        };
+        let envelope = CommittedEnvelope {
+            commit_id,
+            mutations: vec![CommittedMutation::Append(fact)],
+        };
+        let result = AppendOutcome::Committed(receipt);
+        state.last_committed_at_micros = committed_at_micros;
+        retain(
+            &mut state,
+            now,
+            Some(envelope),
+            request.idempotency_key,
+            digest,
+            IdempotencyOutcome::Append(result.clone()),
+        );
+        Ok(result)
+    }
+
+    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        if request.source == request.destination {
+            return Err(StreamError::InvalidArgument);
+        }
+        validate_fork_size(&request)?;
+        let digest = fork_digest(&request);
+        let (mut state, now) = self.mutate().await;
+        if let Some(result) = replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
+            return Ok(result);
+        }
+        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        let forked_at = crate::preparation::fork_cut(
+            &request,
+            state.paths.get(&request.source).map(|stream| stream.tail),
+            state
+                .paths
+                .get(&request.destination)
+                .map(|stream| stream.tail),
+        )?;
+        let source = state
+            .paths
+            .get(&request.source)
+            .ok_or(StreamError::NotFound)?;
+        let source_history = source.history.clone();
+        reserve_paths(&state, &request.destination, self.limits)?;
+        reserve_commit(&state, self.limits)?;
+        let commit_id = next_commit_id(&mut state, digest)?;
+        ensure_path(&mut state, &request.destination, commit_id);
+        let destination = state
+            .paths
+            .get_mut(&request.destination)
+            .ok_or(StreamError::Unavailable)?;
+        destination.history = Some(Arc::new(History::Prefix {
+            source: source_history,
+            tail: forked_at,
+        }));
+        destination.tail = forked_at;
+        destination.changed.send_replace(forked_at);
+        let receipt = ForkReceipt {
+            source: request.source,
+            destination: request.destination,
+            forked_at,
+            tail: forked_at,
+            commit_id,
+        };
+        let envelope = CommittedEnvelope {
+            commit_id,
+            mutations: vec![CommittedMutation::Fork(CommittedFork {
+                source: receipt.source.clone(),
+                destination: receipt.destination.clone(),
+                forked_at,
+                tail: forked_at,
+                records: Vec::new(),
+            })],
+        };
+        retain(
+            &mut state,
+            now,
+            Some(envelope),
+            request.idempotency_key,
+            digest,
+            IdempotencyOutcome::Fork(receipt.clone()),
+        );
+        Ok(receipt)
+    }
+
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        validate_limit(request.limit)?;
+        let state = self.state.read().await;
+        let path = state
+            .paths
+            .get(&request.path)
+            .ok_or(StreamError::NotFound)?;
+        if request.from > path.tail {
+            return Err(StreamError::OutOfRange);
+        }
+        let records = read_history(
+            path.history.as_ref(),
+            path.tail,
+            request.from,
+            usize::try_from(request.limit).map_err(|_| StreamError::LimitExceeded)?,
+        );
+        Ok(stream::iter(records.into_iter().map(Ok)).boxed())
+    }
+
+    async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+        let (receiver, cursor) = {
+            let state = self.state.read().await;
+            let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+            if from > stream.tail {
+                return Err(StreamError::OutOfRange);
+            }
+            (
+                stream.changed.subscribe(),
+                HistoryCursor::new(stream.history.as_ref(), stream.tail, from),
+            )
+        };
+        let state = Arc::clone(&self.state);
+        Ok(stream::unfold(
+            (state, path, receiver, cursor),
+            |(state, path, mut receiver, mut cursor)| async move {
+                loop {
+                    let record = {
+                        let guard = state.read().await;
+                        if let Some(current) = guard.paths.get(&path) {
+                            cursor.sync(current.history.as_ref(), current.tail);
+                            Ok(cursor.next_record())
+                        } else {
+                            Err(StreamError::NotFound)
+                        }
+                    };
+                    let Some(record) = (match record {
+                        Ok(record) => record,
+                        Err(error) => {
+                            return Some((Err(error), (state, path, receiver, cursor)));
+                        }
+                    }) else {
+                        if receiver.changed().await.is_err() {
+                            return Some((
+                                Err(StreamError::Unavailable),
+                                (state, path, receiver, cursor),
+                            ));
+                        }
+                        continue;
+                    };
+                    return Some((Ok(record), (state, path, receiver, cursor)));
+                }
+            },
+        )
+        .boxed())
+    }
+
+    async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+        validate_limit(request.limit)?;
+        let state = self.state.read().await;
+        let limit = usize::try_from(request.limit).map_err(|_| StreamError::LimitExceeded)?;
+        let children = state
+            .paths
+            .keys()
+            .filter(|path| {
+                request.parent.as_ref().map_or_else(
+                    || !path.as_str().contains('/'),
+                    |parent| is_direct_child(parent, path),
+                )
+            })
+            .take(limit)
+            .cloned()
+            .map(|path| Child { path })
+            .collect::<Vec<_>>();
+        Ok(stream::iter(children.into_iter().map(Ok)).boxed())
+    }
+
+    async fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> Result<ChildrenPage, StreamError> {
+        validate_limit(request.limit)?;
+        if request.after.is_some() && request.hierarchy_version.is_none() {
+            return Err(StreamError::InvalidArgument);
+        }
+        if request.after.as_ref().is_some_and(|after| {
+            !request.parent.as_ref().map_or_else(
+                || !after.as_str().contains('/'),
+                |parent| is_direct_child(parent, after),
+            )
+        }) {
+            return Err(StreamError::InvalidArgument);
+        }
+        let state = self.state.read().await;
+        if request
+            .hierarchy_version
+            .is_some_and(|version| version != state.hierarchy_version)
+        {
+            return Err(StreamError::HierarchyChanged);
+        }
+        let start = request.after.as_ref().or(request.parent.as_ref());
+        let candidates: Box<dyn Iterator<Item = &StreamPath> + '_> = match start {
+            Some(start) => Box::new(
+                state
+                    .paths
+                    .range((Bound::Excluded(start.clone()), Bound::Unbounded))
+                    .map(|(path, _)| path),
+            ),
+            None => Box::new(state.paths.keys()),
+        };
+        let parent_prefix = request
+            .parent
+            .as_ref()
+            .map(|parent| format!("{}/", parent.as_str()));
+        let mut paths = candidates
+            .take_while(|path| {
+                parent_prefix
+                    .as_ref()
+                    .is_none_or(|prefix| path.as_str().starts_with(prefix))
+            })
+            .filter(|path| {
+                request.parent.as_ref().map_or_else(
+                    || !path.as_str().contains('/'),
+                    |parent| is_direct_child(parent, path),
+                )
+            })
+            .take(request.limit as usize + 1)
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_more = paths.len() > request.limit as usize;
+        paths.truncate(request.limit as usize);
+        let next_after = if has_more {
+            paths.last().cloned()
+        } else {
+            None
+        };
+        Ok(ChildrenPage {
+            hierarchy_version: state.hierarchy_version,
+            children: paths.into_iter().map(|path| Child { path }).collect(),
+            next_after,
+        })
+    }
+
+    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+        self.commit_inner(request, None).await
+    }
+
+    async fn commit_before(
+        &self,
+        request: CommitRequest,
+        deadline_unix_millis: u64,
+    ) -> Result<CommitOutcome, StreamError> {
+        self.commit_inner(request, Some(deadline_unix_millis)).await
+    }
+
+    async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+        self.state
+            .read()
+            .await
+            .commits
+            .get(&commit_id)
+            .cloned()
+            .ok_or(StreamError::NotFound)
+    }
+}
+
+pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
+    if limit == 0 || usize::try_from(limit).map_or(true, |limit| limit > MAX_ITEMS) {
+        Err(StreamError::LimitExceeded)
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_records(records: &[Bytes]) -> Result<(), StreamError> {
+    if records.is_empty() || records.len() > MAX_ITEMS {
+        return Err(StreamError::LimitExceeded);
+    }
+    for record in records {
+        if record.len() > MAX_RECORD_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_append_size(request: &AppendRequest) -> Result<(), StreamError> {
+    let wire = crate::wire::AppendRequest {
+        path: request.path.to_string(),
+        records: request.records.clone(),
+        if_tail: request.if_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+    };
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
+}
+
+pub(crate) fn validate_fork_size(request: &ForkRequest) -> Result<(), StreamError> {
+    let wire = crate::wire::ForkRequest {
+        source: request.source.to_string(),
+        destination: request.destination.to_string(),
+        at_tail: request.at_tail,
+        idempotency_key: request
+            .idempotency_key
+            .as_ref()
+            .map(|key| Bytes::copy_from_slice(key.as_bytes())),
+    };
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
+}
+
+fn missing_paths(state: &State, path: &StreamPath) -> usize {
+    let mut count = 0;
+    let mut current = Some(path.clone());
+    while let Some(path) = current {
+        count += usize::from(!state.paths.contains_key(&path));
+        current = path.parent();
+    }
+    count
+}
+
+fn reserve_paths(
+    state: &State,
+    path: &StreamPath,
+    limits: MemoryLimits,
+) -> Result<(), StreamError> {
+    let missing_path_bytes = missing_path_bytes(state, path);
+    if state.paths.len().saturating_add(missing_paths(state, path)) > limits.paths
+        || state.path_bytes.saturating_add(missing_path_bytes) > limits.path_bytes
+    {
+        Err(StreamError::Capacity)
+    } else {
+        Ok(())
+    }
+}
+
+fn missing_path_bytes(state: &State, path: &StreamPath) -> usize {
+    let mut bytes = 0_usize;
+    let mut current = Some(path.clone());
+    while let Some(path) = current {
+        if !state.paths.contains_key(&path) {
+            bytes = bytes.saturating_add(path.as_str().len());
+        }
+        current = path.parent();
+    }
+    bytes
+}
+
+fn reserve_commit(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
+    if state.commits.len() >= limits.commits {
+        Err(StreamError::Capacity)
+    } else {
+        Ok(())
+    }
+}
+
+fn reserve_append(
+    state: &State,
+    path: &StreamPath,
+    records: &[Bytes],
+    limits: MemoryLimits,
+) -> Result<(), StreamError> {
+    reserve_paths(state, path, limits)?;
+    reserve_commit(state, limits)?;
+    let bytes = records.iter().map(Bytes::len).sum::<usize>();
+    if state.record_count.saturating_add(records.len()) > limits.records
+        || state.payload_bytes.saturating_add(bytes) > limits.payload_bytes
+    {
+        return Err(StreamError::Capacity);
+    }
+    Ok(())
+}
+
+fn ensure_path(state: &mut State, path: &StreamPath, commit_id: CommitId) {
+    let mut missing = Vec::new();
+    let mut current = Some(path.clone());
+    while let Some(path) = current {
+        if state.paths.contains_key(&path) {
+            break;
+        }
+        current = path.parent();
+        missing.push(path);
+    }
+    for path in missing.into_iter().rev() {
+        let (changed, _) = watch::channel(0);
+        state.path_bytes = state.path_bytes.saturating_add(path.as_str().len());
+        state.paths.insert(
+            path,
+            PathState {
+                history: None,
+                tail: 0,
+                changed,
+            },
+        );
+        state.hierarchy_version = commit_id;
+    }
+}
+
+struct HistoryWindow {
+    records: Arc<[Record]>,
+    start: usize,
+    end: usize,
+}
+
+/// Incremental cursor over the immutable history graph used by `follow`.
+///
+/// A follow can live for a long time while one-record batches are appended.
+/// Replaying the linked graph from its root for every item makes that workload
+/// quadratic.  The cursor indexes the initial graph once and then only walks
+/// the newly added batch suffix after each publication.
+struct HistoryCursor {
+    root: Option<Arc<History>>,
+    windows: Vec<HistoryWindow>,
+    window: usize,
+    record: usize,
+    next: u64,
+}
+
+impl HistoryCursor {
+    fn new(history: Option<&Arc<History>>, tail: u64, next: u64) -> Self {
+        let mut cursor = Self {
+            root: None,
+            windows: Vec::new(),
+            window: 0,
+            record: 0,
+            next,
+        };
+        cursor.rebuild(history, tail);
+        cursor
+    }
+
+    fn rebuild(&mut self, root: Option<&Arc<History>>, tail: u64) {
+        self.root = root.cloned();
+        self.windows = collect_history_windows(root, tail);
+        self.window = 0;
+        self.record = 0;
+        self.seek_next();
+    }
+
+    fn sync(&mut self, history: Option<&Arc<History>>, tail: u64) {
+        let Some(root) = history else {
+            self.rebuild(None, tail);
+            return;
+        };
+        if self.root.as_ref().is_some_and(|old| Arc::ptr_eq(old, root)) {
+            return;
+        }
+
+        // Appends form a new Batch chain whose parent is the previous root.
+        // Walk that suffix once, then attach its windows in chronological order.
+        // A Prefix in a changed suffix can alter visibility of old batches, so
+        // use the bounded full rebuild for that uncommon graph transition.
+        let mut cursor = Some(Arc::clone(root));
+        let mut suffix = Vec::new();
+        let mut reaches_old = false;
+        while let Some(node) = cursor {
+            if self
+                .root
+                .as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, &node))
+            {
+                reaches_old = true;
+                break;
+            }
+            match node.as_ref() {
+                History::Batch { parent, records } => {
+                    suffix.push(Arc::clone(records));
+                    cursor = parent.clone();
+                }
+                History::Prefix { .. } => break,
+            }
+        }
+        if !reaches_old {
+            self.rebuild(Some(root), tail);
+            return;
+        }
+
+        suffix.reverse();
+        let mut added = suffix
+            .into_iter()
+            .filter_map(|records| history_window(records, tail))
+            .collect::<Vec<_>>();
+        self.windows.append(&mut added);
+        self.root = Some(Arc::clone(root));
+    }
+
+    fn seek_next(&mut self) {
+        while let Some(window) = self.windows.get(self.window) {
+            while self.record < window.end.saturating_sub(window.start) {
+                let index = window.start + self.record;
+                let Some(record) = window.records.get(index) else {
+                    break;
+                };
+                if record.sequence >= self.next {
+                    return;
+                }
+                self.record += 1;
+            }
+            self.window += 1;
+            self.record = 0;
+        }
+    }
+
+    fn next_record(&mut self) -> Option<Record> {
+        self.seek_next();
+        let window = self.windows.get(self.window)?;
+        let index = window.start + self.record;
+        let record = window.records.get(index)?.clone();
+        self.record += 1;
+        self.next = record.sequence.checked_add(1)?;
+        Some(record)
+    }
+}
+
+fn collect_history_windows(history: Option<&Arc<History>>, tail: u64) -> Vec<HistoryWindow> {
+    let mut cursor = history.cloned();
+    let mut ceiling = tail;
+    let mut batches = Vec::new();
+    while let Some(history) = cursor {
+        match history.as_ref() {
+            History::Batch { parent, records } => {
+                batches.push((Arc::clone(records), ceiling));
+                cursor = parent.clone();
+            }
+            History::Prefix { source, tail } => {
+                ceiling = ceiling.min(*tail);
+                cursor = source.clone();
+            }
+        }
+    }
+    batches.reverse();
+    batches
+        .into_iter()
+        .filter_map(|(records, ceiling)| history_window(records, ceiling))
+        .collect()
+}
+
+fn history_window(records: Arc<[Record]>, ceiling: u64) -> Option<HistoryWindow> {
+    let first = records.first()?.sequence;
+    let batch_end = records
+        .len()
+        .try_into()
+        .ok()
+        .and_then(|length: u64| first.checked_add(length))
+        .unwrap_or(u64::MAX);
+    let end_sequence = ceiling.min(batch_end);
+    if end_sequence <= first {
+        return None;
+    }
+    let end = usize::try_from(end_sequence - first).ok()?;
+    Some(HistoryWindow {
+        records,
+        start: 0,
+        end,
+    })
+}
+
+fn read_history(history: Option<&Arc<History>>, tail: u64, from: u64, limit: usize) -> Vec<Record> {
+    // Follow asks for one record at a time.  Walking every historical batch and
+    // materializing all of them makes that hot path quadratic as a stream grows.
+    // A single-record read can seek through the newest immutable batches and
+    // clone only the requested record.
+    if limit == 1 {
+        return read_one_history(history, tail, from).into_iter().collect();
+    }
+    let mut cursor = history.cloned();
+    let mut ceiling = tail;
+    let mut batches = Vec::new();
+    while let Some(history) = cursor {
+        match history.as_ref() {
+            History::Batch { parent, records } => {
+                batches.push((Arc::clone(records), ceiling));
+                cursor = parent.clone();
+            }
+            History::Prefix { source, tail } => {
+                ceiling = ceiling.min(*tail);
+                cursor = source.clone();
+            }
+        }
+    }
+    let mut result = Vec::with_capacity(limit);
+    for (records, ceiling) in batches.into_iter().rev() {
+        for record in records.iter() {
+            if record.sequence >= from && record.sequence < ceiling {
+                result.push(record.clone());
+                if result.len() == limit {
+                    return result;
+                }
+            }
+        }
+    }
+    result
+}
+
+fn read_one_history(history: Option<&Arc<History>>, tail: u64, from: u64) -> Option<Record> {
+    let mut cursor = history.cloned();
+    let mut ceiling = tail;
+    while let Some(history) = cursor {
+        match history.as_ref() {
+            History::Batch { parent, records } => {
+                let Some(first) = records.first() else {
+                    cursor = parent.clone();
+                    continue;
+                };
+                let batch_end = records
+                    .len()
+                    .try_into()
+                    .ok()
+                    .and_then(|length: u64| first.sequence.checked_add(length))
+                    .unwrap_or(u64::MAX);
+                let visible_end = ceiling.min(batch_end);
+                if from >= first.sequence && from < visible_end {
+                    let offset = usize::try_from(from - first.sequence).ok()?;
+                    return records.get(offset).cloned();
+                }
+                ceiling = ceiling.min(first.sequence);
+                cursor = parent.clone();
+            }
+            History::Prefix { source, tail } => {
+                ceiling = ceiling.min(*tail);
+                cursor = source.clone();
+            }
+        }
+    }
+    None
+}
+
+fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
+    candidate.parent().as_ref() == Some(parent)
+}
+
+/// Counts exactly the records and payload bytes the live paths retain,
+/// each shared history once.
+fn recount(state: &mut State) {
+    let mut seen = HashSet::new();
+    let mut records = 0_usize;
+    let mut bytes = 0_usize;
+    for path in state.paths.values() {
+        let mut cursor = path.history.clone();
+        while let Some(node) = cursor {
+            if !seen.insert(Arc::as_ptr(&node)) {
+                break;
+            }
+            cursor = match node.as_ref() {
+                History::Batch {
+                    parent,
+                    records: batch,
+                } => {
+                    records = records.saturating_add(batch.len());
+                    bytes = bytes.saturating_add(
+                        batch.iter().map(|record| record.value.len()).sum::<usize>(),
+                    );
+                    parent.clone()
+                }
+                History::Prefix { source, .. } => source.clone(),
+            };
+        }
+    }
+    state.record_count = records;
+    state.payload_bytes = bytes;
+}
+
+fn next_commit_id(state: &mut State, digest: [u8; 32]) -> Result<CommitId, StreamError> {
+    state.decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+    let mut hash = Sha256::new();
+    hash.update(b"acyclic.stream.commit.v1\0");
+    hash.update(state.decision.to_le_bytes());
+    hash.update(digest);
+    Ok(CommitId::from_bytes(hash.finalize().into()))
+}
+
+fn replay(
+    state: &State,
+    key: Option<&crate::IdempotencyKey>,
+    digest: [u8; 32],
+) -> Result<Option<IdempotencyOutcome>, StreamError> {
+    let Some(key) = key else { return Ok(None) };
+    let Some(replay) = state.replays.get(key.as_bytes()) else {
+        return Ok(None);
+    };
+    if replay.digest != digest {
+        return Err(StreamError::IdempotencyMismatch);
+    }
+    Ok(Some(replay.result.clone()))
+}
+
+fn replay_append(
+    state: &State,
+    key: Option<&crate::IdempotencyKey>,
+    digest: [u8; 32],
+) -> Result<Option<AppendOutcome>, StreamError> {
+    match replay(state, key, digest)? {
+        Some(IdempotencyOutcome::Append(result)) => Ok(Some(result)),
+        Some(_) => Err(StreamError::IdempotencyMismatch),
+        None => Ok(None),
+    }
+}
+
+fn replay_fork(
+    state: &State,
+    key: Option<&crate::IdempotencyKey>,
+    digest: [u8; 32],
+) -> Result<Option<ForkReceipt>, StreamError> {
+    match replay(state, key, digest)? {
+        Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result)),
+        Some(_) => Err(StreamError::IdempotencyMismatch),
+        None => Ok(None),
+    }
+}
+
+fn replay_commit(
+    state: &State,
+    key: &crate::IdempotencyKey,
+    digest: [u8; 32],
+) -> Result<Option<CommitOutcome>, StreamError> {
+    match replay(state, Some(key), digest)? {
+        Some(IdempotencyOutcome::Commit(result)) => Ok(Some(result)),
+        Some(_) => Err(StreamError::IdempotencyMismatch),
+        None => Ok(None),
+    }
+}
+
+fn admit_replay(
+    state: &State,
+    key: Option<&crate::IdempotencyKey>,
+    limits: MemoryLimits,
+) -> Result<(), StreamError> {
+    if key.is_some() && state.replays.len() >= limits.idempotency_results {
+        Err(StreamError::Capacity)
+    } else {
+        Ok(())
+    }
+}
+
+/// Retains what one mutation made at `now`: its envelope, when it
+/// committed, and its result, when it has an identity to replay under.
+fn retain(
+    state: &mut State,
+    _now: u64,
+    envelope: Option<CommittedEnvelope>,
+    key: Option<crate::IdempotencyKey>,
+    digest: [u8; 32],
+    result: IdempotencyOutcome,
+) {
+    let commit = envelope.map(|envelope| {
+        let commit_id = envelope.commit_id;
+        state.commits.insert(commit_id, envelope);
+        commit_id
+    });
+    let replay = key.map(|key| {
+        let key = Bytes::copy_from_slice(key.as_bytes());
+        state.replays.insert(key.clone(), Replay { digest, result });
+        key
+    });
+    if commit.is_some() || replay.is_some() {
+        state.retained.push_back(Retained {
+            until: u64::MAX,
+            replay,
+            commit,
+        });
+    }
+}
+
+pub(crate) fn append_digest(request: &AppendRequest) -> [u8; 32] {
+    let mut hash = request_hasher(b"append");
+    hash_path(&mut hash, &request.path);
+    hash.update(request.if_tail.unwrap_or(u64::MAX).to_le_bytes());
+    hash_records(&mut hash, &request.records);
+    hash.finalize().into()
+}
+
+pub(crate) fn fork_digest(request: &ForkRequest) -> [u8; 32] {
+    let mut hash = request_hasher(b"fork");
+    hash_path(&mut hash, &request.source);
+    hash_path(&mut hash, &request.destination);
+    hash.update(request.at_tail.unwrap_or(u64::MAX).to_le_bytes());
+    hash.finalize().into()
+}
+
+pub(crate) fn commit_digest(request: &CommitRequest) -> [u8; 32] {
+    let mut hash = request_hasher(b"commit");
+    for condition in &request.conditions {
+        match condition {
+            CommitCondition::Tail { path, expected } => {
+                hash.update([1]);
+                hash_path(&mut hash, path);
+                hash.update(expected.to_le_bytes());
+            }
+            CommitCondition::Absent { path } => {
+                hash.update([2]);
+                hash_path(&mut hash, path);
+            }
+        }
+    }
+    for mutation in &request.mutations {
+        match mutation {
+            CommitMutation::Append { path, records } => {
+                hash.update([1]);
+                hash_path(&mut hash, path);
+                hash_records(&mut hash, records);
+            }
+            CommitMutation::Fork {
+                source,
+                destination,
+                at_tail,
+                records,
+            } => {
+                hash.update([2]);
+                hash_path(&mut hash, source);
+                hash_path(&mut hash, destination);
+                hash.update(at_tail.to_le_bytes());
+                hash_records(&mut hash, records);
+            }
+        }
+    }
+    hash.finalize().into()
+}
+
+fn request_hasher(kind: &[u8]) -> Sha256 {
+    let mut hash = Sha256::new();
+    hash.update(b"acyclic.stream.request.v1\0");
+    hash.update(kind);
+    hash
+}
+
+fn hash_path(hash: &mut Sha256, path: &StreamPath) {
+    hash.update((path.as_str().len() as u64).to_le_bytes());
+    hash.update(path.as_str().as_bytes());
+}
+
+fn hash_records(hash: &mut Sha256, records: &[Bytes]) {
+    hash.update((records.len() as u64).to_le_bytes());
+    for record in records {
+        hash.update((record.len() as u64).to_le_bytes());
+        hash.update(record);
+    }
+}
+
+fn condition_path(condition: &CommitCondition) -> &StreamPath {
+    match condition {
+        CommitCondition::Tail { path, .. } | CommitCondition::Absent { path } => path,
+    }
+}
+
+fn mutation_path(mutation: &CommitMutation) -> &StreamPath {
+    match mutation {
+        CommitMutation::Fork { destination, .. } => destination,
+        CommitMutation::Append { path, .. } => path,
+    }
+}
+
+pub(crate) fn normalize_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
+    if request.conditions.is_empty()
+        || request.conditions.len() > MAX_ITEMS
+        || request.mutations.is_empty()
+        || request.mutations.len() > MAX_ITEMS
+    {
+        return Err(StreamError::LimitExceeded);
+    }
+    for mutation in &request.mutations {
+        match mutation {
+            CommitMutation::Append { records, .. } => validate_records(records)?,
+            CommitMutation::Fork { records, .. } if !records.is_empty() => {
+                validate_records(records)?;
+            }
+            CommitMutation::Fork { .. } => {}
+        }
+    }
+    validate_commit_size(request)?;
+    request.conditions.sort_by(|left, right| {
+        condition_path(left)
+            .cmp(condition_path(right))
+            .then_with(|| {
+                matches!(left, CommitCondition::Absent { .. })
+                    .cmp(&matches!(right, CommitCondition::Absent { .. }))
+            })
+    });
+    request
+        .mutations
+        .sort_by(|left, right| mutation_path(left).cmp(mutation_path(right)));
+    if request
+        .conditions
+        .windows(2)
+        .any(|pair| matches!(pair, [left, right] if condition_path(left) == condition_path(right)))
+        || request.mutations.windows(2).any(
+            |pair| matches!(pair, [left, right] if mutation_path(left) == mutation_path(right)),
+        )
+    {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
+}
+
+fn validate_commit_size(request: &CommitRequest) -> Result<(), StreamError> {
+    let wire = crate::wire_codec::commit_to_wire(request);
+    (wire.encoded_len() <= MAX_COMMAND_BYTES)
+        .then_some(())
+        .ok_or(StreamError::LimitExceeded)
+}
+
+pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), StreamError> {
+    let conditions = request
+        .conditions
+        .iter()
+        .map(|condition| (condition_path(condition), condition))
+        .collect::<BTreeMap<_, _>>();
+    for mutation in &request.mutations {
+        match mutation {
+            CommitMutation::Append { path, .. } => match conditions.get(path) {
+                Some(CommitCondition::Tail { .. } | CommitCondition::Absent { .. }) => {}
+                _ => return Err(StreamError::InvalidArgument),
+            },
+            CommitMutation::Fork { destination, .. } => {
+                if !matches!(
+                    conditions.get(destination),
+                    Some(CommitCondition::Absent { .. })
+                ) {
+                    return Err(StreamError::InvalidArgument);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_commit_authority(state: &State, request: &CommitRequest) -> Result<(), StreamError> {
+    crate::preparation::authority(request, |path| {
+        state.paths.get(path).map(|stream| stream.tail)
+    })
+}
+
+fn commit_conflicts(state: &State, conditions: &[CommitCondition]) -> Vec<CommitConflict> {
+    crate::preparation::conditions(conditions, |path| {
+        state.paths.get(path).map(|stream| stream.tail)
+    })
+}
+
+fn reserve_coordinated(
+    state: &State,
+    request: &CommitRequest,
+    limits: MemoryLimits,
+) -> Result<(), StreamError> {
+    reserve_commit(state, limits)?;
+    let mut new_paths = BTreeSet::new();
+    let mut records = 0_usize;
+    let mut bytes = 0_usize;
+    for mutation in &request.mutations {
+        let destination = mutation_path(mutation);
+        let mut current = Some(destination.clone());
+        while let Some(path) = current {
+            if !state.paths.contains_key(&path) {
+                new_paths.insert(path.clone());
+            }
+            current = path.parent();
+        }
+        let batch = match mutation {
+            CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. } => {
+                records
+            }
+        };
+        records = records.saturating_add(batch.len());
+        bytes = bytes.saturating_add(batch.iter().map(Bytes::len).sum::<usize>());
+    }
+    if state.paths.len().saturating_add(new_paths.len()) > limits.paths
+        || state
+            .path_bytes
+            .saturating_add(new_paths.iter().map(|path| path.as_str().len()).sum())
+            > limits.path_bytes
+        || state.record_count.saturating_add(records) > limits.records
+        || state.payload_bytes.saturating_add(bytes) > limits.payload_bytes
+    {
+        return Err(StreamError::Capacity);
+    }
+    Ok(())
+}
+
+fn apply_coordinated(
+    state: &mut State,
+    mutations: &[CommitMutation],
+    before: &BTreeMap<StreamPath, (Option<Arc<History>>, u64)>,
+    commit_id: CommitId,
+    committed_at_micros: u64,
+) -> Result<Vec<CommittedMutation>, StreamError> {
+    let committed = crate::preparation::mutations(
+        mutations,
+        |path| state.paths.get(path).map(|stream| stream.tail),
+        commit_id,
+        committed_at_micros,
+    )?;
+    for mutation in &committed {
+        match mutation {
+            CommittedMutation::Append(append) => {
+                let records = &append.records;
+                ensure_path(state, &append.path, commit_id);
+                {
+                    let stream = state
+                        .paths
+                        .get_mut(&append.path)
+                        .ok_or(StreamError::Unavailable)?;
+                    stream.history = Some(Arc::new(History::Batch {
+                        parent: stream.history.clone(),
+                        records: Arc::from(records.clone()),
+                    }));
+                    stream.tail = append.tail;
+                    stream.changed.send_replace(stream.tail);
+                }
+                state.record_count += records.len();
+                state.payload_bytes += records
+                    .iter()
+                    .map(|record| record.value.len())
+                    .sum::<usize>();
+            }
+            CommittedMutation::Fork(fork) => {
+                let (history, _) = before.get(&fork.source).ok_or(StreamError::NotFound)?;
+                let records = &fork.records;
+                ensure_path(state, &fork.destination, commit_id);
+                {
+                    let stream = state
+                        .paths
+                        .get_mut(&fork.destination)
+                        .ok_or(StreamError::Unavailable)?;
+                    let prefix = Arc::new(History::Prefix {
+                        source: history.clone(),
+                        tail: fork.forked_at,
+                    });
+                    stream.history = Some(if records.is_empty() {
+                        prefix
+                    } else {
+                        Arc::new(History::Batch {
+                            parent: Some(prefix),
+                            records: Arc::from(records.clone()),
+                        })
+                    });
+                    stream.tail = fork.tail;
+                    stream.changed.send_replace(stream.tail);
+                }
+                state.record_count += records.len();
+                state.payload_bytes += records
+                    .iter()
+                    .map(|record| record.value.len())
+                    .sum::<usize>();
+            }
+        }
+    }
+    Ok(committed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    #[tokio::test]
+    async fn committed_record_times_never_regress_with_the_clock() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        let stream = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let path = StreamPath::new("accounting/authority")?;
+        for (time, body) in [(100, b"first".as_slice()), (105, b"recovered")] {
+            clock.0.store(time, Ordering::SeqCst);
+            if time == 105 {
+                clock.0.store(90, Ordering::SeqCst);
+                let outcome = stream
+                    .commit(CommitRequest {
+                        conditions: vec![CommitCondition::Tail {
+                            path: path.clone(),
+                            expected: 1,
+                        }],
+                        mutations: vec![CommitMutation::Append {
+                            path: path.clone(),
+                            records: vec![Bytes::from_static(b"rollback")],
+                        }],
+                        idempotency_key: key(b"rollback-commit")?,
+                    })
+                    .await?;
+                assert!(matches!(outcome, CommitOutcome::Committed(_)));
+                clock.0.store(time, Ordering::SeqCst);
+            }
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![Bytes::copy_from_slice(body)],
+                    if_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let records = stream
+            .read(ReadRequest {
+                path,
+                from: 0,
+                limit: 3,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.committed_at_micros)
+                .collect::<Vec<_>>(),
+            vec![100_000, 100_000, 105_000]
+        );
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct TestClock(AtomicU64);
+
+    impl UnixMillisClock for TestClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
+    fn path(value: &str) -> Result<StreamPath, StreamError> {
+        StreamPath::new(value)
+    }
+
+    fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
+        crate::IdempotencyKey::new(Bytes::from_static(value))
+    }
+
+    #[test]
+    fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
+        let records = vec![Bytes::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
+        let mut low = 1_usize;
+        let mut high = crate::MAX_PATH_BYTES;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            let path = StreamPath::new("x".repeat(middle))?;
+            let wire = crate::wire::AppendRequest {
+                path: path.to_string(),
+                records: records.clone(),
+                if_tail: None,
+                idempotency_key: None,
+            };
+            if wire.encoded_len() <= MAX_COMMAND_BYTES {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        let request = AppendRequest {
+            path: StreamPath::new("x".repeat(low))?,
+            records,
+            if_tail: None,
+            idempotency_key: None,
+        };
+        assert!(validate_append_size(&request).is_ok());
+        let next = StreamPath::new("x".repeat(low + 1))?;
+        let next_wire = crate::wire::AppendRequest {
+            path: next.to_string(),
+            records: request.records,
+            if_tail: None,
+            idempotency_key: None,
+        };
+        assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        for index in 0..2_049 {
+            provider
+                .append(AppendRequest {
+                    path: path(&format!("agents/agent-{index:04}"))?,
+                    records: vec![Bytes::from_static(b"bound")],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let mut after = None;
+        let mut revision = None;
+        let mut found = Vec::new();
+        loop {
+            let page = provider
+                .children_page(ChildrenPageRequest {
+                    parent: Some(path("agents")?),
+                    after,
+                    hierarchy_version: revision,
+                    limit: 127,
+                })
+                .await?;
+            revision = Some(page.hierarchy_version);
+            found.extend(page.children.into_iter().map(|child| child.path));
+            after = page.next_after;
+            if after.is_none() {
+                break;
+            }
+        }
+        assert_eq!(found.len(), 2_049);
+        assert!(
+            found
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result<(), StreamError>
+    {
+        let provider = MemoryStream::default();
+        let mut source = path("deep/root")?;
+        provider
+            .append(AppendRequest {
+                path: source.clone(),
+                records: vec![Bytes::from_static(b"root")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        for depth in 0..2_048 {
+            let destination = path(&format!("deep/fork-{depth}"))?;
+            provider
+                .fork(ForkRequest {
+                    source,
+                    destination: destination.clone(),
+                    at_tail: None,
+                    idempotency_key: None,
+                })
+                .await?;
+            source = destination;
+        }
+        drop(provider);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        clock.0.store(100, Ordering::SeqCst);
+        let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent {
+                path: path("deadline/accepted")?,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path("deadline/accepted")?,
+                records: vec![Bytes::from_static(b"accepted")],
+            }],
+            idempotency_key: key(b"deadline-accepted")?,
+        };
+        assert_eq!(
+            provider.commit_before(request.clone(), 100).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        assert_eq!(
+            provider.commit_before(request.clone(), 99).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        let committed = provider.commit_before(request.clone(), 101).await?;
+        assert!(matches!(committed, CommitOutcome::Committed(_)));
+        clock.0.store(1_000, Ordering::SeqCst);
+        assert_eq!(provider.commit_before(request, 101).await?, committed);
+
+        let retryable = CommitRequest {
+            conditions: vec![CommitCondition::Absent {
+                path: path("deadline/retry")?,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: path("deadline/retry")?,
+                records: vec![Bytes::from_static(b"retry")],
+            }],
+            idempotency_key: key(b"deadline-retry")?,
+        };
+        assert_eq!(
+            provider.commit_before(retryable.clone(), 1_000).await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        assert!(matches!(
+            provider.commit_before(retryable, 1_001).await?,
+            CommitOutcome::Committed(_)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "indices are preceded by an assert_eq!(read.len(), 2), proving them in-bounds"
+    )]
+    async fn append_fork_follow_and_replay_preserve_exact_lineage() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = path("runs/a")?;
+        let first = AppendRequest {
+            path: source.clone(),
+            records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+            if_tail: Some(0),
+            idempotency_key: Some(key(b"append")?),
+        };
+        let committed = provider.append(first.clone()).await;
+        assert!(committed.is_ok());
+        assert_eq!(provider.append(first).await, committed);
+        let forked = provider
+            .fork(ForkRequest {
+                source: source.clone(),
+                destination: path("runs/b")?,
+                at_tail: Some(1),
+                idempotency_key: Some(key(b"fork")?),
+            })
+            .await?;
+        assert_eq!(forked.tail, 1);
+        let child = forked.destination.clone();
+        provider
+            .append(AppendRequest {
+                path: child.clone(),
+                records: vec![Bytes::from_static(b"child")],
+                if_tail: Some(1),
+                idempotency_key: None,
+            })
+            .await?;
+        let read = provider
+            .read(ReadRequest {
+                path: child.clone(),
+                from: 0,
+                limit: 10,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(read.len(), 2);
+        assert_eq!(
+            read[0].as_ref().map(|record| record.value.as_ref()),
+            Ok(b"one".as_slice())
+        );
+        assert_eq!(
+            read[1].as_ref().map(|record| record.value.as_ref()),
+            Ok(b"child".as_slice())
+        );
+        let mut follow = provider.follow(child.clone(), 2).await?;
+        provider
+            .append(AppendRequest {
+                path: child,
+                records: vec![Bytes::from_static(b"live")],
+                if_tail: Some(2),
+                idempotency_key: None,
+            })
+            .await?;
+        let live = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next()).await;
+        assert!(matches!(live, Ok(Some(Ok(Record { sequence: 2, .. })))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = path("seek/source")?;
+        for index in 0..256_u64 {
+            provider
+                .append(AppendRequest {
+                    path: source.clone(),
+                    records: vec![Bytes::from(index.to_string())],
+                    if_tail: Some(index),
+                    idempotency_key: None,
+                })
+                .await?;
+        }
+        let destination = path("seek/prefix")?;
+        provider
+            .fork(ForkRequest {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: Some(128),
+                idempotency_key: None,
+            })
+            .await?;
+
+        for (path, expected_tail, expected) in [
+            (&source, 256_u64, b"255".as_slice()),
+            (&destination, 128_u64, b"127".as_slice()),
+        ] {
+            let record = provider
+                .read(ReadRequest {
+                    path: path.clone(),
+                    from: expected_tail - 1,
+                    limit: 1,
+                })
+                .await?
+                .next()
+                .await
+                .ok_or(StreamError::Unavailable)??;
+            assert_eq!(record.sequence, expected_tail - 1);
+            assert_eq!(record.value, expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "bounded scaling benchmark; run with --ignored --nocapture"]
+    async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
+        for count in [1_000_u64, 10_000] {
+            let provider = MemoryStream::default();
+            let stream = path("bench/follow")?;
+            for index in 0..count {
+                provider
+                    .append(AppendRequest {
+                        path: stream.clone(),
+                        records: vec![Bytes::from_static(b"x")],
+                        if_tail: Some(index),
+                        idempotency_key: None,
+                    })
+                    .await?;
+            }
+            let started = std::time::Instant::now();
+            let mut follow = provider.follow(stream, 0).await?;
+            for expected in 0..count {
+                let record = follow.next().await.ok_or(StreamError::Unavailable)??;
+                assert_eq!(record.sequence, expected);
+            }
+            eprintln!("follow history={count} read={:?}", started.elapsed());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::indexing_slicing,
+        reason = "index is preceded by an assert_eq!(forked.len(), 1), proving it in-bounds"
+    )]
+    async fn coordinated_conflict_changes_nothing_and_success_has_one_envelope()
+    -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = path("jobs")?;
+        provider
+            .append(AppendRequest {
+                path: source.clone(),
+                records: vec![Bytes::from_static(b"ready")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        let request = CommitRequest {
+            conditions: vec![CommitCondition::Absent {
+                path: path("runs/a")?,
+            }],
+            mutations: vec![CommitMutation::Fork {
+                source: source.clone(),
+                destination: path("runs/a")?,
+                at_tail: 1,
+                records: Vec::new(),
+            }],
+            idempotency_key: key(b"commit")?,
+        };
+        provider
+            .append(AppendRequest {
+                path: source,
+                records: vec![Bytes::from_static(b"source-progress")],
+                if_tail: Some(1),
+                idempotency_key: None,
+            })
+            .await?;
+        let outcome = provider.commit(request.clone()).await;
+        let Ok(CommitOutcome::Committed(envelope)) = &outcome else {
+            return Err(StreamError::Unavailable);
+        };
+        assert_eq!(provider.commit(request).await, outcome);
+        assert_eq!(
+            provider.read_commit(envelope.commit_id).await.as_ref(),
+            Ok(envelope)
+        );
+        let forked = provider
+            .read(ReadRequest {
+                path: path("runs/a")?,
+                from: 0,
+                limit: 10,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(forked.len(), 1);
+        assert_eq!(
+            forked[0].as_ref().map(|record| record.value.as_ref()),
+            Ok(b"ready".as_slice())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
+    -> Result<(), StreamError> {
+        let provider = MemoryStream::new(MemoryLimits {
+            paths: 2,
+            path_bytes: 4,
+            records: 1,
+            payload_bytes: 3,
+            commits: 1,
+            idempotency_results: 1,
+        });
+        let request = AppendRequest {
+            path: path("a/b")?,
+            records: vec![Bytes::from_static(b"one")],
+            if_tail: Some(0),
+            idempotency_key: Some(key(b"only-key")?),
+        };
+        let committed = provider.append(request.clone()).await?;
+        assert_eq!(
+            provider.append(request.clone()).await,
+            Ok(committed.clone())
+        );
+        let observation = provider
+            .inspect_idempotency(key(b"only-key")?)
+            .await?
+            .ok_or(StreamError::Unavailable)?;
+        assert_ne!(observation.request_digest, [0; 32]);
+        assert_eq!(observation.outcome, IdempotencyOutcome::Append(committed));
+        assert_eq!(
+            provider
+                .append(AppendRequest {
+                    records: vec![Bytes::from_static(b"two")],
+                    ..request
+                })
+                .await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
+    -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = path("lineage/source")?;
+        let bodies = (0_u8..32)
+            .map(|value| Bytes::from(vec![value]))
+            .collect::<Vec<_>>();
+        provider
+            .append(AppendRequest {
+                path: source.clone(),
+                records: bodies,
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        for cut in 0_u64..=32 {
+            let destination = path(&format!("lineage/forks/{cut}"))?;
+            provider
+                .fork(ForkRequest {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    at_tail: Some(cut),
+                    idempotency_key: None,
+                })
+                .await?;
+            let records = provider
+                .read(ReadRequest {
+                    path: destination,
+                    from: 0,
+                    limit: 64,
+                })
+                .await?
+                .collect::<Vec<_>>()
+                .await;
+            assert_eq!(
+                u64::try_from(records.len()).map_err(|_| StreamError::LimitExceeded)?,
+                cut
+            );
+        }
+        assert_eq!(provider.tail(source).await?, 32);
+        Ok(())
+    }
+
+    #[test]
+    fn permanent_path_validation_rejects_ambiguous_names() {
+        for invalid in [
+            "", "/a", "a/", "a//b", ".", "..", "a/./b", "a/../b", "a\n", "a b", "a\\b",
+        ] {
+            assert_eq!(StreamPath::new(invalid), Err(StreamError::InvalidPath));
+        }
+        assert!(StreamPath::new("a".repeat(crate::MAX_PATH_BYTES)).is_ok());
+        assert_eq!(
+            StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)),
+            Err(StreamError::InvalidPath)
+        );
+        assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
+    }
+
+    /// Time cannot free a retry identity for reuse, including at u64 exhaustion.
+    #[tokio::test]
+    async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
+        let clock = Arc::new(TestClock::default());
+        let limits = MemoryLimits {
+            idempotency_results: 1,
+            commits: 1,
+            ..MemoryLimits::default()
+        };
+        let provider = MemoryStream::new_with_clock(limits, clock.clone());
+        let append = |name: &'static [u8]| AppendRequest {
+            path: StreamPath::new("retained").unwrap_or_else(|_| unreachable!()),
+            records: vec![Bytes::from_static(name)],
+            if_tail: None,
+            idempotency_key: Some(
+                crate::IdempotencyKey::new(Bytes::from_static(name))
+                    .unwrap_or_else(|_| unreachable!()),
+            ),
+        };
+        let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
+            return Err(StreamError::Unavailable);
+        };
+        clock.0.store(RETENTION_MILLIS - 1, Ordering::SeqCst);
+        assert_eq!(
+            provider.append(append(b"second")).await,
+            Err(StreamError::Capacity),
+            "the first result is still retained"
+        );
+        assert!(
+            provider
+                .inspect_idempotency(key(b"first")?)
+                .await?
+                .is_some()
+        );
+        assert!(provider.read_commit(first.commit_id).await.is_ok());
+
+        for now in [RETENTION_MILLIS, RETENTION_MILLIS * 365, u64::MAX] {
+            clock.0.store(now, Ordering::SeqCst);
+            assert_eq!(
+                provider.append(append(b"second")).await,
+                Err(StreamError::Capacity)
+            );
+            assert_eq!(
+                provider.append(append(b"first")).await?,
+                AppendOutcome::Committed(first.clone())
+            );
+            assert!(
+                provider
+                    .inspect_idempotency(key(b"first")?)
+                    .await?
+                    .is_some()
+            );
+            assert!(provider.read_commit(first.commit_id).await.is_ok());
+            assert_eq!(provider.tail(path("retained")?).await?, 1);
+            let mut changed = append(b"first");
+            changed.path = path("another/path")?;
+            assert_eq!(
+                provider.append(changed).await,
+                Err(StreamError::IdempotencyMismatch)
+            );
+        }
+        Ok(())
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            rng_seed: proptest::test_runner::RngSeed::Fixed(0x5eed),
+            failure_persistence: None,
+            ..proptest::prelude::ProptestConfig::with_cases(64)
+        })]
+
+        /// Record and child pages concatenate to exactly the full, ordered
+        /// set: no page skips or repeats an entry, whatever its bound.
+        #[test]
+        fn pages_neither_skip_nor_repeat(
+            names in proptest::collection::btree_set("[a-c]{1,2}(/[a-c])?", 1..12),
+            records in 1..40_usize,
+            limit in 1..6_u32,
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+            let provider = MemoryStream::default();
+            runtime.block_on(async {
+                for name in &names {
+                    provider
+                        .append(AppendRequest {
+                            path: path(&format!("root/{name}"))?,
+                            records: vec![Bytes::from_static(b"x")],
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?;
+                }
+                let log = path("log")?;
+                let values: Vec<_> = (0..records).map(|value| Bytes::from(value.to_string())).collect();
+                for chunk in values.chunks(7) {
+                    provider
+                        .append(AppendRequest {
+                            path: log.clone(),
+                            records: chunk.to_vec(),
+                            if_tail: None,
+                            idempotency_key: None,
+                        })
+                        .await?;
+                }
+
+                let mut read = Vec::new();
+                loop {
+                    let page: Vec<_> = provider
+                        .read(ReadRequest {
+                            path: log.clone(),
+                            from: read.len() as u64,
+                            limit,
+                        })
+                        .await?
+                        .collect::<Vec<_>>()
+                        .await
+                        .into_iter()
+                        .collect::<Result<_, _>>()?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    proptest::prop_assert!(page.len() <= limit as usize);
+                    read.extend(page);
+                }
+                proptest::prop_assert!(read.iter().enumerate().all(|(index, record)| record.sequence == index as u64));
+                proptest::prop_assert_eq!(read.into_iter().map(|record| record.value).collect::<Vec<_>>(), values);
+
+                // Only first segments are direct children; deeper paths imply them.
+                let expected: std::collections::BTreeSet<_> = names
+                    .iter()
+                    .map(|name| name.split('/').next().unwrap_or_default().to_owned())
+                    .collect();
+                let (mut found, mut after, mut version) = (Vec::new(), None, None);
+                loop {
+                    let page = provider
+                        .children_page(ChildrenPageRequest {
+                            parent: Some(path("root")?),
+                            after,
+                            hierarchy_version: version,
+                            limit,
+                        })
+                        .await?;
+                    proptest::prop_assert!(page.children.len() <= limit as usize);
+                    version = Some(page.hierarchy_version);
+                    found.extend(page.children.into_iter().map(|child| child.path.to_string()));
+                    after = page.next_after;
+                    if after.is_none() {
+                        break;
+                    }
+                }
+                let expected: Vec<_> = expected.into_iter().map(|name| format!("root/{name}")).collect();
+                proptest::prop_assert_eq!(found, expected);
+                Ok(())
+            })?;
+        }
+    }
+}
