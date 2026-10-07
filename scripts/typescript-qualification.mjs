@@ -24,14 +24,25 @@ function expectedAssets() {
   return PACKAGES.map(({ slug: assetSlug, directory, name }) => {
     const manifest = JSON.parse(readFileSync(join(root, "typescript", "packages", directory, "package.json"), "utf8"));
     if (manifest.name !== name) fail(`release identity differs for ${directory}`);
-    return { asset: `acyclic-labs-${assetSlug}-${manifest.version}.tgz`, name, version: manifest.version };
+    return {
+      asset: `acyclic-labs-${assetSlug}-${manifest.version}.tgz`,
+      name,
+      version: manifest.version,
+      directory: `typescript/packages/${directory}`,
+    };
   });
 }
 
-function create(output, sourceSha) {
+async function create(output, sourceSha) {
   if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(sourceSha)) fail("source commit must be a full lowercase Git object ID");
-  const packages = expectedAssets().map(packageEntry => {
-    const [sha256, size] = digest(join(output, packageEntry.asset));
+  // Keep verify-only publication staging independent of the archive validator:
+  // publish-npm.yml copies this script without its repository-local imports.
+  const { validateArchive } = await import("./validate-npm-package.mjs");
+  const packages = expectedAssets().map(({ directory, ...packageEntry }) => {
+    const archive = join(output, packageEntry.asset);
+    const validatedSha256 = validateArchive(archive, packageEntry.name, packageEntry.version, directory);
+    const [sha256, size] = digest(archive);
+    if (validatedSha256 !== sha256) fail(`archive changed while it was being validated: ${packageEntry.asset}`);
     return { ...packageEntry, sha256, size };
   });
   const expectedNames = new Set(packages.map(item => item.asset));
@@ -98,7 +109,7 @@ function consumer(bun) {
 }
 
 const [command, ...args] = process.argv.slice(2);
-if (command === "create" && args.length === 2) create(resolve(args[0]), args[1]);
+if (command === "create" && args.length === 2) await create(resolve(args[0]), args[1]);
 else if (command === "verify" && args.length === 4) verify(resolve(args[0]), args[1], args[2], resolve(args[3]));
 else if (command === "consumer" && args.length === 1) {
   const result = consumer(args[0]);
