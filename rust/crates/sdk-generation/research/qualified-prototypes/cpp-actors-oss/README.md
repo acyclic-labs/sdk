@@ -53,7 +53,7 @@ reimplementing protobuf semantics.
 ## Consumer compile qualification
 
 `generated/lib.rs.h` is the CXX-generated header from this exact bridge source;
-its SHA-256 is `D45817290B8A5E4DBB8D3B47B2595D7DEA5C92239D2C1181EFB710D5E94B89CB`.
+its SHA-256 is `F302DDDE6C4D2FE594B3C41EA45505C2EDCEA85DECD591EBD0AF45935BC5A713`.
 The consumer source is intentionally tiny and checks only bridge contracts:
 
 * `consumer/positive.cc` links and runs successfully with WSL Ubuntu `g++`.
@@ -92,23 +92,26 @@ compiling emitted `lib.rs.cc`; WSL provides the linked producer qualification.
 
 ## Live authenticated TLS conformance
 
-The bridge also has a live probe, `consumer/live-remote.cc`, which calls the
-real `acyclic_actors::client::connect_with_ca_certificate` and all eight Actors
-operations against the canonical repository gRPC conformance fixture. The
-fixture uses a generated local CA and bearer token; it is a live TLS/authenticated
-server boundary, not a toy transport or an independent DTO. The Rust facade
+The bridge also has `consumer/live-remote.cc`, where C++ calls one opaque-client
+entry point per Actors operation. Each entry point delegates one typed request
+to the real `acyclic_actors::client::Client` and returns a typed projection of
+the Rust domain response. The calls run against the canonical repository gRPC
+conformance fixture with a generated local CA and bearer token. The Rust facade
 checks the real `ActorObservation` fields, invoke status/header semantics,
 `u64` subscription cursor, and rejection of a wrong bearer token.
 
 The WSL run on 2026-10-07 passed:
 
 ```text
-probe ok=1 completed=8 auth=1 error=0
-live_remote_operations:8 authentication_rejected:true
+create/update/inspect/add/remove/resume/checkpoint:ok
+invoke:status=201 location=true
+live_cxx_operations:8 authentication_rejected:true cancellation:cancelled
 ```
 
-This qualifies the reduced opaque bridge against the canonical fixture. It does
-not qualify an internet service, every SDK family, or a direct C++ future ABI.
+The delayed fixture variant holds the second inspect request until the C++
+operation token is cancelled and records the HTTP/2 stream abort. This qualifies
+the reduced opaque bridge against the canonical fixture. It does not qualify an
+internet service, every SDK family, or a direct C++ future ABI.
 
 ## Async and error boundary
 
@@ -116,9 +119,9 @@ The current client methods are Rust `async fn` and use `run_with_cancellation`.
 CXX's current documentation states that direct async FFI is not implemented and
 recommends an opaque oneshot context. Therefore the production adapter must expose
 an opaque operation/context and a callback or poll/join function. It must not
-translate a Rust future into a hand-written C++ algorithm. The fixture proves the
-cancellation control object only; it intentionally does not claim a live network
-operation.
+translate a Rust future into a hand-written C++ algorithm. The delayed fixture
+observes cancellation of an in-flight request at the server boundary. It still
+does not expose a Rust future directly to C++.
 
 `client::Error` has configuration, transport, service (with optional structured
 wire detail), contract, semantic, and cancelled variants. The fixture maps these
@@ -134,10 +137,10 @@ as a Rust-owned opaque/detail accessor and preserve unknown enum numbers through
   oneshot/cancellation pattern.
 * **`pcwalton/cxx-async` 0.1.4:** maintained and specifically aimed at bridging
   C++20 coroutines with Rust futures/streams. It integrates with cppcoro or Folly
-  and requires a separate C++ executor; it does not bind Tokio or another Rust
-  I/O runtime. Those executor headers/libraries are not installed in this
-  qualification environment, so it remains a viable follow-up for a C++20
-  product runtime rather than part of this bounded bridge.
+  and requires a separate C++ executor; it does not bundle or select the Rust
+  runtime, so a Tokio-backed future can still be adapted if the executor and
+  wakeup contract are wired and tested. Those C++20 executor headers/libraries
+  are not installed here, so no linked cxx-async prototype is claimed.
 * **cbindgen 0.29.4:** maintained Mozilla generator and a viable fallback for a
   deliberately authored `extern "C"` ABI. It emits C/C++ headers but cannot infer
   Rust async, `Option`, typed error ownership, or opaque lifetime contracts. It

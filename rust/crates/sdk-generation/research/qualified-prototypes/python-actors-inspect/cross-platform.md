@@ -46,3 +46,25 @@ No binary artifacts were copied into the repository, and no merge or
 publication was performed.
 
 The macOS arm64 native asset is reusable by the Swift and JVM qualification jobs: the ivar build at `/tmp/actors-uniffi-mac-target/release/libacyclic_actors_uniffi.dylib` has SHA-256 `28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719` and 5,122,144 bytes. Those jobs should consume that exact asset and record the hash instead of rebuilding the Rust native library.
+
+## Minimal patched-generator cohort
+
+The full UniFFI 0.31.0 source copy was removed after the reproducible runner and
+source-only patch were checkpointed. The runner downloads the pinned crates.io
+archive, verifies its SHA-256 and upstream revision, applies the MPL-2.0 patch,
+and regenerates the module. The generated module hash is
+`1BD8903E188767D88BB66E880FFB94D9B2896AD92E0BC9374EED9B7DFBB62FE0`.
+
+The patched Linux wheel is
+`acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl`, SHA-256
+`447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761`.
+It installed in a fresh WSL Python 3.10 environment and passed the generated
+union typing constructor probe. The live all-eight remote run was attempted
+through the Windows fixture; the WSL transport path did not complete the TLS
+connection, so no Linux remote pass is recorded.
+
+The patched macOS arm64 wheel reused the generated module hash above and
+installed in a fresh ivar Python environment. Its all-eight remote conformance
+run passed through the SSH tunnel, including typed service errors and
+cancellation. This is a qualification of the patched macOS package and
+canonical Rust adapter, not a claim about unrelated generated runtimes.

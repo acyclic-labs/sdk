@@ -56,5 +56,26 @@
     "upstream_assessment": "UniFFI 0.32.2 template has the same behavior",
     "patch": "isolated UniFFI 0.31.0 source qualification; production dependency pin unchanged"
   },
+  "minimal_patched_generator_cohort": {
+    "upstream": {
+      "version": "uniffi_bindgen 0.31.0",
+      "revision": "309762f55db3f0548194a9ceba3027fa64b18a93",
+      "archive_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+      "license": "MPL-2.0"
+    },
+    "patch_sha256": "7D61A970CAF75CF684E6B5EEA4CEF46C60D0392F258CC8C78F19054853F763B3",
+    "generated_module_sha256": "1BD8903E188767D88BB66E880FFB94D9B2896AD92E0BC9374EED9B7DFBB62FE0",
+    "full_vendor_removed": true,
+    "linux": {
+      "wheel_sha256": "447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761",
+      "fresh_python_install": "PASS: isolated WSL Python 3.10 environment and generated union constructor probe",
+      "all_eight_remote": "BLOCKED: WSL-to-Windows fixture TLS path did not complete; no pass recorded"
+    },
+    "macos": {
+      "wheel_sha256": "F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B",
+      "fresh_python_install": "PASS: isolated ivar Python environment and generated union constructor probe",
+      "all_eight_remote": "PASS: canonical fixture through SSH tunnel, including typed service errors and cancellation"
+    }
+  },
   "scope": "Platform packaging and typing evidence; all-eight remote behavior remains qualified by the Windows wheel receipt"
 }

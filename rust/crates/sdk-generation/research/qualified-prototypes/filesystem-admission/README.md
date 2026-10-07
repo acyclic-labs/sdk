@@ -28,6 +28,7 @@ and after the native companion has been installed:
 node research/qualified-prototypes/filesystem-admission/run.mjs \
   --package-root <extracted-@acyclic-labs-fs> \
   --native-binding <installed-@acyclic-labs-fs-platform>/acyclic-fs-<version>-<target>.node \
+  --native-archive <packed-@acyclic-labs-fs-platform.tgz> \
   --source-root <frozen-source-root> \
   --source-manifest <frozen-source-root>/source-attestation.json \
   --source-commit <checked-out-commit> \
@@ -36,17 +37,23 @@ node research/qualified-prototypes/filesystem-admission/run.mjs \
 ```
 
 `--source-commit` is required for runtime qualification and must equal the
-actual checkout `HEAD`. The validator also compares the manifest's
+actual checkout `HEAD`; `--native-archive` is required so the receipt binds
+the installed companion to the exact package assembly that supplied it. The
+validator also compares the manifest's
 `source_state` with Git, checks the exact selector, and verifies the declared
 lockfiles, toolchain file, and generator scripts. A dirty source snapshot is
 allowed only when the manifest explicitly says `source_state: "dirty"`.
 
-The runner invokes `liveRebase` through the generated WASM module and through
+The runner hashes the package archive, native archive, extracted WASM files,
+and installed native binding before and after the matrix. Any byte change
+during qualification fails the receipt. It also validates the source
+attestation before and after execution. The runner invokes `liveRebase` through the generated WASM module and through
 the installed N-API binding. Each call uses the same Rust-owned boundary
 parameter. A value is classified as `boundary_rejected` only when the runtime
 returns the exact Rust admission error or the exact wasm-bindgen JavaScript
-number type guard; downstream Rust policy errors are recorded separately so a
-valid `u32` value cannot be mistaken for a boundary failure.
+number type guard. Native errors that do not carry the canonical Rust
+admission message remain downstream errors, so a coercing native decoder
+cannot be mistaken for a typed boundary rejection.
 
 The required matrix is:
 
@@ -68,12 +75,13 @@ The manifest uses schema `acyclic.sdk.source-attestation.v1` and must declare
 commit, the exact `required_source_roots` selector used by the runner, every
 selected source-closure file with its SHA-256 and byte count, and a canonical
 digest of sorted `path\0sha256\0bytes\n` records. The selector covers the
-Rust filesystem/native/WASM dependency closure, locked root/toolchain and
+Rust filesystem/native/WASM dependency closure, its path-crate and transport
+descriptor inputs, locked root/toolchain and
 packaging inputs, protocol sources, and the TypeScript filesystem package's
 source/test/example files while excluding generated package outputs. This
 manifest also records the generator provenance: `Cargo.lock`, `bun.lock`,
 `rust-toolchain.toml`, the filesystem generator scripts, and the package
-metadata that selects them. This
+metadata that selects them, plus the path-crate roots. This
 permits an explicitly labelled dirty snapshot while still making the exact
 tested source tree reviewable. The runner independently walks that selector,
 rejects symlinks, and re-hashes every selected file. Removing a manifest entry

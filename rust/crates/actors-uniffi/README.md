@@ -17,6 +17,14 @@ The opt-in `bindgen` feature exposes a one-function wrapper around the same
 UniFFI `0.31.0` CLI. It is used only to generate external qualification files;
 those files are not a supported Kotlin, Swift, or Python package.
 
+Kotlin release inputs are source-owned by
+`src/kotlin_generation_metadata.rs`. The qualification generator applies the
+maintained-template patch under `generator-patches/` before building the pinned
+bindgen binary; it makes generated opaque-object raw-handle and `NoHandle`
+constructors `internal` while preserving same-module converter/lifting calls.
+The generated Kotlin file is never hand-edited, and Maven version data is
+derived from this crate's Cargo package version.
+
 The result records are adapter metadata over Rust-owned domain accessors. They
 do not contain wire messages, transport code, retry logic, or validators.
 Optional Actor observation presence is preserved. The current domain rejects

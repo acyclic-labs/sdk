@@ -1,4 +1,4 @@
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 

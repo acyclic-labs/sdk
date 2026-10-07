@@ -25,6 +25,7 @@ fn main() {
         other => panic!("unsupported prototype language {other}"),
     };
     let generator_version = value(&args, "generator");
+    let generator_source_sha256 = value(&args, "generator-source-sha256");
     let artifact = PathBuf::from(value(&args, "artifact"));
     let receipt = PathBuf::from(value(&args, "receipt"));
     let receipt_marker = value(&args, "receipt-marker");
@@ -38,6 +39,7 @@ fn main() {
             family: "uniffi".into(),
             version: generator_version,
             source: "mozilla/uniffi-rs".into(),
+            source_sha256: generator_source_sha256,
         },
         &artifact,
         &receipt,

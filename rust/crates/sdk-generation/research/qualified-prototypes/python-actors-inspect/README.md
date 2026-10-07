@@ -28,10 +28,13 @@ Rust-backed fixture. The full source and result are retained in
 
 `typing/positive.py` and `typing/negative.py` are maintained-checker fixtures.
 Mypy 1.17.1 and Pyright 1.1.404 both reject all six deliberate negative cases.
-The positive fixture exposes one generated enum typing gap: `SubscriptionStart.CURSOR(1)` is emitted as the nested `CURSOR` class, while
-`SubscriptionSpec` annotates the parameter as `SubscriptionStart`. The runtime
-value is valid, but the generated Python type relationship needs correction in
-the binding-generation path. Full diagnostics are retained beside the fixtures.
+The source-only patch in `uniffi-python-typing.patch` corrects the generated
+enum union metadata, so `SubscriptionStart.CURSOR(1)` is accepted as the
+`SubscriptionStartValue` parameter type while retaining the nested runtime
+class. `run-uniffi-python-typing-patch.sh` reproduces the generated module
+from the pinned UniFFI 0.31.0 archive and verifies its hash. The full vendor
+copy used during diagnosis has been removed; provenance and license evidence
+remain in `uniffi-python-typing-patch-provenance.md`.
 
 The generated Kotlin and Swift artifact hashes and the shared fixture identity
 are recorded in `all8-qualification-receipt.json`. No binary artifacts are

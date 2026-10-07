@@ -111,7 +111,7 @@ Portability and installability matrix (2026-10-07):
 
 Classpath-native Kotlin/JVM package receipt (2026-10-07):
 - package design: KOTLIN-PORTABLE-PACKAGE.md
-- package design SHA-256 after pinned Temurin Mac runtime qualification and loader review: AA3208A56E78FD7B43868804E992BEAB48AB9737A18E9BA750223F8E14283E49
+- package design SHA-256 after pinned Temurin Mac runtime qualification, loader review, and patched-generator cohort: 8E6DA14B17C23C0ED0F0039271BD13EC1349CD07C5EBD7C1B422A584D8C92682
 - JNA maintained `Native.extractFromResourcePath` resolves the generated basename from standard root prefixes `linux-x86-64/`, `win32-x86-64/`, and `darwin-aarch64/`; no source loader, java.library.path, or native-path setting; UniFFI's optional libraryOverride property is unset
 - generated Kotlin remained unchanged, SHA-256 6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B
 - Linux x86_64 resource SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
@@ -138,11 +138,15 @@ Classpath-native Kotlin/JVM package receipt (2026-10-07):
 Rust-owned JVM generation inputs and derived evidence (source only; no registry publication):
 - Rust source authority: rust/crates/actors-uniffi/src/kotlin_generation_metadata.rs
 - maintained template patch: rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-kotlin-opaque-constructors.patch, SHA-256 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
-- Rust metadata source SHA-256: 18B00F165D52B02C4EA1C7A542EF21AC8EEAAA9FB73DBCCCDC954EA17DBF1DA1
-- derived artifact evidence: KOTLIN-GENERATION-EVIDENCE.json, SHA-256 A21DF976E670D26EC749CBC4B75B6650E0744BE702167A5F212F2CF5E202E616
-- design notes: KOTLIN-GENERATION-DESIGN-NOTES.md, SHA-256 60AD1E4A7A9DAF85CF172B3C95D82862AF3CD314E5D45C0FFA830F31C7F88292
+- Rust metadata source SHA-256: 3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9
+- derived artifact evidence: KOTLIN-GENERATION-EVIDENCE.json, SHA-256 04675B31C0FAE57A6799F0E7E345A616FB2D7191E85D1B5EC82CA344E97F94A1
+- design notes: KOTLIN-GENERATION-DESIGN-NOTES.md, SHA-256 17B65BC1A9DA958832E2802302480BE1BC9E78A29862B23423B76AE961E45432
 - Cargo authority: acyclic-actors-uniffi version 0.2.0 from cargo metadata; manifest SHA-256 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377; lock SHA-256 97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE
 - generated coordinate: dev.acyclic:acyclic-actors-uniffi-kotlin:0.2.0, version emitted from Cargo metadata
 - external nominal negative: separate Maven consumer failed raw `(UniffiWithHandle, Long)` construction as internal and rejected `SubscriptionStart.Cursor(true)` as wrong ULong
 - native runtime: new JAR retained native hashes and passed constructor, all-eight, service-error, and generated-null pending cancellation probes
 - no generated source loader or native-path setup; standard JNA resource prefixes remain in use
+- patched cohort generated Kotlin SHA-256: 201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58
+- patched cohort Maven JAR: Q:\sdk\work\actors-uniffi-kotlin-internal-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar; SHA-256 A5E5C1D76ABC11A97DCC96C32A5B5D4C51879C19BAFA3C794C20E9D76E662CFE
+- patched cohort external negative: raw ActorId handle constructor rejected as internal; Cursor(Boolean) rejected as ULong mismatch
+- patched cohort runtime markers: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS; KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS

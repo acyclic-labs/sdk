@@ -73,3 +73,30 @@ The WSL fixture script was attempted with its default Cargo 1.75.0 and was
 rejected by the repository's edition-2024 manifest. The live Windows fixture
 used Cargo 1.98.1. The maintained Rust and bindgen cohort remains pinned at
 0.31.0; the separate Ruby 0.32.2 receipt is an external compatibility cohort.
+
+## Patched-generator cohort
+
+The Rust-owned generator patch
+`rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-kotlin-opaque-constructors.patch`
+changes the maintained UniFFI Kotlin template's raw-handle and `NoHandle`
+constructors to `internal`. The same-module generated FFI converters and
+lifting paths continue to use those constructors; external Kotlin source
+cannot call them. The patch SHA-256 is
+`275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474`.
+
+The patched generated Kotlin source is SHA-256
+`201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58`.
+The Cargo-derived Maven package is
+`dev.acyclic:acyclic-actors-uniffi-kotlin:0.2.0`, built from
+`Q:\sdk\work\actors-uniffi-kotlin-internal-20261007\consumer`; its JAR SHA-256
+is `A5E5C1D76ABC11A97DCC96C32A5B5D4C51879C19BAFA3C794C20E9D76E662CFE`.
+The native resources are unchanged: Linux
+`AA6427DD...`, Windows `A09452F2...`, and macOS arm64 `28D88556...`.
+
+An external Maven consumer compiled against the JAR failed both negative
+checks: raw `ActorId(UniffiWithHandle, 1L)` and `ActorId(NoHandle)` were rejected
+because the constructors are internal, and `SubscriptionStart.Cursor(true)`
+was rejected because the payload must be `ULong`. The production cohort's
+constructor probe, all-eight
+operation/service-error/cancellation probe, and generated-null pending
+cancellation probe all passed with the unchanged native resources.

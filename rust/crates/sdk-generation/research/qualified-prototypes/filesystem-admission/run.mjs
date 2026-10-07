@@ -22,6 +22,13 @@ const REQUIRED_SOURCE_ROOTS = [
   "rust/crates/native-runtime",
   "rust/crates/objects",
   "rust/crates/stream",
+  "rust/crates/actors",
+  "rust/crates/workers",
+  "rust/crates/harness",
+  "rust/crates/inference-contract",
+  "rust/crates/inference-wasm",
+  "rust/crates/machines",
+  "rust/crates/sdk-generation",
   "scripts/build-wasm.mjs",
   "scripts/check-filesystem-napi.mjs",
   "scripts/check-filesystem-package.sh",
@@ -60,6 +67,15 @@ const GENERATOR_PROVENANCE = Object.freeze({
     "scripts/sync-generated.mjs",
     "scripts/validate-npm-package.mjs",
     "typescript/packages/filesystem/package.json",
+  ],
+  path_dependencies: [
+    "rust/crates/actors",
+    "rust/crates/workers",
+    "rust/crates/harness",
+    "rust/crates/inference-contract",
+    "rust/crates/inference-wasm",
+    "rust/crates/machines",
+    "rust/crates/sdk-generation",
   ],
 });
 const EDGE_VALUES = [
@@ -105,6 +121,7 @@ const writeSourceManifest = args.includes("--write-source-manifest");
 const manifestOnly = attestationOnly || writeSourceManifest;
 const packageRoot = manifestOnly ? undefined : resolve(argument("--package-root"));
 const nativeBinding = manifestOnly ? undefined : resolve(argument("--native-binding"));
+const nativeArchivePath = manifestOnly ? undefined : resolve(argument("--native-archive"));
 const requestedSourceCommit = optionalArgument("--source-commit");
 const sourceRoot = resolve(argument("--source-root"));
 const sourceManifest = resolve(argument("--source-manifest"));
@@ -182,6 +199,7 @@ const generatorProvenancePaths = () => [
   ...GENERATOR_PROVENANCE.lockfiles,
   ...GENERATOR_PROVENANCE.toolchain,
   ...GENERATOR_PROVENANCE.generator_files,
+  ...GENERATOR_PROVENANCE.path_dependencies,
 ];
 const validateGeneratorProvenance = (manifest, entries) => {
   if (JSON.stringify(manifest.generator_provenance) !== JSON.stringify(GENERATOR_PROVENANCE)) {
@@ -296,6 +314,7 @@ const sourceAttestation = async () => {
   return {
     path: basename(sourceManifest),
     sha256: await digest(sourceManifest),
+    source_commit: manifest.source_commit,
     source_state: manifest.source_state,
     source_digest: `sha256:${sourceDigest}`,
     file_count: entries.length,
@@ -320,19 +339,15 @@ const describe = value => {
   return JSON.stringify(value);
 };
 
-const likelyDownstream = message =>
-  message.includes("workspace is not a fork") ||
-  message.includes("workspace join exceeds its configured bound");
-const classify = (error, runtime, value) => {
+const classify = (error, runtime) => {
   const message = String(error?.message ?? error);
   if (message.includes(ADMISSION_ERROR)) return "boundary_rejected";
   if (runtime === "wasm" && message === WASM_NUMBER_ERROR) return "boundary_rejected";
-  // N-API rejects non-number values in its f64 decoder before Rust's shared
-  // helper runs. Preserve that native boundary result while still detecting
-  // an accidental ToNumber conversion that reaches Rust policy.
-  if (runtime === "napi" && typeof value !== "number" && !likelyDownstream(message)) {
-    return "boundary_rejected";
-  }
+  // Native conversion failures remain downstream errors unless the binding
+  // returns the canonical Rust admission string above. This deliberately
+  // avoids inferring a boundary rejection from the JavaScript input type: a
+  // coercing N-API decoder must fail the matrix rather than be misreported as
+  // a successful typed boundary.
   return `downstream:${message}`;
 };
 const values = [...EDGE_VALUES, ...REJECT_VALUES];
@@ -356,7 +371,7 @@ async function qualifyWasm() {
         await workspace.liveRebase(null, value, 1, 1);
         outcome = "accepted";
       } catch (error) {
-        outcome = classify(error, "wasm", value);
+        outcome = classify(error, "wasm");
       }
     } finally {
       fs.close?.();
@@ -392,7 +407,7 @@ async function qualifyNative() {
           await workspace.liveRebase(null, value, 1, 1);
           outcome = "accepted";
         } catch (error) {
-          outcome = classify(error, "napi", value);
+          outcome = classify(error, "napi");
         }
         result.push({ label, value: describe(value), outcome });
       }
@@ -409,7 +424,35 @@ async function qualifyNative() {
   }
 }
 
+const qualificationArtifactPaths = [
+  { label: "package_archive", path: archivePath },
+  { label: "native_archive", path: nativeArchivePath },
+  { label: "wasm_js", path: join(packageRoot, "generated", "wasm", "acyclic_fs_wasm.js") },
+  { label: "wasm_binary", path: join(packageRoot, "generated", "wasm", "acyclic_fs_wasm_bg.wasm") },
+  { label: "native_binding", path: nativeBinding },
+];
+const captureQualificationArtifacts = async () => Promise.all(
+  qualificationArtifactPaths.map(async artifact => ({
+    label: artifact.label,
+    path: artifact.path,
+    sha256: await digest(artifact.path),
+    bytes: (await lstat(artifact.path)).size,
+  })),
+);
+const assertStableQualificationArtifacts = (before, after) => {
+  for (let index = 0; index < before.length; index += 1) {
+    const expected = before[index];
+    const actual = after[index];
+    if (expected.sha256 !== actual.sha256 || expected.bytes !== actual.bytes) {
+      throw new Error(`qualification artifact changed during execution: ${expected.label}`);
+    }
+  }
+};
+const sourceBefore = await sourceAttestation();
+const artifactsBefore = await captureQualificationArtifacts();
 const runtimes = [await qualifyWasm(), await qualifyNative()];
+const artifactsAfter = await captureQualificationArtifacts();
+assertStableQualificationArtifacts(artifactsBefore, artifactsAfter);
 const failures = [];
 for (const runtime of runtimes) {
   for (const row of runtime.results) {
@@ -427,11 +470,20 @@ if (failures.length > 0) {
 }
 const matrix = JSON.stringify(runtimes);
 const attestation = await sourceAttestation();
+if (
+  attestation.source_digest !== sourceBefore.source_digest ||
+  attestation.source_commit !== sourceCommit ||
+  attestation.source_state !== sourceBefore.source_state ||
+  attestation.file_count !== sourceBefore.file_count
+) {
+  throw new Error("source checkout changed during qualification");
+}
 const receipt = {
   schema: 1,
   source_commit: sourceCommit,
   source_attestation: attestation,
   package_archive: { path: basename(archivePath), sha256: await digest(archivePath) },
+  native_archive: { path: basename(nativeArchivePath), sha256: await digest(nativeArchivePath) },
   matrix_sha256: createHash("sha256").update(matrix).digest("hex"),
   runtimes,
 };

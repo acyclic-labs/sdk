@@ -35,6 +35,7 @@ pub struct GeneratorIdentity {
     pub family: String,
     pub version: String,
     pub source: String,
+    pub source_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,7 +201,8 @@ fn inventory_for_paths(root: &Path, package_roots: &[PathBuf]) -> Result<SourceI
             if path.is_empty() || !is_rust_owned_input(path) {
                 return false;
             }
-            if matches!(path, &"Cargo.toml" | &"Cargo.lock")
+            if *path == "Cargo.toml"
+                || *path == "Cargo.lock"
                 || path.to_ascii_lowercase().starts_with("rust-toolchain")
                 || path.starts_with("proto/")
                 || path.starts_with("generated/rust/")
@@ -211,10 +213,18 @@ fn inventory_for_paths(root: &Path, package_roots: &[PathBuf]) -> Result<SourceI
                 package_root
                     .strip_prefix(root)
                     .ok()
-                    .and_then(|relative| relative.to_str())
                     .map(|relative| {
-                        let relative = relative.replace('\\', "/");
-                        path == relative || path.starts_with(&(relative + "/"))
+                        if relative.as_os_str().is_empty() {
+                            true
+                        } else {
+                            relative
+                                .to_str()
+                                .map(|relative| {
+                                    let relative = relative.replace('\\', "/");
+                                    *path == relative || path.starts_with(&(relative + "/"))
+                                })
+                                .unwrap_or(false)
+                        }
                     })
                     .unwrap_or(false)
             })
@@ -372,6 +382,7 @@ struct ReceiptFile {
 #[derive(Debug, Deserialize)]
 struct ReceiptToolchain {
     uniffi_bindgen: Option<String>,
+    uniffi_source_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -443,6 +454,17 @@ fn validate_receipt(
                 .as_ref()
                 .and_then(|toolchain| toolchain.uniffi_bindgen.as_deref())
                 != Some(generator.version.as_str())
+        {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
+        if generator.family == "uniffi"
+            && document
+                .toolchain
+                .as_ref()
+                .and_then(|toolchain| toolchain.uniffi_source_sha256.as_deref())
+                != Some(generator.source_sha256.as_str())
         {
             return Err(Error::ReceiptBindingMismatch {
                 path: receipt.to_owned(),
@@ -547,7 +569,7 @@ pub fn build_record_from_source(
         package_name,
         language,
         source_revision(source_root)?,
-        source_inventory(source_root)?,
+        source_inventory_for_manifest(source_root, manifest)?,
         generator,
         artifact,
         receipt,
@@ -570,7 +592,7 @@ impl LanguagePackageArtifact {
 
     pub fn verify_source(&self, source_root: &Path) -> Result<(), Error> {
         self.verify_source_revision(&source_revision(source_root)?)?;
-        let actual = source_inventory(source_root)?;
+        let actual = source_inventory_for_manifest(source_root, &self.package.manifest_path)?;
         if actual.sha256 == self.source_inventory.sha256 {
             Ok(())
         } else {
@@ -673,6 +695,7 @@ mod tests {
             family: "uniffi".into(),
             version: "0.31.0".into(),
             source: "mozilla/uniffi-rs".into(),
+            source_sha256: "generator-source-sha256".into(),
         }
     }
 
@@ -687,7 +710,7 @@ mod tests {
 
     fn typed_receipt(root: &Path, artifact: &Path, language: &str, version: &str) -> PathBuf {
         let revision = source_revision(root).unwrap();
-        let inventory = source_inventory(root).unwrap();
+        let inventory = source_inventory_for_manifest(root, &root.join("Cargo.toml")).unwrap();
         let artifact = sha256_file(artifact).unwrap();
         let key = match language {
             "python" => "wheel",
@@ -695,9 +718,10 @@ mod tests {
             _ => panic!("unsupported fixture language"),
         };
         let receipt = root.join("receipt.json");
+        let artifact_path = artifact.path.to_string_lossy().replace('\\', "\\\\");
         let text = format!(
-            r#"{{"source_revision":"{revision}","source_inventory_sha256":"{inventory}","toolchain":{{"uniffi_bindgen":"{version}"}},"artifacts":{{"{key}":{{"path":"{}","sha256":"{}","bytes":{}}}}},"status":"PASS"}}"#,
-            artifact.path.display(),
+            r#"{{"source_revision":"{revision}","source_inventory_sha256":"{inventory}","toolchain":{{"uniffi_bindgen":"{version}","uniffi_source_sha256":"generator-source-sha256"}},"artifacts":{{"{key}":{{"path":"{}","sha256":"{}","bytes":{}}}}},"status":"PASS"}}"#,
+            artifact_path,
             artifact.sha256,
             artifact.bytes,
             inventory = inventory.sha256,
@@ -770,7 +794,9 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(Error::ReceiptBindingMismatch { .. }) | Err(Error::ReceiptMalformed { .. })
+            Err(Error::ReceiptEvidenceMissing { .. })
+                | Err(Error::ReceiptBindingMismatch { .. })
+                | Err(Error::ReceiptMalformed { .. })
         ));
         let _ = fs::remove_dir_all(root);
     }
@@ -799,6 +825,27 @@ mod tests {
         );
         assert!(matches!(
             changed_generator,
+            Err(Error::ReceiptBindingMismatch { .. })
+        ));
+
+        let changed_generator_source = build_record_from_source(
+            &root,
+            &root.join("Cargo.toml"),
+            "acyclic-actors-uniffi",
+            Language::Python,
+            GeneratorIdentity {
+                family: "uniffi".into(),
+                version: "0.31.0".into(),
+                source: "mozilla/uniffi-rs".into(),
+                source_sha256: "different-generator-source-sha256".into(),
+            },
+            &artifact,
+            &receipt,
+            "PASS",
+            qualification(&receipt),
+        );
+        assert!(matches!(
+            changed_generator_source,
             Err(Error::ReceiptBindingMismatch { .. })
         ));
 

@@ -1,0 +1,80 @@
+{
+  "schema": "acyclic.kani-proof/observation-explicit-v1",
+  "captured_at": "2026-10-07T10:20:00Z",
+  "status": "inconclusive",
+  "source": {
+    "base_revision": "a6af1b21400a4ca1a62b197e210d0f5713618bc7",
+    "source_root": "rust/crates/sdk-generation/research/qualified-prototypes/kani-observation-u64-20261007/source",
+    "kani_proofs_sha256": "AF2E5582D255E9F8B10454F533703200972BF7AD372B3B5E494B1F46A261E72B",
+    "note": "source-only isolated copy; production Q source and proof receipts unchanged"
+  },
+  "tools": {
+    "kani": "Kani Rust Verifier 0.68.0",
+    "cbmc": "CBMC 6.11.0",
+    "toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu",
+    "jobs": 1,
+    "unwind": 1
+  },
+  "harnesses": [
+    "domain::kani_proofs::subscription_observation_preserves_full_width_cursors_and_presence",
+    "domain::kani_proofs::actor_observation_and_optional_response_preserve_u64_fields",
+    "domain::kani_proofs::update_request_preserves_full_width_configuration_revision"
+  ],
+  "attempts": [
+    {
+      "harness": "domain::kani_proofs::subscription_observation_preserves_full_width_cursors_and_presence",
+      "outcome": "inconclusive_before_verification",
+      "timeout_seconds": 60,
+      "log_sha256": "361229A0C35B708D9D38A86D345E026B77E2AEFA3FC25164B734345A1291CB88",
+      "evidence": "evidence/subscription-explicit.log",
+      "detail": "Cargo metadata did not reach harness checking before shell timeout"
+    },
+    {
+      "harness": "domain::kani_proofs::actor_observation_and_optional_response_preserve_u64_fields",
+      "outcome": "inconclusive_before_verification",
+      "timeout_seconds": 60,
+      "log_sha256": "361229A0C35B708D9D38A86D345E026B77E2AEFA3FC25164B734345A1291CB88",
+      "evidence": "evidence/actor-explicit.log",
+      "detail": "Cargo metadata did not reach harness checking before shell timeout"
+    },
+    {
+      "harness": "domain::kani_proofs::update_request_preserves_full_width_configuration_revision",
+      "outcome": "inconclusive_before_verification",
+      "timeout_seconds": 60,
+      "log_sha256": "361229A0C35B708D9D38A86D345E026B77E2AEFA3FC25164B734345A1291CB88",
+      "evidence": "evidence/update-explicit.log",
+      "detail": "Cargo metadata did not reach harness checking before shell timeout"
+    },
+    {
+      "harness": "domain::kani_proofs::update_request_preserves_full_width_configuration_revision",
+      "outcome": "inconclusive_solver_timeout",
+      "timeout_seconds": 1800,
+      "log_sha256": "619D1A9FF615FDCC639432D3C4A8FB0DE760CBB7D18C73EA0B7802A5A098FF50",
+      "evidence": "Q:/sdk/work/sdkgen-kani-observation-run-20261007/observation-cohort.log",
+      "detail": "combined command selected only this final harness; CBMC stopped during propositional reduction without a verification marker"
+    }
+  ],
+  "result": {
+    "successful": null,
+    "failures": null,
+    "verification_marker_present": false
+  },
+  "scope": {
+    "universal_fields": [
+      "all listed u64 fields range over 0..=u64::MAX",
+      "optional u64 fields range over absent or present with any u64 value"
+    ],
+    "assertions": [
+      "semantic getters preserve symbolic values",
+      "semantic-to-wire conversion preserves values",
+      "optional presence survives response conversion"
+    ],
+    "assumptions": [
+      "all non-target fixture values are fixed and valid",
+      "canonical Rust TryFrom and generated wire conversions are authoritative"
+    ],
+    "exclusions": [
+      "no universal theorem for IDs, strings, aggregate validators, transport, FFI, generated SDKs, or packaging"
+    ]
+  }
+}

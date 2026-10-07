@@ -1,0 +1,94 @@
+{
+  "schema": "acyclic.kani-proof/observation-cohort-v1",
+  "captured_at": "2026-10-07T10:02:00Z",
+  "status": "inconclusive_timeout",
+  "source": {
+    "base_revision": "a6af1b21400a4ca1a62b197e210d0f5713618bc7",
+    "source_root": "Q:/sdk/work/sdkgen-kani-observation-prototype-20261007",
+    "working_tree": "isolated prototype copy; never a production qualification source",
+    "files": {
+      "rust/crates/actors/src/domain/kani_proofs.rs": "AF2E5582D255E9F8B10454F533703200972BF7AD372B3B5E494B1F46A261E72B",
+      "rust/crates/actors/Cargo.toml": "75F96ECC6B87A6A9FE55FB8F6AB1A15EC4C4FAA2D42801DA6380987E7525A3B2",
+      "Cargo.toml": "B59D78A8BFFC13E4B293A8E0B9CE73B150FD3F0DF9DE55A45FFBFF3D71A6BB5E",
+      "Cargo.lock": "1993073FA191A9EBB18EA88A0B6DBA8F97925B8B53D074FBB25C2AEB1A9B5846",
+      "rust-toolchain.toml": "85DB324345B7937C49EA2AC8B962D741F710719F4F751CAB809985CBE6AFBE3C"
+    }
+  },
+  "tools": {
+    "kani": "Kani Rust Verifier 0.68.0 (cargo plugin)",
+    "cbmc": "CBMC 6.11.0",
+    "toolchain": "nightly-2026-08-21-x86_64-unknown-linux-gnu",
+    "jobs": 1,
+    "cache_root": "Q:/sdk/work/foundation-kani-068 (symlinked into isolated run root)"
+  },
+  "harnesses": [
+    "domain::kani_proofs::subscription_observation_preserves_full_width_cursors_and_presence",
+    "domain::kani_proofs::actor_observation_and_optional_response_preserve_u64_fields",
+    "domain::kani_proofs::update_request_preserves_full_width_configuration_revision"
+  ],
+  "command": {
+    "entrypoint": "cargo-kani",
+    "manifest": "Q:/sdk/work/sdkgen-kani-observation-prototype-20261007/rust/crates/actors/Cargo.toml",
+    "package": "acyclic-actors",
+    "requested_flags": [
+      "--exact",
+      "--default-unwind",
+      "1",
+      "-j1"
+    ],
+    "timeout_seconds": 1800
+  },
+  "attempts": [
+    {
+      "log": "Q:/sdk/work/sdkgen-kani-observation-run-20261007/observation-cohort.log",
+      "log_sha256": "619D1A9FF615FDCC639432D3C4A8FB0DE760CBB7D18C73EA0B7802A5A098FF50",
+      "requested_harness_count": 3,
+      "harnesses_entered": [
+        "domain::kani_proofs::update_request_preserves_full_width_configuration_revision"
+      ],
+      "result": "stopped after 1800 seconds while CBMC was still in propositional reduction; no verification marker"
+    },
+    {
+      "log": "Q:/sdk/work/sdkgen-kani-observation-run-20261007/subscription-observation.log",
+      "log_sha256": "361229A0C35B708D9D38A86D345E026B77E2AEFA3FC25164B734345A1291CB88",
+      "harnesses_entered": [],
+      "result": "stopped after 120 seconds before harness checking output; no verification marker"
+    }
+  ],
+  "result": {
+    "successful": null,
+    "failures": null,
+    "total": 3,
+    "unwind": 1,
+    "jobs": 1,
+    "verification_marker_present": false
+  },
+  "scope": {
+    "universal_domains": [
+      "SubscriptionObservation.delivered_cursor: every u64 value 0..=u64::MAX",
+      "SubscriptionObservation.completed_cursor: every u64 value 0..=u64::MAX",
+      "SubscriptionObservation.recoverable_cursor: every u64 value 0..=u64::MAX",
+      "SubscriptionObservation.failed_cursor: Option<u64>, arbitrary u64 when present and absence when false",
+      "ActorObservation.checkpoint_unix_millis: Option<u64>, arbitrary u64 when present and absence when false",
+      "ActorObservation.checkpoint_epoch: every u64 value 0..=u64::MAX",
+      "ActorObservation.configuration_revision: every u64 value 0..=u64::MAX",
+      "UpdateActorRequest.expected_configuration_revision: every u64 value 0..=u64::MAX"
+    ],
+    "required_observations": [
+      "validated semantic construction succeeds for the fixed otherwise-valid fixture",
+      "semantic accessors equal each symbolic u64 and preserve Option presence",
+      "conversion back to generated wire value preserves all symbolic values and presence",
+      "CreateActorResponse nested actor Option presence is preserved when exercised"
+    ],
+    "model_assumptions": [
+      "all non-target IDs, strings, digest, enum, limits, bindings, and collections are fixed valid values",
+      "the canonical Rust TryFrom validators and generated wire conversions are the authority",
+      "the model does not prove arbitrary ID/string/aggregate constraints, transport, FFI, generated SDK, or packaging behavior",
+      "bounded execution outcome is not a mathematical proof until a successful verification marker is recorded"
+    ]
+  },
+  "notes": [
+    "Repeated --harness flags were accepted by the command wrapper but the log entered only the final update harness; this is recorded rather than counted as a three-harness pass.",
+    "The Q canonical proof harness and receipts were not modified by this prototype run."
+  ]
+}
