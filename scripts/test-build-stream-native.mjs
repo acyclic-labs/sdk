@@ -112,7 +112,9 @@ test("native qualification encodes remap and MSVC reproducibility flags without 
     encoded: "--cfg\x1fprior_flag",
   });
   const flags = encoded.split("\x1f");
-  assert.deepEqual(flags.slice(0, 5), ["-C", "opt-level=3", "-C", "link-arg=C:/tool path/extra.lib", "--cfg"]);
+  assert.deepEqual(flags.slice(0, 2), ["--cfg", "prior_flag"]);
+  assert.ok(!flags.includes("opt-level=3"));
+  assert.ok(!flags.includes("link-arg=C:/tool path/extra.lib"));
   assert.ok(flags.includes("prior_flag"));
   assert.ok(flags.includes("-C"));
   assert.equal(flags.at(-3), "target-feature=+crt-static");
@@ -233,6 +235,14 @@ test("native qualification adds stable Rust path remapping flags", () => {
   assert.deepEqual(
     deterministicRustflags("D:/agent/two", "D:/agent/two/target", undefined, { plain: null, encoded: null }).split("\x1f"),
     ["--remap-path-prefix=D:/agent/two=/__acyclic_stream_source", "--remap-path-prefix=D:/agent/two/target=/__acyclic_stream_target"],
+  );
+  assert.deepEqual(
+    deterministicRustflags("C:/agent/three", "C:/agent/three/target", undefined, { plain: "ignored_plain", encoded: "encoded_only" }).split("\x1f"),
+    ["encoded_only", "--remap-path-prefix=C:/agent/three=/__acyclic_stream_source", "--remap-path-prefix=C:/agent/three/target=/__acyclic_stream_target"],
+  );
+  assert.deepEqual(
+    deterministicRustflags("C:/agent/four", "C:/agent/four/target", undefined, { plain: "ignored_plain", encoded: "" }).split("\x1f"),
+    ["--remap-path-prefix=C:/agent/four=/__acyclic_stream_source", "--remap-path-prefix=C:/agent/four/target=/__acyclic_stream_target"],
   );
 });
 
