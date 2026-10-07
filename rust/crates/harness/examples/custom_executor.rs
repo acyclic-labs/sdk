@@ -1,74 +1,70 @@
-//! A complete custom loop can replace the stock executor without core changes.
+//! A custom control loop reuses public durable model admission and recovery.
 
 use acyclic_harness::{
-    Result,
-    conversation::Attachment,
-    executor::{ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput},
-    model::{ModelContent, ModelEvent},
+    Error, Result,
+    context::ContextPipeline,
+    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
+    model::{Model, ModelAttempt, ModelEvent, ModelProvider, PreparedModelRequest},
+    tool::ToolRegistry,
 };
-use futures::{FutureExt as _, future::BoxFuture};
-use serde_json::json;
+use futures::{
+    future::BoxFuture,
+    stream::{self, BoxStream},
+};
+use serde_json::Value;
+use std::sync::Arc;
 
-struct FullControlExecutor;
+struct CustomExecutor(StockExecutor);
 
-impl Executor for FullControlExecutor {
+impl Executor for CustomExecutor {
     fn execute<'a>(
         &'a self,
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        async move {
-            // A real implementation may select prompts/models/tools/memory,
-            // compact, open interactions, spawn tasks, or stop here.
-            let event = ModelEvent::Completed {
-                metadata: json!({"executor": "custom"}),
-            };
-            let bytes = serde_json::to_vec(&event)
-                .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-            let staged = journal
-                .stage(
-                    input.operation_id,
-                    "custom:complete:event".into(),
-                    bytes,
-                    "application/json",
-                )
-                .await?;
-            journal
-                .append(
-                    input.operation_id,
-                    "custom:complete".into(),
-                    ExecutionEvent::Model {
-                        step: 0,
-                        event: staged,
-                    },
-                )
-                .await?;
-            // Inputs contain immutable refs rather than attachment bytes. A
-            // custom loop may retain or publish those refs explicitly; it
-            // must not copy their bytes into a durable event.
-            let attachments = input
-                .input
-                .file_refs()
-                .into_iter()
-                .cloned()
-                .map(|file| Attachment { file, label: None })
-                .collect();
-            Ok(TurnOutput {
-                text: match input.input {
-                    ModelContent::Text(text) => text,
-                    ModelContent::Part(_) | ModelContent::Parts(_) => {
-                        "Custom executor accepted typed input".into()
+        Box::pin(async move {
+            let mut text = String::new();
+            let mut metadata = None;
+            // Custom stopping policy, the same admitted step used by the stock loop.
+            for event in self.0.model_step(journal, &input, 0, &[]).await? {
+                match event {
+                    ModelEvent::Content { delta } => text.push_str(&delta),
+                    ModelEvent::Completed { metadata: value } => metadata = Some(value),
+                    ModelEvent::Reasoning { .. } => {}
+                    ModelEvent::ToolCall { .. } => {
+                        return Err(Error::Unsupported("this custom loop has no tools".into()));
                     }
-                },
-                attachments,
-                metadata: json!({"owned_by": "application"}),
+                }
+            }
+            Ok(TurnOutput {
+                text,
+                attachments: Vec::new(),
+                metadata: metadata.ok_or(Error::Indeterminate(input.operation_id))?,
                 steps: 1,
             })
-        }
-        .boxed()
+        })
     }
 }
 
-fn main() {
-    let _executor: Box<dyn Executor> = Box::new(FullControlExecutor);
+struct MockModel;
+impl ModelProvider for MockModel {
+    fn generate<'a>(&'a self, _: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        Box::pin(stream::iter([Ok(ModelEvent::Completed {
+            metadata: Value::Null,
+        })]))
+    }
+
+    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+fn main() -> Result<()> {
+    let _executor: Box<dyn Executor> = Box::new(CustomExecutor(StockExecutor::new(
+        Model::new("example", "mock", "1", Value::Null)?,
+        Arc::new(MockModel),
+        ContextPipeline::default(),
+        ToolRegistry::new(),
+    )));
+    Ok(())
 }
