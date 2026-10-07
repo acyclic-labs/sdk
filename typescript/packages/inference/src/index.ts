@@ -57,7 +57,7 @@ import { http_path } from "../generated/proto/validation/v1/options_pb.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
-export { InferenceProtocolError } from "./contract.js";
+export { InferenceProtocolError, type InferenceProtocolErrorCode } from "./contract.js";
 
 /** One authenticated HTTP endpoint derived from a protobuf RPC descriptor. */
 export interface InferenceHttpRoute<Method extends DescMethod = DescMethod> {

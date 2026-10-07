@@ -36,7 +36,7 @@ fn bool_option(message: &DynamicMessage, name: &str) -> bool {
 /// protobuf contract before it can reach TypeScript.
 #[wasm_bindgen]
 pub fn run_terminal_metadata() -> Result<String, JsValue> {
-    terminal_metadata().map_err(JsValue::from_str)
+    terminal_metadata().map_err(|message| crate::js_error("unavailable", message))
 }
 
 /// Return terminal metadata for native generators and the WASM boundary.
@@ -433,21 +433,25 @@ fn validate_runtime_message(
 
 /// Validate the JavaScript object shape before protobuf encoding can coerce it.
 #[wasm_bindgen]
-#[allow(clippy::needless_pass_by_value)]
-pub fn runtime_shape_error(message_name: &str, value: JsValue) -> Option<String> {
+pub fn validate_runtime_shape(message_name: &str, value: &JsValue) -> Result<(), JsValue> {
     let Some(pool) = pool() else {
-        return Some("inference reflection descriptor is unavailable".to_owned());
+        return Err(crate::js_error(
+            "unavailable",
+            "inference reflection descriptor is unavailable",
+        ));
     };
     let Some(descriptor) = pool.get_message_by_name(message_name) else {
-        return Some(format!("{message_name} is not a known protobuf message"));
+        return Err(crate::invalid(&format!(
+            "{message_name} is not a known protobuf message"
+        )));
     };
-    if let Some(error) = validate_runtime_message(&descriptor, &value, descriptor.name()) {
-        return Some(error);
-    }
-    match runtime_message(&descriptor, &value, descriptor.name()) {
-        Ok(message) => retention_error(message_name, &message.encode_to_vec()),
-        Err(error) => Some(error),
-    }
+    let error = validate_runtime_message(&descriptor, value, descriptor.name()).or_else(|| {
+        match runtime_message(&descriptor, value, descriptor.name()) {
+            Ok(message) => retention_error(message_name, &message.encode_to_vec()),
+            Err(error) => Some(error),
+        }
+    });
+    error.map_or(Ok(()), |error| Err(crate::invalid(&error)))
 }
 
 fn bigint_text(value: &JsValue) -> Option<String> {
@@ -575,33 +579,6 @@ fn runtime_message(
             .map_err(|_| format!("{field_path} has an invalid protobuf type"))?;
     }
     Ok(message)
-}
-
-/// Encode a JavaScript protobuf-shaped value using the Rust descriptor and
-/// canonical dynamic message encoder. Shape validation and protobuf encoding
-/// therefore share one reflection boundary instead of relying on a TypeScript
-/// cast followed by generated runtime coercion.
-#[wasm_bindgen]
-pub fn runtime_encode(message_name: &str, value: &JsValue) -> Result<Uint8Array, JsValue> {
-    let Some(pool) = pool() else {
-        return Err(JsValue::from_str(
-            "inference reflection descriptor is unavailable",
-        ));
-    };
-    let Some(descriptor) = pool.get_message_by_name(message_name) else {
-        return Err(JsValue::from_str(&format!(
-            "{message_name} is not a known protobuf message"
-        )));
-    };
-    if let Some(error) = validate_runtime_message(&descriptor, value, descriptor.name()) {
-        return Err(JsValue::from_str(&error));
-    }
-    let message = runtime_message(&descriptor, value, descriptor.name())
-        .map_err(|error| JsValue::from_str(&error))?;
-    if let Some(error) = retention_error(message_name, &message.encode_to_vec()) {
-        return Err(JsValue::from_str(&error));
-    }
-    Ok(Uint8Array::from(message.encode_to_vec().as_slice()))
 }
 
 #[cfg(test)]
