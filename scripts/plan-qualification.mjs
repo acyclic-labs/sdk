@@ -215,13 +215,7 @@ function select() {
   for (const [lane, source] of Object.entries(reused)) {
     console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
   }
-  // On pull requests, early-start lanes run in their own job that is queued at
-  // workflow start and executes only when the plan requires it.
-  const early = event === qualificationEventKinds.pullRequest
-    ? matrix.filter(lane => lane.early_start)
-    : [];
-  output("matrix", matrix.filter(lane => !early.includes(lane)));
-  output("windows", early.some(lane => lane.lane === "windows") ? "true" : "false");
+  output("matrix", matrix);
   output("reused", reused);
 }
 

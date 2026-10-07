@@ -35,16 +35,6 @@ test("every lane names a known input set and a Blacksmith runner", () => {
   }
 });
 
-test("the early-start windows job runs on the windows lane's runner", () => {
-  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
-  const job = workflow.slice(workflow.indexOf("\n  windows:\n"));
-  const runsOn = job.match(/\n {4}runs-on: (\S+)\n/)?.[1];
-  const early = lanes.filter(lane => lane.early_start);
-  assert.deepEqual(early.map(lane => lane.lane), ["windows"]);
-  assert.equal(runsOn, early[0].runner);
-  assert.match(job, new RegExp(`\\n {6}CARGO_BUILD_JOBS: ${early[0].workers}\\n`));
-});
-
 test("root documentation changes reuse every lane", () => {
   assert.deepEqual(differing(laneKeys(lanes, tree), laneKeys(lanes, changed("README.md"))), []);
 });
@@ -195,8 +185,6 @@ test("the workflow keeps full qualification off routine pull requests", () => {
   assert.doesNotMatch(workflow, /^  schedule:/m);
   assert.match(workflow, /default: false/);
   assert.match(workflow, /github\.event_name == 'release' && github\.event\.release\.tag_name/);
-  assert.match(workflow, /needs: plan/);
-  assert.match(workflow, /needs\.plan\.outputs\.windows == 'true'/);
 });
 
 test("the fast gate covers the Rust workspace and standalone docs crate", () => {
