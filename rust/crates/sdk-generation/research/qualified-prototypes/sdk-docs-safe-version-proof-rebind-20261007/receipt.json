@@ -1,0 +1,44 @@
+{
+  "artifact": "sdk-docs-safe-version-proof-rebind-20261007",
+  "source_worktree": "C:\\Users\\varun\\.codex\\worktrees\\rust-profile-c8-port",
+  "source_head": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "source_state": "dirty working copy; only the recorded source snapshot is qualified",
+  "source_files": {
+    "rust/crates/sdk-docs/src/lib.rs": "134374E6C598DE229F3E10C0C0148266844416AA91E1B5383574DB84A74C2993",
+    "rust/crates/sdk-generation/src/release_manifest.rs": "E99A3A703C5CE1F14EFB764FFC4F6E7F64C2A00A3E1F0EBB01E12DAF594A5556",
+    "rust/crates/sdk-docs/proofs/safe-version-injectivity.md": "8DEA57A4A8B7883D823DFF8BE2A16BA9771D08F886294178D7259DA4509624B7"
+  },
+  "mapping_functions": {
+    "safe_version": "77F0AC4022620D931C309043347AD6F8EC8B510D956D889E84AE5A8A262DBB6A",
+    "is_portable_version_byte": "EABC0AA6AEB9A857D7A19E9F7B49FD55CF771265D445ACB49CDAAA68FD9165E0",
+    "hex_version": "E93970220D658CF94BCA5B7AA61BB066A83EFD6EF847BDF43E1A337F50D0E612",
+    "is_windows_reserved_segment": "25B9C1DFB97B2409A4DD1F51C79255AC7E3E3C4E509F5B1C6822776403C43531",
+    "combined": "4DC8AA1BAD80E039C9AEB8CCC596C9B586424CC3AF2507D332D3768F018A902C"
+  },
+  "baseline_comparison": {
+    "baseline_lib_sha256": "AF949D5FB8E494B66E9F9651EDBB51F235DE771782ADFE973803D36E38E46315",
+    "function_bodies_equal": true,
+    "allowed_difference": "safe_version visibility changed from private fn to public fn; body unchanged"
+  },
+  "production_binding": {
+    "public_function": "sdk_docs::safe_version",
+    "release_manifest_call": "rust/crates/sdk-generation/src/release_manifest.rs:output_path",
+    "duplicate_encoder": false,
+    "production_calls": [
+      "sdk_docs::safe_version(version)"
+    ]
+  },
+  "tests": [
+    {
+      "command": "cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml preview_version_paths_are_injective_and_portable",
+      "result": "PASS",
+      "summary": "1 passed, 0 failed"
+    },
+    {
+      "command": "CARGO_NET_OFFLINE=true CARGO_TARGET_DIR=<task-local> cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml",
+      "result": "PASS",
+      "summary": "11 CLI regression tests and 2 profile-planner tests passed, 0 failed"
+    }
+  ],
+  "scope": "The injectivity and portable static-path argument applies to non-empty accepted Rust UTF-8 strings whose encoded output passes the 255-byte guard. It does not claim transport behavior, whole release qualification, or whole-crate semantics."
+}
