@@ -1623,7 +1623,7 @@ export interface InitOutput {
     readonly browserchangeset_compose: (a: number, b: number, c: number) => any;
     readonly browserchangeset_from: (a: number) => number;
     readonly browserchangeset_to: (a: number) => number;
-    readonly browsercheckout_acquisitionWork: (a: number) => any;
+    readonly browsercheckout_acquisitionWork: (a: number) => [number, number, number];
     readonly browsercheckout_applyTransaction: (a: number, b: any) => any;
     readonly browsercheckout_checkpoint: (a: number) => any;
     readonly browsercheckout_cloneFileRange: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
@@ -1719,7 +1719,7 @@ export interface InitOutput {
     readonly browserresolvedfile_readSymbolicLink: (a: number) => any;
     readonly browserresolvedfiles_length: (a: number) => number;
     readonly browserresolvedfiles_take: (a: number, b: number) => [number, number, number];
-    readonly browserresolvedfiles_work: (a: number) => any;
+    readonly browserresolvedfiles_work: (a: number) => [number, number, number];
     readonly browserspeculation_cancel: (a: number) => void;
     readonly browserspeculation_executeResidency: (a: number, b: number, c: number) => any;
     readonly browserspeculation_finishPromotion: (a: number, b: number, c: number, d: number) => [number, number];
@@ -1744,7 +1744,7 @@ export interface InitOutput {
     readonly browsertransaction_write: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_writeRange: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsertransaction_zeroRange: (a: number, b: number, c: number, d: bigint, e: bigint, f: number, g: number) => any;
-    readonly browservolume_acquisitionWork: (a: number) => any;
+    readonly browservolume_acquisitionWork: (a: number) => [number, number, number];
     readonly browservolume_checkout: (a: number, b: any) => any;
     readonly browservolume_diffGenerations: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly browservolume_id: (a: number) => [number, number];
