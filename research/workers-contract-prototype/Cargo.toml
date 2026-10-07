@@ -1,0 +1,12 @@
+[package]
+name = "workers-contract-prototype"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+prost = "=0.14.4"
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }

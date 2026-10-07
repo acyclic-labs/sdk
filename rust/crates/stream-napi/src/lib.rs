@@ -504,6 +504,16 @@ impl NativeStreamClient {
         operation_result(tail(&self.inner, request, cancellation)).await
     }
 
+    /// Observes the canonical atomic replay bound for one stream path.
+    #[napi(js_name = "boundsResult")]
+    pub async fn bounds_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamOperationResult> {
+        operation_result(bounds(&self.inner, request, cancellation)).await
+    }
+
     /// Executes a canonical append request.
     #[napi(js_name = "appendResult")]
     pub async fn append_result(
@@ -896,6 +906,20 @@ async fn tail(
     )
     .await?;
     encode(&wire::TailResponse { tail: value }, "tail")
+}
+
+async fn bounds(
+    client: &Client,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+    let request = decode::<wire::TailRequest>(&request, "bounds")?;
+    let value = run_with_cancellation(
+        async { client.bounds(&request.path).await.map_err(stream_error) },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    encode(&wire::TailResponse { tail: value.tail }, "bounds")
 }
 
 async fn append(

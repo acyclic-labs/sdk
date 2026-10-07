@@ -4,7 +4,10 @@
 //! so it can call the existing crate-private predicate without changing its
 //! visibility or creating a second validation rule.
 
-use super::{valid_code_sha256, ActorState, DomainError, ErrorCode, SubscriptionState};
+use super::{
+    valid_code_sha256, wire, ActorState, DomainError, ErrorCode, SubscriptionStart,
+    SubscriptionState,
+};
 
 #[kani::proof]
 #[kani::unwind(65)]
@@ -71,6 +74,41 @@ fn assert_error_code_mapping(raw: i32) {
             assert!(false);
         },
     }
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn subscription_start_preserves_cursor_and_current_head_presence() {
+    let cursor: u64 = kani::any();
+    let cursor_wire = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::Cursor(cursor)),
+    };
+    let parsed_cursor =
+        SubscriptionStart::try_from(cursor_wire).expect("cursor is valid");
+    assert_eq!(parsed_cursor.cursor_value(), Some(cursor));
+    assert_eq!(parsed_cursor.current_head_value(), None);
+
+    let current_head_wire = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::CurrentHead(true)),
+    };
+    let parsed_current_head = SubscriptionStart::try_from(current_head_wire)
+        .expect("true current head is valid");
+    assert_eq!(parsed_current_head.cursor_value(), None);
+    assert_eq!(parsed_current_head.current_head_value(), Some(true));
+
+    let false_current_head = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::CurrentHead(false)),
+    };
+    assert_eq!(
+        SubscriptionStart::try_from(false_current_head),
+        Err(DomainError::InvalidSubscription)
+    );
+
+    let missing_start = wire::SubscriptionStart { start: None };
+    assert_eq!(
+        SubscriptionStart::try_from(missing_start),
+        Err(DomainError::InvalidSubscription)
+    );
 }
 
 #[kani::proof]
