@@ -35,7 +35,7 @@
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs actors",
-    "generate:client": "node ../../../scripts/generate-actors-client.mjs",
+    "generate:client": "cargo run --offline -p acyclic-actors --example actors-http-routes -- src/generated/actors-service.ts",
     "build:native": "node ../../../scripts/build-actors-native.mjs build",
     "stage:native": "node ../../../scripts/build-actors-native.mjs stage",
     "check:native": "node ../../../scripts/build-actors-native.mjs check",
