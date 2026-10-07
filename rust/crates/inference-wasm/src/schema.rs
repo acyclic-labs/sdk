@@ -8,12 +8,11 @@ use prost::bytes::Bytes;
 use prost_reflect::{DescriptorPool, DynamicMessage, Kind, ReflectMessage, Value};
 use wasm_bindgen::{JsCast, prelude::*};
 
-const DESCRIPTOR_SET: &[u8] = include_bytes!("../inference_reflection_descriptor.bin");
 const VALIDATION_PACKAGE: &str = "acyclic.validation.v1.";
 
 fn pool() -> Option<&'static DescriptorPool> {
     static POOL: OnceLock<Option<DescriptorPool>> = OnceLock::new();
-    POOL.get_or_init(|| DescriptorPool::decode(DESCRIPTOR_SET).ok())
+    POOL.get_or_init(|| DescriptorPool::decode(acyclic_inference::DESCRIPTOR).ok())
         .as_ref()
 }
 

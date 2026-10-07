@@ -70,7 +70,6 @@ export const generatedDescriptors = [
   ["proto/objects/v2", "rust/crates/objects/src/generated/acyclic-objects-v2.bin"],
   ["proto/machines", compatibilityArtifacts.machines.descriptorDigest],
   ["proto/inference", compatibilityArtifacts.inference.descriptorDigest],
-  ["proto/inference", "rust/crates/inference-wasm/inference_reflection_descriptor.bin"],
   ["proto/actors", compatibilityArtifacts.actors.descriptorDigest],
   ["proto/workers", compatibilityArtifacts.workers.descriptorDigest],
   ["rust/crates/stream/proto/stream", compatibilityArtifacts.stream.descriptorDigest],
