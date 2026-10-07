@@ -233,8 +233,9 @@ function isMissingNativeArtifact(error: unknown): boolean {
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   const message = error instanceof Error ? error.message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  if (/generated[\\/]native[\\/]binding\.cjs/i.test(firstLine)) return true;
-  return /@acyclic-labs[\\/]actors-(?:win32|linux|darwin|freebsd)-[^'"\s]+|(?:^|[\\/])index\.[^'"\s]+\.node/.test(firstLine);
+  if (/^Cannot find module ['"][^'"]*generated[\\/]native[\\/]binding\.cjs['"]/i.test(firstLine)) return true;
+  if (/^Cannot find package ['"]@acyclic-labs[\\/]actors-(?:win32|linux|darwin|freebsd)-[^'"]+['"]/i.test(firstLine)) return true;
+  return /^Cannot find module ['"][^'"]*[\\/]index\.(?:win32|linux|darwin|freebsd)-[^'"]+\.node['"]/i.test(firstLine);
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
