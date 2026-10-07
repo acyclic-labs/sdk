@@ -299,8 +299,79 @@ impl WorkflowAdmission {
     }
 }
 
+/// Maximum workflow records returned by one owner-journal read.
+pub const MAX_WORKFLOW_PAGE_RECORDS: u32 = 64;
+/// Maximum retained transitions in one workflow.
+pub const MAX_WORKFLOW_RECORDS: u64 = 4_096;
+/// Maximum transition and command identities retained by one workflow.
+pub const MAX_WORKFLOW_IDENTITIES: usize = 65_536;
+
+pub(crate) fn validate_workflow_page(after: u64, maximum: u32) -> Result<()> {
+    if after > MAX_WORKFLOW_RECORDS || maximum == 0 || maximum > MAX_WORKFLOW_PAGE_RECORDS {
+        return Err(Error::Invalid("workflow page bounds are invalid".into()));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_workflow_commit(
+    expected_revision: u64,
+    key: &IdempotencyKey,
+    record: &WorkflowRecord,
+) -> Result<()> {
+    IdempotencyKey::new(key.0.clone())?;
+    record.validate()?;
+    if record.idempotency_key != *key
+        || record.prior.revision != expected_revision
+        || expected_revision >= MAX_WORKFLOW_RECORDS
+    {
+        return Err(Error::Invalid(
+            "workflow commit identity or revision is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_workflow_next(
+    checkpoint: &MachineCheckpoint,
+    terminal: bool,
+    reserved: &BTreeSet<OperationId>,
+    keys: &BTreeSet<IdempotencyKey>,
+    record: &WorkflowRecord,
+) -> Result<()> {
+    record.validate()?;
+    if record.prior != *checkpoint || terminal {
+        return Err(Error::Conflict(
+            "workflow transition differs from its current checkpoint".into(),
+        ));
+    }
+    if checkpoint.revision >= MAX_WORKFLOW_RECORDS
+        || reserved
+            .len()
+            .saturating_add(record.transition.commands.len() + 1)
+            > MAX_WORKFLOW_IDENTITIES
+    {
+        return Err(Error::Invalid(
+            "workflow retention bound is exhausted".into(),
+        ));
+    }
+    if keys.contains(&record.idempotency_key)
+        || record.operation_ids().any(|id| reserved.contains(&id))
+    {
+        return Err(Error::Conflict(
+            "workflow command, transition or retry identity is already bound".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Durable journal boundary; one commit atomically stores checkpoint and commands.
 pub trait WorkflowJournal: Send + Sync {
+    /// Exact task lease whose coordinator condition fences every publication.
+    /// Unbound workflow providers do not authorize registered task execution.
+    fn task_binding(&self) -> Option<(crate::TaskId, crate::scheduler::LeaseFence)> {
+        None
+    }
+
     /// Atomically retains one exact workflow admission. Providers must return
     /// the existing admission on retries and reject an identity conflict.
     fn admit<'a>(
@@ -311,8 +382,10 @@ pub trait WorkflowJournal: Send + Sync {
     /// Observes the exact owner-retained admission before replay or dispatch.
     fn admission(&self) -> BoxFuture<'_, Result<Option<WorkflowAdmission>>>;
 
-    /// Replays all retained records in gapless order.
-    fn replay(&self) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>>;
+    /// Reads at most `maximum` records starting at the zero-based revision.
+    /// Records and payloads are validated individually; the consuming host
+    /// validates the complete chain incrementally. Empty means current tail.
+    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>>;
 
     /// Commits exactly one complete transition with CAS and idempotency.
     fn commit<'a>(
@@ -367,37 +440,25 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         })
     }
 
-    fn replay(&self) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
+    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
         Box::pin(async move {
-            let records = self
+            validate_workflow_page(after, maximum)?;
+            let state = self
                 .state
                 .lock()
-                .map(|state| {
-                    state
-                        .records
-                        .iter()
-                        .map(|(_, record)| record.clone())
-                        .collect::<Vec<_>>()
-                })
                 .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let mut reserved = BTreeSet::new();
-            let mut terminal = false;
+            let records = state
+                .records
+                .iter()
+                .skip(
+                    usize::try_from(after)
+                        .map_err(|_| Error::Invalid("workflow revision is not portable".into()))?,
+                )
+                .take(maximum as usize)
+                .map(|(_, record)| record.clone())
+                .collect::<Vec<_>>();
             for record in &records {
-                if terminal {
-                    return Err(Error::Storage(
-                        "workflow history continues after a terminal transition".into(),
-                    ));
-                }
                 record.validate()?;
-                if record
-                    .operation_ids()
-                    .any(|operation_id| !reserved.insert(operation_id))
-                {
-                    return Err(Error::Storage(
-                        "workflow history reuses a command or transition identity".into(),
-                    ));
-                }
-                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
             }
             Ok(records)
         })
@@ -419,14 +480,7 @@ impl WorkflowJournal for MemoryWorkflowJournal {
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
         Box::pin(async move {
-            record.validate()?;
-            if record.idempotency_key != idempotency_key
-                || record.prior.revision != expected_revision
-            {
-                return Err(Error::Invalid(
-                    "workflow commit identity or revision is invalid".into(),
-                ));
-            }
+            validate_workflow_commit(expected_revision, &idempotency_key, &record)?;
             let mut state = self
                 .state
                 .lock()
@@ -466,6 +520,19 @@ impl WorkflowJournal for MemoryWorkflowJournal {
             if state.records.len() as u64 != expected_revision {
                 return Err(Error::Conflict("stale workflow revision".into()));
             }
+            if expected_revision >= MAX_WORKFLOW_RECORDS
+                || state
+                    .records
+                    .iter()
+                    .map(|(_, record)| record.transition.commands.len() + 1)
+                    .sum::<usize>()
+                    .saturating_add(record.transition.commands.len() + 1)
+                    > MAX_WORKFLOW_IDENTITIES
+            {
+                return Err(Error::Invalid(
+                    "workflow retention bound is exhausted".into(),
+                ));
+            }
             let requested: BTreeSet<_> = record.operation_ids().collect();
             if state.records.iter().any(|(_, existing)| {
                 existing
@@ -487,7 +554,7 @@ pub struct DurableWorkflowHost {
     registry: MachineRegistry,
     checkpoint: MachineCheckpoint,
     journal: Arc<dyn WorkflowJournal>,
-    intents: BTreeMap<OperationId, (IdempotencyKey, WorkflowRecord)>,
+    intents: BTreeMap<OperationId, (u64, [u8; 32])>,
     reserved_operations: BTreeSet<OperationId>,
     terminal: bool,
 }
@@ -514,46 +581,45 @@ impl DurableWorkflowHost {
         let mut intents = BTreeMap::new();
         let mut reserved_operations = BTreeSet::new();
         let mut terminal = false;
-        for record in journal.replay().await? {
-            if terminal {
-                return Err(Error::Conflict(
-                    "workflow history continues after a terminal transition".into(),
+        let mut keys = BTreeSet::new();
+        loop {
+            let page = journal
+                .replay(checkpoint.revision, MAX_WORKFLOW_PAGE_RECORDS)
+                .await?;
+            if page.len() > MAX_WORKFLOW_PAGE_RECORDS as usize {
+                return Err(Error::Storage(
+                    "workflow provider exceeded page bound".into(),
                 ));
             }
-            record.validate()?;
-            if !reserved_operations.insert(record.operation_id)
-                || record
-                    .transition
-                    .commands
-                    .iter()
-                    .any(|command| !reserved_operations.insert(command.operation_id))
-            {
-                return Err(Error::Conflict(
-                    "workflow history reuses a command or transition identity".into(),
-                ));
+            if page.is_empty() {
+                break;
             }
-            if intents
-                .insert(
+            for record in page {
+                validate_workflow_next(
+                    &checkpoint,
+                    terminal,
+                    &reserved_operations,
+                    &keys,
+                    &record,
+                )?;
+                keys.insert(record.idempotency_key.clone());
+                reserved_operations.extend(record.operation_ids());
+                intents.insert(
                     record.operation_id,
-                    (record.idempotency_key.clone(), record.clone()),
-                )
-                .is_some()
-            {
-                return Err(Error::Conflict(
-                    "workflow history repeats an operation identity".into(),
-                ));
+                    (
+                        record.prior.revision,
+                        crate::contract::canonical_json_digest(&record)?,
+                    ),
+                );
+                let (next, transition) = registry.step(&checkpoint, &record.input)?;
+                if next != record.next || transition != record.transition {
+                    return Err(Error::Conflict(
+                        "workflow history disagrees with its pinned machine".into(),
+                    ));
+                }
+                checkpoint = next;
+                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
             }
-            if record.prior != checkpoint {
-                return Err(Error::Conflict("workflow history is not contiguous".into()));
-            }
-            let (next, transition) = registry.step(&checkpoint, &record.input)?;
-            if next != record.next || transition != record.transition {
-                return Err(Error::Conflict(
-                    "workflow history disagrees with its pinned machine".into(),
-                ));
-            }
-            checkpoint = next;
-            terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
         }
         Ok(Self {
             registry,
@@ -569,6 +635,29 @@ impl DurableWorkflowHost {
     #[must_use]
     pub const fn checkpoint(&self) -> &MachineCheckpoint {
         &self.checkpoint
+    }
+
+    /// Reads the latest committed outbox/status without retaining transition history.
+    pub async fn latest_transition(&self) -> Result<Option<MachineTransition>> {
+        if self.checkpoint.revision == 0 {
+            return Ok(None);
+        }
+        let records = self.journal.replay(self.checkpoint.revision - 1, 1).await?;
+        let [record] = records.as_slice() else {
+            return Err(Error::Storage(
+                "latest workflow record is unavailable".into(),
+            ));
+        };
+        if record.next != self.checkpoint
+            || self.intents.get(&record.operation_id)
+                != Some(&(
+                    record.prior.revision,
+                    crate::contract::canonical_json_digest(record)?,
+                ))
+        {
+            return Err(Error::Storage("latest workflow record changed".into()));
+        }
+        Ok(Some(record.transition.clone()))
     }
 
     /// Calculates then atomically commits a checkpoint and all emitted commands.
@@ -596,8 +685,17 @@ impl DurableWorkflowHost {
         F: FnOnce(&MachineTransition) -> Result<()>,
     {
         IdempotencyKey::new(idempotency_key.0.clone())?;
-        if let Some((existing_key, record)) = self.intents.get(&operation_id) {
-            return if existing_key == &idempotency_key && record.input == input {
+        if let Some((revision, digest)) = self.intents.get(&operation_id) {
+            let records = self.journal.replay(*revision, 1).await?;
+            let [record] = records.as_slice() else {
+                return Err(Error::Storage(
+                    "workflow retry record is unavailable".into(),
+                ));
+            };
+            if crate::contract::canonical_json_digest(record)? != *digest {
+                return Err(Error::Storage("workflow retry record changed".into()));
+            }
+            return if record.idempotency_key == idempotency_key && record.input == input {
                 check(&record.transition)?;
                 Ok(record.transition.clone())
             } else {
@@ -616,7 +714,22 @@ impl DurableWorkflowHost {
                 "workflow step reuses a command identity".into(),
             ));
         }
+        if self.checkpoint.revision >= MAX_WORKFLOW_RECORDS {
+            return Err(Error::Invalid(
+                "workflow retention bound is exhausted".into(),
+            ));
+        }
         let (next, transition) = self.registry.step(&self.checkpoint, &input)?;
+        if self
+            .reserved_operations
+            .len()
+            .saturating_add(transition.commands.len() + 1)
+            > MAX_WORKFLOW_IDENTITIES
+        {
+            return Err(Error::Invalid(
+                "workflow identity bound is exhausted".into(),
+            ));
+        }
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
@@ -660,7 +773,13 @@ impl DurableWorkflowHost {
         for command in &record.transition.commands {
             self.reserved_operations.insert(command.operation_id);
         }
-        self.intents.insert(operation_id, (idempotency_key, record));
+        self.intents.insert(
+            operation_id,
+            (
+                record.prior.revision,
+                crate::contract::canonical_json_digest(&record)?,
+            ),
+        );
         Ok(transition)
     }
 }
@@ -826,6 +945,156 @@ mod tests {
         Ok(())
     }
 
+    struct PagingCounter {
+        identity: MachineIdentity,
+        schema: Value,
+    }
+
+    impl ResumableMachine for PagingCounter {
+        fn identity(&self) -> &MachineIdentity {
+            &self.identity
+        }
+        fn state_schema(&self) -> &Value {
+            &self.schema
+        }
+        fn initialize(&self, input: &Value) -> Result<Value> {
+            Ok(input.clone())
+        }
+        fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+            Ok(MachineTransition {
+                state: json!(state.as_u64().unwrap_or(0) + input.as_u64().unwrap_or(0)),
+                commands: vec![],
+                status: MachineStatus::Suspended,
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn workflow_pages_preserve_old_retries_and_reject_cross_page_corruption() -> Result<()> {
+        let identity = MachineIdentity {
+            name: "test.paged".into(),
+            version: "1".into(),
+            digest: [1; 32],
+        };
+        let mut registry = MachineRegistry::default();
+        registry.register(Arc::new(PagingCounter {
+            identity: identity.clone(),
+            schema: json!({"type":"integer","minimum":0}),
+        }))?;
+        let initial = MachineCheckpoint {
+            machine: identity,
+            revision: 0,
+            state: json!(0),
+        };
+        let journal = Arc::new(MemoryWorkflowJournal::default());
+        journal
+            .admit(WorkflowAdmission {
+                operation_id: OperationId::new(),
+                request_digest: [2; 32],
+                initial: initial.clone(),
+            })
+            .await?;
+        let mut host =
+            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        let first = OperationId::new();
+        let first_key = IdempotencyKey::new("paged-first")?;
+        let transition = host.step(first, first_key.clone(), json!(1)).await?;
+        for index in 1..=MAX_WORKFLOW_PAGE_RECORDS {
+            host.step(
+                OperationId::new(),
+                IdempotencyKey::new(format!("paged-{index}"))?,
+                json!(1),
+            )
+            .await?;
+        }
+        assert_eq!(
+            journal.replay(0, MAX_WORKFLOW_PAGE_RECORDS).await?.len(),
+            MAX_WORKFLOW_PAGE_RECORDS as usize
+        );
+        assert_eq!(
+            journal
+                .replay(
+                    u64::from(MAX_WORKFLOW_PAGE_RECORDS),
+                    MAX_WORKFLOW_PAGE_RECORDS
+                )
+                .await?
+                .len(),
+            1
+        );
+        assert!(
+            journal
+                .replay(0, MAX_WORKFLOW_PAGE_RECORDS + 1)
+                .await
+                .is_err()
+        );
+        assert!(journal.replay(0, 0).await.is_err());
+        let mut reopened =
+            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
+        assert_eq!(
+            reopened.checkpoint().revision,
+            u64::from(MAX_WORKFLOW_PAGE_RECORDS) + 1
+        );
+        assert_eq!(
+            reopened.step(first, first_key.clone(), json!(1)).await?,
+            transition
+        );
+        assert!(
+            reopened
+                .step(first, first_key.clone(), json!(2))
+                .await
+                .is_err()
+        );
+        // A duplicate retry key appears beyond the first page and remains a hard error.
+        let original_key = {
+            let mut state = journal
+                .state
+                .lock()
+                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            let last = state
+                .records
+                .last_mut()
+                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let original = last.1.idempotency_key.clone();
+            last.1.idempotency_key = first_key.clone();
+            original
+        };
+        assert!(
+            DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone())
+                .await
+                .is_err()
+        );
+        {
+            let mut state = journal
+                .state
+                .lock()
+                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            let last = state
+                .records
+                .last_mut()
+                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            last.1.idempotency_key = original_key;
+            last.1.operation_id = first;
+        }
+        assert!(
+            DurableWorkflowHost::open(registry, initial, journal.clone())
+                .await
+                .is_err()
+        );
+        // Retry records are loaded by revision and compared with the verified digest.
+        {
+            let mut state = journal
+                .state
+                .lock()
+                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            state.records[0].1.idempotency_key = IdempotencyKey::new("changed-first")?;
+        }
+        assert!(matches!(
+            reopened.step(first, first_key, json!(1)).await,
+            Err(Error::Storage(_))
+        ));
+        Ok(())
+    }
+
     struct Counter {
         identity: MachineIdentity,
         schema: Value,
@@ -928,7 +1197,12 @@ mod tests {
             Err(Error::Invalid(_))
         ));
         assert_eq!(host.checkpoint().revision, 0);
-        assert!(journal.replay().await?.is_empty());
+        assert!(
+            journal
+                .replay(0, MAX_WORKFLOW_PAGE_RECORDS)
+                .await?
+                .is_empty()
+        );
         let transition = host
             .step(
                 OperationId::from_bytes([1; 16]),

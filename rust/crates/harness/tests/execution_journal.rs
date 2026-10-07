@@ -102,8 +102,13 @@ struct TerminalCasLoser {
 }
 
 impl ExecutionJournal for TerminalCasLoser {
-    fn replay<'a>(&'a self, operation: OperationId) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(operation)
+    fn replay<'a>(
+        &'a self,
+        operation: OperationId,
+        after: u64,
+        maximum: u32,
+    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
+        self.inner.replay(operation, after, maximum)
     }
 
     fn append<'a>(
@@ -309,7 +314,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         journal_b.append_if_tail(operation, 1, "claim-b".into(), event),
     );
     assert_ne!(first?, second?);
-    assert_eq!(journal_a.replay(operation).await?.len(), 2);
+    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 2);
     let (first_terminal, second_terminal) = tokio::join!(
         journal_a.append_if_tail(
             operation,
@@ -333,7 +338,56 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         ),
     );
     assert_ne!(first_terminal?, second_terminal?);
-    assert_eq!(journal_a.replay(operation).await?.len(), 3);
+    assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
+    let paged = OperationId::from_bytes([57; 16]);
+    for step in 0..70 {
+        journal_a
+            .append(
+                paged,
+                format!("paged-{step}"),
+                ExecutionEvent::ModelStarted {
+                    step,
+                    request_digest: [57; 32],
+                },
+            )
+            .await?;
+    }
+    let first_page = journal_b.replay(paged, 0, 64).await?;
+    let second_page = journal_b.replay(paged, 64, 64).await?;
+    assert_eq!(first_page.len(), 64);
+    assert_eq!(second_page.len(), 6);
+    assert_eq!(first_page[63].sequence, 64);
+    assert_eq!(second_page[0].sequence, 65);
+    assert!(journal_b.replay(paged, 0, 65).await.is_err());
+    assert!(journal_b.replay(paged, 0, 0).await.is_err());
+    journal_b
+        .append(
+            paged,
+            "paged-0".into(),
+            ExecutionEvent::ModelStarted {
+                step: 0,
+                request_digest: [57; 32],
+            },
+        )
+        .await?;
+    assert!(journal_b.replay(paged, 70, 64).await?.is_empty());
+    let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
+    while cursor.next_page(&journal_b).await?.is_some() {}
+    assert_eq!(cursor.tail(), 70);
+    assert!(
+        journal_a
+            .append_if_tail(
+                paged,
+                cursor.tail(),
+                "paged-cas-70".into(),
+                ExecutionEvent::ModelStarted {
+                    step: 70,
+                    request_digest: [57; 32]
+                },
+            )
+            .await?
+    );
+    assert_eq!(journal_b.replay(paged, 70, 64).await?.len(), 1);
     Ok(())
 }
 
@@ -498,7 +552,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     assert_eq!(reconciliations.load(Ordering::SeqCst), 0);
     assert!(matches!(
         journal
-            .replay(failure_operation)
+            .replay(failure_operation, 0, 64)
             .await?
             .last()
             .map(|record| &record.event),
@@ -563,7 +617,7 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first, again);
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
-    let records = journal.replay(operation_id).await?;
+    let records = journal.replay(operation_id, 0, 64).await?;
     assert_eq!(records.len(), 4);
     let stream = stream
         .stream(format!("harness/v2/execution/{operation_id}"))
@@ -1030,7 +1084,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
     assert!(
         executor
             .execute(
@@ -1048,7 +1102,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
             .await
             .is_err()
     );
-    assert!(journal.replay(operation_id).await?.is_empty());
+    assert!(journal.replay(operation_id, 0, 64).await?.is_empty());
     executor
         .execute(
             TurnInput {

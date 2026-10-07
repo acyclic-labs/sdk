@@ -292,12 +292,64 @@ pub struct DistributedCoordinator<P> {
     scheduler: Scheduler,
     revision: u64,
     last_committed_at_ms: u64,
-    intents: BTreeMap<String, ([u8; 32], SchedulerEvent)>,
+    intents: BTreeMap<String, ([u8; 32], SchedulerEvent, u64, acyclic_stream::CommitId)>,
     content_verifier: Arc<dyn ContentResidencyVerifier>,
     payload_store: Option<Arc<dyn SchedulerPayloadStore>>,
 }
 
+#[cfg(feature = "filesystem")]
+#[derive(Clone, Copy)]
+pub(crate) enum JournalWrite {
+    Fresh,
+    Model {
+        attempt_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+    },
+    Settlement,
+}
+
+#[cfg(feature = "filesystem")]
+impl JournalWrite {
+    pub(crate) fn settlement(self) -> bool {
+        matches!(self, Self::Settlement)
+    }
+}
+
 impl<P: StreamProvider> DistributedCoordinator<P> {
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn journal_client(&self) -> StreamClient<P> {
+        self.client.clone()
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn journal_condition(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        fence: &LeaseFence,
+        write: JournalWrite,
+    ) -> Result<acyclic_stream::CommitCondition> {
+        self.refresh().await?;
+        let operation = self.observe_operation(owner, scope, verifier, operation_id)?;
+        crate::scheduler::require_execution_owner(&operation, fence, write.settlement())?;
+        if let JournalWrite::Model {
+            attempt_id,
+            step,
+            request_digest,
+        } = write
+        {
+            self.scheduler
+                .require_model_claim(operation_id, attempt_id, step, &request_digest)?;
+        }
+        Ok(acyclic_stream::CommitCondition::Tail {
+            path: self.stream.path().clone(),
+            expected: self.revision,
+        })
+    }
+
     /// Opens and replays the public coordinator implementation.
     pub async fn open(
         client: &StreamClient<P>,
@@ -334,7 +386,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     self.content_verifier.verify(&spec.state).await?;
                 }
                 self.verify_published_result(&event).await?;
-                self.apply_committed(revision, operation_id, key, digest, committed_at_ms, event)?;
+                self.apply_committed(
+                    (revision, record.commit_id),
+                    operation_id,
+                    key,
+                    digest,
+                    committed_at_ms,
+                    event,
+                )?;
             }
         }
         Ok(())
@@ -476,6 +535,29 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Ok(page)
     }
 
+    /// Pins immutable session ceilings under the existing root owner's authority.
+    pub async fn configure_session(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        limits: crate::scheduler::SessionLimits,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:declare")?;
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SessionConfigured {
+                operation_id,
+                limits,
+            },
+        )
+        .await
+    }
+
     /// Durably requests cancellation with exact retry and optional subtree propagation.
     pub async fn cancel_operation(
         &mut self,
@@ -549,6 +631,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "declarations require owner-scoped admission".into(),
             ));
         }
+        if matches!(&event, SchedulerEvent::SessionConfigured { .. }) {
+            return Err(Error::Unauthorized(
+                "session configuration requires owner authority".into(),
+            ));
+        }
         if matches!(&event, SchedulerEvent::Orchestrated { .. }) {
             return Err(Error::Unauthorized(
                 "orchestration decisions require coordinator-owned materialization".into(),
@@ -600,6 +687,201 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    /// Publishes a root and its immutable shared ceilings in one atomic append.
+    /// No worker can observe the root before its session budget is configured.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "validates and reconciles one atomic two-event publication"
+    )]
+    pub async fn declare_session(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        spec: OperationSpec,
+        limits: crate::scheduler::SessionLimits,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<CoordinatorApply> {
+        verifier.verify_audience(owner)?;
+        verifier.verify(scope)?;
+        if !scope.capabilities().contains("operation:declare") || spec.owner.authority() != owner {
+            return Err(Error::Unauthorized(
+                "session declaration owner is invalid".into(),
+            ));
+        }
+        if spec.parent.is_some() {
+            return Err(Error::Invalid("session declaration must be a root".into()));
+        }
+        limits.validate()?;
+        IdempotencyKey::new(idempotency_key.0.clone())?;
+        let operation_id = spec.operation_id;
+        let keys = [
+            idempotency_key.0.clone(),
+            format!(
+                "session:{}:{}",
+                operation_id,
+                blake3::hash(idempotency_key.as_str().as_bytes()).to_hex()
+            ),
+        ];
+        let events = [
+            SchedulerEvent::Declared {
+                spec: Box::new(spec),
+            },
+            SchedulerEvent::SessionConfigured {
+                operation_id,
+                limits,
+            },
+        ];
+        self.refresh().await?;
+        if self.session_intent(&keys, &events)? {
+            return Ok(CoordinatorApply::Replayed);
+        }
+        let mut projected = self.scheduler.clone();
+        let mut records = Vec::with_capacity(2);
+        let mut revision = self.revision;
+        let mut committed_at_ms = self.next_committed_at_ms()?;
+        for (key, event) in keys.iter().zip(&events) {
+            if let SchedulerEvent::Declared { spec } = event {
+                self.content_verifier.verify(&spec.state).await?;
+            }
+            projected.apply(event.clone())?;
+            revision = revision
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("coordinator revision exhausted".into()))?;
+            let canonical = crate::contract::canonical_json_bytes(event)?;
+            let digest = *blake3::hash(&canonical).as_bytes();
+            records.push(Bytes::from(encode(
+                revision,
+                operation_id,
+                key,
+                digest,
+                canonical,
+                committed_at_ms,
+            )));
+            committed_at_ms = committed_at_ms
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("coordinator commit time exhausted".into()))?;
+        }
+        let stream_key = stream_key(idempotency_key.as_str())?;
+        let outcome = match self
+            .stream
+            .append_batch(records, Some(self.revision), Some(stream_key.clone()))
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(StreamError::Unavailable) => {
+                match self.client.inspect_idempotency(stream_key).await {
+                    Ok(Some(observation)) => match observation.outcome {
+                        IdempotencyOutcome::Append(outcome) => outcome,
+                        _ => {
+                            return Err(Error::Conflict(
+                                "session retry has another operation kind".into(),
+                            ));
+                        }
+                    },
+                    Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
+                }
+            }
+            Err(StreamError::IdempotencyMismatch) => {
+                self.refresh().await?;
+                if self.session_intent(&keys, &events)? {
+                    return Ok(CoordinatorApply::Replayed);
+                }
+                return Err(Error::Conflict("session retry identity reused".into()));
+            }
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        self.finish_session_append(outcome, &keys, &events, revision - 2)
+            .await
+    }
+
+    fn session_intent(&self, keys: &[String; 2], events: &[SchedulerEvent; 2]) -> Result<bool> {
+        let mut retained = 0;
+        let mut previous: Option<(u64, acyclic_stream::CommitId)> = None;
+        for (key, event) in keys.iter().zip(events) {
+            if let Some((digest, existing, revision, commit_id)) = self.intents.get(key) {
+                if existing != event
+                    || digest
+                        != blake3::hash(&crate::contract::canonical_json_bytes(event)?).as_bytes()
+                {
+                    return Err(Error::Conflict("session retry identity reused".into()));
+                }
+                if let Some((prior, envelope)) = previous
+                    && (prior.checked_add(1) != Some(*revision) || envelope != *commit_id)
+                {
+                    return Err(Error::Conflict(
+                        "session declaration is not one atomic envelope".into(),
+                    ));
+                }
+                previous = Some((*revision, *commit_id));
+                retained += 1;
+            }
+        }
+        match retained {
+            0 => Ok(false),
+            2 => Ok(true),
+            _ => Err(Error::Conflict("session declaration is not atomic".into())),
+        }
+    }
+
+    async fn finish_session_append(
+        &mut self,
+        outcome: AppendOutcome,
+        keys: &[String; 2],
+        events: &[SchedulerEvent; 2],
+        expected_start: u64,
+    ) -> Result<CoordinatorApply> {
+        let (result, receipt) = match outcome {
+            AppendOutcome::Committed(receipt) => {
+                if receipt.end.checked_sub(receipt.start) != Some(2) || receipt.tail < receipt.end {
+                    return Err(Error::Storage("invalid session append receipt".into()));
+                }
+                let result = if receipt.start == expected_start {
+                    CoordinatorApply::Applied
+                } else {
+                    CoordinatorApply::Replayed
+                };
+                (result, Some((receipt.commit_id, receipt.start)))
+            }
+            AppendOutcome::TailConflict { .. } => (CoordinatorApply::Replayed, None),
+        };
+        self.refresh().await?;
+        if !self.session_intent(keys, events)? {
+            return Err(Error::Conflict(
+                "session append conflicted without its complete intent".into(),
+            ));
+        }
+        if let Some((envelope, start)) = receipt
+            && keys
+                .first()
+                .and_then(|key| self.intents.get(key))
+                .is_none_or(|(_, _, revision, commit_id)| {
+                    *commit_id != envelope || revision.checked_sub(1) != Some(start)
+                })
+        {
+            return Err(Error::Storage(
+                "session append receipt differs from its committed envelope".into(),
+            ));
+        }
+        Ok(result)
+    }
+
+    fn replay_intent(&self, event: &SchedulerEvent) -> Result<CoordinatorApply> {
+        if let SchedulerEvent::ModelDispatchClaimed {
+            operation_id,
+            fence,
+            ..
+        } = event
+        {
+            let operation = self
+                .scheduler
+                .operation(*operation_id)
+                .ok_or_else(|| Error::NotFound("model task".into()))?;
+            crate::scheduler::require_model_owner(operation, fence)?;
+        }
+        Ok(CoordinatorApply::Replayed)
+    }
+
     async fn apply_internal(
         &mut self,
         operation_id: OperationId,
@@ -616,9 +898,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         let canonical = crate::contract::canonical_json_bytes(&event)?;
         let digest = *blake3::hash(&canonical).as_bytes();
-        if let Some((existing_digest, existing)) = self.intents.get(key) {
+        if let Some((existing_digest, existing, ..)) = self.intents.get(key) {
             return if existing_digest == &digest && existing == &event {
-                Ok(CoordinatorApply::Replayed)
+                // A retained accounting receipt is not an execution permit.
+                // Revalidate the exact owner and cancellation state on retry.
+                self.replay_intent(&event)
             } else {
                 Err(Error::Conflict("coordinator retry identity reused".into()))
             };
@@ -668,6 +952,18 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
+        self.finish_append(outcome, &event, key, &digest, revision)
+            .await
+    }
+
+    async fn finish_append(
+        &mut self,
+        outcome: AppendOutcome,
+        event: &SchedulerEvent,
+        key: &str,
+        digest: &[u8; 32],
+        revision: u64,
+    ) -> Result<CoordinatorApply> {
         match outcome {
             AppendOutcome::Committed(receipt) => {
                 if receipt.end.checked_sub(receipt.start) != Some(1) || receipt.tail < receipt.end {
@@ -675,9 +971,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 }
                 self.refresh().await?;
                 match self.intents.get(key) {
-                    Some((committed_digest, committed))
-                        if committed_digest == &digest && committed == &event =>
+                    Some((committed_digest, committed, ..))
+                        if committed_digest == digest && committed == event =>
                     {
+                        self.replay_intent(event)?;
                         Ok(if receipt.start == revision - 1 {
                             CoordinatorApply::Applied
                         } else {
@@ -692,10 +989,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             AppendOutcome::TailConflict { actual_tail } => {
                 self.refresh().await?;
                 match self.intents.get(key) {
-                    Some((committed_digest, committed))
-                        if committed_digest == &digest && committed == &event =>
+                    Some((committed_digest, committed, ..))
+                        if committed_digest == digest && committed == event =>
                     {
-                        Ok(CoordinatorApply::Replayed)
+                        self.replay_intent(event)
                     }
                     Some(_) => Err(Error::Conflict("coordinator retry identity reused".into())),
                     None => Err(Error::Conflict(format!(
@@ -945,7 +1242,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
     }
 
     fn replay_orchestration(&self, parent: OperationId, key: &str, reduced: bool) -> Result<bool> {
-        let Some((_, event)) = self.intents.get(key) else {
+        let Some((_, event, ..)) = self.intents.get(key) else {
             return Ok(false);
         };
         if let SchedulerEvent::Orchestrated {
@@ -985,13 +1282,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 
     fn apply_committed(
         &mut self,
-        revision: u64,
+        position: (u64, acyclic_stream::CommitId),
         operation_id: OperationId,
         key: String,
         digest: [u8; 32],
         committed_at_ms: u64,
         event: SchedulerEvent,
     ) -> Result<()> {
+        let (revision, commit_id) = position;
         if revision != self.revision + 1 || scheduler_event_operation(&event) != operation_id {
             return Err(Error::Conflict(
                 "invalid committed coordinator event".into(),
@@ -1011,7 +1309,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         self.scheduler.apply(event.clone())?;
         self.revision = revision;
         self.last_committed_at_ms = committed_at_ms;
-        self.intents.insert(key, (digest, event));
+        self.intents
+            .insert(key, (digest, event, revision, commit_id));
         Ok(())
     }
 }
@@ -1019,7 +1318,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
 fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
     match event {
         SchedulerEvent::Declared { spec } => spec.operation_id,
-        SchedulerEvent::WaitingForCapacity { operation_id }
+        SchedulerEvent::SessionConfigured { operation_id, .. }
+        | SchedulerEvent::ModelDispatchClaimed { operation_id, .. }
+        | SchedulerEvent::WaitingForCapacity { operation_id }
         | SchedulerEvent::Admitted { operation_id, .. }
         | SchedulerEvent::PartiallyAdmitted { operation_id, .. }
         | SchedulerEvent::Rejected { operation_id, .. }
@@ -1221,8 +1522,8 @@ mod tests {
         })
     }
 
-    async fn declare(
-        coordinator: &mut DistributedCoordinator<MemoryStream>,
+    async fn declare<P: StreamProvider>(
+        coordinator: &mut DistributedCoordinator<P>,
         spec: OperationSpec,
         key: &str,
     ) -> Result<CoordinatorApply> {
@@ -1798,6 +2099,49 @@ mod tests {
         coordinator
             .apply(
                 first,
+                IdempotencyKey::new("uncertain-capacity-first")?,
+                SchedulerEvent::Completed {
+                    operation_id: first,
+                    outcome: crate::Outcome::Indeterminate {
+                        operation_id: first,
+                    },
+                    fence: Some(LeaseFence::from(&first_lease.reservation)),
+                    execution_duration_ns: None,
+                },
+            )
+            .await?;
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert!(coordinator.pull(&worker).await?.is_none());
+        coordinator
+            .apply(
+                first,
+                IdempotencyKey::new("cancel-uncertain-capacity-first")?,
+                SchedulerEvent::CancellationRequested {
+                    operation_id: first,
+                    recursive: true,
+                },
+            )
+            .await?;
+        assert!(coordinator.pull(&worker).await?.is_none());
+        assert!(
+            coordinator
+                .apply(
+                    first,
+                    IdempotencyKey::new("unfenced-capacity-first")?,
+                    SchedulerEvent::Completed {
+                        operation_id: first,
+                        outcome: crate::Outcome::Cancelled,
+                        fence: None,
+                        execution_duration_ns: None,
+                    },
+                )
+                .await
+                .is_err()
+        );
+        coordinator
+            .apply(
+                first,
                 IdempotencyKey::new("complete-capacity-first")?,
                 SchedulerEvent::Completed {
                     operation_id: first,
@@ -1815,6 +2159,656 @@ mod tests {
             Some(second)
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_session_claims_cannot_overspend_after_reopen() -> Result<()> {
+        session_claim_race(StreamClient::new(Arc::new(MemoryStream::default()))).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn root_declaration_and_shared_limits_are_atomic() -> Result<()> {
+        atomic_session_race(StreamClient::new(Arc::new(MemoryStream::default()))).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_retry_rejects_separately_committed_lookalike_events() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let root = OperationId::from_bytes([86; 16]);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("split-session", [9; 32], owner.clone());
+        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+        let limits = crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 1,
+        };
+        let key = "split-root";
+        coordinator
+            .declare_operation(
+                &owner,
+                &signed,
+                &issuer.verifier(),
+                spec(root, 0)?,
+                IdempotencyKey::new(key)?,
+            )
+            .await?;
+        coordinator
+            .configure_session(
+                &owner,
+                &signed,
+                &issuer.verifier(),
+                root,
+                limits,
+                IdempotencyKey::new(format!(
+                    "session:{root}:{}",
+                    blake3::hash(key.as_bytes()).to_hex()
+                ))?,
+            )
+            .await?;
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert!(
+            reopened
+                .declare_session(
+                    &owner,
+                    &signed,
+                    &issuer.verifier(),
+                    spec(root, 0)?,
+                    limits,
+                    IdempotencyKey::new(key)?
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 2);
+        Ok(())
+    }
+
+    struct LostSessionAck {
+        inner: MemoryStream,
+        lose_ack: std::sync::atomic::AtomicBool,
+        hide_receipt: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl StreamProvider for LostSessionAck {
+        async fn inspect_idempotency(
+            &self,
+            key: acyclic_stream::IdempotencyKey,
+        ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError>
+        {
+            if self
+                .hide_receipt
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            self.inner.inspect_idempotency(key).await
+        }
+        async fn tail(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+        async fn bounds(
+            &self,
+            path: acyclic_stream::StreamPath,
+        ) -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+        async fn append(
+            &self,
+            request: acyclic_stream::AppendRequest,
+        ) -> std::result::Result<AppendOutcome, StreamError> {
+            let outcome = self.inner.append(request).await?;
+            if matches!(outcome, AppendOutcome::Committed(_))
+                && self
+                    .lose_ack
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(outcome)
+        }
+        async fn fork(
+            &self,
+            request: acyclic_stream::ForkRequest,
+        ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+        async fn read(
+            &self,
+            request: acyclic_stream::ReadRequest,
+        ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            self.inner.read(request).await
+        }
+        async fn follow(
+            &self,
+            path: acyclic_stream::StreamPath,
+            from: u64,
+        ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+        async fn children(
+            &self,
+            request: acyclic_stream::ChildrenRequest,
+        ) -> std::result::Result<acyclic_stream::ChildStream, StreamError> {
+            self.inner.children(request).await
+        }
+        async fn commit(
+            &self,
+            request: acyclic_stream::CommitRequest,
+        ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+        async fn read_commit(
+            &self,
+            id: acyclic_stream::CommitId,
+        ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
+            self.inner.read_commit(id).await
+        }
+    }
+
+    #[tokio::test]
+    async fn root_limits_reconcile_a_lost_atomic_append_acknowledgement() -> Result<()> {
+        for hide_receipt in [false, true] {
+            let client = StreamClient::new(Arc::new(LostSessionAck {
+                inner: MemoryStream::default(),
+                lose_ack: std::sync::atomic::AtomicBool::new(true),
+                hide_receipt: std::sync::atomic::AtomicBool::new(hide_receipt),
+            }));
+            let mut coordinator =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let root = OperationId::from_bytes([87; 16]);
+            let owner = Authority {
+                kind: AggregateKind::Task,
+                id: "owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("lost-session-ack", [9; 32], owner.clone());
+            let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+            let limits = crate::scheduler::SessionLimits {
+                active_tasks: 1,
+                total_tasks: 1,
+                depth: 0,
+                model_steps: 1,
+            };
+            let result = coordinator
+                .declare_session(
+                    &owner,
+                    &signed,
+                    &issuer.verifier(),
+                    spec(root, 0)?,
+                    limits,
+                    IdempotencyKey::new("lost-root")?,
+                )
+                .await;
+            if hide_receipt {
+                assert!(matches!(result, Err(Error::Indeterminate(id)) if id == root));
+            } else {
+                assert!(result.is_ok());
+            }
+            drop(coordinator);
+            let mut recovered =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+            assert_eq!(
+                recovered
+                    .declare_session(
+                        &owner,
+                        &signed,
+                        &issuer.verifier(),
+                        spec(root, 0)?,
+                        limits,
+                        IdempotencyKey::new("lost-root")?
+                    )
+                    .await?,
+                CoordinatorApply::Replayed
+            );
+            assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 2);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn atomic_root_limits_survive_local_stream_reopen() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let client = StreamClient::new(Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let (root, limits) = atomic_session_race(client).await?;
+        let client = StreamClient::new(Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(coordinator.scheduler().session_limits(root)?, limits);
+        assert_eq!(
+            coordinator
+                .scheduler()
+                .operation(root)
+                .map(|state| state.phase),
+            Some(crate::scheduler::OperationPhase::Admitted)
+        );
+        Ok(())
+    }
+
+    async fn atomic_session_race<P: StreamProvider>(
+        client: StreamClient<P>,
+    ) -> Result<(OperationId, crate::scheduler::SessionLimits)> {
+        let mut left = DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let mut right =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let root = OperationId::from_bytes([89; 16]);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("atomic-budget", [9; 32], owner.clone());
+        let signed = issuer.root("owner", Capabilities::new(["operation:declare"]));
+        let verifier = issuer.verifier();
+        let one = crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 2,
+            depth: 1,
+            model_steps: 1,
+        };
+        let two = crate::scheduler::SessionLimits {
+            model_steps: 2,
+            ..one
+        };
+        let unsigned = issuer.root("reader", Capabilities::default());
+        assert!(
+            left.declare_session(
+                &owner,
+                &unsigned,
+                &verifier,
+                spec(root, 0)?,
+                one,
+                IdempotencyKey::new("unauthorized-root")?
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            read_coordinator_event_page(&client, 0, 64)
+                .await?
+                .is_empty()
+        );
+        let (first, second) = tokio::join!(
+            left.declare_session(
+                &owner,
+                &signed,
+                &verifier,
+                spec(root, 0)?,
+                one,
+                IdempotencyKey::new("atomic-one")?
+            ),
+            right.declare_session(
+                &owner,
+                &signed,
+                &verifier,
+                spec(root, 0)?,
+                two,
+                IdempotencyKey::new("atomic-two")?
+            ),
+        );
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        let (limits, key) = if first.is_ok() {
+            (one, "atomic-one")
+        } else {
+            (two, "atomic-two")
+        };
+        let events = read_coordinator_event_page(&client, 0, 64).await?;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.first().map(|record| &record.event),
+            Some(SchedulerEvent::Declared { .. })
+        ));
+        assert!(
+            matches!(events.last().map(|record| &record.event), Some(SchedulerEvent::SessionConfigured { limits: retained, .. }) if *retained == limits)
+        );
+        let mut recovered =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(recovered.scheduler().session_limits(root)?, limits);
+        let lease = recovered
+            .pull(&Worker {
+                id: "atomic-worker".into(),
+                available: ResourceSnapshot::default(),
+                labels: BTreeMap::new(),
+            })
+            .await?
+            .ok_or_else(|| Error::NotFound("atomic root lease".into()))?;
+        assert_eq!(lease.operation.operation_id, root);
+        assert_eq!(
+            recovered
+                .declare_session(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    spec(root, 0)?,
+                    limits,
+                    IdempotencyKey::new(key)?
+                )
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        assert!(
+            recovered
+                .declare_session(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    spec(root, 0)?,
+                    crate::scheduler::SessionLimits {
+                        model_steps: limits.model_steps + 1,
+                        ..limits
+                    },
+                    IdempotencyKey::new(key)?
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 3);
+        // Identical logical requests may encode different commit timestamps.
+        let identical_root = OperationId::from_bytes([88; 16]);
+        let mut duplicate =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let (first, second) = tokio::join!(
+            recovered.declare_session(
+                &owner,
+                &signed,
+                &verifier,
+                spec(identical_root, 0)?,
+                limits,
+                IdempotencyKey::new("identical-root")?
+            ),
+            duplicate.declare_session(
+                &owner,
+                &signed,
+                &verifier,
+                spec(identical_root, 0)?,
+                limits,
+                IdempotencyKey::new("identical-root")?
+            ),
+        );
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        assert_eq!(read_coordinator_event_page(&client, 0, 64).await?.len(), 5);
+        Ok((root, limits))
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn local_session_budget_survives_provider_reopen() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            acyclic_stream::LocalStream::open(directory.path(), Default::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let loser = session_claim_race(StreamClient::new(provider.clone())).await?;
+        drop(provider);
+        let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let client = StreamClient::new(Arc::new(provider));
+        let mut coordinator =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert!(
+            coordinator
+                .apply(
+                    scheduler_event_operation(&loser),
+                    IdempotencyKey::new("local-budget-loser")?,
+                    loser
+                )
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+
+    async fn session_claim_race<P: StreamProvider>(
+        client: StreamClient<P>,
+    ) -> Result<SchedulerEvent> {
+        let mut first =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let root = OperationId::from_bytes([90; 16]);
+        declare(&mut first, spec(root, 0)?, "budget-root").await?;
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("budget-test", [9; 32], owner.clone());
+        let scope = issuer.root("budget", Capabilities::new(["operation:declare"]));
+        let limits = crate::scheduler::SessionLimits {
+            active_tasks: 2,
+            total_tasks: 3,
+            depth: 1,
+            model_steps: 1,
+        };
+        assert!(
+            first
+                .apply(
+                    root,
+                    IdempotencyKey::new("unscoped-budget")?,
+                    SchedulerEvent::SessionConfigured {
+                        operation_id: root,
+                        limits
+                    }
+                )
+                .await
+                .is_err()
+        );
+        first
+            .configure_session(
+                &owner,
+                &scope,
+                &issuer.verifier(),
+                root,
+                limits,
+                IdempotencyKey::new("configure-budget")?,
+            )
+            .await?;
+        let mut claims = Vec::new();
+        for index in [91, 92] {
+            let id = OperationId::from_bytes([index; 16]);
+            let mut child = spec(id, 0)?;
+            child.parent = Some(ParentLink {
+                operation_id: root,
+                slot: index.to_string(),
+            });
+            declare(&mut first, child, &format!("budget-child-{index}")).await?;
+            let lease = first
+                .pull(&Worker {
+                    id: format!("worker-{index}"),
+                    available: ResourceSnapshot::default(),
+                    labels: BTreeMap::new(),
+                })
+                .await?
+                .ok_or_else(|| Error::NotFound("budget lease".into()))?;
+            // Root may be pulled first; both independently placed tasks belong to this session.
+            let id = lease.operation.operation_id;
+            let fence = LeaseFence::from(&lease.reservation);
+            first
+                .apply(
+                    id,
+                    IdempotencyKey::new(format!("budget-start-{index}"))?,
+                    SchedulerEvent::Started {
+                        operation_id: id,
+                        fence: fence.clone(),
+                    },
+                )
+                .await?;
+            claims.push(SchedulerEvent::ModelDispatchClaimed {
+                operation_id: id,
+                attempt_id: id,
+                step: 0,
+                request_digest: [index; 32],
+                fence,
+                ceiling: 1,
+            });
+        }
+        let mut second =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        let [one, two] = claims.as_slice() else {
+            return Err(Error::Invalid("two budget claims required".into()));
+        };
+        let (left, right) = tokio::join!(
+            first.apply(
+                scheduler_event_operation(one),
+                IdempotencyKey::new("budget-one")?,
+                one.clone()
+            ),
+            second.apply(
+                scheduler_event_operation(two),
+                IdempotencyKey::new("budget-two")?,
+                two.clone()
+            )
+        );
+        assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
+        let (winner, key, loser) = if left.is_ok() {
+            (one, "budget-one", two)
+        } else {
+            (two, "budget-two", one)
+        };
+        let mut reopened =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(
+            reopened
+                .apply(
+                    scheduler_event_operation(winner),
+                    IdempotencyKey::new(key)?,
+                    winner.clone()
+                )
+                .await?,
+            CoordinatorApply::Replayed
+        );
+        assert!(
+            reopened
+                .apply(
+                    scheduler_event_operation(loser),
+                    IdempotencyKey::new("budget-loser-retry")?,
+                    loser.clone()
+                )
+                .await
+                .is_err()
+        );
+        let mut changed = winner.clone();
+        if let SchedulerEvent::ModelDispatchClaimed { request_digest, .. } = &mut changed {
+            *request_digest = [99; 32];
+        }
+        assert!(
+            reopened
+                .apply(
+                    scheduler_event_operation(&changed),
+                    IdempotencyKey::new("budget-changed")?,
+                    changed
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            reopened
+                .configure_session(
+                    &owner,
+                    &scope,
+                    &issuer.verifier(),
+                    root,
+                    crate::scheduler::SessionLimits {
+                        model_steps: 2,
+                        ..limits
+                    },
+                    IdempotencyKey::new("budget-reset")?
+                )
+                .await
+                .is_err()
+        );
+        let winner_id = scheduler_event_operation(winner);
+        let digest = *blake3::hash(&crate::contract::canonical_json_bytes(winner)?).as_bytes();
+        let receipt = client
+            .inspect_idempotency(stream_key(key)?)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .ok_or_else(|| Error::NotFound("winning budget receipt".into()))?;
+        let IdempotencyOutcome::Append(AppendOutcome::Committed(receipt)) = receipt.outcome else {
+            return Err(Error::Invalid("winning budget append required".into()));
+        };
+        let revision = receipt.end;
+        // Exercise the completion boundary with actual provider outcomes. A response
+        // may be delayed while another coordinator commits cancellation.
+        let mut delayed =
+            DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+        assert_eq!(
+            delayed
+                .finish_append(
+                    AppendOutcome::Committed(receipt.clone()),
+                    winner,
+                    key,
+                    &digest,
+                    revision,
+                )
+                .await?,
+            CoordinatorApply::Applied
+        );
+        reopened
+            .apply(
+                winner_id,
+                IdempotencyKey::new("cancel-budget-winner")?,
+                SchedulerEvent::CancellationRequested {
+                    operation_id: winner_id,
+                    recursive: false,
+                },
+            )
+            .await?;
+        assert!(
+            reopened
+                .apply(winner_id, IdempotencyKey::new(key)?, winner.clone(),)
+                .await
+                .is_err(),
+            "an exact accounting retry cannot bypass cancellation"
+        );
+        assert!(
+            delayed
+                .finish_append(
+                    AppendOutcome::Committed(receipt),
+                    winner,
+                    key,
+                    &digest,
+                    revision,
+                )
+                .await
+                .is_err(),
+            "a delayed committed response cannot bypass cancellation"
+        );
+        let conflict = delayed
+            .stream
+            .append_batch(vec![Bytes::from_static(b"not committed")], Some(0), None)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(conflict, AppendOutcome::TailConflict { .. }));
+        assert!(
+            delayed
+                .finish_append(conflict, winner, key, &digest, revision)
+                .await
+                .is_err(),
+            "an intent discovered after a tail conflict cannot bypass cancellation"
+        );
+        Ok(loser.clone())
     }
 
     #[tokio::test]

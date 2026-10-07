@@ -1063,93 +1063,100 @@ impl MemoryHarnessStorage {
         user_id: Uuid,
     ) -> Result<()> {
         let mut calls = BTreeMap::new();
-        for record in self.journal.replay(operation_id).await? {
-            let (kind, content, attachments, reply_to, call_id, step) = match record.event {
-                ExecutionEvent::ToolStarted {
-                    step,
-                    call_id,
-                    invocation,
-                } => (
-                    MessageKind::ToolCall,
-                    invocation,
-                    ReferencedAttachments::Inline { items: Vec::new() },
-                    Some(user_id),
-                    call_id,
-                    step,
-                ),
-                ExecutionEvent::ToolCompleted {
-                    step,
-                    call_id,
-                    result,
-                    projection,
-                } => {
-                    let call = calls
-                        .get(&(step, call_id.clone()))
-                        .copied()
-                        .ok_or_else(|| Error::Storage("tool result has no durable start".into()))?;
-                    (
-                        MessageKind::ToolResult,
-                        result,
-                        ReferencedAttachments::Inline {
-                            items: vec![Attachment {
-                                file: projection,
-                                label: Some("model_projection".into()),
-                            }],
-                        },
-                        Some(call),
+        let mut replay = crate::executor::ExecutionReplay::new(operation_id);
+        while let Some(page) = replay.next_page(self.journal.as_ref()).await? {
+            for record in page {
+                let (kind, content, attachments, reply_to, call_id, step) = match record.event {
+                    ExecutionEvent::ToolStarted {
+                        step,
+                        call_id,
+                        invocation,
+                    } => (
+                        MessageKind::ToolCall,
+                        invocation,
+                        ReferencedAttachments::Inline { items: Vec::new() },
+                        Some(user_id),
                         call_id,
                         step,
-                    )
-                }
-                _ => continue,
-            };
-            let publication = derived_operation_id(
-                operation_id,
-                format!("conversation-tool:{}", record.sequence).as_bytes(),
-            );
-            let id = Uuid::from_bytes(publication.into_bytes());
-            if kind == MessageKind::ToolCall && calls.insert((step, call_id.clone()), id).is_some()
-            {
-                return Err(Error::Storage(
-                    "duplicate durable tool call identity".into(),
-                ));
-            }
-            let state = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-            if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
-                if existing.kind != kind
-                    || existing.content != content
-                    || existing.attachments != attachments
-                    || existing.reply_to != reply_to
-                    || existing.tool_call_id.as_deref() != Some(call_id.as_str())
+                    ),
+                    ExecutionEvent::ToolCompleted {
+                        step,
+                        call_id,
+                        result,
+                        projection,
+                    } => {
+                        let call =
+                            calls
+                                .get(&(step, call_id.clone()))
+                                .copied()
+                                .ok_or_else(|| {
+                                    Error::Storage("tool result has no durable start".into())
+                                })?;
+                        (
+                            MessageKind::ToolResult,
+                            result,
+                            ReferencedAttachments::Inline {
+                                items: vec![Attachment {
+                                    file: projection,
+                                    label: Some("model_projection".into()),
+                                }],
+                            },
+                            Some(call),
+                            call_id,
+                            step,
+                        )
+                    }
+                    _ => continue,
+                };
+                let publication = derived_operation_id(
+                    operation_id,
+                    format!("conversation-tool:{}", record.sequence).as_bytes(),
+                );
+                let id = Uuid::from_bytes(publication.into_bytes());
+                if kind == MessageKind::ToolCall
+                    && calls.insert((step, call_id.clone()), id).is_some()
                 {
-                    return Err(Error::Conflict(
-                        "tool publication identity belongs to another message".into(),
+                    return Err(Error::Storage(
+                        "duplicate durable tool call identity".into(),
                     ));
                 }
-                continue;
+                let state = aggregate
+                    .reducer()
+                    .conversation()
+                    .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
+                if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
+                    if existing.kind != kind
+                        || existing.content != content
+                        || existing.attachments != attachments
+                        || existing.reply_to != reply_to
+                        || existing.tool_call_id.as_deref() != Some(call_id.as_str())
+                    {
+                        return Err(Error::Conflict(
+                            "tool publication identity belongs to another message".into(),
+                        ));
+                    }
+                    continue;
+                }
+                let message = ConversationMessage {
+                    id,
+                    sequence: state.messages.len() as u64 + 1,
+                    kind,
+                    content,
+                    attachments,
+                    reply_to,
+                    tool_call_id: Some(call_id),
+                    extensions: BTreeMap::new(),
+                };
+                self.append_conversation(
+                    aggregate,
+                    publication,
+                    "tool",
+                    Action::AppendConversationMessage {
+                        message: Box::new(message),
+                    },
+                )
+                .await?;
             }
-            let message = ConversationMessage {
-                id,
-                sequence: state.messages.len() as u64 + 1,
-                kind,
-                content,
-                attachments,
-                reply_to,
-                tool_call_id: Some(call_id),
-                extensions: BTreeMap::new(),
-            };
-            self.append_conversation(
-                aggregate,
-                publication,
-                "tool",
-                Action::AppendConversationMessage {
-                    message: Box::new(message),
-                },
-            )
-            .await?;
         }
         Ok(())
     }

@@ -3,7 +3,9 @@
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     conversation::Limits,
-    executor::{ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, stage_json},
+    executor::{
+        ExecutionEvent, ExecutionJournal, ToolFailureKind, load_json, replay_execution, stage_json,
+    },
     runtime::ToolContext,
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, ToolResult, validate_value},
     workflow::{
@@ -280,21 +282,13 @@ impl DurableToolRunner {
             projection_limit,
         ))?)
         .as_bytes();
-        let records = self.journal.replay(operation_id).await?;
-        let mut keys = std::collections::HashSet::new();
+        let (_, records) =
+            replay_execution(self.journal.as_ref(), operation_id, 4, |_| true).await?;
         let mut started = false;
         let mut dispatched = false;
         let mut completed = None;
         let mut failed = None;
-        for (index, record) in records.iter().enumerate() {
-            if record.operation_id != operation_id
-                || record.sequence != index as u64 + 1
-                || !keys.insert(&record.idempotency_key)
-            {
-                return Err(Error::Conflict(
-                    "durable tool journal identity or sequence is invalid".into(),
-                ));
-            }
+        for record in &records {
             match &record.event {
                 ExecutionEvent::Started { request_digest }
                     if !started
@@ -392,7 +386,8 @@ impl DurableToolRunner {
             .await?;
             // Re-read the tail after the Started append. Only a linearizable
             // provider may award execution to this process.
-            let current = self.journal.replay(operation_id).await?;
+            let (_, current) =
+                replay_execution(self.journal.as_ref(), operation_id, 4, |_| true).await?;
             if matches!(current.as_slice(), [record]
                 if matches!(&record.event,
                     ExecutionEvent::Started { request_digest } if *request_digest == digest))

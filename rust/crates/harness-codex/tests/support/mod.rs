@@ -478,14 +478,25 @@ impl ExecutionJournal for Journal {
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
+        after: u64,
+        maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
         async move {
+            if maximum == 0
+                || maximum > acyclic_harness::executor::MAX_EXECUTION_PAGE_RECORDS
+                || after > acyclic_harness::executor::MAX_EXECUTION_RECORDS
+            {
+                return Err(Error::Invalid(
+                    "execution replay page bound is invalid".into(),
+                ));
+            }
             Ok(self
                 .records
                 .lock()
                 .map_err(poisoned)?
                 .iter()
-                .filter(|record| record.operation_id == operation_id)
+                .filter(|record| record.operation_id == operation_id && record.sequence > after)
+                .take(maximum as usize)
                 .cloned()
                 .collect())
         }

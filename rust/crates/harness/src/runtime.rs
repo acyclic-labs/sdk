@@ -25,7 +25,10 @@ use crate::{
     resources::{ArtifactRef, GenerationRef, SandboxRef},
     scheduler::InboxItem,
     tool::{ToolDefinition, ToolInvocation, ToolRegistry, validate_value},
-    workflow::{MachineIdentity, ResumableMachine, WorkflowJournal},
+    workflow::{
+        DurableWorkflowHost, MachineCheckpoint, MachineIdentity, MachineRegistry, MachineStatus,
+        MachineTransition, ResumableMachine, WorkflowAdmission, WorkflowJournal,
+    },
 };
 use futures::future::BoxFuture;
 use futures::{StreamExt as _, stream, stream::BoxStream};
@@ -175,6 +178,98 @@ impl<I, O> TaskDefinition<I, O> {
         Ok(())
     }
 
+    /// Opens the registered task's retained workflow under its exact lease.
+    /// Recovery reads the committed checkpoint/outbox; advancing still requires
+    /// uncancelled ownership and an atomically task-fenced journal provider.
+    pub async fn open(
+        self: &Arc<Self>,
+        context: &TaskContext,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession>
+    where
+        I: 'static,
+        O: 'static,
+    {
+        let registered = context
+            .harness
+            .tasks
+            .get_version::<I, O>(&self.identity.name, &self.identity.version)?;
+        if !Arc::ptr_eq(&registered, self) {
+            return Err(Error::Conflict(
+                "task definition is not the registered version".into(),
+            ));
+        }
+        let TaskImplementation::Resumable(machine) = &self.implementation else {
+            return Err(Error::Unsupported(
+                "live tasks have no resumable workflow".into(),
+            ));
+        };
+        let task_id = context.durable_task.ok_or_else(|| {
+            Error::Unauthorized("task workflow requires a durable task context".into())
+        })?;
+        let host = context
+            .harness
+            .host
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("task workflow ownership is not bound".into()))?;
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        if journal.task_binding() != Some((task_id, fence.clone())) {
+            return Err(Error::Unauthorized(
+                "workflow journal is not bound to this task lease".into(),
+            ));
+        }
+        let retained = host.observe_admission(task_id).await?;
+        context.harness.validate_observed_admission(&retained)?;
+        if retained.task != self.identity
+            || retained.machine != *machine.identity()
+            || retained.input_schema != self.input_schema
+            || retained.output_schema != self.output_schema
+            || context.task_id != retained.operation_id
+            || context.scope.grants() != &retained.grants
+            || context.scope.limits() != retained.limits
+            || context.scope.run_limits() != retained.run_limits
+            || context.scope.extensions() != retained.extensions.as_ref()
+        {
+            return Err(Error::Conflict(
+                "task workflow differs from its admitted definition or scope".into(),
+            ));
+        }
+        let admission = WorkflowAdmission {
+            operation_id: retained.operation_id,
+            request_digest: crate::contract::canonical_json_digest(&retained)?,
+            initial: MachineCheckpoint {
+                machine: retained.machine,
+                revision: 0,
+                state: machine.initialize(&retained.input)?,
+            },
+        };
+        let mut registry = MachineRegistry::default();
+        registry.register(machine.clone())?;
+        registry.validate_checkpoint(&admission.initial)?;
+        match journal.admission().await? {
+            Some(existing) if existing == admission => {}
+            Some(_) => return Err(Error::Conflict("task workflow admission changed".into())),
+            None => {
+                if journal.admit(admission.clone()).await? != admission {
+                    return Err(Error::Conflict("task workflow admission changed".into()));
+                }
+            }
+        }
+        let workflow = DurableWorkflowHost::open(registry, admission.initial, journal).await?;
+        if let Some(transition) = workflow.latest_transition().await? {
+            validate_task_transition(&self.output_schema, &transition)?;
+        }
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        Ok(ResumableTaskSession {
+            task_id,
+            fence,
+            host: host.clone(),
+            workflow,
+            output_schema: self.output_schema.clone(),
+        })
+    }
+
     /// Returns the version and implementation identity pinned at admission.
     #[must_use]
     pub const fn identity(&self) -> &ComponentIdentity {
@@ -185,6 +280,67 @@ impl<I, O> TaskDefinition<I, O> {
     #[must_use]
     pub(crate) fn requirements(&self) -> &BTreeSet<String> {
         &self.requirements
+    }
+}
+
+fn validate_task_transition(output_schema: &Value, transition: &MachineTransition) -> Result<()> {
+    if let MachineStatus::Completed { value } = &transition.status {
+        validate_value(output_schema, value, "task output")?;
+    }
+    Ok(())
+}
+
+/// A registered task's current checkpoint and bounded workflow replay index.
+/// The existing workflow journal remains authoritative; dropping this handle
+/// discards its projection and retains no waiting worker future.
+pub struct ResumableTaskSession {
+    task_id: TaskId,
+    fence: crate::scheduler::LeaseFence,
+    host: Arc<dyn DurableTaskHost>,
+    workflow: DurableWorkflowHost,
+    output_schema: Value,
+}
+
+impl ResumableTaskSession {
+    /// Returns the owner-retained task identity.
+    #[must_use]
+    pub const fn task_id(&self) -> TaskId {
+        self.task_id
+    }
+
+    /// Returns the latest committed task checkpoint.
+    #[must_use]
+    pub const fn checkpoint(&self) -> &MachineCheckpoint {
+        self.workflow.checkpoint()
+    }
+
+    /// Reads the latest committed outbox/status for recovery without advancing.
+    pub async fn latest_transition(&self) -> Result<Option<MachineTransition>> {
+        self.workflow.latest_transition().await
+    }
+
+    /// Commits one deterministic task transition and its outbox. Both fresh
+    /// steps and exact retries require the current uncancelled lease.
+    pub async fn step(
+        &mut self,
+        operation_id: OperationId,
+        idempotency_key: crate::IdempotencyKey,
+        input: Value,
+    ) -> Result<MachineTransition> {
+        self.host
+            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .await?;
+        let output_schema = &self.output_schema;
+        let transition = self
+            .workflow
+            .step_checked(operation_id, idempotency_key, input, |transition| {
+                validate_task_transition(output_schema, transition)
+            })
+            .await?;
+        self.host
+            .verify_dispatch_owner(self.task_id, self.fence.clone())
+            .await?;
+        Ok(transition)
     }
 }
 
@@ -619,6 +775,52 @@ impl TaskAdmissionRecord {
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: Send + Sync {
+    /// Requires the current uncancelled running lease before a fresh task step
+    /// or dispatch. Settlement ownership alone does not authorize new work.
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable dispatch ownership is not bound".into(),
+            ))
+        })
+    }
+
+    /// Checks that this lease still owns execution or reconciliation. A retained
+    /// cancelled lease may reconcile an existing attempt, but cannot dispatch.
+    fn verify_execution_owner<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable execution ownership is not bound".into(),
+            ))
+        })
+    }
+
+    /// Charges one exact durable model attempt under the current task owner.
+    /// The host derives ceilings from its retained admission; callers cannot
+    /// choose or reset usage. Uncertain claims remain charged.
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _attempt_id: OperationId,
+        _step: u32,
+        _request_digest: [u8; 32],
+        _fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable model accounting is not bound".into(),
+            ))
+        })
+    }
+
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -3113,6 +3315,27 @@ impl AgentHarness {
         })
     }
 
+    /// Opens an admitted registered task from its retained input and workflow.
+    /// The supplied journal must attest the exact task lease and atomically
+    /// fence its publications through that owner.
+    pub async fn open_task<I: 'static, O: 'static>(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
+        let retained = state.observe_admission(task_id).await?;
+        let context = self.durable_context(task_id, retained.operation_id).await?;
+        context
+            .open_resumable_task(definition, fence, journal)
+            .await
+    }
+
     /// Discovers direct durable children from their owner, not from fork or
     /// conversation history. Continuation must carry the observed revision.
     pub async fn children(
@@ -3993,6 +4216,16 @@ impl TaskContext {
                 Outcome::Indeterminate { operation_id } => Outcome::Indeterminate { operation_id },
             },
         )
+    }
+
+    /// Opens this context's registered task from its retained admission.
+    pub async fn open_resumable_task<I: 'static, O: 'static>(
+        &self,
+        definition: &Arc<TaskDefinition<I, O>>,
+        fence: crate::scheduler::LeaseFence,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<ResumableTaskSession> {
+        definition.open(self, fence, journal).await
     }
 
     /// Opens one registered, version-pinned resumable tool under this task's

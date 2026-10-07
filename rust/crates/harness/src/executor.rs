@@ -1,7 +1,7 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
 use crate::{
-    Error, InteractionId, OperationId, Result,
+    Error, InteractionId, OperationId, Result, TaskId,
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
     interaction::{Interaction, InteractionOutcome},
@@ -12,7 +12,8 @@ use crate::{
     projection::SelectedModelContext,
     registry::ComponentIdentity,
     runtime::{
-        RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
+        DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
+        validate_policy_identity,
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
@@ -20,6 +21,20 @@ use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, sync::Arc};
+
+/// Maximum execution observations returned by one replay page.
+pub const MAX_EXECUTION_PAGE_RECORDS: u32 = 64;
+/// Maximum retained observations in one execution journal.
+pub const MAX_EXECUTION_RECORDS: u64 = 1_000_000;
+
+pub(crate) fn validate_execution_page(after: u64, maximum: u32) -> Result<()> {
+    if maximum == 0 || maximum > MAX_EXECUTION_PAGE_RECORDS || after > MAX_EXECUTION_RECORDS {
+        return Err(Error::Invalid(
+            "execution replay page bound is invalid".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// Durable input to any custom executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -166,10 +181,14 @@ impl ToolFailureKind {
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: Send + Sync {
     /// Implementations must scope sequences and retry keys by `operation_id`.
-    /// Replays the complete retained journal before execution resumes.
+    /// Reads at most `maximum` records after the exclusive one-based sequence
+    /// `after`. Zero starts at the first record. Pages are bounded by
+    /// `MAX_EXECUTION_PAGE_RECORDS`; no complete-history fallback is provided.
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
+        after: u64,
+        maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>>;
 
     /// Appends one reconstructable executor observation.
@@ -248,6 +267,92 @@ pub trait ExecutionJournal: Send + Sync {
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>>;
 }
 
+/// Incremental replay validation retaining only a cursor and retry digests.
+/// Pages are returned to the caller and are never retained by this cursor.
+pub struct ExecutionReplay {
+    operation_id: OperationId,
+    after: u64,
+    keys: BTreeSet<[u8; 32]>,
+}
+
+impl ExecutionReplay {
+    /// Starts validation at the first observation of one exact execution.
+    #[must_use]
+    pub fn new(operation_id: OperationId) -> Self {
+        Self {
+            operation_id,
+            after: 0,
+            keys: BTreeSet::new(),
+        }
+    }
+
+    /// Last successfully validated one-based sequence, zero for an empty journal.
+    #[must_use]
+    pub const fn tail(&self) -> u64 {
+        self.after
+    }
+
+    /// Reads one bounded page, or `None` at the current tail. Invalid pages do
+    /// not advance the cursor.
+    pub async fn next_page(
+        &mut self,
+        journal: &dyn ExecutionJournal,
+    ) -> Result<Option<Vec<ExecutionRecord>>> {
+        validate_execution_page(self.after, MAX_EXECUTION_PAGE_RECORDS)?;
+        let page = journal
+            .replay(self.operation_id, self.after, MAX_EXECUTION_PAGE_RECORDS)
+            .await?;
+        if page.len() > MAX_EXECUTION_PAGE_RECORDS as usize {
+            return Err(Error::Storage("execution replay page exceeds bound".into()));
+        }
+        if page.is_empty() {
+            return Ok(None);
+        }
+        let mut keys = BTreeSet::new();
+        for (index, record) in page.iter().enumerate() {
+            let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
+            if record.operation_id != self.operation_id
+                || record.sequence != self.after + index as u64 + 1
+                || record.sequence > MAX_EXECUTION_RECORDS
+                || record.idempotency_key.is_empty()
+                || record.idempotency_key.len() > 256
+                || self.keys.contains(&key)
+                || !keys.insert(key)
+            {
+                return Err(Error::Conflict(
+                    "execution journal identity or sequence is invalid".into(),
+                ));
+            }
+        }
+        self.after += page.len() as u64;
+        self.keys.extend(keys);
+        Ok(Some(page))
+    }
+}
+
+pub(crate) async fn replay_execution(
+    journal: &dyn ExecutionJournal,
+    operation_id: OperationId,
+    maximum_selected: usize,
+    select: impl Fn(&ExecutionEvent) -> bool,
+) -> Result<(u64, Vec<ExecutionRecord>)> {
+    let mut replay = ExecutionReplay::new(operation_id);
+    let mut selected = Vec::new();
+    while let Some(page) = replay.next_page(journal).await? {
+        for record in page {
+            if select(&record.event) {
+                if selected.len() >= maximum_selected {
+                    return Err(Error::Invalid(
+                        "selected execution records exceed bound".into(),
+                    ));
+                }
+                selected.push(record);
+            }
+        }
+    }
+    Ok((replay.tail(), selected))
+}
+
 /// Terminal result produced by an executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TurnOutput {
@@ -283,6 +388,11 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
+    task: Option<(
+        Arc<dyn DurableTaskHost>,
+        TaskId,
+        crate::scheduler::LeaseFence,
+    )>,
 }
 
 impl StockExecutor {
@@ -303,7 +413,22 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
+            task: None,
         }
+    }
+
+    /// Binds this worker's exact admitted task and execution fence. Fresh model
+    /// attempts consume the existing owner journal before dispatch; replay and
+    /// reconciliation do not consume another unit.
+    #[must_use]
+    pub fn with_durable_task(
+        mut self,
+        host: Arc<dyn DurableTaskHost>,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Self {
+        self.task = Some((host, task_id, fence));
+        self
     }
 
     /// Applies the composition's checked bounds to the stock loop.
@@ -329,7 +454,7 @@ impl StockExecutor {
     }
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest(&json!({
+        let mut request = json!({
             "executor": "acyclic.stock.v2",
             "input": input,
             "model": self.model,
@@ -338,7 +463,14 @@ impl StockExecutor {
             "limits": self.limits,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
-        }))
+        });
+        if let Some((_, task_id, _)) = &self.task {
+            request
+                .as_object_mut()
+                .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
+                .insert("task_id".into(), json!(task_id));
+        }
+        crate::contract::canonical_json_digest(&request)
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -348,13 +480,14 @@ impl StockExecutor {
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
     ) -> Result<()> {
-        let records = journal.replay(input.operation_id).await?;
-        for (index, record) in records.iter().enumerate() {
-            if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
-                return Err(Error::Conflict(
-                    "execution journal is not gapless or belongs to another turn".into(),
-                ));
-            }
+        let (tail, records) = replay_execution(journal, input.operation_id, 1, |event| {
+            matches!(event, ExecutionEvent::Started { .. })
+        })
+        .await?;
+        if tail != 0 && records.first().is_none_or(|record| record.sequence != 1) {
+            return Err(Error::Conflict(
+                "execution journal has no initial request binding".into(),
+            ));
         }
         let request_digest = self.request_digest(input)?;
         match records.first().map(|record| &record.event) {
@@ -395,7 +528,12 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
-        let records = journal.replay(input.operation_id).await?;
+        if let Some((host, task_id, fence)) = &self.task {
+            host.verify_execution_owner(*task_id, fence.clone()).await?;
+        }
+        let (_, records) = self
+            .model_records(journal, input.operation_id, step)
+            .await?;
         let context = self
             .context
             .run(&ContextInput {
@@ -493,7 +631,9 @@ impl StockExecutor {
             }
             observed
         } else {
-            let current = journal.replay(input.operation_id).await?;
+            let (tail, current) = self
+                .model_records(journal, input.operation_id, step)
+                .await?;
             if let Some(existing) = current.iter().find_map(|record| match &record.event {
                 ExecutionEvent::ModelStarted {
                     step: event_step,
@@ -508,10 +648,20 @@ impl StockExecutor {
                 }
                 return Err(Error::Indeterminate(input.operation_id));
             }
+            if let Some((host, task_id, fence)) = &self.task {
+                host.claim_model_dispatch(
+                    *task_id,
+                    input.operation_id,
+                    step,
+                    request_digest,
+                    fence.clone(),
+                )
+                .await?;
+            }
             let claimed = journal
                 .append_if_tail(
                     input.operation_id,
-                    current.len() as u64,
+                    tail,
                     format!("model:{step}:claim:{}", OperationId::new()),
                     ExecutionEvent::ModelStarted {
                         step,
@@ -550,6 +700,41 @@ impl StockExecutor {
         Ok(model_events)
     }
 
+    async fn model_records(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        replay_execution(
+            journal,
+            operation_id,
+            self.limits.model_events_per_step.saturating_add(1),
+            |event| {
+                matches!(event,
+                ExecutionEvent::ModelStarted { step: event_step, .. }
+                | ExecutionEvent::Model { step: event_step, .. } if *event_step == step)
+            },
+        )
+        .await
+    }
+
+    async fn tool_records(
+        journal: &dyn ExecutionJournal,
+        operation_id: OperationId,
+        step: u32,
+        call_id: &str,
+    ) -> Result<(u64, Vec<ExecutionRecord>)> {
+        replay_execution(journal, operation_id, 3, |event| {
+            matches!(event,
+            ExecutionEvent::ToolStarted { step: event_step, call_id: existing, .. }
+            | ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
+            | ExecutionEvent::ToolFailed { step: event_step, call_id: existing, .. }
+            if *event_step == step && existing == call_id)
+        })
+        .await
+    }
+
     async fn record_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,
@@ -558,7 +743,7 @@ impl StockExecutor {
         call_id: &str,
         reason: ToolFailureKind,
     ) -> Result<()> {
-        let current = journal.replay(operation_id).await?;
+        let (tail, current) = Self::tool_records(journal, operation_id, step, call_id).await?;
         if current.iter().any(|record| {
             matches!(&record.event,
             ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
@@ -570,7 +755,7 @@ impl StockExecutor {
         match journal
             .append_if_tail(
                 operation_id,
-                current.len() as u64,
+                tail,
                 format!("tool:{step}:{call_id}:failed:{}", OperationId::new()),
                 ExecutionEvent::ToolFailed {
                     step,
@@ -605,7 +790,8 @@ impl StockExecutor {
         invocation: ToolInvocation,
         prior_messages: &mut Vec<ModelMessage>,
     ) -> Result<()> {
-        let records = journal.replay(operation_id).await?;
+        let (_, records) =
+            Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
         invocation.validate()?;
         let tool = self
             .tools
@@ -765,7 +951,8 @@ impl StockExecutor {
                     &invocation,
                 )
                 .await?;
-                let current = journal.replay(operation_id).await?;
+                let (tail, current) =
+                    Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
                 if current.iter().any(|record| {
                     matches!(&record.event,
                     ExecutionEvent::ToolStarted { step: event_step, call_id, .. }
@@ -776,7 +963,7 @@ impl StockExecutor {
                 match journal
                     .append_if_tail(
                         operation_id,
-                        current.len() as u64,
+                        tail,
                         format!(
                             "tool:{step}:{}:claim:{}",
                             invocation.call_id,
@@ -930,7 +1117,8 @@ impl StockExecutor {
                     ));
                 }
             };
-            let current = journal.replay(operation_id).await?;
+            let (tail, current) =
+                Self::tool_records(journal, operation_id, step, &invocation.call_id).await?;
             if current.iter().any(|record| {
                 matches!(&record.event,
                 ExecutionEvent::ToolCompleted { step: event_step, call_id, .. }
@@ -942,7 +1130,7 @@ impl StockExecutor {
             match journal
                 .append_if_tail(
                     operation_id,
-                    current.len() as u64,
+                    tail,
                     format!(
                         "tool:{step}:{}:completed:{}",
                         invocation.call_id,
@@ -1023,6 +1211,9 @@ impl Executor for StockExecutor {
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
         Box::pin(async move {
+            if let Some((host, task_id, fence)) = &self.task {
+                host.verify_execution_owner(*task_id, fence.clone()).await?;
+            }
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
@@ -1247,7 +1438,7 @@ impl ModelEventAdmission {
 mod tests {
     use super::*;
     use crate::{
-        AgentId, Capabilities,
+        AgentId, Capabilities, Outcome,
         conversation::{FileDescriptor, VolumeOwner, VolumeRef},
         resources::ProviderRef,
     };
@@ -1372,12 +1563,17 @@ mod tests {
             _: ModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
-            Box::pin(stream::iter(vec![
-                Ok(ModelEvent::Content {
-                    delta: "partial-".into(),
-                }),
-                Err(Error::Storage("stream interrupted".into())),
-            ]))
+            Box::pin(stream::iter(
+                (0..70)
+                    .map(|_| {
+                        Ok(ModelEvent::Content {
+                            delta: "partial-".into(),
+                        })
+                    })
+                    .chain(std::iter::once(Err(Error::Storage(
+                        "stream interrupted".into(),
+                    )))),
+            ))
         }
 
         fn reconcile<'a>(
@@ -1387,9 +1583,12 @@ mod tests {
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
                 if attempt.observed
-                    != vec![ModelEvent::Content {
-                        delta: "partial-".into(),
-                    }]
+                    != vec![
+                        ModelEvent::Content {
+                            delta: "partial-".into(),
+                        };
+                        70
+                    ]
                 {
                     return Err(Error::Conflict("unexpected model event prefix".into()));
                 }
@@ -1459,14 +1658,20 @@ mod tests {
         fn replay<'a>(
             &'a self,
             operation_id: OperationId,
+            after: u64,
+            maximum: u32,
         ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
             async move {
+                validate_execution_page(after, maximum)?;
                 self.0
                     .lock()
                     .map(|records| {
                         records
                             .iter()
-                            .filter(|record| record.operation_id == operation_id)
+                            .filter(|record| {
+                                record.operation_id == operation_id && record.sequence > after
+                            })
+                            .take(maximum as usize)
                             .cloned()
                             .collect()
                     })
@@ -2059,6 +2264,50 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> {
+        struct DispatchObserver {
+            claims: AtomicUsize,
+            owned: std::sync::atomic::AtomicBool,
+        }
+        impl DurableTaskHost for DispatchObserver {
+            fn verify_execution_owner<'a>(
+                &'a self,
+                _: TaskId,
+                _: crate::scheduler::LeaseFence,
+            ) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async move {
+                    if self.owned.load(Ordering::SeqCst) {
+                        Ok(())
+                    } else {
+                        Err(Error::Conflict("stale test owner".into()))
+                    }
+                })
+            }
+            fn claim_model_dispatch<'a>(
+                &'a self,
+                _: TaskId,
+                _: OperationId,
+                _: u32,
+                _: [u8; 32],
+                _: crate::scheduler::LeaseFence,
+            ) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async move {
+                    self.claims.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+            }
+            fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+            fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+        }
+        // This observer checks executor calls, not budget semantics. The real
+        // CoordinatorTaskHost test covers the authoritative pinned ceiling.
+        let host = Arc::new(DispatchObserver {
+            claims: AtomicUsize::new(0),
+            owned: std::sync::atomic::AtomicBool::new(true),
+        });
         let model = Arc::new(RecoverableModel {
             generate_calls: AtomicUsize::new(0),
             reconcile_calls: AtomicUsize::new(0),
@@ -2068,6 +2317,14 @@ mod tests {
             model.clone(),
             ContextPipeline::default(),
             ToolRegistry::default(),
+        )
+        .with_durable_task(
+            host.clone(),
+            TaskId::from_bytes([11; 16]),
+            crate::scheduler::LeaseFence {
+                reservation_id: "lease".into(),
+                placement: "worker".into(),
+            },
         );
         let journal = Journal::default();
         let input = TurnInput {
@@ -2082,12 +2339,100 @@ mod tests {
             Err(Error::Storage(_))
         ));
         let recovered = executor.execute(input.clone(), &journal).await?;
-        let replayed = executor.execute(input, &journal).await?;
+        let replayed = executor.execute(input.clone(), &journal).await?;
 
-        assert_eq!(recovered.text, "partial-restored");
+        assert_eq!(recovered.text, format!("{}restored", "partial-".repeat(70)));
         assert_eq!(replayed, recovered);
         assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
         assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(host.claims.load(Ordering::SeqCst), 1);
+        assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
+        assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 10);
+        assert!(journal.replay(input.operation_id, 74, 64).await?.is_empty());
+        host.owned.store(false, Ordering::SeqCst);
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption() -> Result<()>
+    {
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([29; 16]);
+        for step in 0..70 {
+            journal
+                .append(
+                    operation,
+                    format!("step-{step}"),
+                    ExecutionEvent::ModelStarted {
+                        step,
+                        request_digest: [1; 32],
+                    },
+                )
+                .await?;
+        }
+        let (tail, selected) = replay_execution(&journal, operation, 1, |event| {
+            matches!(event, ExecutionEvent::ModelStarted { step: 69, .. })
+        })
+        .await?;
+        assert_eq!(tail, 70);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].sequence, 70);
+        assert_eq!(journal.replay(operation, 0, 64).await?.len(), 64);
+        assert_eq!(journal.replay(operation, 64, 64).await?.len(), 6);
+        assert!(journal.replay(operation, 0, 65).await.is_err());
+        assert!(journal.replay(operation, 0, 0).await.is_err());
+        assert!(
+            replay_execution(&journal, operation, 1, |_| true)
+                .await
+                .is_err()
+        );
+        let original = {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock".into()))?;
+            let original = records[69].idempotency_key.clone();
+            records[69].idempotency_key = records[0].idempotency_key.clone();
+            original
+        };
+        assert!(matches!(
+            replay_execution(&journal, operation, 0, |_| false).await,
+            Err(Error::Conflict(_))
+        ));
+        let mut cursor = ExecutionReplay::new(operation);
+        assert_eq!(
+            cursor.next_page(&journal).await?.map(|page| page.len()),
+            Some(64)
+        );
+        for _ in 0..2 {
+            assert!(matches!(
+                cursor.next_page(&journal).await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(
+                cursor.tail(),
+                64,
+                "a corrupt page must not advance partially"
+            );
+        }
+        {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock".into()))?;
+            records[69].idempotency_key = original;
+            records[69].sequence += 1;
+        }
+        assert!(matches!(
+            replay_execution(&journal, operation, 0, |_| false).await,
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 
@@ -2107,12 +2452,14 @@ mod tests {
                 )
                 .await?;
         }
-        let replayed_first = journal.replay(first).await?;
+        let replayed_first = journal.replay(first, 0, MAX_EXECUTION_PAGE_RECORDS).await?;
         let [first_entry] = replayed_first.as_slice() else {
             unreachable!("expected exactly one replayed event for the first operation");
         };
         assert_eq!(first_entry.sequence, 1);
-        let replayed_second = journal.replay(second).await?;
+        let replayed_second = journal
+            .replay(second, 0, MAX_EXECUTION_PAGE_RECORDS)
+            .await?;
         let [second_entry] = replayed_second.as_slice() else {
             unreachable!("expected exactly one replayed event for the second operation");
         };

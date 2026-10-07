@@ -24,9 +24,7 @@ use crate::{
 use acyclic_harness::{
     Error, OperationId, Result,
     conversation::FileRef,
-    executor::{
-        ExecutionEvent, ExecutionJournal, ExecutionRecord, Executor, TurnInput, TurnOutput,
-    },
+    executor::{ExecutionEvent, ExecutionJournal, Executor, TurnInput, TurnOutput},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelRole},
     runtime::{RuntimeScope, ToolPolicy},
     tool::ToolRegistry,
@@ -197,8 +195,7 @@ impl CodexExecutor {
         let prompt = with_selected_context(&input, prompt_text(&input.input)?);
         let digest = self.request_digest(&input, max_steps)?;
 
-        let records = journal.replay(operation).await?;
-        let prior = Prior::read(journal, &records, digest).await?;
+        let prior = Prior::read(journal, operation, digest).await?;
         if let Some(output) = prior.finished {
             return Ok(output);
         }
@@ -575,7 +572,7 @@ struct Prior {
 impl Prior {
     async fn read(
         journal: &dyn ExecutionJournal,
-        records: &[ExecutionRecord],
+        operation: OperationId,
         digest: [u8; 32],
     ) -> Result<Self> {
         let mut prior = Self {
@@ -585,66 +582,71 @@ impl Prior {
             finished: None,
             metered: ResponsesUsage::default(),
         };
-        for record in records {
-            match &record.event {
-                ExecutionEvent::Started { request_digest } => {
-                    if *request_digest != digest {
-                        return Err(Error::Conflict(
-                            "this operation already ran a different codex turn".into(),
-                        ));
+        let mut replay = acyclic_harness::executor::ExecutionReplay::new(operation);
+        while let Some(page) = replay.next_page(journal).await? {
+            for record in page {
+                match &record.event {
+                    ExecutionEvent::Started { request_digest } => {
+                        if *request_digest != digest {
+                            return Err(Error::Conflict(
+                                "this operation already ran a different codex turn".into(),
+                            ));
+                        }
+                        prior.started = true;
                     }
-                    prior.started = true;
-                }
-                ExecutionEvent::Model { step, event } => {
-                    prior.last_step = prior.last_step.max(*step);
-                    let Ok(ModelEvent::Completed { metadata }) = load(journal, event).await else {
-                        continue;
-                    };
-                    // A per-call usage record (the completion marker also has
-                    // `usage`, but it carries `harness`).
-                    if metadata.get("harness").is_none()
-                        && let Some(usage) = metadata.get("usage")
-                        && let Ok(usage) = serde_json::from_value::<ResponsesUsage>(usage.clone())
-                    {
-                        prior.metered = add_usage(prior.metered, usage);
+                    ExecutionEvent::Model { step, event } => {
+                        prior.last_step = prior.last_step.max(*step);
+                        let Ok(ModelEvent::Completed { metadata }) = load(journal, event).await
+                        else {
+                            continue;
+                        };
+                        // A per-call usage record (the completion marker also has
+                        // `usage`, but it carries `harness`).
+                        if metadata.get("harness").is_none()
+                            && let Some(usage) = metadata.get("usage")
+                            && let Ok(usage) =
+                                serde_json::from_value::<ResponsesUsage>(usage.clone())
+                        {
+                            prior.metered = add_usage(prior.metered, usage);
+                        }
+                        if let Some(thread) = metadata
+                            .pointer("/codex/thread_started")
+                            .and_then(Value::as_str)
+                        {
+                            prior.thread = Some(thread.to_owned());
+                        }
+                        if metadata.get("harness").and_then(Value::as_str) == Some("codex") {
+                            let mut metadata = metadata.clone();
+                            let turn = metadata
+                                .as_object_mut()
+                                .and_then(|object| object.remove("turn"))
+                                .unwrap_or(Value::Null);
+                            prior.finished = Some(TurnOutput {
+                                text: turn
+                                    .get("text")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or_default()
+                                    .to_owned(),
+                                attachments: Vec::new(),
+                                metadata,
+                                steps: turn
+                                    .get("steps")
+                                    .and_then(Value::as_u64)
+                                    .and_then(|steps| u32::try_from(steps).ok())
+                                    .unwrap_or(0),
+                            });
+                        }
                     }
-                    if let Some(thread) = metadata
-                        .pointer("/codex/thread_started")
-                        .and_then(Value::as_str)
-                    {
-                        prior.thread = Some(thread.to_owned());
+                    ExecutionEvent::ModelStarted { step, .. }
+                    | ExecutionEvent::ToolStarted { step, .. }
+                    | ExecutionEvent::ToolCompleted { step, .. }
+                    | ExecutionEvent::ToolFailed { step, .. } => {
+                        prior.last_step = prior.last_step.max(*step);
                     }
-                    if metadata.get("harness").and_then(Value::as_str) == Some("codex") {
-                        let mut metadata = metadata.clone();
-                        let turn = metadata
-                            .as_object_mut()
-                            .and_then(|object| object.remove("turn"))
-                            .unwrap_or(Value::Null);
-                        prior.finished = Some(TurnOutput {
-                            text: turn
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                            attachments: Vec::new(),
-                            metadata,
-                            steps: turn
-                                .get("steps")
-                                .and_then(Value::as_u64)
-                                .and_then(|steps| u32::try_from(steps).ok())
-                                .unwrap_or(0),
-                        });
-                    }
-                }
-                ExecutionEvent::ModelStarted { step, .. }
-                | ExecutionEvent::ToolStarted { step, .. }
-                | ExecutionEvent::ToolCompleted { step, .. }
-                | ExecutionEvent::ToolFailed { step, .. } => {
-                    prior.last_step = prior.last_step.max(*step);
                 }
             }
         }
-        if !prior.started && !records.is_empty() {
+        if !prior.started && replay.tail() != 0 {
             return Err(Error::Conflict(
                 "the journal for this operation was not started by the codex executor".into(),
             ));

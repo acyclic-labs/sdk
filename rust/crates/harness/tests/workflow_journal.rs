@@ -178,7 +178,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             .state,
         json!(4)
     );
-    let committed = journal.replay().await?;
+    let committed = journal.replay(0, 64).await?;
     assert_eq!(committed.len(), 2);
     assert!(matches!(
         journal
@@ -217,7 +217,8 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
-    let reopened = DurableWorkflowHost::open(registry, initial, journal.clone()).await?;
+    let reopened =
+        DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     assert_eq!(reopened.checkpoint().state, json!(4));
     let admission_entries = stream
         .stream("harness/v2/workflow-admissions/counter")
@@ -245,6 +246,66 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reference: FileRef = serde_json::from_slice(&records[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(reference.descriptor().media_type(), "application/json");
+    // Read and reopen more than one page through the real Filesystem/Stream journal.
+    let paged = Arc::new(FilesystemWorkflowJournal::new(
+        stream.clone(),
+        host.clone(),
+        "paged-counter",
+        volume.clone(),
+        issuer.verifier(),
+        scope.clone(),
+        65_536,
+    )?);
+    paged.admit(admission.clone()).await?;
+    let mut paged_host =
+        DurableWorkflowHost::open(registry.clone(), initial.clone(), paged.clone()).await?;
+    let first_paged = OperationId::new();
+    let first_key = IdempotencyKey::new("paged-first")?;
+    let first_transition = paged_host
+        .step(first_paged, first_key.clone(), json!(1))
+        .await?;
+    for index in 1..=64 {
+        paged_host
+            .step(
+                OperationId::new(),
+                IdempotencyKey::new(format!("paged-{index}"))?,
+                json!(1),
+            )
+            .await?;
+    }
+    assert_eq!(paged.replay(0, 64).await?.len(), 64);
+    assert_eq!(paged.replay(64, 64).await?.len(), 1);
+    assert!(paged.replay(0, 65).await.is_err());
+    let fresh_paged = Arc::new(FilesystemWorkflowJournal::new(
+        stream.clone(),
+        host.clone(),
+        "paged-counter",
+        volume.clone(),
+        issuer.verifier(),
+        scope.clone(),
+        65_536,
+    )?);
+    let mut fresh_host = DurableWorkflowHost::open(registry, initial, fresh_paged.clone()).await?;
+    assert_eq!(fresh_host.checkpoint().revision, 65);
+    assert_eq!(
+        fresh_host
+            .step(first_paged, first_key.clone(), json!(1))
+            .await?,
+        first_transition
+    );
+    let first_record = fresh_paged.replay(0, 1).await?.remove(0);
+    assert!(matches!(
+        fresh_paged.commit(0, first_key, first_record).await?,
+        WorkflowCommitOutcome::Replayed(_)
+    ));
+    fresh_host
+        .step(
+            OperationId::new(),
+            IdempotencyKey::new("paged-next")?,
+            json!(1),
+        )
+        .await?;
+    assert_eq!(fresh_host.checkpoint().revision, 66);
     let other = FilesystemWorkflowJournal::new(
         stream,
         host,
@@ -281,7 +342,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         matches!(&first_result, Err(acyclic_harness::Error::Conflict(_)))
             ^ matches!(&second_result, Err(acyclic_harness::Error::Conflict(_)))
     );
-    let tail = journal.replay().await?;
+    let tail = journal.replay(0, 64).await?;
     assert_eq!(tail.len(), 3);
     assert!(tail[2] == first || tail[2] == second);
     Ok(())

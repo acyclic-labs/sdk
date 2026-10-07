@@ -5,9 +5,11 @@ use crate::{
     Error, IdempotencyKey, Result,
     conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeRef},
     core::{AuthorityVerifier, Scope},
+    durable_host::TaskJournalOwner,
     workflow::{
-        MachineCheckpoint, MachineStatus, WorkflowAdmission, WorkflowCommitOutcome,
-        WorkflowJournal, WorkflowRecord,
+        MAX_WORKFLOW_PAGE_RECORDS, MAX_WORKFLOW_RECORDS, MachineCheckpoint, MachineStatus,
+        WorkflowAdmission, WorkflowCommitOutcome, WorkflowJournal, WorkflowRecord,
+        validate_workflow_commit, validate_workflow_next, validate_workflow_page,
     },
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -17,59 +19,35 @@ use acyclic_stream::{
 use bytes::Bytes;
 use futures::{TryStreamExt as _, future::BoxFuture};
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::BTreeSet,
     sync::{Arc, Mutex},
 };
-
-// Reopening must be bounded even when every transition and command is valid.
-const MAX_RECORDS: u64 = 4_096;
-const MAX_RESERVED_IDENTITIES: usize = 65_536;
 
 struct VerifiedSummary {
     admission: WorkflowAdmission,
     revision: u64,
     checkpoint: MachineCheckpoint,
     reserved: BTreeSet<crate::OperationId>,
+    keys: BTreeSet<IdempotencyKey>,
     terminal: bool,
 }
 
 impl VerifiedSummary {
     fn require_next(&self, record: &WorkflowRecord) -> Result<()> {
-        if record.prior != self.checkpoint || record.prior.revision != self.revision {
-            return Err(Error::Conflict(
-                "workflow transition differs from admission".into(),
-            ));
-        }
-        if self.terminal {
-            return Err(Error::Conflict(
-                "workflow cannot advance after a terminal transition".into(),
-            ));
-        }
-        if self
-            .reserved
-            .len()
-            .saturating_add(record.transition.commands.len() + 1)
-            > MAX_RESERVED_IDENTITIES
-        {
-            return Err(Error::Invalid(
-                "workflow operation identity bound is exhausted".into(),
-            ));
-        }
-        if record
-            .operation_ids()
-            .any(|identity| self.reserved.contains(&identity))
-        {
-            return Err(Error::Conflict(
-                "workflow command or transition identity is already bound".into(),
-            ));
-        }
-        Ok(())
+        validate_workflow_next(
+            &self.checkpoint,
+            self.terminal,
+            &self.reserved,
+            &self.keys,
+            record,
+        )
     }
 
     fn advance(&mut self, record: &WorkflowRecord) {
         for identity in record.operation_ids() {
             self.reserved.insert(identity);
         }
+        self.keys.insert(record.idempotency_key.clone());
         self.revision = record.next.revision;
         self.checkpoint = record.next.clone();
         self.terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
@@ -87,6 +65,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     scope: Scope,
     maximum_payload_bytes: u64,
     verified: Mutex<Option<VerifiedSummary>>,
+    owner: Option<TaskJournalOwner<P>>,
 }
 
 impl<P, A, O> FilesystemWorkflowJournal<P, A, O>
@@ -95,6 +74,30 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Binds one task workflow to its exact worker lease. Publications atomically
+    /// compare the coordinator tail and workflow tail on the same Stream provider.
+    pub fn for_task(
+        owner: TaskJournalOwner<P>,
+        host: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef,
+        verifier: AuthorityVerifier,
+        scope: Scope,
+        maximum_payload_bytes: u64,
+    ) -> Result<Self> {
+        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        let mut journal = Self::new(
+            owner.stream(),
+            host,
+            &owner.operation_id().to_string(),
+            volume,
+            verifier,
+            scope,
+            maximum_payload_bytes,
+        )?;
+        journal.owner = Some(owner);
+        Ok(journal)
+    }
+
     /// Binds a validated workflow identity and its exact private-volume grants.
     pub fn new(
         stream: StreamClient<P>,
@@ -134,6 +137,7 @@ where
             scope,
             maximum_payload_bytes,
             verified: Mutex::new(None),
+            owner: None,
         })
     }
 
@@ -165,87 +169,89 @@ where
         let record: WorkflowRecord = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?;
         record.validate()?;
+        if let Some(owner) = &self.owner {
+            owner.validate_workflow_record(&record)?;
+        }
         if verify_payloads {
             self.verify_command_payloads(&record).await?;
         }
         Ok(record)
     }
 
-    async fn replay_records(&self, verify_payloads: bool) -> Result<Vec<WorkflowRecord>> {
+    async fn replay_records(
+        &self,
+        after: u64,
+        maximum: u32,
+        verify_payloads: bool,
+    ) -> Result<Vec<WorkflowRecord>> {
+        validate_workflow_page(after, maximum)?;
         let stream = self.stream.stream(&self.path)?;
-        let mut result = Vec::new();
-        let mut keys = HashSet::new();
-        let mut reserved = BTreeSet::new();
-        let mut identities = 0_usize;
-        let mut terminal = false;
-        let mut replay = stream.replay(0);
-        while let Some(page) = replay.next_page().await? {
-            for entry in page {
-                let from = entry.sequence;
-                if from >= MAX_RECORDS {
-                    return Err(Error::Storage(
-                        "workflow sequence or retention bound is invalid".into(),
-                    ));
-                }
-                let reference: FileRef = serde_json::from_slice(&entry.value).map_err(|error| {
-                    Error::Storage(format!("workflow reference is invalid: {error}"))
-                })?;
-                let record = self.read_record(&reference, verify_payloads).await?;
-                if terminal {
-                    return Err(Error::Storage(
-                        "workflow history continues after a terminal transition".into(),
-                    ));
-                }
-                if record
-                    .operation_ids()
-                    .any(|operation_id| !reserved.insert(operation_id))
-                {
-                    return Err(Error::Storage(
-                        "workflow history reuses a command or transition identity".into(),
-                    ));
-                }
-                identities = identities.saturating_add(record.transition.commands.len() + 1);
-                if identities > MAX_RESERVED_IDENTITIES {
-                    return Err(Error::Storage(
-                        "workflow identity retention bound is invalid".into(),
-                    ));
-                }
-                if record.prior.revision != from || record.next.revision != from + 1 {
-                    return Err(Error::Storage(
-                        "workflow checkpoint revision is discontinuous".into(),
-                    ));
-                }
-                if !keys.insert(record.idempotency_key.clone()) {
-                    return Err(Error::Storage(
-                        "workflow retry identity is duplicated".into(),
-                    ));
-                }
-                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
-                result.push(record);
+        let entries = match stream.read(after, maximum).await {
+            Ok(entries) => entries,
+            Err(StreamError::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        let mut entries = entries;
+        let mut records = Vec::new();
+        while let Some(entry) = entries.try_next().await? {
+            let sequence = after + records.len() as u64;
+            if records.len() >= maximum as usize
+                || entry.sequence != sequence
+                || sequence >= MAX_WORKFLOW_RECORDS
+            {
+                return Err(Error::Storage(
+                    "workflow sequence or page bound is invalid".into(),
+                ));
             }
+            let reference: FileRef = serde_json::from_slice(&entry.value).map_err(|error| {
+                Error::Storage(format!("workflow reference is invalid: {error}"))
+            })?;
+            let record = self.read_record(&reference, verify_payloads).await?;
+            if record.prior.revision != sequence || record.next.revision != sequence + 1 {
+                return Err(Error::Storage(
+                    "workflow checkpoint revision is discontinuous".into(),
+                ));
+            }
+            records.push(record);
         }
-        Ok(result)
+        Ok(records)
     }
 
-    async fn verified_history(&self, admission: &WorkflowAdmission) -> Result<Vec<WorkflowRecord>> {
-        // Identity validation needs the immutable record envelopes, not every
-        // historic command body. Public replay still verifies every payload.
-        let history = self.replay_records(false).await?;
+    async fn verified_history(
+        &self,
+        admission: &WorkflowAdmission,
+        operation_id: crate::OperationId,
+    ) -> Result<(u64, Option<WorkflowRecord>)> {
+        // Retain identities and one checkpoint, never historic state or command bodies.
         let mut summary = VerifiedSummary {
             admission: admission.clone(),
             revision: 0,
             checkpoint: admission.initial.clone(),
             reserved: BTreeSet::new(),
+            keys: BTreeSet::new(),
             terminal: false,
         };
-        for record in &history {
-            summary.require_next(record).map_err(|_| {
-                Error::Storage(
-                    "workflow history diverges from its admission or reuses an identity".into(),
-                )
-            })?;
-            summary.advance(record);
+        let mut matched = None;
+        loop {
+            let page = self
+                .replay_records(summary.revision, MAX_WORKFLOW_PAGE_RECORDS, false)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            for record in page {
+                summary.require_next(&record).map_err(|_| {
+                    Error::Storage(
+                        "workflow history diverges from admission or reuses an identity".into(),
+                    )
+                })?;
+                summary.advance(&record);
+                if record.operation_id == operation_id {
+                    matched = Some(record);
+                }
+            }
         }
+        let revision = summary.revision;
         if let Ok(mut cached) = self.verified.lock()
             && cached
                 .as_ref()
@@ -253,7 +259,7 @@ where
         {
             *cached = Some(summary);
         }
-        Ok(history)
+        Ok((revision, matched))
     }
 
     fn cached_preflight(
@@ -347,6 +353,15 @@ where
         let admission: WorkflowAdmission = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?;
         admission.validate()?;
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.workflow_admission() != &admission)
+        {
+            return Err(Error::Conflict(
+                "workflow differs from retained task admission".into(),
+            ));
+        }
         Ok(Some(admission))
     }
 
@@ -441,24 +456,30 @@ where
         let admission = self.read_admission().await?.ok_or_else(|| {
             Error::Conflict("workflow transition has no retained admission".into())
         })?;
-        let requested: BTreeSet<_> = record.operation_ids().collect();
-        for existing in self.verified_history(&admission).await? {
-            if existing.operation_id == record.operation_id {
-                return if existing == *record {
-                    self.verify_command_payloads(&existing).await?;
-                    Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
-                } else {
-                    Err(Error::Conflict("workflow operation identity reused".into()))
-                };
-            }
-            if existing
+        let (_, existing) = self
+            .verified_history(&admission, record.operation_id)
+            .await?;
+        if let Some(existing) = existing {
+            return if existing == *record {
+                self.verify_command_payloads(&existing).await?;
+                Ok(Some(WorkflowCommitOutcome::Replayed(existing)))
+            } else {
+                Err(Error::Conflict("workflow operation identity reused".into()))
+            };
+        }
+        // Validate collisions with committed command identities as well.
+        let cached = self
+            .verified
+            .lock()
+            .map_err(|_| Error::Storage("workflow summary cache is poisoned".into()))?;
+        if cached.as_ref().is_some_and(|summary| {
+            record
                 .operation_ids()
-                .any(|operation_id| requested.contains(&operation_id))
-            {
-                return Err(Error::Conflict(
-                    "workflow command or transition identity is already bound".into(),
-                ));
-            }
+                .any(|id| summary.reserved.contains(&id))
+        }) {
+            return Err(Error::Conflict(
+                "workflow command identity is already bound".into(),
+            ));
         }
         Ok(None)
     }
@@ -470,12 +491,24 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn task_binding(&self) -> Option<(crate::TaskId, crate::scheduler::LeaseFence)> {
+        self.owner.as_ref().map(TaskJournalOwner::task_binding)
+    }
+
     fn admit<'a>(
         &'a self,
         admission: WorkflowAdmission,
     ) -> BoxFuture<'a, Result<WorkflowAdmission>> {
         Box::pin(async move {
             admission.validate()?;
+            if let Some(owner) = &self.owner {
+                if &admission != owner.workflow_admission() {
+                    return Err(Error::Unauthorized(
+                        "workflow differs from retained task admission".into(),
+                    ));
+                }
+                owner.verify(false).await?;
+            }
             if let Some(existing) = self.read_admission().await? {
                 return if existing == admission {
                     Ok(existing)
@@ -501,6 +534,23 @@ where
             let digest = blake3::hash(format!("{}:admission", self.admission_path()).as_bytes());
             let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
+            if let Some(owner) = &self.owner {
+                if owner
+                    .append_workflow(true, 0, &key, Bytes::from(bytes))
+                    .await?
+                {
+                    return Ok(admission);
+                }
+                return match self.read_admission().await? {
+                    Some(existing) if existing == admission => Ok(existing),
+                    Some(_) => Err(Error::Conflict(
+                        "workflow admission identity is already bound".into(),
+                    )),
+                    None => Err(Error::Conflict(
+                        "workflow admission ownership changed".into(),
+                    )),
+                };
+            }
             let stream = self.stream.stream(self.admission_path())?;
             match stream
                 .append_batch(vec![Bytes::from(bytes)], Some(0), Some(key))
@@ -540,8 +590,8 @@ where
         Box::pin(self.read_admission())
     }
 
-    fn replay(&self) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
-        Box::pin(self.replay_records(true))
+    fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
+        Box::pin(self.replay_records(after, maximum, true))
     }
 
     fn commit<'a>(
@@ -551,42 +601,34 @@ where
         record: WorkflowRecord,
     ) -> BoxFuture<'a, Result<WorkflowCommitOutcome>> {
         Box::pin(async move {
+            if let Some(owner) = &self.owner {
+                owner.verify(false).await?;
+            }
             let admission = self.read_admission().await?.ok_or_else(|| {
                 Error::Conflict("workflow transition has no retained admission".into())
             })?;
-            IdempotencyKey::new(idempotency_key.0.clone())?;
-            record.validate()?;
-            if record.idempotency_key != idempotency_key
-                || record.prior.revision != expected_revision
-                || record.next.revision
-                    != expected_revision
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Invalid("workflow revision exhausted".into()))?
-                || expected_revision >= MAX_RECORDS
-            {
-                return Err(Error::Invalid(
-                    "workflow commit identity or revision is invalid".into(),
-                ));
+            validate_workflow_commit(expected_revision, &idempotency_key, &record)?;
+            if let Some(owner) = &self.owner {
+                owner.validate_workflow_record(&record)?;
             }
             if !self.cached_preflight(&admission, &record)? {
                 // Reopening or reconciling an old retry scans the authoritative
                 // chain once. The normal next step uses its verified summary;
                 // Stream's tail CAS fences concurrent writers after preflight.
-                let history = self.verified_history(&admission).await?;
-                if let Some(existing) = history
-                    .iter()
-                    .find(|existing| existing.operation_id == record.operation_id)
-                {
-                    return if existing == &record {
-                        self.verify_command_payloads(existing).await?;
-                        Ok(WorkflowCommitOutcome::Replayed(existing.clone()))
+                let (revision, existing) = self
+                    .verified_history(&admission, record.operation_id)
+                    .await?;
+                if let Some(existing) = existing {
+                    return if existing == record {
+                        self.verify_command_payloads(&existing).await?;
+                        Ok(WorkflowCommitOutcome::Replayed(existing))
                     } else {
                         Err(Error::Conflict(
                             "workflow operation identity is already bound".into(),
                         ))
                     };
                 }
-                if history.len() as u64 != expected_revision {
+                if revision != expected_revision {
                     return Err(Error::Conflict(
                         "workflow checkpoint revision is stale".into(),
                     ));
@@ -610,6 +652,21 @@ where
                 blake3::hash(format!("{}:{}", self.path, idempotency_key.as_str()).as_bytes());
             let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
+            if let Some(owner) = &self.owner {
+                if owner
+                    .append_workflow(false, expected_revision, &key, Bytes::from(bytes))
+                    .await?
+                {
+                    self.advance_cached(&admission, &record);
+                    return Ok(WorkflowCommitOutcome::Applied(record));
+                }
+                return match self.reconcile(&record).await? {
+                    Some(previous) => Ok(previous),
+                    None => Err(Error::Conflict(
+                        "workflow checkpoint or ownership changed".into(),
+                    )),
+                };
+            }
             let stream = self.stream.stream(&self.path)?;
             match stream
                 .append_batch(vec![Bytes::from(bytes)], Some(expected_revision), Some(key))

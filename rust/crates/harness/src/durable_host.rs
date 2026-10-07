@@ -92,9 +92,379 @@ pub struct CoordinatorTaskHost<P> {
     policy: Option<Arc<dyn ToolPolicy>>,
     interactions: Option<Arc<dyn ExecutionJournal>>,
     effects: Option<Arc<dyn DurableEffectObserver>>,
+    session_limits: Option<crate::scheduler::SessionLimits>,
+}
+
+/// One worker's exact task lease, bound to the coordinator's own Stream provider.
+/// Journal constructors use this binding to atomically fence their publications.
+#[cfg(feature = "filesystem")]
+pub struct TaskJournalOwner<P> {
+    host: Arc<CoordinatorTaskHost<P>>,
+    stream: StreamClient<P>,
+    task_id: TaskId,
+    fence: crate::scheduler::LeaseFence,
+    workflow: crate::workflow::WorkflowAdmission,
+    maximum_payload_bytes: u64,
+    output_schema: Value,
+}
+
+#[cfg(feature = "filesystem")]
+impl<P: StreamProvider> TaskJournalOwner<P> {
+    pub(crate) fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
+        (self.task_id, self.fence.clone())
+    }
+
+    pub(crate) fn validate_storage(
+        &self,
+        verifier: &AuthorityVerifier,
+        maximum_payload_bytes: u64,
+    ) -> Result<()> {
+        if verifier.audience() != &self.host.owner
+            || maximum_payload_bytes > self.maximum_payload_bytes
+        {
+            return Err(Error::Unauthorized(
+                "journal storage exceeds admitted task authority or limits".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Returns the initial workflow identity derived from the retained task
+    /// admission and its registered machine, rather than caller-selected state.
+    #[must_use]
+    pub const fn workflow_admission(&self) -> &crate::workflow::WorkflowAdmission {
+        &self.workflow
+    }
+
+    pub(crate) fn validate_workflow_record(
+        &self,
+        record: &crate::workflow::WorkflowRecord,
+    ) -> Result<()> {
+        if record.prior.machine != self.workflow.initial.machine {
+            return Err(Error::Conflict(
+                "workflow implementation differs from task admission".into(),
+            ));
+        }
+        let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
+        if next != record.next || transition != record.transition {
+            return Err(Error::Conflict(
+                "workflow transition differs from pinned machine".into(),
+            ));
+        }
+        if let crate::workflow::MachineStatus::Completed { value } = &transition.status {
+            crate::tool::validate_value(&self.output_schema, value, "task output")?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stream(&self) -> StreamClient<P> {
+        self.stream.clone()
+    }
+
+    pub(crate) fn operation_id(&self) -> OperationId {
+        OperationId::from_bytes(self.task_id.into_bytes())
+    }
+
+    async fn condition(
+        &self,
+        write: crate::distributed::JournalWrite,
+    ) -> Result<acyclic_stream::CommitCondition> {
+        self.host
+            .coordinator
+            .lock()
+            .await
+            .journal_condition(
+                &self.host.owner,
+                &self.host.owner_scope,
+                &self.host.verifier,
+                self.operation_id(),
+                &self.fence,
+                write,
+            )
+            .await
+    }
+
+    pub(crate) async fn verify(&self, settlement: bool) -> Result<()> {
+        use crate::distributed::JournalWrite;
+        self.condition(if settlement {
+            JournalWrite::Settlement
+        } else {
+            JournalWrite::Fresh
+        })
+        .await
+        .map(|_| ())
+    }
+
+    fn execution_write(
+        operation: OperationId,
+        event: &crate::executor::ExecutionEvent,
+    ) -> crate::distributed::JournalWrite {
+        use crate::{distributed::JournalWrite, executor::ExecutionEvent};
+        match event {
+            ExecutionEvent::ModelStarted {
+                step,
+                request_digest,
+            } => JournalWrite::Model {
+                attempt_id: operation,
+                step: *step,
+                request_digest: *request_digest,
+            },
+            ExecutionEvent::Started { .. } | ExecutionEvent::ToolStarted { .. } => {
+                JournalWrite::Fresh
+            }
+            ExecutionEvent::Model { .. }
+            | ExecutionEvent::ToolCompleted { .. }
+            | ExecutionEvent::ToolFailed { .. } => JournalWrite::Settlement,
+        }
+    }
+
+    pub(crate) async fn verify_execution(
+        &self,
+        operation: OperationId,
+        event: &crate::executor::ExecutionEvent,
+    ) -> Result<()> {
+        self.condition(Self::execution_write(operation, event))
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn verify_model_history(
+        &self,
+        operation: OperationId,
+        records: &[crate::executor::ExecutionRecord],
+    ) -> Result<()> {
+        if !records.iter().any(|record| {
+            matches!(
+                record.event,
+                crate::executor::ExecutionEvent::ModelStarted { .. }
+            )
+        }) {
+            return Ok(());
+        }
+        let mut coordinator = self.host.coordinator.lock().await;
+        coordinator.refresh().await?;
+        coordinator.observe_operation(
+            &self.host.owner,
+            &self.host.owner_scope,
+            &self.host.verifier,
+            self.operation_id(),
+        )?;
+        for record in records {
+            if let crate::executor::ExecutionEvent::ModelStarted {
+                step,
+                request_digest,
+            } = &record.event
+            {
+                coordinator.scheduler().require_model_claim(
+                    self.operation_id(),
+                    operation,
+                    *step,
+                    request_digest,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn append_execution(
+        &self,
+        operation: OperationId,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+        event: &crate::executor::ExecutionEvent,
+    ) -> Result<bool> {
+        let path = acyclic_stream::StreamPath::new(format!("harness/v2/execution/{operation}"))?;
+        self.append(
+            path,
+            expected_tail,
+            key,
+            bytes,
+            Self::execution_write(operation, event),
+        )
+        .await
+    }
+
+    pub(crate) async fn append_workflow(
+        &self,
+        admission: bool,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+    ) -> Result<bool> {
+        let class = if admission {
+            "workflow-admissions"
+        } else {
+            "workflows"
+        };
+        let path =
+            acyclic_stream::StreamPath::new(format!("harness/v2/{class}/{}", self.operation_id()))?;
+        self.append(
+            path,
+            expected_tail,
+            key,
+            bytes,
+            crate::distributed::JournalWrite::Fresh,
+        )
+        .await
+    }
+
+    async fn prepare_append(
+        &self,
+        path: &acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: &Bytes,
+        write: crate::distributed::JournalWrite,
+    ) -> Result<acyclic_stream::CommitRequest> {
+        use acyclic_stream::{CommitCondition, CommitMutation};
+        let owner = self.condition(write).await?;
+        let target = match self.stream.bounds(path.as_str()).await {
+            Ok(_) => CommitCondition::Tail {
+                path: path.clone(),
+                expected: expected_tail,
+            },
+            Err(StreamError::NotFound) if expected_tail == 0 => {
+                CommitCondition::Absent { path: path.clone() }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // Conflicting transactions are retained by Stream too. A refreshed owner
+        // revision gets its own recovery key; the journal's CAS and retry index
+        // still prevent duplicate logical records.
+        let mut hash = blake3::Hasher::new();
+        hash.update(b"harness/v2/owned-journal\0");
+        hash.update(key.as_bytes());
+        hash.update(&self.task_id.into_bytes());
+        hash.update(&crate::contract::canonical_json_bytes(&self.fence)?);
+        let CommitCondition::Tail { expected, .. } = &owner else {
+            return Err(Error::Invalid("coordinator tail condition required".into()));
+        };
+        hash.update(&expected.to_le_bytes());
+        hash.update(path.as_str().as_bytes());
+        hash.update(&expected_tail.to_le_bytes());
+        hash.update(&[u8::from(matches!(target, CommitCondition::Absent { .. }))]);
+        hash.update(blake3::hash(bytes).as_bytes());
+        let transaction_key = StreamKey::new(Bytes::copy_from_slice(hash.finalize().as_bytes()))?;
+        Ok(acyclic_stream::CommitRequest {
+            conditions: vec![owner, target],
+            mutations: vec![CommitMutation::Append {
+                path: path.clone(),
+                records: vec![bytes.clone()],
+            }],
+            idempotency_key: transaction_key,
+        })
+    }
+
+    async fn append(
+        &self,
+        path: acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+        write: crate::distributed::JournalWrite,
+    ) -> Result<bool> {
+        use acyclic_stream::{CommitOutcome, CommittedMutation};
+        let request = self
+            .prepare_append(&path, expected_tail, key, &bytes, write)
+            .await?;
+        let transaction_key = request.idempotency_key.clone();
+        let outcome = match self.stream.commit(request).await {
+            Ok(outcome) => outcome,
+            Err(StreamError::Unavailable) => {
+                match self.stream.inspect_idempotency(transaction_key).await {
+                    Ok(Some(observation)) => match observation.outcome {
+                        IdempotencyOutcome::Commit(outcome) => outcome,
+                        _ => {
+                            return Err(Error::Conflict("journal recovery identity reused".into()));
+                        }
+                    },
+                    Ok(None) | Err(_) => return Err(Error::Indeterminate(self.operation_id())),
+                }
+            }
+            Err(error) => return Err(error.into()),
+        };
+        self.condition(write).await?;
+        match outcome {
+            CommitOutcome::Conflict(_) => Ok(false),
+            CommitOutcome::Committed(envelope) => {
+                let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+                    return Err(Error::Storage("invalid owned journal envelope".into()));
+                };
+                if append.path != path
+                    || append.start != expected_tail
+                    || append.end != expected_tail + 1
+                    || append.tail != append.end
+                    || append.records.len() != 1
+                    || append.records.first().is_none_or(|record| {
+                        record.sequence != expected_tail
+                            || record.value != bytes
+                            || record.commit_id != envelope.commit_id
+                    })
+                {
+                    return Err(Error::Storage("invalid owned journal append".into()));
+                }
+                Ok(true)
+            }
+        }
+    }
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    async fn verify_owner(
+        &self,
+        task_id: TaskId,
+        fence: &crate::scheduler::LeaseFence,
+        settlement: bool,
+    ) -> Result<()> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task_id.into_bytes()),
+        )?;
+        crate::scheduler::require_execution_owner(&operation, fence, settlement)
+    }
+
+    /// Binds journal publications to the authenticated task's exact current lease.
+    #[cfg(feature = "filesystem")]
+    pub async fn journal_owner(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Result<TaskJournalOwner<P>> {
+        let admission = self
+            .admission(OperationId::from_bytes(task_id.into_bytes()))
+            .await?;
+        let machine = self
+            .machines
+            .resolve(&admission.machine)
+            .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?;
+        let workflow = crate::workflow::WorkflowAdmission {
+            operation_id: admission.operation_id,
+            request_digest: crate::contract::canonical_json_digest(&admission)?,
+            initial: crate::workflow::MachineCheckpoint {
+                machine: admission.machine.clone(),
+                revision: 0,
+                state: machine.initialize(&admission.input)?,
+            },
+        };
+        self.machines.validate_checkpoint(&workflow.initial)?;
+        let stream = self.coordinator.lock().await.journal_client();
+        let owner = TaskJournalOwner {
+            host: self.clone(),
+            stream,
+            task_id,
+            fence,
+            workflow,
+            maximum_payload_bytes: admission.limits.file_bytes,
+            output_schema: admission.output_schema,
+        };
+        owner.verify(true).await?;
+        Ok(owner)
+    }
     /// Binds a trusted owner, its exact task/machine registries, and immutable
     /// admission payload provider. The host validates definitions even when a
     /// caller bypasses the high-level typed runtime.
@@ -145,7 +515,40 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             policy: None,
             interactions: None,
             effects: None,
+            session_limits: None,
         })
+    }
+
+    /// Requires these immutable shared ceilings for every root admitted by this
+    /// host. Root admission publishes its declaration and configuration together.
+    pub fn with_session_limits(mut self, limits: crate::scheduler::SessionLimits) -> Result<Self> {
+        limits.validate()?;
+        self.session_limits = Some(limits);
+        Ok(self)
+    }
+
+    async fn declare_task(
+        &self,
+        spec: OperationSpec,
+        key: IdempotencyKey,
+    ) -> Result<crate::distributed::CoordinatorApply> {
+        let mut coordinator = self.coordinator.lock().await;
+        if let Some(limits) = self.session_limits.filter(|_| spec.parent.is_none()) {
+            coordinator
+                .declare_session(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    spec,
+                    limits,
+                    key,
+                )
+                .await
+        } else {
+            coordinator
+                .declare_operation(&self.owner, &self.owner_scope, &self.verifier, spec, key)
+                .await
+        }
     }
 
     /// Installs a separately replaceable ref-only durable tool runner.
@@ -197,12 +600,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let state = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh().await?;
-            coordinator.observe_operation(
+            let state = coordinator.observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
                 operation_id,
-            )?
+            )?;
+            if let Some(limits) = self.session_limits
+                && coordinator.scheduler().session_limits(operation_id)? != limits
+            {
+                return Err(Error::Conflict(
+                    "retained session ceilings differ from owner bindings".into(),
+                ));
+            }
+            state
         };
         let value = self
             .read_json(&state.spec.state)
@@ -256,6 +667,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&admission.input),
         )?;
         Ok(admission)
+    }
+
+    async fn validate_parent_scope(
+        &self,
+        parent: Option<TaskId>,
+        scope: &RuntimeScope,
+    ) -> Result<()> {
+        if let Some(parent) = parent {
+            let admitted = self
+                .admission(OperationId::from_bytes(parent.into_bytes()))
+                .await?;
+            RuntimeScope::new(admitted.grants, admitted.limits)?
+                .with_run_limits(admitted.run_limits)?
+                .narrow(scope.grants().clone(), scope.limits())?
+                .with_run_limits(scope.run_limits())?;
+        }
+        Ok(())
     }
 
     fn validate_local_admission_policy(&self, admission: &TaskAdmissionRecord) -> Result<()> {
@@ -530,6 +958,80 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    fn verify_dispatch_owner<'a>(
+        &'a self,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.verify_owner(task_id, &fence, false).await })
+    }
+
+    fn verify_execution_owner<'a>(
+        &'a self,
+        task_id: TaskId,
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.verify_owner(task_id, &fence, true).await })
+    }
+
+    fn claim_model_dispatch<'a>(
+        &'a self,
+        task_id: TaskId,
+        attempt_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        fence: crate::scheduler::LeaseFence,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let operation_id = OperationId::from_bytes(task_id.into_bytes());
+            let admission = self.admission(operation_id).await?;
+            if !admission.grants.contains("model:generate") {
+                return Err(Error::Unauthorized(
+                    "task scope lacks model:generate".into(),
+                ));
+            }
+            let scope = RuntimeScope::new(admission.grants, admission.limits)?
+                .with_run_limits(admission.run_limits)?;
+            self.validate_parent_scope(admission.parent, &scope).await?;
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh().await?;
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+            )?;
+            crate::scheduler::require_model_owner(&operation, &fence)?;
+            let session = coordinator.scheduler().session_limits(operation_id)?;
+            let ceiling = (scope.limits().model_steps as u64)
+                .min(
+                    scope
+                        .run_limits()
+                        .max_steps
+                        .map_or(u64::MAX, |value| value as u64),
+                )
+                .min(session.model_steps);
+            let lease_digest = blake3::hash(&crate::contract::canonical_json_bytes(&fence)?);
+            coordinator
+                .apply(
+                    operation_id,
+                    IdempotencyKey::new(format!(
+                        "model-dispatch:{attempt_id}:{step}:{lease_digest}"
+                    ))?,
+                    crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
+                        operation_id,
+                        attempt_id,
+                        step,
+                        request_digest,
+                        fence,
+                        ceiling,
+                    },
+                )
+                .await?;
+            Ok(())
+        })
+    }
+
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.policy.as_ref().map(|policy| policy.identity())
     }
@@ -677,6 +1179,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     ) -> BoxFuture<'a, Result<Vec<Admission<TaskId>>>> {
         Box::pin(async move {
             self.validate_batch(&request)?;
+            self.validate_parent_scope(request.parent, &request.scope)
+                .await?;
             self.commit_batch(&request).await?;
             let observed = self
                 .reconcile_batch(request.clone())
@@ -799,6 +1303,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             self.root_scope
                 .narrow(scope.grants().clone(), scope.limits())?
                 .with_run_limits(scope.run_limits())?;
+            self.validate_parent_scope(parent, &scope).await?;
             if parent.is_some() {
                 require_descendant_grant(scope.grants(), &identity)?;
             }
@@ -866,18 +1371,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 orchestration: Orchestration::Leaf,
                 state,
             };
-            let outcome = self
-                .coordinator
-                .lock()
-                .await
-                .declare_operation(
-                    &self.owner,
-                    &self.owner_scope,
-                    &self.verifier,
-                    spec,
-                    IdempotencyKey::new(key)?,
-                )
-                .await;
+            let outcome = self.declare_task(spec, IdempotencyKey::new(key)?).await;
             match outcome {
                 Ok(_) => Ok(Admission::Accepted(TaskId::from_bytes(
                     operation_id.into_bytes(),
@@ -1323,6 +1817,814 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_claims_use_pinned_ceiling_and_current_owner() -> Result<()> {
+        model_claim_host(StreamClient::new(Arc::new(MemoryStream::default())))
+            .await
+            .map(|_| ())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[tokio::test]
+    async fn owned_task_journal_guards_survive_local_stream_reopen() -> Result<()> {
+        let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let payloads = model_claim_host(StreamClient::new(Arc::new(provider))).await?;
+        let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let stream = StreamClient::new(Arc::new(provider));
+        assert_eq!(
+            stream
+                .stream(format!(
+                    "harness/v2/workflows/{}",
+                    OperationId::from_bytes([77; 16])
+                ))?
+                .tail()
+                .await?,
+            1
+        );
+        assert_eq!(
+            stream
+                .stream(format!(
+                    "harness/v2/execution/{}",
+                    OperationId::from_bytes([78; 16])
+                ))?
+                .tail()
+                .await?,
+            74
+        );
+        // The coordinator journal is durable independently of the in-memory
+        // Filesystem payloads used by this focused guard qualification.
+        let coordinator = DistributedCoordinator::open(&stream, payloads).await?;
+        let operation = coordinator
+            .scheduler()
+            .operation(OperationId::from_bytes([77; 16]))
+            .ok_or_else(|| Error::NotFound("reopened owned task".into()))?;
+        assert!(operation.cancellation_requested);
+        assert!(operation.reservation.is_some());
+        Ok(())
+    }
+
+    async fn model_claim_host<P: StreamProvider>(
+        stream: StreamClient<P>,
+    ) -> Result<Arc<MemoryPayloads>> {
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "model-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("model-test", [7; 32], owner.clone());
+        let owner_scope = issuer.root(
+            "owner",
+            Capabilities::new([
+                "operation:declare",
+                "operation:observe",
+                "operation:cancel",
+                "task:spawn:test.model@1",
+                "model:generate",
+            ]),
+        );
+        let scope = RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
+        let machine = MachineIdentity {
+            name: "test.model".into(),
+            version: "1".into(),
+            digest: [2; 32],
+        };
+        let implementation: Arc<dyn ResumableMachine> = Arc::new(BatchMachine {
+            identity: machine.clone(),
+            schema: serde_json::json!({"type": "integer"}),
+        });
+        let definition = TaskDefinition::<Value, i64>::resumable(
+            implementation.clone(),
+            serde_json::json!({"type": "integer"}),
+            serde_json::json!({"type": "integer"}),
+        )?;
+        let task = definition.identity().clone();
+        let mut tasks = TaskRegistry::default();
+        tasks.register(definition)?;
+        let mut machines = MachineRegistry::default();
+        machines.register(implementation)?;
+        let host = Arc::new(CoordinatorTaskHost::new(
+            DistributedCoordinator::open(&stream, payloads.clone()).await?,
+            stream.clone(),
+            payloads.clone(),
+            payloads.clone(),
+            owner.clone(),
+            owner_scope.clone(),
+            issuer.verifier(),
+            scope.clone(),
+            tasks,
+            machines,
+            Arc::new(SystemUnixMillisClock),
+        )?);
+        let operation_id = OperationId::from_bytes([77; 16]);
+        let task_id = TaskId::from_bytes(operation_id.into_bytes());
+        host.admit(TaskAdmissionRecord {
+            operation_id,
+            task,
+            machine,
+            input: serde_json::json!(0),
+            input_schema: serde_json::json!({"type": "integer"}),
+            output_schema: serde_json::json!({"type": "integer"}),
+            parent: None,
+            grants: scope.grants().clone(),
+            limits: scope.limits(),
+            run_limits: crate::runtime::TaskRunLimits {
+                max_steps: Some(1),
+                ..scope.run_limits()
+            },
+            policy: None,
+            extensions: None,
+            execution: None,
+        })
+        .await?;
+        let fence = {
+            let mut coordinator = host.coordinator.lock().await;
+            coordinator
+                .configure_session(
+                    &owner,
+                    &owner_scope,
+                    &issuer.verifier(),
+                    operation_id,
+                    crate::scheduler::SessionLimits {
+                        active_tasks: 1,
+                        total_tasks: 1,
+                        depth: 0,
+                        model_steps: 2,
+                    },
+                    IdempotencyKey::new("model-session")?,
+                )
+                .await?;
+            let lease = coordinator
+                .pull(&crate::distributed::Worker {
+                    id: "model-worker".into(),
+                    available: crate::scheduler::ResourceSnapshot::default(),
+                    labels: BTreeMap::new(),
+                })
+                .await?
+                .ok_or_else(|| Error::NotFound("model lease".into()))?;
+            let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
+            coordinator
+                .apply(
+                    operation_id,
+                    IdempotencyKey::new("model-start")?,
+                    crate::scheduler::SchedulerEvent::Started {
+                        operation_id,
+                        fence: fence.clone(),
+                    },
+                )
+                .await?;
+            fence
+        };
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        let attempt = OperationId::from_bytes([78; 16]);
+        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+            .await?;
+        #[cfg(feature = "filesystem")]
+        let (workflow, filesystem, volume, content_scope, original_owner, original_pending) = {
+            use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
+            let provider = ProviderRef::new("owned-workflow", "filesystem", "2")?;
+            let filesystem = Arc::new(crate::filesystem::FilesystemHost::new(
+                acyclic_fs::Fs::memory(),
+                provider.clone(),
+            )?);
+            let volume = VolumeRef::new(
+                provider,
+                "owned-private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+            )?;
+            filesystem.create_volume(&volume).await?;
+            let content_scope = issuer.root_for_agent(
+                AgentId::from_bytes([1; 16]),
+                "workflow-content",
+                Capabilities::new([
+                    volume.capability(crate::conversation::VolumeOperation::Read)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                ]),
+            );
+            let original_owner = host.journal_owner(task_id, fence.clone()).await?;
+            assert!(
+                original_owner
+                    .validate_storage(&issuer.verifier(), scope.limits().file_bytes + 1)
+                    .is_err()
+            );
+            let foreign = AuthorityIssuer::new(
+                "foreign-owner",
+                [8; 32],
+                Authority {
+                    kind: AggregateKind::Task,
+                    id: "foreign".into(),
+                },
+            );
+            assert!(
+                original_owner
+                    .validate_storage(&foreign.verifier(), 65_536)
+                    .is_err()
+            );
+            let binding = host.journal_owner(task_id, fence.clone()).await?;
+            let admission = binding.workflow_admission().clone();
+            let journal = Arc::new(crate::filesystem::FilesystemWorkflowJournal::for_task(
+                binding,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?);
+            let mut wrong = admission.clone();
+            wrong.initial.state = serde_json::json!(1);
+            assert!(journal.admit(wrong).await.is_err());
+            assert_eq!(journal.admit(admission.clone()).await?, admission);
+            let mut workflow = DurableWorkflowHost::open(
+                host.machines.clone(),
+                admission.initial,
+                journal.clone(),
+            )
+            .await?;
+            workflow
+                .step(
+                    OperationId::from_bytes([85; 16]),
+                    IdempotencyKey::new("owned-step")?,
+                    serde_json::json!(0),
+                )
+                .await?;
+            let records = journal.replay(0, 1).await?;
+            let [record] = records.as_slice() else {
+                return Err(Error::Invalid("one owned transition required".into()));
+            };
+            assert!(matches!(
+                journal
+                    .commit(0, record.idempotency_key.clone(), record.clone())
+                    .await?,
+                crate::workflow::WorkflowCommitOutcome::Replayed(_)
+            ));
+            let mut forged = record.clone();
+            forged.next.state = serde_json::json!(1);
+            forged.transition.state = serde_json::json!(1);
+            assert!(
+                journal
+                    .commit(0, forged.idempotency_key.clone(), forged)
+                    .await
+                    .is_err()
+            );
+            let path =
+                acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
+            let key = StreamKey::new(Bytes::from_static(b"owned-before-replacement"))?;
+            let original_pending = original_owner
+                .prepare_append(
+                    &path,
+                    1,
+                    &key,
+                    &Bytes::from_static(b"never published"),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?;
+            (
+                journal,
+                filesystem,
+                volume,
+                content_scope,
+                original_owner,
+                original_pending,
+            )
+        };
+        #[cfg(feature = "filesystem")]
+        let (execution, execution_pending) = {
+            use crate::executor::{ExecutionEvent, ExecutionJournal};
+            let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+                host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            let pending_operation = OperationId::from_bytes([80; 16]);
+            let digest = blake3::hash(format!("{pending_operation}:pending-execution").as_bytes());
+            let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
+            let bytes = Bytes::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "operation_id": pending_operation,
+                    "retry_digest": digest.to_hex().to_string(),
+                    "event": ExecutionEvent::Started { request_digest: [9; 32] },
+                }))
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+            );
+            let path = acyclic_stream::StreamPath::new(format!(
+                "harness/v2/execution/{pending_operation}"
+            ))?;
+            let pending = original_owner
+                .prepare_append(
+                    &path,
+                    0,
+                    &key,
+                    &bytes,
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?;
+            journal
+                .append(
+                    attempt,
+                    "request".into(),
+                    ExecutionEvent::Started {
+                        request_digest: [9; 32],
+                    },
+                )
+                .await?;
+            assert!(
+                journal
+                    .append(
+                        attempt,
+                        "wrong-claim".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 0,
+                            request_digest: [4; 32]
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            assert!(
+                journal
+                    .append(
+                        attempt,
+                        "absent-claim".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 1,
+                            request_digest: [3; 32]
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            let start = ExecutionEvent::ModelStarted {
+                step: 0,
+                request_digest: [3; 32],
+            };
+            assert!(
+                journal
+                    .append_if_tail(attempt, 1, "model".into(), start.clone())
+                    .await?
+            );
+            assert!(
+                journal
+                    .append_if_tail(attempt, 1, "model".into(), start)
+                    .await?
+            );
+            assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
+            let invocation = crate::tool::ToolInvocation::for_model_call(
+                attempt,
+                0,
+                "owned-tool".into(),
+                "test".into(),
+                serde_json::json!({}),
+            );
+            let invocation =
+                crate::executor::stage_json(&journal, attempt, "tool-invocation", &invocation)
+                    .await?;
+            journal
+                .append(
+                    attempt,
+                    "tool".into(),
+                    ExecutionEvent::ToolStarted {
+                        step: 0,
+                        call_id: "owned-tool".into(),
+                        invocation,
+                    },
+                )
+                .await?;
+            assert!(journal.replay(operation_id, 0, 1).await.is_err());
+            assert!(matches!(
+                journal
+                    .interaction_outcome(crate::InteractionId::from_bytes([91; 16]))
+                    .await,
+                Err(Error::Unsupported(_))
+            ));
+            let uncharged = OperationId::from_bytes([79; 16]);
+            let unbound = crate::filesystem::FilesystemExecutionJournal::new(
+                stream.clone(),
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            unbound
+                .append(
+                    uncharged,
+                    "request".into(),
+                    ExecutionEvent::Started {
+                        request_digest: [9; 32],
+                    },
+                )
+                .await?;
+            unbound
+                .append(
+                    uncharged,
+                    "model".into(),
+                    ExecutionEvent::ModelStarted {
+                        step: 0,
+                        request_digest: [3; 32],
+                    },
+                )
+                .await?;
+            let adopted = crate::filesystem::FilesystemExecutionJournal::for_task(
+                host.journal_owner(task_id, fence.clone()).await?,
+                uncharged,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            assert!(
+                adopted.replay(uncharged, 0, 64).await.is_err(),
+                "cold replay must reject a model start lacking its retained charge"
+            );
+            (journal, pending)
+        };
+        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+            .await?;
+        assert!(
+            host.claim_model_dispatch(task_id, attempt, 1, [4; 32], fence.clone())
+                .await
+                .is_err(),
+            "the task ceiling is one despite the larger session ceiling"
+        );
+        assert!(
+            host.claim_model_dispatch(task_id, attempt, 0, [4; 32], fence.clone())
+                .await
+                .is_err()
+        );
+        let mut stale = fence.clone();
+        stale.reservation_id.push_str("-stale");
+        assert!(
+            host.verify_execution_owner(task_id, stale.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            host.claim_model_dispatch(task_id, attempt, 0, [3; 32], stale)
+                .await
+                .is_err()
+        );
+        let fence = {
+            let mut coordinator = host.coordinator.lock().await;
+            coordinator
+                .apply(
+                    operation_id,
+                    IdempotencyKey::new("model-release")?,
+                    crate::scheduler::SchedulerEvent::LeaseReleased {
+                        operation_id,
+                        fence: fence.clone(),
+                    },
+                )
+                .await?;
+            let lease = coordinator
+                .pull(&crate::distributed::Worker {
+                    id: "replacement-worker".into(),
+                    available: crate::scheduler::ResourceSnapshot::default(),
+                    labels: BTreeMap::new(),
+                })
+                .await?
+                .ok_or_else(|| Error::NotFound("replacement model lease".into()))?;
+            let replacement = crate::scheduler::LeaseFence::from(&lease.reservation);
+            coordinator
+                .apply(
+                    operation_id,
+                    IdempotencyKey::new("model-restart")?,
+                    crate::scheduler::SchedulerEvent::Started {
+                        operation_id,
+                        fence: replacement.clone(),
+                    },
+                )
+                .await?;
+            replacement
+        };
+        // An admitted attempt whose execution-journal claim was not yet written
+        // can continue under a new owner without spending another unit.
+        host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
+            .await?;
+        assert!(
+            host.claim_model_dispatch(task_id, attempt, 1, [4; 32], fence.clone())
+                .await
+                .is_err()
+        );
+        #[cfg(feature = "filesystem")]
+        let (replacement_workflow, pending) = {
+            use crate::workflow::WorkflowJournal;
+            assert!(
+                matches!(
+                    stream.commit(original_pending).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
+                ),
+                "lease replacement after preflight must atomically prevent publication"
+            );
+            assert_eq!(
+                stream
+                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                    .tail()
+                    .await?,
+                1
+            );
+            let record = workflow
+                .replay(0, 1)
+                .await?
+                .pop()
+                .ok_or_else(|| Error::NotFound("owned workflow record".into()))?;
+            assert!(
+                workflow
+                    .commit(0, record.idempotency_key.clone(), record.clone())
+                    .await
+                    .is_err(),
+                "the previous lease cannot replay a checkpoint mutation"
+            );
+            assert!(original_owner.verify(false).await.is_err());
+            let binding = host.journal_owner(task_id, fence.clone()).await?;
+            let path =
+                acyclic_stream::StreamPath::new(format!("harness/v2/workflows/{operation_id}"))?;
+            let key = StreamKey::new(Bytes::from_static(b"owned-pending"))?;
+            let pending = binding
+                .prepare_append(
+                    &path,
+                    1,
+                    &key,
+                    &Bytes::from_static(b"never published"),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?;
+            let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
+                binding,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            assert!(matches!(
+                journal
+                    .commit(0, record.idempotency_key.clone(), record)
+                    .await?,
+                crate::workflow::WorkflowCommitOutcome::Replayed(_)
+            ));
+            (journal, pending)
+        };
+        #[cfg(feature = "filesystem")]
+        let execution_pending =
+            {
+                assert!(
+                    matches!(
+                        stream.commit(execution_pending).await?,
+                        acyclic_stream::CommitOutcome::Conflict(_)
+                    ),
+                    "lease replacement must atomically fence execution publication"
+                );
+                let pending_operation = OperationId::from_bytes([80; 16]);
+                let path = acyclic_stream::StreamPath::new(format!(
+                    "harness/v2/execution/{pending_operation}"
+                ))?;
+                assert!(matches!(
+                    stream.bounds(path.as_str()).await,
+                    Err(StreamError::NotFound)
+                ));
+                let digest =
+                    blake3::hash(format!("{pending_operation}:pending-execution").as_bytes());
+                let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
+                let bytes = Bytes::from(serde_json::to_vec(&serde_json::json!({
+                "operation_id": pending_operation,
+                "retry_digest": digest.to_hex().to_string(),
+                "event": crate::executor::ExecutionEvent::Started { request_digest: [9; 32] },
+            })).map_err(|error| Error::Invalid(error.to_string()))?);
+                host.journal_owner(task_id, fence.clone())
+                    .await?
+                    .prepare_append(
+                        &path,
+                        0,
+                        &key,
+                        &bytes,
+                        crate::distributed::JournalWrite::Fresh,
+                    )
+                    .await?
+            };
+        host.coordinator
+            .lock()
+            .await
+            .cancel_operation(
+                &owner,
+                &owner_scope,
+                &issuer.verifier(),
+                operation_id,
+                IdempotencyKey::new("model-cancel")?,
+                false,
+            )
+            .await?;
+        // Cancellation retains this owner only to settle an already dispatched attempt.
+        host.verify_execution_owner(task_id, fence.clone()).await?;
+        #[cfg(feature = "filesystem")]
+        {
+            use crate::executor::{ExecutionEvent, ExecutionJournal};
+            assert!(
+                matches!(
+                    stream.commit(execution_pending).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
+                ),
+                "cancellation must atomically fence execution publication"
+            );
+            assert!(matches!(
+                stream
+                    .bounds(&format!(
+                        "harness/v2/execution/{}",
+                        OperationId::from_bytes([80; 16])
+                    ))
+                    .await,
+                Err(StreamError::NotFound)
+            ));
+            assert!(
+                execution
+                    .append(
+                        attempt,
+                        "model".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 0,
+                            request_digest: [3; 32]
+                        }
+                    )
+                    .await
+                    .is_err(),
+                "stale lease must reject even an exact retry"
+            );
+            assert!(
+                execution
+                    .append(
+                        attempt,
+                        "stale-tool-settlement".into(),
+                        ExecutionEvent::ToolFailed {
+                            step: 0,
+                            call_id: "owned-tool".into(),
+                            reason: crate::executor::ToolFailureKind::ExecutorRejected
+                        }
+                    )
+                    .await
+                    .is_err(),
+                "a replaced lease cannot settle the retained dispatch"
+            );
+            let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+                host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            assert!(
+                journal
+                    .append(
+                        attempt,
+                        "model".into(),
+                        ExecutionEvent::ModelStarted {
+                            step: 0,
+                            request_digest: [3; 32]
+                        }
+                    )
+                    .await
+                    .is_err(),
+                "cancellation forbids new or retried starts"
+            );
+            let bytes = serde_json::to_vec(&crate::model::ModelEvent::Content {
+                delta: "settled".into(),
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            let reference = journal
+                .stage(
+                    attempt,
+                    "model-observation".into(),
+                    bytes,
+                    "application/json",
+                )
+                .await?;
+            let observation = ExecutionEvent::Model {
+                step: 0,
+                event: reference.clone(),
+            };
+            assert!(
+                journal
+                    .append(
+                        attempt,
+                        "missing-tool".into(),
+                        ExecutionEvent::ToolFailed {
+                            step: 0,
+                            call_id: "missing".into(),
+                            reason: crate::executor::ToolFailureKind::ExecutorRejected
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            let tool_settlement = ExecutionEvent::ToolFailed {
+                step: 0,
+                call_id: "owned-tool".into(),
+                reason: crate::executor::ToolFailureKind::ExecutorRejected,
+            };
+            journal
+                .append(attempt, "tool-settlement".into(), tool_settlement.clone())
+                .await?;
+            journal
+                .append(attempt, "tool-settlement".into(), tool_settlement.clone())
+                .await?;
+            assert!(
+                journal
+                    .append(attempt, "another-tool-settlement".into(), tool_settlement)
+                    .await
+                    .is_err()
+            );
+            for index in 0..70 {
+                journal
+                    .append(attempt, format!("settlement-{index}"), observation.clone())
+                    .await?;
+            }
+            journal
+                .append(attempt, "settlement-69".into(), observation.clone())
+                .await?;
+            assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 64);
+            assert_eq!(journal.replay(attempt, 64, 64).await?.len(), 10);
+            let reopened = crate::filesystem::FilesystemExecutionJournal::for_task(
+                host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            reopened
+                .append(attempt, "settlement-69".into(), observation.clone())
+                .await?;
+            assert!(
+                reopened
+                    .append(
+                        attempt,
+                        "settlement-69".into(),
+                        ExecutionEvent::Model {
+                            step: 1,
+                            event: reference,
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+            assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
+        }
+        #[cfg(feature = "filesystem")]
+        {
+            use crate::workflow::WorkflowJournal;
+            assert!(
+                matches!(
+                    stream.commit(pending).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
+                ),
+                "cancellation after preflight must atomically prevent publication"
+            );
+            assert_eq!(
+                stream
+                    .stream(format!("harness/v2/workflows/{operation_id}"))?
+                    .tail()
+                    .await?,
+                1
+            );
+            let record = replacement_workflow
+                .replay(0, 1)
+                .await?
+                .pop()
+                .ok_or_else(|| Error::NotFound("cancelled workflow record".into()))?;
+            assert!(
+                replacement_workflow
+                    .commit(0, record.idempotency_key.clone(), record)
+                    .await
+                    .is_err(),
+                "cancellation must reject checkpoint mutation retries"
+            );
+            assert!(
+                host.journal_owner(task_id, fence.clone())
+                    .await?
+                    .verify(false)
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence)
+                .await
+                .is_err()
+        );
+        Ok(payloads)
+    }
+
+    #[tokio::test]
     async fn partially_admitted_batch_reopens_and_fills_only_missing_slots() -> Result<()> {
         let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let payloads = Arc::new(MemoryPayloads::new()?);
@@ -1421,6 +2723,56 @@ mod tests {
             policy: None,
             execution: None,
         };
+        let bounded_parent_operation = OperationId::from_bytes([27; 16]);
+        let bounded_parent = TaskId::from_bytes(bounded_parent_operation.into_bytes());
+        let mut bounded = root_admission(bounded_parent_operation, serde_json::json!(0));
+        bounded.grants = Capabilities::new(["task:spawn:test.batch@1"]);
+        bounded.limits.model_steps = 2;
+        bounded.run_limits = crate::runtime::TaskRunLimits {
+            concurrency: Some(2),
+            max_steps: Some(2),
+            deadline_epoch_ms: None,
+        };
+        assert!(matches!(
+            host.admit(bounded.clone()).await?,
+            Admission::Accepted(_)
+        ));
+        for kind in 0..5 {
+            let mut child = bounded.clone();
+            child.operation_id = OperationId::new();
+            child.parent = Some(bounded_parent);
+            match kind {
+                0 => child.grants = runtime_scope.grants().clone(),
+                1 => child.limits.model_steps = 3,
+                2 => child.run_limits.max_steps = Some(3),
+                3 => child.run_limits.max_steps = None,
+                _ => child.run_limits.concurrency = None,
+            }
+            let operation_id = child.operation_id;
+            assert!(matches!(
+                host.admit(child).await,
+                Err(Error::Unauthorized(_))
+            ));
+            assert!(host.reconcile_admission(operation_id).await?.is_none());
+        }
+        let mut valid_child = bounded.clone();
+        valid_child.operation_id = OperationId::new();
+        valid_child.parent = Some(bounded_parent);
+        valid_child.limits.model_steps = 1;
+        valid_child.run_limits.max_steps = Some(1);
+        valid_child.run_limits.concurrency = Some(1);
+        assert!(matches!(
+            host.admit(valid_child).await?,
+            Admission::Accepted(_)
+        ));
+        let mut wide_batch = request.clone();
+        wide_batch.batch_id = BatchId::from_bytes([28; 16]);
+        wide_batch.parent = Some(bounded_parent);
+        assert!(matches!(
+            host.admit_batch(wide_batch.clone()).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(host.retained_batch(wide_batch.batch_id).await?.is_none());
         let mut forged = request.clone();
         forged.task.digest = [99; 32];
         assert!(matches!(
