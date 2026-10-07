@@ -15,7 +15,7 @@ use crate::{
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, ContentBindings, DurableTaskHost, ResumableTaskSession, RuntimeScope,
-        TaskContext, TaskRegistry, TaskRunLimits,
+        TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -145,6 +145,7 @@ pub struct FilesystemTaskRuntime<P, A, O> {
     signed: Scope,
     tools: ToolRegistry,
     maximum_payload_bytes: u64,
+    policy: Option<Arc<dyn ToolPolicy>>,
 }
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
@@ -211,6 +212,48 @@ where
         maximum_payload_bytes: u64,
         clock: Arc<dyn UnixMillisClock>,
     ) -> Result<Self> {
+        Self::open_with_policy_and_clock(
+            stream,
+            filesystem,
+            volume,
+            verifier,
+            signed,
+            scope,
+            tasks,
+            machines,
+            tools,
+            session_limits,
+            concurrency,
+            maximum_payload_bytes,
+            clock,
+            None,
+        )
+        .await
+    }
+
+    /// Composes one exact policy into the existing task host, runtime and stock
+    /// executor. The policy identity is retained at admission and must match
+    /// after reopening. Approval decisions still need an interaction binding.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit existing provider and authority boundaries"
+    )]
+    pub async fn open_with_policy_and_clock(
+        stream: StreamClient<P>,
+        filesystem: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef,
+        verifier: AuthorityVerifier,
+        signed: Scope,
+        scope: RuntimeScope,
+        tasks: TaskRegistry,
+        machines: MachineRegistry,
+        tools: ToolRegistry,
+        session_limits: SessionLimits,
+        concurrency: usize,
+        maximum_payload_bytes: u64,
+        clock: Arc<dyn UnixMillisClock>,
+        policy: Option<Arc<dyn ToolPolicy>>,
+    ) -> Result<Self> {
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             volume.clone(),
@@ -224,25 +267,27 @@ where
             signed.clone(),
             maximum_payload_bytes,
         )?);
-        let host = Arc::new(
-            CoordinatorTaskHost::new(
-                DistributedCoordinator::open(&stream, reader.clone())
-                    .await?
-                    .with_payload_store(payloads.clone()),
-                stream,
-                payloads,
-                reader.clone(),
-                verifier.audience().clone(),
-                signed.clone(),
-                verifier.clone(),
-                scope.clone(),
-                tasks.clone(),
-                machines,
-                clock,
-            )?
-            .with_session_limits(session_limits)?,
-        );
-        let harness = AgentHarness::with_content(
+        let mut host = CoordinatorTaskHost::new(
+            DistributedCoordinator::open(&stream, reader.clone())
+                .await?
+                .with_payload_store(payloads.clone()),
+            stream,
+            payloads,
+            reader.clone(),
+            verifier.audience().clone(),
+            signed.clone(),
+            verifier.clone(),
+            scope.clone(),
+            tasks.clone(),
+            machines,
+            clock,
+        )?
+        .with_session_limits(session_limits)?;
+        if let Some(policy) = &policy {
+            host = host.with_policy(policy.clone())?;
+        }
+        let host = Arc::new(host);
+        let harness = AgentHarness::with_policy(
             tasks,
             tools.clone(),
             scope,
@@ -253,6 +298,8 @@ where
                 reader,
                 writer: None,
             }),
+            None,
+            policy.clone(),
         )?;
         Ok(Self {
             host,
@@ -263,6 +310,7 @@ where
             signed,
             tools,
             maximum_payload_bytes,
+            policy,
         })
     }
 
@@ -687,10 +735,9 @@ where
                 "task scope lacks model:generate".into(),
             ));
         }
-        if admission.policy.is_some() || admission.execution.is_some() {
+        if admission.execution.is_some() {
             return Err(Error::Unsupported(
-                "persistent local stock composition has no policy or routed execution provider"
-                    .into(),
+                "persistent local stock composition has no routed execution provider".into(),
             ));
         }
         let task_context = self
@@ -719,7 +766,7 @@ where
         )?;
         let executor = StockExecutor::new(model, provider, context, self.tools.clone())
             .with_limits(limits)
-            .with_tool_authority(scope, None)?
+            .with_tool_authority(scope, self.policy.clone())?
             .with_durable_task(self.host.clone(), task, fence);
         Ok(FilesystemTaskExecution {
             operation_id,

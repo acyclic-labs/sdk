@@ -174,12 +174,9 @@ where
                     "command scope differs from retained task".into(),
                 ));
             }
-            if admission.policy.is_some()
-                || admission.execution.is_some()
-                || admission.run_limits.deadline_epoch_ms.is_some()
-            {
+            if admission.execution.is_some() || admission.run_limits.deadline_epoch_ms.is_some() {
                 return Err(Error::Unsupported(
-                    "stock command policy, route or deadline runner is not composed".into(),
+                    "stock command route or deadline runner is not composed".into(),
                 ));
             }
             self.runtime

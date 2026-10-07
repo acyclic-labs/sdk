@@ -24,10 +24,11 @@ use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
     ModelProvider, PreparedModelRequest,
 };
+use acyclic_harness::registry::ComponentIdentity;
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
     DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
-    ToolContext,
+    ToolContext, ToolPolicy, ToolPolicyDecision,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
 use acyclic_harness::tool::{
@@ -284,6 +285,48 @@ impl ResumableMachine for CompletedChildMachine {
     }
 }
 
+struct RestartPolicy {
+    evaluated: AtomicUsize,
+    digest: [u8; 32],
+}
+impl ToolPolicy for RestartPolicy {
+    fn identity(&self) -> ComponentIdentity {
+        ComponentIdentity {
+            name: "test.restart-policy".into(),
+            version: "1".into(),
+            digest: self.digest,
+        }
+    }
+    fn evaluate<'a>(
+        &'a self,
+        invocation: &'a ToolInvocation,
+        _scope: &'a RuntimeScope,
+    ) -> BoxFuture<'a, Result<ToolPolicyDecision>> {
+        Box::pin(async move {
+            self.evaluated.fetch_add(1, Ordering::SeqCst);
+            Ok(
+                if invocation.arguments.get("denied") == Some(&json!(true)) {
+                    ToolPolicyDecision::Deny {
+                        reason: "pinned policy denied".into(),
+                    }
+                } else {
+                    ToolPolicyDecision::Allow
+                },
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn worker_pinned_policy_denies_dispatch_and_reconciles_after_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::PolicyTool).await
+}
+
+#[tokio::test]
+async fn worker_pinned_policy_model_binding_survives_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::PolicyModel).await
+}
+
 struct TestClock(AtomicU64);
 impl UnixMillisClock for TestClock {
     fn now_unix_millis(&self) -> u64 {
@@ -295,7 +338,9 @@ impl UnixMillisClock for TestClock {
 enum WorkerCommand {
     Wait,
     Model,
+    PolicyModel,
     Tool,
+    PolicyTool,
     Timer,
     TimerThenMail,
     MailSend,
@@ -364,7 +409,10 @@ impl ResumableMachine for CommandMachine {
                         MAIL_RECEIVE_TASK_COMMAND_KIND
                     } else if self.command == WorkerCommand::Timer {
                         TIMER_TASK_COMMAND_KIND
-                    } else if self.command == WorkerCommand::Tool {
+                    } else if matches!(
+                        self.command,
+                        WorkerCommand::Tool | WorkerCommand::PolicyTool
+                    ) {
                         TOOL_TASK_COMMAND_KIND
                     } else {
                         MODEL_TASK_COMMAND_KIND
@@ -403,7 +451,10 @@ impl ResumableMachine for CommandMachine {
                 assert!(value.get("payload").is_some());
             } else if matches!(self.command, WorkerCommand::Timer | WorkerCommand::MailSend) {
                 assert!(value.is_null());
-            } else if self.command == WorkerCommand::Tool {
+            } else if matches!(
+                self.command,
+                WorkerCommand::Tool | WorkerCommand::PolicyTool
+            ) {
                 assert_eq!(value, json!("tool-restored"));
             } else {
                 assert_eq!(value.get("text"), Some(&json!("partial-restored")));
@@ -440,9 +491,23 @@ async fn worker_restart_with_options(
     let with_mail_receive = command == WorkerCommand::MailReceive;
     let with_two_waits = command == WorkerCommand::TimerThenMail;
     let with_timer = matches!(command, WorkerCommand::Timer | WorkerCommand::TimerThenMail);
-    let uncertain = matches!(command, WorkerCommand::Model | WorkerCommand::Tool);
+    let uncertain = matches!(
+        command,
+        WorkerCommand::Model
+            | WorkerCommand::PolicyModel
+            | WorkerCommand::Tool
+            | WorkerCommand::PolicyTool
+    );
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
-    let with_tool = command == WorkerCommand::Tool;
+    let with_tool = matches!(command, WorkerCommand::Tool | WorkerCommand::PolicyTool);
+    let with_policy = matches!(
+        command,
+        WorkerCommand::PolicyTool | WorkerCommand::PolicyModel
+    );
+    let policy = Arc::new(RestartPolicy {
+        evaluated: AtomicUsize::new(0),
+        digest: [52; 32],
+    });
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
     let stream_root = directory.path().join("streams");
@@ -586,9 +651,9 @@ async fn worker_restart_with_options(
             signed.clone(),
             65_536,
         )?);
-        let runtime = FilesystemTaskRuntime::open_with_clock(
+        let runtime = FilesystemTaskRuntime::open_with_policy_and_clock(
             stream.clone(),
-            filesystem,
+            filesystem.clone(),
             volume.clone(),
             issuer.verifier(),
             signed.clone(),
@@ -605,8 +670,43 @@ async fn worker_restart_with_options(
             1,
             65_536,
             clock.clone(),
+            with_policy.then(|| policy.clone() as Arc<dyn ToolPolicy>),
         )
         .await?;
+        if with_policy && reopened {
+            let wrong = FilesystemTaskRuntime::open_with_policy_and_clock(
+                stream.clone(),
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                signed.clone(),
+                scope.clone(),
+                tasks.clone(),
+                machines.clone(),
+                tools.clone(),
+                SessionLimits {
+                    active_tasks: 1,
+                    total_tasks: 1,
+                    depth: 1,
+                    model_steps: 1,
+                },
+                1,
+                65_536,
+                clock.clone(),
+                Some(Arc::new(RestartPolicy {
+                    evaluated: AtomicUsize::new(0),
+                    digest: [53; 32],
+                })),
+            )
+            .await?;
+            assert!(matches!(
+                wrong.task_host().observe_admission(task).await,
+                Err(Error::Conflict(_))
+            ));
+            drop(wrong);
+            assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
+            assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+        }
         if !reopened {
             let input = if with_child {
                 let admit = serde_json::to_vec(&TaskAdmitCommand {
@@ -1131,6 +1231,28 @@ async fn worker_restart_with_options(
                         kind: TOOL_TASK_COMMAND_KIND.into(),
                         payload: file,
                     };
+                    if with_policy {
+                        let denied = serde_json::to_value(ToolTaskCommand {
+                            arguments: json!({"denied":true}),
+                            ..payload.clone()
+                        })
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                        assert!(matches!(
+                            runtime
+                                .commands()
+                                .execute(
+                                    context.clone(),
+                                    LeaseFence::from(&lease.reservation),
+                                    command.clone(),
+                                    denied
+                                )
+                                .await,
+                            Err(Error::Unauthorized(_))
+                        ));
+                        assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                        assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+                        assert_eq!(policy.evaluated.load(Ordering::SeqCst), 1);
+                    }
                     let wrong = serde_json::to_value(ToolTaskCommand {
                         revision: "2".into(),
                         ..payload
@@ -1217,12 +1339,18 @@ async fn worker_restart_with_options(
             if with_command {
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
-                    usize::from(command == WorkerCommand::Model)
+                    usize::from(matches!(
+                        command,
+                        WorkerCommand::Model | WorkerCommand::PolicyModel
+                    ))
                 );
                 assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
                 assert_eq!(
                     model.reconciled.load(Ordering::SeqCst),
-                    usize::from(command == WorkerCommand::Model)
+                    usize::from(matches!(
+                        command,
+                        WorkerCommand::Model | WorkerCommand::PolicyModel
+                    ))
                 );
                 assert_eq!(
                     tool.reconciled.load(Ordering::SeqCst),
@@ -1236,7 +1364,10 @@ async fn worker_restart_with_options(
                 );
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
-                    usize::from(command == WorkerCommand::Model)
+                    usize::from(matches!(
+                        command,
+                        WorkerCommand::Model | WorkerCommand::PolicyModel
+                    ))
                 );
                 assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
@@ -1300,6 +1431,11 @@ async fn worker_restart_with_options(
             }
         }
         // All provider, runtime and coordinator handles are dropped here.
+    }
+    if with_policy && with_tool {
+        assert!(policy.evaluated.load(Ordering::SeqCst) >= 3);
+        assert_eq!(tool.executed.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.reconciled.load(Ordering::SeqCst), 1);
     }
     Ok(())
 }
