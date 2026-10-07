@@ -112,8 +112,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
               if (frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
               expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
             } else {
-              if (frame.case !== "body" || frame.value.byteLength > 65536) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-              bodySize += BigInt(frame.value.byteLength);
+              if (frame.case !== "body" || frame.value.decodedLength > 65536n) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              bodySize += frame.value.decodedLength;
               if (bodySize > maximum) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
               if (bodySize > expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
             }

@@ -169,11 +169,16 @@ async fn operation(
                 } else {
                     65536
                 };
-                for bytes in selected.body.chunks(size) {
+                for (index, bytes) in selected.body.chunks(size).enumerate() {
+                    let body = if index % 2 == 1 && size == 65536 {
+                        super::response::zstd_body(bytes)
+                    } else {
+                        super::response::plain_body(bytes.to_vec())
+                    };
                     result.extend(framed(
                         output,
                         &wire::GetObjectResponse {
-                            frame: Some(wire::get_object_response::Frame::Body(bytes.to_vec())),
+                            frame: Some(wire::get_object_response::Frame::Body(body)),
                         },
                     )?);
                 }

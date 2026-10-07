@@ -112,12 +112,29 @@ message GetObjectHeader {
   ObjectInfo object = 1;
   ContentRange content_range = 2;
 }
+// Encoding of one body frame's data.
+enum Codec {
+  // data is the decoded bytes themselves.
+  CODEC_NONE = 0;
+  // data is one or more complete Zstandard frames.
+  CODEC_ZSTD = 1;
+}
+// One body frame. data decodes under codec to exactly decoded_length bytes, which
+// follow the previous frame's bytes in the selected representation. A client
+// rejects decoded_length above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES before it
+// allocates or decompresses, rejects any other decoded length, and rejects an
+// unknown codec. A server chooses the codec independently for every frame.
+message Body {
+  Codec codec = 1;
+  bytes data = 2;
+  uint64 decoded_length = 3;
+}
 // Exactly one metadata header first. The body belongs to that complete representation.
 // A terminal semantic error can follow the header when an HTTP stream is already open.
 message GetObjectResponse {
   oneof frame {
     GetObjectHeader header = 1;
-    bytes body = 2;
+    Body body = 2;
     ErrorDetail error = 3;
   }
 }

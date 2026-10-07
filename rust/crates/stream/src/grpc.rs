@@ -1,6 +1,7 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
 use std::{
+    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{
@@ -26,7 +27,7 @@ use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
     commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
     fork_receipt_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
-    optional_key, path, record, record_wire,
+    optional_key, path, read_response_records, read_response_wire, record, record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
@@ -446,11 +447,25 @@ impl Client {
                 next: from,
                 remaining: limit,
                 active: None,
+                buffered: VecDeque::new(),
             },
             |mut cursor| async move {
                 loop {
                     if cursor.remaining == Some(0) {
                         return None;
+                    }
+                    if let Some(record) = cursor.buffered.pop_front() {
+                        if record.sequence == cursor.next {
+                            cursor.next = cursor.next.saturating_add(1);
+                            if let Some(remaining) = &mut cursor.remaining {
+                                *remaining = remaining.saturating_sub(1);
+                            }
+                            return Some((Ok(record), cursor));
+                        }
+                        if record.sequence < cursor.next {
+                            continue;
+                        }
+                        return Some((Err(StreamError::Unavailable), cursor));
                     }
                     if cursor.active.is_none() {
                         match cursor.open().await {
@@ -464,15 +479,7 @@ impl Client {
                     let active_endpoint = active.endpoint;
                     match active.records.next().await {
                         Some(Ok(response)) => match read_response(response) {
-                            Ok(record) if record.sequence == cursor.next => {
-                                cursor.next = cursor.next.saturating_add(1);
-                                if let Some(remaining) = &mut cursor.remaining {
-                                    *remaining = remaining.saturating_sub(1);
-                                }
-                                return Some((Ok(record), cursor));
-                            }
-                            Ok(record) if record.sequence < cursor.next => continue,
-                            Ok(_) => return Some((Err(StreamError::Unavailable), cursor)),
+                            Ok(records) => cursor.buffered = records,
                             Err(error) => return Some((Err(error), cursor)),
                         },
                         Some(Err(error)) if retryable(&error) => {
@@ -509,6 +516,8 @@ struct RecordCursor {
     next: u64,
     remaining: Option<u32>,
     active: Option<ActiveRecords>,
+    /// Decoded records from the latest frame that the caller has not yet taken.
+    buffered: VecDeque<Record>,
 }
 
 struct ActiveRecords {
@@ -959,9 +968,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 .map(|record| {
                     record
                         .map(record_wire)
-                        .map(|record| wire::ReadResponse {
-                            record: Some(record),
-                        })
+                        .map(|record| read_response_wire(vec![record]))
                         .map_err(|error| error_status(&error))
                 })
                 .boxed(),
@@ -992,9 +999,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 .map(|record| {
                     record
                         .map(record_wire)
-                        .map(|record| wire::ReadResponse {
-                            record: Some(record),
-                        })
+                        .map(|record| read_response_wire(vec![record]))
                         .map_err(|error| error_status(&error))
                 })
                 .boxed(),
@@ -1220,8 +1225,11 @@ fn status(error: &tonic::Status) -> StreamError {
     }
 }
 
-fn read_response(value: wire::ReadResponse) -> Result<Record, StreamError> {
-    record(value.record.ok_or(StreamError::Unavailable)?)
+fn read_response(value: wire::ReadResponse) -> Result<VecDeque<Record>, StreamError> {
+    read_response_records(value)?
+        .into_iter()
+        .map(record)
+        .collect()
 }
 
 #[cfg(test)]
@@ -1318,6 +1326,165 @@ mod tests {
             Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]),
             "fixture",
         )?;
+        crate::conformance::verify(&transport).await?;
+        Ok(())
+    }
+
+    /// Regroups every Read frame into batches of three records that alternate
+    /// between Zstandard and uncompressed frames.
+    #[derive(Clone)]
+    struct MixedFrames(Service<MemoryStream>);
+
+    #[async_trait]
+    impl StreamService for MixedFrames {
+        type ReadStream = futures::stream::BoxStream<'static, Result<wire::ReadResponse, Status>>;
+        type FollowStream = futures::stream::BoxStream<'static, Result<wire::ReadResponse, Status>>;
+        type ChildrenStream =
+            futures::stream::BoxStream<'static, Result<wire::ChildrenResponse, Status>>;
+
+        async fn inspect_idempotency(
+            &self,
+            request: Request<wire::InspectIdempotencyRequest>,
+        ) -> Result<Response<wire::InspectIdempotencyResponse>, Status> {
+            self.0.inspect_idempotency(request).await
+        }
+        async fn append(
+            &self,
+            request: Request<wire::AppendRequest>,
+        ) -> Result<Response<wire::AppendResponse>, Status> {
+            self.0.append(request).await
+        }
+        async fn tail(
+            &self,
+            request: Request<wire::TailRequest>,
+        ) -> Result<Response<wire::TailResponse>, Status> {
+            self.0.tail(request).await
+        }
+        async fn fork(
+            &self,
+            request: Request<wire::ForkRequest>,
+        ) -> Result<Response<wire::ForkReceipt>, Status> {
+            self.0.fork(request).await
+        }
+        async fn read(
+            &self,
+            request: Request<wire::ReadRequest>,
+        ) -> Result<Response<Self::ReadStream>, Status> {
+            let frames = self
+                .0
+                .read(request)
+                .await?
+                .into_inner()
+                .collect::<Vec<_>>()
+                .await;
+            let mut records = Vec::new();
+            for frame in frames {
+                records
+                    .extend(read_response_records(frame?).map_err(|error| error_status(&error))?);
+            }
+            let regrouped = records
+                .chunks(3)
+                .enumerate()
+                .map(|(index, chunk)| {
+                    Ok(if index % 2 == 0 {
+                        crate::wire_codec::zstd_read_response(chunk.to_vec())
+                    } else {
+                        read_response_wire(chunk.to_vec())
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(Response::new(stream::iter(regrouped).boxed()))
+        }
+        async fn follow(
+            &self,
+            request: Request<wire::FollowRequest>,
+        ) -> Result<Response<Self::FollowStream>, Status> {
+            self.0.follow(request).await
+        }
+        async fn children(
+            &self,
+            request: Request<wire::ChildrenRequest>,
+        ) -> Result<Response<Self::ChildrenStream>, Status> {
+            self.0.children(request).await
+        }
+        async fn children_page(
+            &self,
+            request: Request<wire::ChildrenPageRequest>,
+        ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
+            self.0.children_page(request).await
+        }
+        async fn commit(
+            &self,
+            request: Request<wire::CommitRequest>,
+        ) -> Result<Response<wire::CommitResponse>, Status> {
+            self.0.commit(request).await
+        }
+        async fn read_commit(
+            &self,
+            request: Request<wire::ReadCommitRequest>,
+        ) -> Result<Response<wire::CommittedEnvelope>, Status> {
+            self.0.read_commit(request).await
+        }
+    }
+
+    #[tokio::test]
+    async fn client_reassembles_mixed_compressed_and_plain_read_frames()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())));
+        let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
+            tower::service_fn(move |_| {
+                let service = service.clone();
+                async move {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    tokio::spawn(async move {
+                        let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
+                        let _ = tonic::transport::Server::builder()
+                            .add_service(StreamServiceServer::new(service))
+                            .serve_with_incoming(incoming)
+                            .await;
+                    });
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+                }
+            }),
+        );
+        let transport = Client::from_channels(Arc::from([channel]), "fixture")?;
+        let path = StreamPath::new("accounts/mixed")?;
+        let values = (0..20_u8)
+            .map(|value| Bytes::from(vec![value; 64]))
+            .collect::<Vec<_>>();
+        transport
+            .append(AppendRequest {
+                path: path.clone(),
+                records: values.clone(),
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let records = transport
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 2,
+                limit: 17,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.sequence)
+                .collect::<Vec<_>>(),
+            (2..19).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            records
+                .into_iter()
+                .map(|record| record.value)
+                .collect::<Vec<_>>(),
+            values.get(2..19).unwrap_or_default().to_vec()
+        );
         crate::conformance::verify(&transport).await?;
         Ok(())
     }
@@ -1631,6 +1798,7 @@ mod tests {
             next: 0,
             remaining: None,
             active: None,
+            buffered: VecDeque::new(),
         };
         stale.client.preferred.store(1, Ordering::Relaxed);
         stale.advance_follow(0);
@@ -1878,11 +2046,14 @@ mod tests {
             }))
             .await?
             .into_inner();
-        let record = read
+        let frame = read
             .next()
             .await
-            .ok_or_else(|| Status::internal("read ended"))??
-            .record
+            .ok_or_else(|| Status::internal("read ended"))??;
+        let record = read_response_records(frame)
+            .map_err(|error| error_status(&error))?
+            .into_iter()
+            .next()
             .ok_or_else(|| Status::internal("record missing"))?;
         if record.sequence != 0 || record.value != Bytes::from_static(b"one") {
             return Err(Status::internal("record changed"));

@@ -1,7 +1,7 @@
 /** Logical Objects v2 clients. Public messages are generated from the canonical descriptor. */
 import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { ObjectsV2Memory, validate_objects_v2_request, validate_objects_v2_response, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
+import { ObjectsV2Memory, decode_objects_v2_body, validate_objects_v2_request, validate_objects_v2_response, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 export * from "../generated/proto/objects/v2/objects_pb.js";
 
@@ -62,10 +62,12 @@ export abstract class ObjectsV2Provider {
           header = frame.value;
           expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, header), maximumBytes);
         } else {
-          if (frame.case !== "body" || frame.value.byteLength > 65536) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-          length += frame.value.byteLength;
+          if (frame.case !== "body") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+          // Rust bounds the declared length by the frame limit and the bytes still selected before decompressing.
+          const chunk = decode_objects_v2_body(toBinary(wire.BodySchema, frame.value), expected - BigInt(length));
+          length += chunk.byteLength;
           if (BigInt(length) > maximumBytes) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
-          chunks.push(frame.value);
+          chunks.push(chunk);
         }
       }
       if (header === undefined) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);

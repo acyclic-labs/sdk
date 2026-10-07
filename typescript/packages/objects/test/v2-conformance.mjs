@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { zstdCompressSync } from "node:zlib";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
 import { MemoryObjectsV2 } from "@acyclic-labs/objects";
@@ -13,6 +14,14 @@ const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "obj
 const make = (name, value) => create(wire[`${name}Schema`], value);
 const fail = (code) => error => error.code === code;
 const bytes = new Uint8Array(135000).map((_, index) => index % 251);
+const zstdBody = (data, decodedLength = BigInt(data.length)) => make("Body", { codec: wire.Codec.ZSTD, data: zstdCompressSync(data), decodedLength });
+const plainBody = data => make("Body", { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
+// Compresses every other download frame so clients reassemble mixed codecs in order.
+const mixedFrames = frames => frames.map((frame, index) => {
+  const message = fromBinary(wire.GetObjectResponseSchema, frame);
+  if (message.frame.case !== "body" || index % 2 === 0) return frame;
+  return toBinary(wire.GetObjectResponseSchema, make("GetObjectResponse", { frame: { case: "body", value: zstdBody(message.frame.value.data) } }));
+});
 
 async function fixture() {
   await MemoryObjectsV2.create(); // initialize the shared WASM runtime
@@ -44,7 +53,8 @@ async function fixture() {
         query = toBinary(headerSchema, first.frame.value);
         body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); return frame.value; }));
       } else query = decode_objects_v2_json(input, data, 16 * 1024 * 1024);
-      const result = await memory.invoke(route, query, body, 64n * 1024n * 1024n);
+      const invoked = await memory.invoke(route, query, body, 64n * 1024n * 1024n);
+      const result = route === "objects/get" ? mixedFrames(invoked) : invoked;
       const encoded = result.map(frame => Buffer.from(encode_objects_v2_json(output, frame, 16 * 1024 * 1024)));
       response.writeHead(200, { "content-type": route === "objects/get" ? "application/x-ndjson" : "application/json" });
       const payload = route === "objects/get" ? Buffer.concat(encoded.flatMap(frame => [frame, Buffer.from("\n")])) : encoded[0];
@@ -103,7 +113,8 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
   await MemoryObjectsV2.create();
   const info = { etag: "opaque", size: 1n, lastModified: { seconds: 0n, nanos: 0 } };
   const header = make("GetObjectResponse", { frame: { case: "header", value: { object: info } } });
-  const body = make("GetObjectResponse", { frame: { case: "body", value: new Uint8Array([1]) } });
+  const body = make("GetObjectResponse", { frame: { case: "body", value: plainBody(new Uint8Array([1])) } });
+  const bodyFrame = value => make("GetObjectResponse", { frame: { case: "body", value } });
   const encode = frame => Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024));
   const lines = frames => Buffer.concat(frames.flatMap(frame => [encode(frame), Buffer.from("\n")]));
   const query = make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" });
@@ -116,9 +127,19 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
     [lines([make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 999999999n } } } })]), "application/x-ndjson", wire.ErrorCode.QUOTA_EXCEEDED],
     [lines([make("GetObjectResponse", { frame: { case: "header", value: { object: info, contentRange: { start: 0n, end: 0n, total: 1n } } } }), body]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     [Buffer.from('{"unknown":true}\n'), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    // Declared lengths above the frame limit are refused before decompressing the garbage data.
+    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 65537n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(zstdBody(new Uint8Array([1, 2]), 1n))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(make("Body", { codec: 2, data: zstdCompressSync(new Uint8Array([1])), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.NONE, data: new Uint8Array([1]), decodedLength: 2n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
   ]) {
     const client = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(payload, { headers: { "content-type": media } }) });
     await assert.rejects(client.get(query, 16n), fail(code));
+  }
+  for (const frame of [body, bodyFrame(zstdBody(new Uint8Array([1])))]) {
+    const client = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([header, frame]), { headers: { "content-type": "application/x-ndjson" } }) });
+    assert.deepEqual([...(await client.get(query, 16n)).body], [1]);
   }
   const corrupt = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response('{"bucket":{"name":"different.bucket"},"createdAt":"1970-01-01T00:00:00Z"}', { headers: { "content-type": "application/json" } }) });
   await assert.rejects(corrupt.headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.UNAVAILABLE));

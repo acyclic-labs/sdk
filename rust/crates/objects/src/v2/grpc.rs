@@ -13,7 +13,6 @@ use tonic::{
 };
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
-const FRAME_BYTES: usize = 64 * 1024;
 
 fn put_frame(chunk: Result<Bytes, Error>) -> wire::PutObjectRequest {
     wire::PutObjectRequest {
@@ -300,9 +299,8 @@ impl GrpcObjects {
                 };
             };
             match frame.frame {
-                Some(wire::get_object_response::Frame::Body(bytes))
-                    if bytes.len() <= FRAME_BYTES && bytes.len() as u64 <= remaining =>
-                {
+                Some(wire::get_object_response::Frame::Body(frame)) => {
+                    let bytes = response::body(frame, remaining)?;
                     let remaining = remaining - bytes.len() as u64;
                     Ok(Some((Bytes::from(bytes), (frames, remaining))))
                 }

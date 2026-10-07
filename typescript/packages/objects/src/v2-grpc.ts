@@ -174,8 +174,8 @@ export class GrpcObjectsV2 extends ObjectsV2Provider {
                   if (frame.frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.frame.value), maximum);
                 } else {
-                  if (frame.frame.case !== "body" || frame.frame.value.byteLength > 65536 || BigInt(frame.frame.value.byteLength) > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-                  remaining -= BigInt(frame.frame.value.byteLength);
+                  if (frame.frame.case !== "body" || frame.frame.value.decodedLength > 65536n || frame.frame.value.decodedLength > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+                  remaining -= frame.frame.value.decodedLength;
                 }
               } catch (error) { rejected = objectsV2Error(error); }
             }

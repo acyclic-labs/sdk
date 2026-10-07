@@ -11,7 +11,6 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
-const FRAME_BYTES: usize = 65536;
 const JSON_FRAME_BYTES: usize = 128 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
@@ -323,9 +322,8 @@ impl HttpObjects {
                 };
             };
             match frame.frame {
-                Some(wire::get_object_response::Frame::Body(bytes))
-                    if bytes.len() <= FRAME_BYTES && bytes.len() as u64 <= remaining =>
-                {
+                Some(wire::get_object_response::Frame::Body(frame)) => {
+                    let bytes = response::body(frame, remaining)?;
                     let remaining = remaining - bytes.len() as u64;
                     Ok(Some((Bytes::from(bytes), (reader, remaining))))
                 }

@@ -52,7 +52,10 @@ may impose smaller explicit bounds. Conditions are evaluated at publication,
 including multipart completion, never only at upload creation.
 
 GET requires exactly one metadata header first, followed by body frames for that
-complete representation. EOF succeeds only when the decoded length equals
+complete representation. Each download body frame is a `Body` whose `data`
+decodes under `codec` (`CODEC_NONE` or `CODEC_ZSTD`) to exactly `decodedLength`
+bytes; clients refuse a declared length above 65,536 or above the bytes still
+selected before decompressing, and refuse an unknown codec. EOF succeeds only when the decoded length equals
 ObjectInfo.size, or the selected ContentRange length. Clients check the caller's
 allocation bound before collecting bytes. A second header, malformed range,
 oversized frame, excess bytes or premature EOF fails. A terminal `error` frame
