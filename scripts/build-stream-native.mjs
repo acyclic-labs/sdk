@@ -182,6 +182,7 @@ function splitRustflags(value) {
   if (typeof value !== "string" || value.trim().length === 0) return [];
   const flags = [];
   let current = "";
+  /** @type {string|null} */
   let quote = null;
   const appendEscaped = (index) => {
     const next = value[index + 1];
@@ -215,7 +216,7 @@ function splitRustflags(value) {
   return flags;
 }
 
-export function deterministicRustflags(sourceRoot, targetDir, target, { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+export function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain?: string|null, encoded?: string|null}} */ { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
   const prior = encoded !== null && typeof encoded === "string"
     ? (encoded.length === 0 ? [] : encoded.split("\x1f"))
     : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
@@ -411,7 +412,7 @@ function maintainedBunCandidates(version) {
   const configured = envValue("BUN_BINARY");
   if (configured !== null) candidates.push(configured);
   const tools = envValue("TOOLS_DIR");
-  if (tools !== null) candidates.push(resolve(tools, "bun", version, target, executable));
+  if (typeof tools === "string") candidates.push(resolve(tools, "bun", version, target, executable));
   candidates.push("bun");
   return [...new Set(candidates)];
 }
@@ -428,7 +429,7 @@ function maintainedBunIdentity(version) {
   throw new Error(`maintained Bun ${version} is unavailable${versions.length === 0 ? "" : `; observed ${versions}`}`);
 }
 
-function normalizedPath(value, { targetDir, outputDir } = {}) {
+function normalizedPath(value, /** @type {{targetDir?: string, outputDir?: string}} */ { targetDir, outputDir } = {}) {
   if (typeof value !== "string") return value;
   let text = value.replaceAll("\\", "/");
   const prefixes = [
@@ -438,7 +439,7 @@ function normalizedPath(value, { targetDir, outputDir } = {}) {
   ];
   let replacedPrefix = false;
   for (const [prefix, replacement] of prefixes) {
-    if (typeof prefix !== "string") continue;
+    if (typeof prefix !== "string" || typeof replacement !== "string") continue;
     const normalizedPrefix = prefix.replaceAll("\\", "/").replace(/\/$/u, "");
     if (text === normalizedPrefix) return replacement;
     const prefixPattern = new RegExp(`${normalizedPrefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?=[/=]|$)`, "u");

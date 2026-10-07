@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+/** @typedef {ReturnType<typeof validBuildInputs>} BuildInputs */
+
 import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertOwnedDirectory, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -209,7 +211,8 @@ test("native qualification rejects build input identity mutations", () => {
   const valid = validBuildInputs();
   assertBuildInputs(valid);
 
-  for (const [label, mutate, expected] of [
+  /** @type {Array<[string, (value: BuildInputs) => void, RegExp]>} */
+  const mutations = [
     ["compiler", value => { value.compiler.rustc.output = "rustc 1.99.0"; }, /build input attestation differs/],
     ["generator", value => { value.generator.version = "3.10.4"; }, /build input attestation differs/],
     ["generator options", value => { value.generator.options.output_dir = "C:/runner/_work/other-bundle"; }, /build input attestation differs/],
@@ -218,10 +221,11 @@ test("native qualification rejects build input identity mutations", () => {
     ["linker", value => { value.linker.actual.linker = "C:/Program Files/LLVM/lld-link.exe"; }, /build input attestation differs/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
-    ["incremental policy", value => { value.profile.cargo_incremental = null; }, /incremental policy is not pinned to zero/],
+    ["incremental policy", value => { Object.assign(value.profile, { cargo_incremental: null }); }, /incremental policy is not pinned to zero/],
     ["generator cargo options", value => { value.generator.options.cargo_options = ["--offline"]; }, /generator cargo options are invalid/],
-    ["cache", value => { value.cache.wrapper = 42; }, /native build input cache\.wrapper is invalid/],
-  ]) {
+    ["cache", value => { Object.assign(value.cache, { wrapper: 42 }); }, /native build input cache\.wrapper is invalid/],
+  ];
+  for (const [label, mutate, expected] of mutations) {
     const mutated = structuredClone(valid);
     mutate(mutated);
     if (["compiler", "generator", "generator options", "bun", "invocation", "linker", "environment"].includes(label)) assert.throws(() => assertMatchingBuildInputs(valid, mutated), expected);
@@ -277,7 +281,7 @@ test("native qualification normalizes host paths in published build inputs", () 
   llvm.linker.actual.linker = "C:/LLVM/bin/lld-link.exe";
   llvm.linker.actual.args = ["--crate-name", "acyclic_stream_napi", "-Clinker=C:/LLVM/bin/lld-link.exe"];
   llvm.environment.RUSTFLAGS = "-C linker=C:/LLVM/bin/lld-link.exe";
-  llvm.environment.CARGO_ENCODED_RUSTFLAGS = "-C\x1flinker=C:/LLVM/bin/lld-link.exe";
+  Object.assign(llvm.environment, { CARGO_ENCODED_RUSTFLAGS: "-C\x1flinker=C:/LLVM/bin/lld-link.exe" });
   const normalizedLlvm = normalizeBuildInputs(llvm, {
     targetDir: "C:/runner/_work/target-stream-native",
     outputDir: "C:/runner/_work/native-bundle",
@@ -370,7 +374,9 @@ test("native qualification restores Rustflags when setup fails", async () => {
   await assert.rejects(
     withDeterministicRustflags("C:/src", "C:/target", undefined, async () => {
       assert.equal(process.env.RUSTFLAGS, undefined);
-      assert.match(process.env.CARGO_ENCODED_RUSTFLAGS, /__acyclic_stream_source/u);
+      const encodedRustflags = process.env.CARGO_ENCODED_RUSTFLAGS;
+      assert.ok(encodedRustflags);
+      assert.match(encodedRustflags, /__acyclic_stream_source/u);
       assert.equal(process.env.CARGO_INCREMENTAL, "0");
       assert.equal(process.env.CARGO_PROFILE_RELEASE_INCREMENTAL, "false");
       throw new Error("capture setup failed");
@@ -512,7 +518,8 @@ test("native capture restores nested wrappers and PATH and receipts retain the i
     assert.equal(process.env.PATH, prior.PATH);
 
     const raw = validBuildInputs();
-    raw.environment.RUSTC_WORKSPACE_WRAPPER = invoked;
+    assert.ok(invoked);
+    Object.assign(raw.environment, { RUSTC_WORKSPACE_WRAPPER: invoked });
     const receipt = buildInputsReceipt(raw, structuredClone(raw));
     assert.equal(receipt.raw_build_inputs.environment.RUSTC_WORKSPACE_WRAPPER, invoked);
 
