@@ -34,9 +34,17 @@ next model step or publishing a child prefix.
 
 Stock output-token budgets are caller-controlled: Rust exposes
 `StockExecutor::with_max_output_tokens`, and TypeScript exposes
-`HarnessBuilder.modelOutputTokens`. Both default to 4,096 tokens and accept any
-positive value representable by the model request's `u32` field. Rust binds the
+`HarnessBuilder.modelOutputTokens`. Neither adds an output-token ceiling when
+the caller omits the budget; explicit budgets accept any positive value
+representable by the model request's `u32` field. Rust binds the
 budget into the durable execution identity; admitted requests retain it on replay.
+
+Default admission and projection limits use representable values, with counts
+fitting the 32-bit WASM runtime and byte lengths fitting exact JavaScript integers.
+Callers may choose narrower budgets. The local runtime's default concurrency uses
+the semaphore's representable permit count; explicit concurrency still controls
+scheduling. Replay page and cache sizes control processing and retention, without
+limiting the total admitted history.
 
 `ContextPipeline` composes ordered sources and transformations. `SelectionStage`
 registers a pinned file/span or schema-validated custom attribute with a typed

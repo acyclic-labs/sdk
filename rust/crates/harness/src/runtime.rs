@@ -2227,6 +2227,29 @@ pub(crate) fn check_tool_approval(outcome: InteractionOutcome) -> Result<()> {
     }
 }
 
+/// Binds typed and stock tool approvals to the same runtime-owned action.
+/// Provider call names are part of the exact invocation, not operation IDs.
+pub(crate) fn tool_approval_request(
+    task: TaskId,
+    policy: &ComponentIdentity,
+    definition: &ToolDefinition,
+    invocation: &ToolInvocation,
+    prompt: String,
+) -> Result<(OperationId, Interaction)> {
+    validate_policy_identity(policy)?;
+    invocation.validate()?;
+    let digest = crate::contract::canonical_json_digest(&(task, policy, definition, invocation))?;
+    let mut id_bytes = [0_u8; 16];
+    id_bytes.copy_from_slice(
+        &blake3::hash(&[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat())
+            .as_bytes()[..16],
+    );
+    Ok((
+        OperationId::from_bytes(id_bytes),
+        Interaction::approval(prompt, invocation.operation_id, digest)?,
+    ))
+}
+
 /// Provider-owned, scope-bound file handles. The reader verifies every exact
 /// ref; the optional writer can only publish into its original owner's volume.
 #[derive(Clone)]
@@ -2290,7 +2313,7 @@ impl Bindings {
             tools: ToolRegistry::default(),
             resumable_tools: ResumableToolRegistry::default(),
             scope: RuntimeScope::default(),
-            concurrency: 64,
+            concurrency: tokio::sync::Semaphore::MAX_PERMITS,
             durable_host: None,
             state: None,
             spawner: None,
@@ -3937,7 +3960,7 @@ impl TaskContext {
             model: binding.model.clone(),
             messages,
             tools,
-            max_output_tokens: Some(max_output_tokens.unwrap_or(4_096)),
+            max_output_tokens,
         };
         let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
         let mut events = Vec::new();
@@ -4491,25 +4514,10 @@ impl TaskContext {
             ToolPolicyDecision::Allow => Ok(None),
             ToolPolicyDecision::Deny { reason } => Err(Error::Unauthorized(reason)),
             ToolPolicyDecision::RequireApproval { prompt } => {
-                let digest = crate::contract::canonical_json_digest(&(
-                    &self.task_id,
-                    identity,
-                    definition,
-                    invocation,
-                ))?;
-                let mut id_bytes = [0_u8; 16];
-                id_bytes.copy_from_slice(
-                    &blake3::hash(
-                        &[b"harness:tool-approval:v2".as_slice(), digest.as_slice()].concat(),
-                    )
-                    .as_bytes()[..16],
-                );
-                let approval_id = OperationId::from_bytes(id_bytes);
-                let action_id = OperationId::parse(&invocation.call_id)?;
-                Ok(Some((
-                    approval_id,
-                    Interaction::approval(prompt, action_id, digest)?,
-                )))
+                let task = self
+                    .durable_task
+                    .unwrap_or_else(|| TaskId::from_bytes(self.task_id.into_bytes()));
+                tool_approval_request(task, &identity, definition, invocation, prompt).map(Some)
             }
         }
     }
@@ -7776,5 +7784,135 @@ mod tests {
             );
         }
         assert_eq!(check_tool_approval(InteractionOutcome::Approved), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn tool_approval_binds_runtime_action_and_accepts_provider_call_names() -> Result<()> {
+        let policy = FixedPolicy {
+            identity: ComponentIdentity {
+                name: "approval.policy".into(),
+                version: "1".into(),
+                digest: [9; 32],
+            },
+            decision: ToolPolicyDecision::RequireApproval {
+                prompt: "Approve echo".into(),
+            },
+        };
+        let task = TaskId::from_bytes([42; 16]);
+        let scope = RuntimeScope::default();
+        let context = TaskContext {
+            harness: AgentHarness::new(
+                TaskRegistry::default(),
+                ToolRegistry::new(),
+                scope.clone(),
+                1,
+                None,
+            )?,
+            task_id: OperationId::from_bytes([41; 16]),
+            durable_task: Some(task),
+            descendants: TaskGroup::new(1),
+            scope,
+            policy_overrides: Vec::new(),
+            owned_interactions: None,
+            model_steps: Arc::new(AtomicUsize::new(0)),
+        };
+        let definition = ToolDefinition {
+            name: "test.echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: serde_json::json!({"type":"object"}),
+            output_schema: serde_json::json!({}),
+        };
+        let invocation = ToolInvocation::for_model_call(
+            OperationId::from_bytes([40; 16]),
+            0,
+            "provider-call-name".into(),
+            definition.name.clone(),
+            serde_json::json!({"text":"hello"}),
+        );
+        let approval = context
+            .policy_approval(&policy, &definition, &invocation)
+            .await?
+            .ok_or_else(|| Error::NotFound("policy approval".into()))?;
+        assert!(
+            matches!(&approval.1, Interaction::Approval { operation_id, .. } if *operation_id == invocation.operation_id)
+        );
+        assert_eq!(
+            approval,
+            tool_approval_request(
+                task,
+                &policy.identity,
+                &definition,
+                &invocation,
+                "Approve echo".into()
+            )?
+        );
+        assert_eq!(
+            context
+                .policy_approval(&policy, &definition, &invocation)
+                .await?,
+            Some(approval.clone())
+        );
+        for (changed_task, changed_policy, changed_definition, changed_invocation) in [
+            (
+                TaskId::from_bytes([43; 16]),
+                policy.identity.clone(),
+                definition.clone(),
+                invocation.clone(),
+            ),
+            (
+                task,
+                ComponentIdentity {
+                    version: "2".into(),
+                    digest: [8; 32],
+                    ..policy.identity.clone()
+                },
+                definition.clone(),
+                invocation.clone(),
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                ToolDefinition {
+                    revision: "2".into(),
+                    ..definition.clone()
+                },
+                invocation.clone(),
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                definition.clone(),
+                ToolInvocation {
+                    arguments: serde_json::json!({"text":"different"}),
+                    ..invocation.clone()
+                },
+            ),
+            (
+                task,
+                policy.identity.clone(),
+                definition.clone(),
+                ToolInvocation::for_model_call(
+                    OperationId::from_bytes([40; 16]),
+                    1,
+                    invocation.call_id.clone(),
+                    invocation.name.clone(),
+                    invocation.arguments.clone(),
+                ),
+            ),
+        ] {
+            assert_ne!(
+                approval.0,
+                tool_approval_request(
+                    changed_task,
+                    &changed_policy,
+                    &changed_definition,
+                    &changed_invocation,
+                    "Approve echo".into()
+                )?
+                .0
+            );
+        }
+        Ok(())
     }
 }

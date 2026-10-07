@@ -8,14 +8,14 @@ export interface SessionLimitsWire {
 }
 
 export const HARNESS_LIMITS_DEFAULT = Object.freeze({
-  file_bytes: 67108864 as number,
-  path_bytes: 4096 as number,
-  attachments: 65536 as number,
-  render_bytes: 131072 as number,
-  model_steps: 64 as number,
-  model_events_per_step: 4096 as number,
-  tool_calls_per_step: 64 as number,
-  context_messages: 256 as number,
+  file_bytes: 9007199254740991 as number,
+  path_bytes: 4294967295 as number,
+  attachments: 4294967295 as number,
+  render_bytes: 9007199254740991 as number,
+  model_steps: 4294967295 as number,
+  model_events_per_step: 4294967295 as number,
+  tool_calls_per_step: 4294967295 as number,
+  context_messages: 4294967295 as number,
 });
 export const HARNESS_LIMITS_MAXIMUM = Object.freeze({
   file_bytes: 9007199254740991 as number,
@@ -38,10 +38,10 @@ export const MAX_FORK_ATTACHMENT_MANIFEST_BYTES = 18446744073709551615n;
 export const MAX_FORK_INHERITED_BYTES = 18446744073709551615n;
 export const MAX_FORK_REFERENCE_BYTES = 18446744073709551615n;
 export const MAX_FORK_INHERITED_MESSAGES = 18446744073709551615n;
-export const HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES = 1048576;
-export const HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES = 1048576;
-export const HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS = 256;
-export const HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES = 256;
-export const HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES = 131072;
+export const HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES = 9007199254740991;
+export const HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES = 9007199254740991;
+export const HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS = 4294967295;
+export const HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES = 4294967295;
+export const HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES = 9007199254740991;
 export const HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS = 9007199254740991;
 export const HARNESS_PROJECTION_MAX_JSON_BYTES = 9007199254740991;

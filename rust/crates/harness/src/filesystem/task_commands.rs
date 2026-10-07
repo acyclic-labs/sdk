@@ -95,7 +95,7 @@ pub struct ModelTaskCommand {
     pub selected_context: Option<SelectedModelContext>,
     /// Model/tool step allowance, bounded by retained task limits.
     pub max_steps: u32,
-    /// Caller-selected model output token budget; absent uses the stock default.
+    /// Caller-selected model output token budget; absent adds no Harness ceiling.
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
 }

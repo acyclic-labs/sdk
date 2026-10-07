@@ -12,7 +12,8 @@ const agent = "01010101-0101-0101-0101-010101010101" as AgentId;
 const fixtureId = (value: string): ConversationMessageId => value as ConversationMessageId;
 
 test("Rust-owned limits contract preserves defaults, ceilings, and number semantics", () => {
-  expect(DEFAULT_LIMITS.path_bytes).toBe(4096);
+  expect(DEFAULT_LIMITS.path_bytes).toBe(2 ** 32 - 1);
+  expect(contracts.validate("limits", DEFAULT_LIMITS)).toEqual(DEFAULT_LIMITS);
   expect(MAX_LIMITS.path_bytes).toBe(MAX_PATH_BYTES);
   expect(MAX_EXACT_JS_INTEGER).toBe(MAX_LIMITS.file_bytes);
   expect(MAX_LABEL_BYTES).toBeGreaterThan(0);

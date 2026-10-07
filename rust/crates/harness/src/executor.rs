@@ -14,7 +14,7 @@ use crate::{
     registry::ComponentIdentity,
     runtime::{
         DurableTaskHost, RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval,
-        validate_policy_identity,
+        tool_approval_request, validate_policy_identity,
     },
     tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
@@ -380,7 +380,7 @@ pub trait Executor: Send + Sync {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
-    max_output_tokens: u32,
+    max_output_tokens: Option<u32>,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
@@ -410,7 +410,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
-            max_output_tokens: 4_096,
+            max_output_tokens: None,
             provider,
             context,
             tools,
@@ -428,7 +428,7 @@ impl StockExecutor {
         if maximum == 0 {
             return Err(Error::Invalid("model output token budget is zero".into()));
         }
-        self.max_output_tokens = maximum;
+        self.max_output_tokens = Some(maximum);
         Ok(self)
     }
 
@@ -589,7 +589,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         let mut request = json!({
-            "executor": "acyclic.stock.v3",
+            "executor": "acyclic.stock.v4",
             "input": input,
             "model": self.model,
             "max_output_tokens": self.max_output_tokens,
@@ -752,7 +752,7 @@ impl StockExecutor {
                             .contains(&capability::tool_call(&tool.name))
                     })
                     .collect(),
-                max_output_tokens: Some(self.max_output_tokens),
+                max_output_tokens: self.max_output_tokens,
             };
             if let Some((prefix, verifier)) = &self.inherited_prefix {
                 crate::model::PreparedModelRequest::inherit(
@@ -1097,37 +1097,28 @@ impl StockExecutor {
                                     "stock tool approval requires interaction:route".into(),
                                 ));
                             }
-                            let digest = crate::contract::canonical_json_digest(&(
-                                &operation_id,
-                                step,
+                            let task = self.task.as_ref().map_or(
+                                TaskId::from_bytes(operation_id.into_bytes()),
+                                |(_, task, _)| *task,
+                            );
+                            let (approval_operation, request) = tool_approval_request(
+                                task,
+                                self.policy_identity.as_ref().ok_or_else(|| {
+                                    Error::Conflict("stock policy identity is missing".into())
+                                })?,
                                 &tool.definition,
                                 &invocation,
-                            ))?;
-                            let mut identity = [0_u8; 16];
-                            identity.copy_from_slice(
-                                &blake3::hash(
-                                    &[
-                                        b"harness:stock-tool-approval:v2".as_slice(),
-                                        operation_id.into_bytes().as_slice(),
-                                        &step.to_be_bytes(),
-                                        invocation.call_id.as_bytes(),
-                                    ]
-                                    .concat(),
-                                )
-                                .as_bytes()[..16],
-                            );
-                            let approval = InteractionId::from_bytes(identity);
-                            journal
-                                .open_interaction(
-                                    approval,
-                                    Interaction::approval(prompt, operation_id, digest)?,
-                                )
-                                .await?;
+                                prompt,
+                            )?;
+                            let approval =
+                                crate::durable_host::task_interaction_id(task, approval_operation);
+                            journal.open_interaction(approval, request).await?;
                             check_tool_approval(
-                                journal
-                                    .interaction_outcome(approval)
-                                    .await?
-                                    .unwrap_or(InteractionOutcome::Indeterminate { operation_id }),
+                                journal.interaction_outcome(approval).await?.unwrap_or(
+                                    InteractionOutcome::Indeterminate {
+                                        operation_id: invocation.operation_id,
+                                    },
+                                ),
                             )?;
                         }
                     }
@@ -2276,6 +2267,8 @@ mod tests {
         executor.execute(input.clone(), journal.as_ref()).await?;
         executor.execute(input.clone(), journal.as_ref()).await?;
         let mut expected = root.request().clone();
+        // An inherited prefix carries history, while the child chooses its budget.
+        expected.max_output_tokens = None;
         expected.messages.push(ModelMessage {
             role: ModelRole::User,
             content: input.input.clone(),
@@ -2352,6 +2345,14 @@ mod tests {
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let _ = base.execute(input.clone(), &journal).await?;
+        assert!(
+            model
+                .requests
+                .lock()
+                .map_err(|_| Error::Storage("test lock".into()))?
+                .iter()
+                .all(|request| request.max_output_tokens.is_none())
+        );
         let changed = Limits {
             model_steps: 3,
             ..Limits::default()

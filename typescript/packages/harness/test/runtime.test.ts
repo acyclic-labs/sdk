@@ -1818,6 +1818,8 @@ describe("typed agent runtime", () => {
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
     expect(budgets).toEqual([8_192, 8_192]);
+    await Harness.builder(contracts).model(testModel, provider).build().run("without a budget");
+    expect(budgets).toEqual([8_192, 8_192, undefined]);
     expect(() => Harness.builder(contracts).modelOutputTokens(0)).toThrow("positive u32");
     expect(() => Harness.builder(contracts).modelOutputTokens(2 ** 32)).toThrow("positive u32");
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
@@ -1841,6 +1843,14 @@ describe("typed agent runtime", () => {
     expect(observed).toHaveLength(2);
     expect(observed[0]?.role).toBe("assistant");
     expect(observed[1]?.content).toEqual([{ kind: "text", text: "follow-up" }]);
+    await runtime.runSelectedContext({
+      selection: { conversationRevision: 257n, messageIds: Array.from({ length: 257 }, (_, index) =>
+        fixtureMessageId(`${(index + 1).toString(16).padStart(8, "0")}-0000-0000-0000-000000000000`)) },
+      messages: Array.from({ length: 257 }, (_, index) => ({ role: "user" as const,
+        content: index === 0 ? "x".repeat(128 * 1024 + 1) : "retained history" })),
+    });
+    expect(observed).toHaveLength(257);
+    expect(observed[0]?.content).toHaveLength(128 * 1024 + 1);
     await expect(runtime.run({ prompt: "conflicting prompt", selectedContext: {
       selection: { conversationRevision: 1n, messageIds: [fixtureMessageId("02020202-0202-0202-0202-020202020202")] },
       messages: [{ role: "user", content: "recorded prompt" }],

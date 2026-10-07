@@ -13,8 +13,8 @@ import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
-const defaultResidentBytes = 256 * 1024 * 1024;
-const defaultResidentFiles = 65_536;
+const defaultResidentBytes = Number.MAX_SAFE_INTEGER;
+const defaultResidentFiles = Number.MAX_SAFE_INTEGER;
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;

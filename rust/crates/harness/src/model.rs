@@ -118,7 +118,7 @@ impl ModelContent {
             Self::Part(part) => std::slice::from_ref(part),
             Self::Parts(parts) => parts.as_slice(),
         };
-        if parts.len() > limits.attachments + 1 {
+        if parts.len() > limits.attachments.saturating_add(1) {
             return Err(Error::Invalid(
                 "model content exceeds attachment limit".into(),
             ));
@@ -309,9 +309,9 @@ impl ModelRequest {
         if self.messages.is_empty() || self.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
-        if self.max_output_tokens.is_none_or(|bound| bound == 0) {
+        if self.max_output_tokens == Some(0) {
             return Err(Error::Invalid(
-                "model output token bound is required".into(),
+                "model output token bound must be positive".into(),
             ));
         }
         let mut tools = BTreeMap::new();
@@ -1013,7 +1013,14 @@ mod tests {
         candidates.push(changed);
         let mut changed = valid.clone();
         changed.max_output_tokens = None;
-        candidates.push(changed);
+        let unconstrained = PreparedModelRequest::prepare(changed, Limits::default())?;
+        assert!(unconstrained.request().max_output_tokens.is_none());
+        assert_eq!(
+            PreparedModelRequest::decode(unconstrained.bytes(), Limits::default())?
+                .request()
+                .max_output_tokens,
+            None
+        );
         let mut changed = valid.clone();
         changed.max_output_tokens = Some(0);
         candidates.push(changed);

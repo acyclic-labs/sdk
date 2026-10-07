@@ -17,16 +17,16 @@ use uuid::Uuid;
 
 /// Default maximum bytes read when resolving a file for the provider-neutral
 /// projection helper.  Adapters may narrow this bound for their provider.
-pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = 1_024 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
 /// Default maximum bytes read for an attachment manifest in the projection
 /// helper.  The owning provider may choose a lower bound.
-pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = 1_024 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
 /// Default maximum number of attachments resolved from one selected message.
-pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = 256;
+pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = u32::MAX as usize;
 /// Default maximum number of selected messages in one provider request.
-pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = 256;
+pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = u32::MAX as usize;
 /// Default maximum bytes rendered into one provider request.
-pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = 128 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = crate::conversation::MAX_LIMIT_RENDER_BYTES;
 /// Protocol ceiling for attachments materialized into one model projection.
 pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
 /// Largest JSON byte allowance representable by the JavaScript contract.

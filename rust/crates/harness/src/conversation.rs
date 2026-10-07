@@ -96,14 +96,16 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            file_bytes: 64 * 1024 * 1024,
-            path_bytes: 4_096,
-            attachments: 65_536,
-            render_bytes: 128 * 1024,
-            model_steps: 64,
-            model_events_per_step: 4_096,
-            tool_calls_per_step: 64,
-            context_messages: 256,
+            file_bytes: MAX_LIMIT_FILE_BYTES,
+            // Defaults must also fit the 32-bit WASM runtime. Native callers
+            // can explicitly select the wider platform-representable counts.
+            path_bytes: u32::MAX as usize,
+            attachments: u32::MAX as usize,
+            render_bytes: MAX_LIMIT_RENDER_BYTES,
+            model_steps: u32::MAX as usize,
+            model_events_per_step: u32::MAX as usize,
+            tool_calls_per_step: u32::MAX as usize,
+            context_messages: u32::MAX as usize,
         }
     }
 }
@@ -1714,6 +1716,7 @@ mod tests {
 
     #[test]
     fn configured_limits_reject_oversized_references() -> Result<()> {
+        Limits::default().validate_file(&file(AgentId::new(), &"x".repeat(4_097))?)?;
         let file = file(AgentId::new(), "message.txt")?;
         let mut limits = Limits {
             file_bytes: 4,

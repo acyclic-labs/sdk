@@ -1,6 +1,6 @@
 # @acyclic-labs/harness
 
-The local `MemoryConversation` byte store retains at most 256 MiB and 65,536 immutable file versions by default, including zero-byte files. `maxResidentBytes` and `maxResidentFiles` configure these local caps; new versions are rejected before retention when either is reached.
+The local `MemoryConversation` byte store uses exact JavaScript integer bounds for retained bytes and immutable file versions, including zero-byte files. `maxResidentBytes` and `maxResidentFiles` set caller-selected budgets; new versions are rejected before retention when either is reached. Admission and projection defaults use representable values, with counts fitting the 32-bit WASM runtime. Model output tokens remain unspecified unless `modelOutputTokens` is selected. Browser outbox and transport sizes and model-adapter projection and event sizes likewise add no smaller default ceiling; explicit caller budgets remain enforced.
 
 TypeScript facade for the Rust-first Harness v2 runtime. It includes typed aggregate handles, reconnect/cursors, bounded hydration, an offline outbox, embedded/JSONL/WebSocket/HTTP-SSE/gRPC transports, explicit conversation selection, and native OpenAI-compatible model projection.
 
