@@ -312,7 +312,8 @@ pub(crate) fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Res
             return Err(Error::Invalid("Run result terminal is invalid"));
         }
         if let Some(context) = &result.context {
-            fixed::<32>(&context.revision)?;
+            let revision = fixed::<32>(&context.revision)?;
+            validate_context_view(context, revision)?;
         }
         if let Some(receipt) = &result.receipt {
             fixed::<32>(&receipt.receipt_id)?;
@@ -933,6 +934,67 @@ mod tests {
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[4; 32]).is_err());
         assert!(validate_customer_wire("generated_run_view", &bytes, &[2; 16], &[3; 32]).is_ok());
+    }
+
+    #[test]
+    fn completed_run_validates_the_full_result_context() -> Result<(), ()> {
+        let context = wire::ContextView {
+            revision: vec![10; 32],
+            parent: Some(vec![4; 32]),
+            lineage: vec![5; 32],
+            execution_profile: vec![6; 32],
+            content_digest: vec![7; 32],
+            model: "model".to_owned(),
+            provenance: Some(wire::ContextProvenance {
+                origin: Some(wire::context_provenance::Origin::Created(wire::Empty {})),
+            }),
+            ..Default::default()
+        };
+        let mut result = wire::RunResult::default();
+        result.context = Some(context);
+        result.terminal = wire::RunTerminal::Completed.into();
+        let view = wire::RunView {
+            run_id: vec![2; 16],
+            input: vec![3; 32],
+            model: "model".to_owned(),
+            result: Some(result),
+            ..Default::default()
+        };
+        assert!(validate_run_view(&view, [2; 16]).is_ok());
+        assert!(validate_customer_wire("run_view", &view.encode_to_vec(), &[2; 16], &[]).is_ok());
+
+        let mut missing_provenance = view.clone();
+        missing_provenance
+            .result
+            .as_mut()
+            .and_then(|result| result.context.as_mut())
+            .ok_or(())?
+            .provenance = None;
+        assert!(validate_run_view(&missing_provenance, [2; 16]).is_err());
+        assert!(
+            validate_customer_wire(
+                "run_view",
+                &missing_provenance.encode_to_vec(),
+                &[2; 16],
+                &[]
+            )
+            .is_err()
+        );
+
+        let mut invalid_digest = view;
+        invalid_digest
+            .result
+            .as_mut()
+            .and_then(|result| result.context.as_mut())
+            .ok_or(())?
+            .content_digest
+            .clear();
+        assert!(validate_run_view(&invalid_digest, [2; 16]).is_err());
+        assert!(
+            validate_customer_wire("run_view", &invalid_digest.encode_to_vec(), &[2; 16], &[])
+                .is_err()
+        );
+        Ok(())
     }
 
     #[test]
