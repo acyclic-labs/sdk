@@ -4,10 +4,27 @@ import fc from "fast-check";
 import { AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema, ReadRequestSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v2/stream_pb.js";
 import { is_stream_error_code, WasmMemoryStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, wireAppendRequest, wireRequest } from "../src/contract.js";
+import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, compareStreamPaths, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
+import type { StreamProvider } from "../src/types.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
 const encodedCommitId = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+
+async function withBrowserDefault<T>(fetcher: typeof fetch, action: () => Promise<T>): Promise<T> {
+  const processDescriptor = Object.getOwnPropertyDescriptor(globalThis, "process");
+  const fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+  try {
+    Object.defineProperty(globalThis, "process", { configurable: true, enumerable: true, writable: true, value: { versions: {} } });
+    Object.defineProperty(globalThis, "fetch", { configurable: true, enumerable: true, writable: true, value: fetcher });
+    return await action();
+  } finally {
+    if (processDescriptor === undefined) Reflect.deleteProperty(globalThis, "process");
+    else Object.defineProperty(globalThis, "process", processDescriptor);
+    if (fetchDescriptor === undefined) Reflect.deleteProperty(globalThis, "fetch");
+    else Object.defineProperty(globalThis, "fetch", fetchDescriptor);
+  }
+}
 
 test("absent retry observations project undefined through memory and HTTP", async () => {
   await ensureStreamWasm();
@@ -231,6 +248,18 @@ describe("website Stream contract", () => {
       .rejects.toMatchObject({ code: "invalid_argument" });
     await expect(client.provider.commit({ conditions: [{ path: "malformed", ifAbsent: true }], mutations: [null as never] }, { idempotencyKey: key("null-mutation") }))
       .rejects.toMatchObject({ code: "invalid_argument" });
+  });
+
+  test("rejects forged absence conditions before provider dispatch", async () => {
+    let dispatches = 0;
+    const provider = { commit: async () => { dispatches += 1; throw new Error("provider must not be called"); } } as unknown as StreamProvider;
+    const client = new StreamClient(provider);
+    const mutation = { append: { path: "forged", values: [new Uint8Array([1])] } };
+    await expect(client.commit({ conditions: [{ path: "forged", ifAbsent: false } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-false") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(client.commit({ conditions: [{ path: "forged" } as never], mutations: [mutation] }, { idempotencyKey: key("client-forged-missing") }))
+      .rejects.toMatchObject({ code: "invalid_argument" });
+    expect(dispatches).toBe(0);
   });
 
   test("distinguishes a missing tail from zero and materializes ancestor paths", async () => {
@@ -557,6 +586,71 @@ describe("website Stream contract", () => {
     expect(sent?.options.idempotencyKey).toBe(btoa("snap"));
   });
 
+  test("default transport snapshots append inputs before delayed provider selection", async () => {
+    let release!: () => void;
+    const selection = new Promise<void>(resolve => { release = resolve; });
+    let sent: Record<string, unknown> | undefined;
+    const value = new Uint8Array([1]);
+    const retryKey = key("default-append");
+    await withBrowserDefault(async (_input, init) => {
+      await selection;
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ok: true, start: "0", end: "0", tail: "1", commitId: encodedCommitId }));
+    }, async () => {
+      const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+      const pending = provider.append("events", [value], { idempotencyKey: retryKey });
+      value[0] = 9;
+      retryKey[0] = 9;
+      release();
+      await pending;
+    });
+    expect(sent).toEqual({ path: "events", values: ["AQ=="], options: { idempotencyKey: btoa("default-append") } });
+  });
+
+  test("default transport snapshots token grants before delayed provider selection", async () => {
+    let release!: () => void;
+    const selection = new Promise<void>(resolve => { release = resolve; });
+    let sent: Record<string, unknown> | undefined;
+    const request = { expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] as const }] };
+    const expected = structuredClone(request);
+    await withBrowserDefault(async (_input, init) => {
+      await selection;
+      sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ token: "secret", expiresAt: "2030-01-02T03:04:05.000Z" }));
+    }, async () => {
+      const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+      const pending = provider.createToken(request);
+      request.expiresIn = "5m";
+      request.allow[0]!.path = "mutated";
+      request.allow[0]!.operations[0] = "write" as never;
+      release();
+      await expect(pending).resolves.toMatchObject({ token: "secret" });
+    });
+    expect(sent).toEqual(expected);
+  });
+
+  test("default transport snapshots lazy read cursors when the iterator is created", async () => {
+    let release!: () => void;
+    const selection = new Promise<void>(resolve => { release = resolve; });
+    const requests: Record<string, unknown>[] = [];
+    const options = { from: 0n, limit: 1 };
+    await withBrowserDefault(async (input, init) => {
+      await selection;
+      const route = new URL(String(input)).pathname.split("/").pop();
+      if (route === "tail") return new Response('"0"');
+      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response("[]");
+    }, async () => {
+      const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+      const next = provider.read("events", options)[Symbol.asyncIterator]().next();
+      options.from = 7n;
+      options.limit = 8;
+      release();
+      await expect(next).resolves.toEqual({ done: true, value: undefined });
+    });
+    expect(requests).toEqual([{ path: "events", from: "0", limit: 1 }]);
+  });
+
   test("Rust encodes every protobuf-backed hosted request shape", async () => {
     await ensureStreamWasm();
     const retry = new Uint8Array([0, 255, 128, 1]);
@@ -607,6 +701,149 @@ describe("website Stream contract", () => {
 
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/a" })) });
     await expect(malformed.childrenPage({ parent: "runs", limit: 2 })).rejects.toMatchObject({ code: "invalid_response" });
+  });
+
+  test("public stream handles snapshot commit and iterator inputs at call time", async () => {
+    const provider = new MemoryStreamProvider();
+    let seenCommitRequest: unknown;
+    let seenCommitOptions: unknown;
+    let seenReadOptions: unknown;
+    let seenFollowOptions: unknown;
+    const commit = provider.commit.bind(provider);
+    provider.commit = async (request, options) => {
+      seenCommitRequest = structuredClone(request);
+      seenCommitOptions = options;
+      return commit(request, options);
+    };
+    const read = provider.read.bind(provider);
+    provider.read = (path, options) => {
+      seenReadOptions = options;
+      return read(path, options);
+    };
+    provider.follow = (_path, options) => {
+      seenFollowOptions = options;
+      return (async function* () { /* capture only */ })();
+    };
+    const client = new StreamClient(provider);
+    const stream = client.bytes("events");
+    const commitOptions = { idempotencyKey: key("public-commit") };
+    const commitRequest = { conditions: [{ path: "events", ifAbsent: true }], mutations: [{ append: { stream, values: [new Uint8Array([1])] } }] } as const;
+    const commitPending = client.commit(commitRequest, commitOptions);
+    (commitRequest.conditions[0] as { ifAbsent: boolean }).ifAbsent = false;
+    commitOptions.idempotencyKey[0] = 9;
+    await commitPending;
+    expect(seenCommitRequest).toMatchObject({ conditions: [{ path: "events", ifAbsent: true }] });
+    expect((seenCommitOptions as { idempotencyKey: Uint8Array }).idempotencyKey).toEqual(key("public-commit"));
+
+    const readOptions = { from: 0n, limit: 1 };
+    const readPending = stream.read(readOptions)[Symbol.asyncIterator]().next();
+    readOptions.from = 7n;
+    readOptions.limit = 8;
+    await readPending;
+    expect(seenReadOptions).toEqual({ from: 0n, limit: 1 });
+
+    const signal = new AbortController().signal;
+    const followOptions = { from: 0n, signal };
+    const followPending = stream.follow(followOptions)[Symbol.asyncIterator]().next();
+    followOptions.from = 7n;
+    await followPending;
+    expect(seenFollowOptions).toEqual({ from: 0n, signal });
+  });
+
+  test("default selection keeps concurrent follow waiters independent", async () => {
+    const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+    const internal = provider as unknown as {
+      select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
+    };
+    let release!: (value: StreamProvider) => void;
+    let cancelled = 0;
+    internal.select = async registerCancel => {
+      registerCancel(() => { cancelled += 1; });
+      return new Promise<StreamProvider>(resolve => { release = resolve; });
+    };
+    const record = { sequence: 0n, value: new Uint8Array([1]), commitId: new Uint8Array(32), committedAtMicros: 0n };
+    const selected = { follow: async function* () { yield record; } } as unknown as StreamProvider;
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = provider.follow("events", { from: 0n, signal: firstController.signal })[Symbol.asyncIterator]().next();
+    const second = provider.follow("events", { from: 0n, signal: secondController.signal })[Symbol.asyncIterator]().next();
+    await Promise.resolve();
+    firstController.abort();
+    await expect(first).resolves.toEqual({ value: undefined, done: true });
+    expect(cancelled).toBe(0);
+    release(selected);
+    await expect(second).resolves.toEqual({ value: record, done: false });
+  });
+
+  test("default selection cancels abandoned native connect and retries for a newcomer", async () => {
+    const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+    const internal = provider as unknown as {
+      select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
+    };
+    const releases: Array<(value: StreamProvider) => void> = [];
+    let selectCalls = 0;
+    let cancelled = 0;
+    internal.select = async registerCancel => {
+      selectCalls += 1;
+      registerCancel(() => { cancelled += 1; });
+      return new Promise<StreamProvider>(resolve => { releases.push(resolve); });
+    };
+    const record = { sequence: 0n, value: new Uint8Array([2]), commitId: new Uint8Array(32), committedAtMicros: 0n };
+    const selected = { follow: async function* () { yield record; } } as unknown as StreamProvider;
+    const firstController = new AbortController();
+    const secondController = new AbortController();
+    const first = provider.follow("events", { from: 0n, signal: firstController.signal })[Symbol.asyncIterator]().next();
+    const second = provider.follow("events", { from: 0n, signal: secondController.signal })[Symbol.asyncIterator]().next();
+    await Promise.resolve();
+    firstController.abort();
+    secondController.abort();
+    await expect(first).resolves.toEqual({ value: undefined, done: true });
+    await expect(second).resolves.toEqual({ value: undefined, done: true });
+    expect(cancelled).toBe(1);
+
+    const newcomer = provider.follow("events", { from: 0n })[Symbol.asyncIterator]().next();
+    await Promise.resolve();
+    expect(selectCalls).toBe(2);
+    releases[1]!(selected);
+    await expect(newcomer).resolves.toEqual({ value: record, done: false });
+    releases[0]!(selected);
+  });
+
+  test("default selection caches a successfully selected provider", async () => {
+    const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+    const internal = provider as unknown as {
+      select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
+    };
+    let selectCalls = 0;
+    const selected = { tail: async () => 0n } as unknown as StreamProvider;
+    internal.select = async () => { selectCalls += 1; return selected; };
+    await expect(provider.tail("events")).resolves.toBe(0n);
+    await expect(provider.tail("events")).resolves.toBe(0n);
+    expect(selectCalls).toBe(1);
+  });
+
+  test("default childrenPage snapshots hierarchy version and request fields", async () => {
+    const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
+    const internal = provider as unknown as {
+      select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
+    };
+    let release!: (value: StreamProvider) => void;
+    let seen: unknown;
+    const hierarchyVersion = new Uint8Array(32).fill(7);
+    const selected = {
+      childrenPage: async (request: unknown) => {
+        seen = request;
+        return { hierarchyVersion: hierarchyVersion.slice(), children: [] };
+      },
+    } as unknown as StreamProvider;
+    internal.select = async () => new Promise<StreamProvider>(resolve => { release = resolve; });
+    const request = { parent: "runs", hierarchyVersion, limit: 2 };
+    const pending = provider.childrenPage(request);
+    request.limit = 9;
+    hierarchyVersion[0] = 99;
+    release(selected);
+    await pending;
+    expect(seen).toEqual({ parent: "runs", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
   });
 
   test("read captures one cursor before asynchronous validation", async () => {

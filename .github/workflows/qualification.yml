@@ -58,6 +58,8 @@ jobs:
       keys: ${{ steps.fingerprints.outputs.keys }}
       matrix: ${{ steps.select.outputs.matrix }}
       reused: ${{ steps.select.outputs.reused }}
+      trusted: ${{ steps.select.outputs.trusted }}
+      windows: ${{ steps.select.outputs.windows }}
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -163,6 +165,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/plan-qualification.mjs select
 
+      # The early Windows job reads this step's conclusion through the API.
+      - name: Windows lane required
+        if: steps.select.outputs.windows == 'true'
+        run: echo 'windows executes in its early-start job'
 
   qualification:
     name: ${{ matrix.lane }}
@@ -170,7 +176,7 @@ jobs:
     if: needs.plan.outputs.matrix != '[]'
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
@@ -180,6 +186,9 @@ jobs:
       MAKEFLAGS: -j${{ matrix.workers }}
       RAYON_NUM_THREADS: ${{ matrix.workers }}
       RUST_TEST_THREADS: ${{ matrix.workers }}
+      # Windows restores the compiler cache at ~70 MB/s rather than from
+      # co-located storage, so bound it near one run's working set.
+      SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
     # Complete qualification is governed by bounded operations and resource
     # limits, not a wall-clock cutoff across cold builds and package verification.
     steps:
@@ -198,11 +207,72 @@ jobs:
           artifact: ${{ matrix.artifact }}
           artifact_path: ${{ matrix.artifact_path }}
 
+  # Windows is the longest lane and its runners take a minute or more to
+  # provision, so on pull requests it is requested at workflow start rather
+  # than after the plan, then waits for the plan's decision before any work.
+  # Its runner must match the windows entry in .github/qualification-lanes.json.
+  windows:
+    name: windows
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.windows == 'true'
+    runs-on: blacksmith-4vcpu-windows-2025
+    permissions:
+      contents: read
+      actions: read
+    env:
+      CARGO_BUILD_JOBS: 4
+      CMAKE_BUILD_PARALLEL_LEVEL: 4
+      MAKEFLAGS: -j4
+      RAYON_NUM_THREADS: 4
+      RUST_TEST_THREADS: 4
+      SCCACHE_CACHE_SIZE: 3G
+    # Preserve all checks when cold builds outlast an estimated lane duration.
+    steps:
+      - name: Await the qualification plan
+        id: plan
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+          $uri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID/attempts/$env:GITHUB_RUN_ATTEMPT/jobs?per_page=100"
+          $deadline = (Get-Date).AddMinutes(15)
+          while ((Get-Date) -lt $deadline) {
+            $plan = (Invoke-RestMethod -Uri $uri -Headers $headers).jobs | Where-Object name -eq 'plan'
+            if ($plan -and $plan.status -eq 'completed') {
+              if ($plan.conclusion -ne 'success') { throw "plan concluded $($plan.conclusion)" }
+              $step = $plan.steps | Where-Object name -eq 'Windows lane required'
+              $run = [bool]$step -and $step.conclusion -eq 'success'
+              "run=$($run.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+              Write-Host "windows lane required: $run"
+              exit 0
+            }
+            Start-Sleep -Seconds 2
+          }
+          throw 'timed out waiting for the qualification plan'
+
+      - name: Check out exact source
+        if: steps.plan.outputs.run == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Run qualification lane
+        if: steps.plan.outputs.run == 'true'
+        uses: ./.github/actions/qualification-lane
+        with:
+          lane: windows
+          artifact: stream-native-windows
+          artifact_path: stream-native-bundle
+
   # Records qualified lanes and forwards reused artifacts. It is not the
   # required check, but release workflows only accept fully successful runs.
   record:
     name: record
-    needs: [plan, qualification]
+    needs: [plan, qualification, windows]
     if: always() && needs.plan.result == 'success'
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 10
@@ -228,8 +298,12 @@ jobs:
           set -euo pipefail
           pids=()
           while IFS=$'\t' read -r run artifact; do
+            destination="${artifact%-*-*}"
+            if [[ "$artifact" == stream-native-windows-* ]]; then
+              destination=stream-native-windows
+            fi
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "$artifact" \
-              --dir "forward/${artifact%-*-*}" &
+              --dir "forward/$destination" &
             pids+=("$!")
           done < <(jq -r 'to_entries[] | select(.value.artifact != "") | [.value.run_id, .value.artifact] | @tsv' <<<"$REUSED")
           for pid in "${pids[@]}"; do wait "$pid"; done
@@ -270,12 +344,22 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 90
+      - name: Forward stream-native-windows
+        if: hashFiles('forward/stream-native-windows/**') != ''
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-native-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: forward/stream-native-windows
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Record qualified lanes
         id: record
         env:
           GH_TOKEN: ${{ github.token }}
           REUSED: ${{ needs.plan.outputs.reused }}
+          TRUSTED: ${{ needs.plan.outputs.trusted }}
         run: node scripts/plan-qualification.mjs record
 
       - name: Record gate
@@ -336,7 +420,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification]
+    needs: [plan, qualification, windows]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -345,8 +429,10 @@ jobs:
           PLAN_RESULT: ${{ needs.plan.result }}
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
         run: |
           test "$PLAN_RESULT" = success
+          test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
           if test "$MATRIX" = '[]'; then
             test "$RESULT" = skipped
           else

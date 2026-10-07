@@ -101,7 +101,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     marker: everywhere,
     retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), ["linux"]);
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux", "windows"]);
   assert.equal(reused.linux, undefined);
   assert.equal(reused.gate.run_id, source.run_id);
 });

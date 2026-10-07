@@ -27,6 +27,11 @@ fi
 git ls-files -v >"$work/git-index"
 ! grep -Eq '^[a-zS] ' "$work/git-index" || { echo 'package checkout contains concealed index changes' >&2; exit 1; }
 
+# The Windows Stream native bundle is forwarded after the platform lanes finish.
+# Linux package qualification intentionally does not invent a native artifact;
+# release assembly stages the forwarded bundle and runs the same cheap attestation
+# check before replacing the Stream archive.
+
 verify_staged_input() {
   local archive=$1 directory observed filename
   directory=$(dirname "$archive")

@@ -7,6 +7,9 @@ node_modules/
 /typescript/packages/*/dist/
 # WASM is built for the target platform before TypeScript checking or packaging.
 /typescript/packages/*/generated/wasm/*
+/typescript/packages/stream/generated/native/*
+!/typescript/packages/stream/generated/native/
+!/typescript/packages/stream/generated/native/binding.d.ts
 !/typescript/packages/filesystem/generated/wasm/.npmignore
 !/typescript/packages/filesystem/generated/wasm/package.json
 # Keep the Rust-generated type surface available to clean standalone project

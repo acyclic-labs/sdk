@@ -132,7 +132,7 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
+export interface StreamEnvironment { readonly endpoint: string; readonly token: string; readonly caCertificate?: Uint8Array }
 /**
  * Every code a StreamError carries: the Rust-owned base codes, the public
  * aliases hosted and gRPC providers project onto, and failures the client
