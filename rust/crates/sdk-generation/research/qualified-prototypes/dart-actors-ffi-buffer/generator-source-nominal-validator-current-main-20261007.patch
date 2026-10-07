@@ -1,0 +1,1232 @@
+diff --git a/crates/ubdg_bindgen/src/dart/callback.rs b/crates/ubdg_bindgen/src/dart/callback.rs
+index f6acf2a..8589873 100644
+--- a/crates/ubdg_bindgen/src/dart/callback.rs
++++ b/crates/ubdg_bindgen/src/dart/callback.rs
+@@ -906,6 +906,10 @@ pub(super) fn render_callback_arg_decode_expr(
+             format!("DateTime.fromMicrosecondsSinceEpoch({arg_name}, isUtc: true)")
+         }
+         Type::Duration => format!("Duration(microseconds: {arg_name})"),
++        // Keep the public callback signature semantic (`BigInt`) while the
++        // native callback ABI continues to carry the 64-bit bit pattern in
++        // Dart's FFI `int` slot.
++        Type::UInt64 => format!("_uniffiU64ToBigInt({arg_name})"),
+         _ => arg_name.to_string(),
+     };
+     // Apply lift template if the original type is Custom (stripped by runtime_unwrapped_type above).
+@@ -961,6 +965,7 @@ pub(super) fn render_callback_return_encode_expr(
+         }
+         Type::Timestamp => format!("{lowered}.toUtc().microsecondsSinceEpoch"),
+         Type::Duration => format!("{lowered}.inMicroseconds"),
++        Type::UInt64 => format!("_uniffiBigIntToU64({lowered})"),
+         // Result struct field is @ffi.Bool() / external bool — no int conversion needed.
+         Type::Boolean => lowered,
+         _ => lowered,
+@@ -1040,6 +1045,30 @@ mod tests {
+         assert_eq!(callback_interface_name_from_type(&Type::String), None);
+     }
+ 
++    #[test]
++    fn callback_uint64_crosses_the_public_bigint_boundary() {
++        assert_eq!(
++            render_callback_arg_decode_expr(
++                &Type::UInt64,
++                "value",
++                &[],
++                &[],
++                &HashMap::new(),
++            ),
++            "_uniffiU64ToBigInt(value)"
++        );
++        assert_eq!(
++            render_callback_return_encode_expr(
++                &Type::UInt64,
++                "value",
++                &[],
++                &[],
++                &HashMap::new(),
++            ),
++            "_uniffiBigIntToU64(value)"
++        );
++    }
++
+     // Trait callback naming helpers (defined in render_objects.rs).
+     use super::super::render_objects::{
+         trait_callback_bridge_class_name, trait_callback_init_done_field_name,
+diff --git a/crates/ubdg_bindgen/src/dart/codec.rs b/crates/ubdg_bindgen/src/dart/codec.rs
+index 792138a..4804d9a 100644
+--- a/crates/ubdg_bindgen/src/dart/codec.rs
++++ b/crates/ubdg_bindgen/src/dart/codec.rs
+@@ -14,7 +14,6 @@ fn is_identity_json_encode(type_: &Type, custom_types: &HashMap<String, CustomTy
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64
+         | Type::Float32
+         | Type::Float64
+@@ -42,7 +41,6 @@ fn is_simple_json_decode(type_: &Type, custom_types: &HashMap<String, CustomType
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64
+         | Type::Float32
+         | Type::Float64 => true,
+@@ -63,6 +61,7 @@ pub(super) fn render_json_encode_expr(
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     match type_ {
++        Type::UInt64 => format!("{value_expr}.toString()"),
+         Type::Timestamp => format!("{value_expr}.toUtc().microsecondsSinceEpoch"),
+         Type::Duration => format!("{value_expr}.inMicroseconds"),
+         Type::Bytes => format!("base64Encode({value_expr})"),
+@@ -101,13 +100,9 @@ pub(super) fn render_json_encode_expr(
+                 format!("{value_expr}.map((key, value) => MapEntry(key, {inner}))")
+             }
+         }
+-        Type::Custom { name, builtin, .. } => {
+-            if let Some(cfg) = custom_types.get(name.as_str()) {
+-                let lowered = cfg.lower_expr(value_expr);
+-                render_json_encode_expr(&lowered, builtin, custom_types)
+-            } else {
+-                render_json_encode_expr(value_expr, builtin, custom_types)
+-            }
++        Type::Custom { name: _name, builtin, .. } => {
++            let lowered = lower_custom_if_needed(value_expr, type_, custom_types);
++            render_json_encode_expr(&lowered, builtin, custom_types)
+         }
+         Type::Record { .. } => format!("{value_expr}.toJson()"),
+         Type::Object { name, .. } => {
+@@ -126,13 +121,13 @@ pub(super) fn render_json_decode_expr(
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     match type_ {
++        Type::UInt64 => format!("{value_expr} is String ? BigInt.parse({value_expr}) : BigInt.from(({value_expr} as num).toInt())"),
+         Type::UInt8
+         | Type::Int8
+         | Type::UInt16
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64 => format!("({value_expr} as num).toInt()"),
+         Type::Float32 | Type::Float64 => format!("({value_expr} as num).toDouble()"),
+         Type::Boolean => format!("{value_expr} as bool"),
+@@ -171,13 +166,9 @@ pub(super) fn render_json_decode_expr(
+             let inner = render_json_decode_expr("value", value_type, custom_types);
+             format!("({value_expr} as Map<String, dynamic>).map((key, value) => MapEntry(key, {inner}))")
+         }
+-        Type::Custom { name, builtin, .. } => {
++        Type::Custom { name: _name, builtin, .. } => {
+             let builtin_decoded = render_json_decode_expr(value_expr, builtin, custom_types);
+-            if let Some(cfg) = custom_types.get(name.as_str()) {
+-                cfg.lift_expr(&builtin_decoded)
+-            } else {
+-                builtin_decoded
+-            }
++            lift_custom_if_needed(&builtin_decoded, type_, custom_types)
+         }
+         Type::Record { name, .. } => format!(
+             "{}.fromJson({value_expr} as Map<String, dynamic>)",
+@@ -230,12 +221,20 @@ fn is_binary_supported_type(type_: &Type, enums: &[UdlEnum]) -> bool {
+         } => {
+             is_binary_supported_type(key_type, enums) && is_binary_supported_type(value_type, enums)
+         }
++        // Handles and callbacks are represented by opaque u64 values in the
++        // ffibuffer stream; their generated codecs already lower/lift those
++        // handles, so they are valid fields inside compound results.
++        Type::Object { .. } | Type::CallbackInterface { .. } => true,
+         Type::Record { .. } => true,
+         Type::Enum { .. } if is_runtime_enum_type(type_, enums) => true,
+         _ => false,
+     }
+ }
+ 
++pub(super) fn render_uint64_helpers() -> String {
++    "int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();\nBigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);\n\n".to_string()
++}
++
+ pub(super) fn render_uniffi_binary_helpers(
+     records: &[UdlRecord],
+     enums: &[UdlEnum],
+@@ -426,6 +425,16 @@ pub(super) fn render_uniffi_binary_helpers(
+         out.push_str("}\n\n");
+     }
+ 
++    // Records may be owned by a separate UniFFI component. Expose a small
++    // public codec facade so another generated Dart library can import the
++    // canonical record implementation without copying its fields.
++    for record in records {
++        let type_name = to_upper_camel(&record.name);
++        out.push_str(&format!(
++            "final class {type_name}FfiCodec {{\n  const {type_name}FfiCodec._();\n\n  static Uint8List encode({type_name} value) => _uniffiEncode{type_name}(value);\n\n  static {type_name} decode(Uint8List bytes) => _uniffiDecode{type_name}(bytes);\n}}\n\n"
++        ));
++    }
++
+     for enum_ in enums {
+         let type_name = to_upper_camel(&enum_.name);
+         let is_flat_enum = !enum_.is_error && enum_.variants.iter().all(|v| v.fields.is_empty());
+@@ -599,12 +608,8 @@ pub(super) fn render_uniffi_binary_write_statement(
+     indent: &str,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+-    if let Type::Custom { name, builtin, .. } = type_ {
+-        let effective_value = if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(value_expr)
+-        } else {
+-            value_expr.to_string()
+-        };
++    if let Type::Custom { builtin, .. } = type_ {
++        let effective_value = lower_custom_if_needed(value_expr, type_, custom_types);
+         return render_uniffi_binary_write_statement(
+             builtin,
+             &effective_value,
+@@ -621,7 +626,7 @@ pub(super) fn render_uniffi_binary_write_statement(
+         Type::Int16 => format!("{indent}{writer}.writeI16({value_expr});\n"),
+         Type::UInt32 => format!("{indent}{writer}.writeU32({value_expr});\n"),
+         Type::Int32 => format!("{indent}{writer}.writeI32({value_expr});\n"),
+-        Type::UInt64 => format!("{indent}{writer}.writeU64({value_expr});\n"),
++        Type::UInt64 => format!("{indent}{writer}.writeU64(_uniffiBigIntToU64({value_expr}));\n"),
+         Type::Int64 => format!("{indent}{writer}.writeI64({value_expr});\n"),
+         Type::Float32 => format!("{indent}{writer}.writeF32({value_expr});\n"),
+         Type::Float64 => format!("{indent}{writer}.writeF64({value_expr});\n"),
+@@ -685,6 +690,12 @@ pub(super) fn render_uniffi_binary_write_statement(
+             let enum_name = to_upper_camel(name);
+             format!("{indent}_uniffiWrite{enum_name}({value_expr}, {writer});\n")
+         }
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            let object_name = to_upper_camel(name);
++            format!(
++                "{indent}{writer}.writeU64({object_name}FfiCodec.lower({value_expr}));\n"
++            )
++        }
+         _ => format!(
+             "{indent}throw UnsupportedError('UniFFI binary write not implemented for {}');\n",
+             map_uniffi_type_to_dart(type_, custom_types)
+@@ -698,14 +709,10 @@ pub(super) fn render_uniffi_binary_read_expression(
+     enums: &[UdlEnum],
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+-    if let Type::Custom { name, builtin, .. } = type_ {
++    if let Type::Custom { builtin, .. } = type_ {
+         let builtin_expr =
+             render_uniffi_binary_read_expression(builtin, reader, enums, custom_types);
+-        return if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lift_expr(&builtin_expr)
+-        } else {
+-            builtin_expr
+-        };
++        return lift_custom_if_needed(&builtin_expr, type_, custom_types);
+     }
+     match type_ {
+         Type::UInt8 => format!("{reader}.readU8()"),
+@@ -714,7 +721,7 @@ pub(super) fn render_uniffi_binary_read_expression(
+         Type::Int16 => format!("{reader}.readI16()"),
+         Type::UInt32 => format!("{reader}.readU32()"),
+         Type::Int32 => format!("{reader}.readI32()"),
+-        Type::UInt64 => format!("{reader}.readU64()"),
++        Type::UInt64 => format!("_uniffiU64ToBigInt({reader}.readU64())"),
+         Type::Int64 => format!("{reader}.readI64()"),
+         Type::Float32 => format!("{reader}.readF32()"),
+         Type::Float64 => format!("{reader}.readF64()"),
+@@ -757,6 +764,12 @@ pub(super) fn render_uniffi_binary_read_expression(
+         Type::Enum { name, .. } if is_runtime_enum_type(type_, enums) => {
+             format!("_uniffiRead{}({reader})", to_upper_camel(name))
+         }
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            format!(
++                "{}FfiCodec.lift({reader}.readU64())",
++                to_upper_camel(name)
++            )
++        }
+         _ => format!(
+             "throw UnsupportedError('UniFFI binary read not implemented for {}')",
+             map_uniffi_type_to_dart(type_, custom_types)
+@@ -774,6 +787,22 @@ mod tests {
+         HashMap::new()
+     }
+ 
++    #[test]
++    fn uint64_helpers_preserve_the_entire_unsigned_domain_as_bit_patterns() {
++        assert_eq!(
++            render_uint64_helpers(),
++            "int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();\nBigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);\n\n"
++        );
++        assert_eq!(
++            render_json_encode_expr("value", &Type::UInt64, &no_customs()),
++            "value.toString()"
++        );
++        assert_eq!(
++            render_json_decode_expr("value", &Type::UInt64, &no_customs()),
++            "value is String ? BigInt.parse(value) : BigInt.from((value as num).toInt())"
++        );
++    }
++
+     // ── render_json_encode_expr ──────────────────────────────────────────
+ 
+     #[test]
+@@ -1099,6 +1128,27 @@ mod tests {
+         assert!(result.contains("writer.writeI32(value!)"));
+     }
+ 
++    #[test]
++    fn binary_write_object_uses_opaque_handle_codec() {
++        let ty = Type::Object {
++            module_path: String::new(),
++            name: "my_counter".to_string(),
++            imp: ObjectImpl::Struct,
++        };
++        let result = render_uniffi_binary_write_statement(
++            &ty,
++            "value",
++            "writer",
++            &[],
++            "  ",
++            &no_customs(),
++        );
++        assert_eq!(
++            result,
++            "  writer.writeU64(MyCounterFfiCodec.lower(value));\n"
++        );
++    }
++
+     #[test]
+     fn binary_write_sequence_string() {
+         let ty = Type::Sequence {
+diff --git a/crates/ubdg_bindgen/src/dart/config.rs b/crates/ubdg_bindgen/src/dart/config.rs
+index 0b2823f..f651668 100644
+--- a/crates/ubdg_bindgen/src/dart/config.rs
++++ b/crates/ubdg_bindgen/src/dart/config.rs
+@@ -17,6 +17,8 @@ pub struct DartBindingsConfig {
+     pub rename: HashMap<String, String>,
+     pub exclude: Vec<String>,
+     pub external_packages: HashMap<String, String>,
++    /// Store generated record collections as recursively unmodifiable values.
++    pub readonly_collections: Option<bool>,
+     pub custom_types: HashMap<String, CustomTypeConfig>,
+ }
+ 
+@@ -31,6 +33,13 @@ pub struct CustomTypeConfig {
+     pub lift: Option<String>,
+     /// Template converting custom → builtin: `"{}.toString()"`.
+     pub lower: Option<String>,
++    /// Generate a nominal Dart wrapper for this Rust UniFFI custom type.
++    pub nominal: Option<bool>,
++    /// Optional Rust-owned semantic marker: `non-empty-string`, `non-zero-u64`, or
++    /// `fixed-bytes-32`. The generator does not duplicate Rust validation.
++    pub safe_value: Option<String>,
++    /// Rust-exported function called by the public nominal factory.
++    pub validator: Option<String>,
+ }
+ 
+ impl CustomTypeConfig {
+diff --git a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs b/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
+index 8e84591..dee1c25 100644
+--- a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
++++ b/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
+@@ -18,8 +18,11 @@ pub(super) fn ffi_type_contains_rust_buffer(type_: &FfiType) -> bool {
+ pub(super) fn runtime_unsupported_reason_for_ffi_func(
+     ffi_func: &uniffi_bindgen::interface::FfiFunction,
+ ) -> Option<String> {
++    // Every UniFFI 0.31 function carries RustCallStatus as an out-argument in
++    // the direct ABI.  The maintained ffibuffer renderer consumes that status
++    // from the return buffer, so keep these functions on its generated path.
+     if ffi_func.has_rust_call_status_arg() {
+-        return Some("runtime invocation for this UniFFI ABI (RustCallStatus out-arg) is not implemented yet".to_string());
++        return Some("runtime invocation requires the UniFFI ffibuffer path for RustCallStatus out-arg".to_string());
+     }
+     if ffi_func
+         .arguments()
+@@ -94,7 +97,8 @@ pub(super) fn ffibuffer_primitive_union_field(ffi_type: &FfiType) -> Option<&'st
+         FfiType::Int16 => Some("i16"),
+         FfiType::UInt32 => Some("u32"),
+         FfiType::Int32 => Some("i32"),
+-        FfiType::UInt64 | FfiType::Int64 | FfiType::Handle => Some("u64"),
++        FfiType::UInt64 | FfiType::Handle => Some("u64"),
++        FfiType::Int64 => Some("i64"),
+         FfiType::Float32 => Some("float32"),
+         FfiType::Float64 => Some("float64"),
+         FfiType::Reference(inner) | FfiType::MutReference(inner)
+@@ -243,18 +247,11 @@ pub(super) fn render_ffibuffer_rustbuffer_arg_serialization(
+     let arg_name = safe_dart_identifier(&to_lower_camel(&arg.name));
+     // Compute the lowered expression for custom types (used in encode paths
+     // that bypass render_uniffi_binary_write_statement).
+-    let lowered_arg = if let Type::Custom { name, .. } = &arg.type_ {
+-        if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(&arg_name)
+-        } else {
+-            arg_name.clone()
+-        }
+-    } else {
+-        arg_name.clone()
+-    };
++    let lowered_arg = lower_custom_if_needed(&arg_name, &arg.type_, custom_types);
+     let needs_writer = matches!(
+         runtime_unwrapped_type(&arg.type_),
+-        Type::Map { .. }
++        Type::Bytes
++            | Type::Map { .. }
+             | Type::Sequence { .. }
+             | Type::Optional { .. }
+             | Type::Timestamp
+@@ -262,13 +259,16 @@ pub(super) fn render_ffibuffer_rustbuffer_arg_serialization(
+     );
+     let writer_name = format!("{arg_name}Writer");
+     let encode_expr = match runtime_unwrapped_type(&arg.type_) {
+-        Type::Record { name, .. } | Type::Enum { name, .. } => {
++        Type::Record { name, .. } => {
++            format!("{}FfiCodec.encode({lowered_arg})", to_upper_camel(name))
++        }
++        Type::Enum { name, .. } => {
+             format!("_uniffiEncode{}({lowered_arg})", to_upper_camel(name))
+         }
+         Type::String => {
+             format!("Uint8List.fromList(utf8.encode({lowered_arg}))")
+         }
+-        Type::Bytes => lowered_arg.clone(),
++        Type::Bytes => format!("{writer_name}.toBytes()"),
+         Type::Map { .. }
+         | Type::Sequence { .. }
+         | Type::Optional { .. }
+@@ -382,14 +382,13 @@ pub(super) fn render_ffibuffer_primitive_arg_write(
+ ) {
+     let arg_name = safe_dart_identifier(&to_lower_camel(&arg.name));
+     // Apply lower transform for custom types backed by primitives.
+-    let lowered_arg = if let Type::Custom { name, .. } = &arg.type_ {
+-        if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(&arg_name)
+-        } else {
+-            arg_name.clone()
++    let lowered_arg = match runtime_unwrapped_type(&arg.type_) {
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            format!("{}FfiCodec.lower({arg_name})", to_upper_camel(name))
++        }
++        _ => {
++            lower_custom_if_needed(&arg_name, &arg.type_, custom_types)
+         }
+-    } else {
+-        arg_name.clone()
+     };
+     let Some(union_field) = ffibuffer_primitive_union_field(ffi_type) else {
+         out.push_str(&format!(
+@@ -403,12 +402,13 @@ pub(super) fn render_ffibuffer_primitive_arg_write(
+             offset, lowered_arg
+         ));
+     } else {
+-        let value_expr =
+-            if union_field == "i8" && matches!(runtime_unwrapped_type(&arg.type_), Type::Boolean) {
+-                format!("{lowered_arg} ? 1 : 0")
+-            } else {
+-                lowered_arg.clone()
+-            };
++        let value_expr = if matches!(runtime_unwrapped_type(&arg.type_), Type::UInt64) {
++            format!("_uniffiBigIntToU64({lowered_arg})")
++        } else if union_field == "i8" && matches!(runtime_unwrapped_type(&arg.type_), Type::Boolean) {
++            format!("{lowered_arg} ? 1 : 0")
++        } else {
++            lowered_arg.clone()
++        };
+         out.push_str(&format!(
+             "      (argBuf + {}).ref.{} = {};\n",
+             offset, union_field, value_expr
+@@ -466,7 +466,10 @@ pub(super) fn render_ffibuffer_async_complete_and_decode(
+                     lift_custom_if_needed("utf8.decode(resultBytes)", ret_type, custom_types)
+                 }
+                 Type::Bytes => lift_custom_if_needed("resultBytes", ret_type, custom_types),
+-                Type::Record { name, .. } | Type::Enum { name, .. } => {
++                Type::Record { name, .. } => {
++                    format!("{}FfiCodec.decode(resultBytes)", to_upper_camel(name))
++                }
++                Type::Enum { name, .. } => {
+                     format!("_uniffiDecode{}(resultBytes)", to_upper_camel(name))
+                 }
+                 _ => render_uniffi_binary_read_expression(
+@@ -936,6 +939,54 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn primitive_write_object_lowers_opaque_handle() {
++        let arg = UdlArg {
++            name: "actor_id".into(),
++            type_: Type::Object {
++                name: "actor_id".into(),
++                module_path: String::new(),
++                imp: ObjectImpl::Struct,
++            },
++            docstring: None,
++            default: None,
++        };
++        let mut result = String::new();
++        render_ffibuffer_primitive_arg_write(
++            &mut result,
++            &arg,
++            &FfiType::Handle,
++            1,
++            "unsupported",
++            "probe",
++            &HashMap::new(),
++        );
++        assert_eq!(result, "      (argBuf + 1).ref.u64 = ActorIdFfiCodec.lower(actorId);\n");
++    }
++
++    #[test]
++    fn rustbuffer_bytes_argument_uses_uniffi_sequence_encoding() {
++        let arg = UdlArg {
++            name: "value".into(),
++            type_: Type::Bytes,
++            docstring: None,
++            default: None,
++        };
++        let mut result = String::new();
++        render_ffibuffer_rustbuffer_arg_serialization(
++            &mut result,
++            &arg,
++            0,
++            "unsupported",
++            "probe",
++            &[],
++            &HashMap::new(),
++        );
++        assert!(result.contains("final valueWriter = _UniFfiBinaryWriter();"));
++        assert!(result.contains("valueWriter.writeI32(value.length);"));
++        assert!(result.contains("final Uint8List valueBytes = valueWriter.toBytes();"));
++    }
++
+     #[test]
+     fn ffi_type_from_float64() {
+         assert_eq!(
+diff --git a/crates/ubdg_bindgen/src/dart/mod.rs b/crates/ubdg_bindgen/src/dart/mod.rs
+index af40db9..42f96d6 100644
+--- a/crates/ubdg_bindgen/src/dart/mod.rs
++++ b/crates/ubdg_bindgen/src/dart/mod.rs
+@@ -66,12 +66,14 @@ pub fn generate_bindings(args: &GenerateArgs) -> Result<()> {
+         module_name: &module_name,
+         ffi_class_name: &ffi_class_name,
+         library_name: &library_name,
++        ffi_namespace: &namespace,
+         namespace_docstring: metadata.namespace_docstring.as_deref(),
+         local_module_path: &metadata.local_module_path,
+         uniffi_contract_version: metadata.uniffi_contract_version,
+         ffi_uniffi_contract_version_symbol: metadata.ffi_uniffi_contract_version_symbol.as_deref(),
+         api_checksums: &metadata.api_checksums,
+         external_packages: &cfg.external_packages,
++        readonly_collections: cfg.readonly_collections == Some(true),
+         custom_types: &cfg.custom_types,
+         api_overrides: ApiOverrides::new(&cfg.rename, &cfg.exclude),
+         functions: &metadata.functions,
+@@ -95,12 +97,14 @@ struct RenderContext<'a> {
+     module_name: &'a str,
+     ffi_class_name: &'a str,
+     library_name: &'a str,
++    ffi_namespace: &'a str,
+     namespace_docstring: Option<&'a str>,
+     local_module_path: &'a str,
+     uniffi_contract_version: Option<u32>,
+     ffi_uniffi_contract_version_symbol: Option<&'a str>,
+     api_checksums: &'a [UdlApiChecksum],
+     custom_types: &'a HashMap<String, CustomTypeConfig>,
++    readonly_collections: bool,
+     external_packages: &'a HashMap<String, String>,
+     api_overrides: ApiOverrides,
+     functions: &'a [UdlFunction],
+@@ -110,17 +114,62 @@ struct RenderContext<'a> {
+     enums: &'a [UdlEnum],
+ }
+ 
++fn render_nominal_custom_type(
++    name: &str,
++    builtin_dart_type: &str,
++    safe_value: Option<&str>,
++    validator: Option<&str>,
++) -> String {
++    let mut out = String::new();
++    out.push_str(&format!("final class {name} {{\n"));
++    if let Some(validator) = validator {
++        if safe_value == Some("fixed-bytes-32") {
++            out.push_str(&format!(
++                "  factory {name}({builtin_dart_type} value) {{\n    final {builtin_dart_type} copied = Uint8List.fromList(value);\n    {validator}(copied);\n    return {name}._(copied);\n  }}\n"
++            ));
++        } else {
++            out.push_str(&format!(
++                "  factory {name}({builtin_dart_type} value) {{\n    {validator}(value);\n    return {name}._(value);\n  }}\n"
++            ));
++        }
++    } else if safe_value == Some("fixed-bytes-32") {
++        // The Rust custom-type lift/lower implementation owns validation.  The
++        // Dart factory only copies bytes so callers cannot mutate the wrapper
++        // through the list used to construct it.
++        out.push_str(&format!(
++            "  factory {name}({builtin_dart_type} value) => {name}._(Uint8List.fromList(value));\n"
++        ));
++    } else {
++        out.push_str(&format!(
++            "  factory {name}({builtin_dart_type} value) => {name}._(value);\n"
++        ));
++    }
++    out.push_str(&format!("  const {name}._(this.value);\n\n"));
++    out.push_str(&format!("  final {builtin_dart_type} value;\n\n"));
++    out.push_str(&format!("  factory {name}.fromValue({builtin_dart_type} value) => {name}._(value);\n"));
++    out.push_str(&format!("  {builtin_dart_type} toValue() => value;\n\n"));
++    out.push_str("  @override\n  String toString() => value.toString();\n\n");
++    out.push_str("  @override\n  bool operator ==(Object other) => identical(this, other) || other is ");
++    out.push_str(name);
++    out.push_str(" && value == other.value;\n\n");
++    out.push_str("  @override\n  int get hashCode => value.hashCode;\n");
++    out.push_str("}\n\n");
++    out
++}
++
+ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+     let RenderContext {
+         module_name,
+         ffi_class_name,
+         library_name,
++        ffi_namespace,
+         namespace_docstring,
+         local_module_path,
+         uniffi_contract_version,
+         ffi_uniffi_contract_version_symbol,
+         api_checksums,
+         custom_types,
++        readonly_collections,
+         external_packages,
+         ref api_overrides,
+         functions,
+@@ -191,7 +240,10 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+                 .flat_map(|e| e.methods.iter())
+                 .any(method_uses_non_string_map)
+     };
+-    let needs_binary_helpers = has_runtime_unsupported || has_non_string_map_boundary;
++    // A record-only component can be referenced by a second UniFFI
++    // component. Keep its binary codecs available even without local methods.
++    let needs_binary_helpers =
++        has_runtime_unsupported || has_non_string_map_boundary || !records.is_empty() || !enums.is_empty();
+     let needs_typed_data = has_runtime_unsupported
+         || functions.iter().any(function_uses_bytes)
+         || objects.iter().any(|o| {
+@@ -201,13 +253,16 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+             })
+         })
+         || records.iter().any(|r| {
+-            r.methods.iter().any(|m| {
++            r.fields.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
++                || r.methods.iter().any(|m| {
+                 m.return_type.as_ref().is_some_and(uniffi_type_uses_bytes)
+                     || m.args.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
+             })
+         })
+         || enums.iter().any(|e| {
+-            e.methods.iter().any(|m| {
++            e.variants.iter().any(|v| {
++                v.fields.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
++            }) || e.methods.iter().any(|m| {
+                 m.return_type.as_ref().is_some_and(uniffi_type_uses_bytes)
+                     || m.args.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
+             })
+@@ -370,6 +425,9 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+     if needs_typed_data {
+         out.push_str("import 'dart:typed_data';\n");
+     }
++    if readonly_collections {
++        out.push_str("import 'dart:collection';\n");
++    }
+     for uri in &external_import_uris {
+         out.push_str(&format!("import '{uri}';\n"));
+     }
+@@ -388,6 +446,13 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         }
+     }
+     out.push('\n');
++    if readonly_collections {
++        out.push_str("dynamic _uniffiDeepReadonly(dynamic value) {\n");
++        out.push_str("  if (value is List) return UnmodifiableListView(value.map(_uniffiDeepReadonly).toList());\n");
++        out.push_str("  if (value is Map) return UnmodifiableMapView(value.map((key, item) => MapEntry(key, _uniffiDeepReadonly(item))));\n");
++        out.push_str("  return value;\n");
++        out.push_str("}\n\n");
++    }
+     // Emit typedefs for custom types that appear in the UDL.
+     {
+         let mut customs = std::collections::BTreeMap::new();
+@@ -444,11 +509,23 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         }
+         if !customs.is_empty() {
+             for (name, builtin_dart_type) in &customs {
+-                let dart_type = custom_types
+-                    .get(name.as_str())
+-                    .and_then(|cfg| cfg.type_name.as_deref())
+-                    .unwrap_or(builtin_dart_type);
+-                out.push_str(&format!("typedef {name} = {dart_type};\n"));
++                if let Some(cfg) = custom_types.get(name.as_str()) {
++                    if cfg.nominal == Some(true) {
++                        let wrapper_name = custom_type_name(name, cfg);
++                        out.push_str(&render_nominal_custom_type(
++                            &wrapper_name,
++                            builtin_dart_type,
++                            cfg.safe_value.as_deref(),
++                            cfg.validator.as_deref(),
++                        ));
++                        continue;
++                    }
++                    if let Some(type_name) = &cfg.type_name {
++                        out.push_str(&format!("typedef {name} = {type_name};\n"));
++                        continue;
++                    }
++                }
++                out.push_str(&format!("typedef {name} = {builtin_dart_type};\n"));
+             }
+             out.push('\n');
+         }
+@@ -535,11 +612,13 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         out.push_str("const int _rustFuturePollReady = 0;\n");
+         out.push_str("const int _rustFuturePollWake = 1;\n\n");
+     }
++    out.push_str(&render_uint64_helpers());
+     out.push_str(&render_data_models(
+         records,
+         enums,
+         callback_interfaces,
+         has_runtime_unsupported,
++        readonly_collections,
+         custom_types,
+     ));
+     if needs_binary_helpers {
+@@ -636,7 +715,7 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         functions,
+         objects,
+         callback_interfaces,
+-        library_name,
++        ffi_namespace,
+         local_module_path,
+         records,
+         enums,
+@@ -1351,7 +1430,7 @@ namespace compound_demo {
+         let content =
+             fs::read_to_string(out_dir.join("compound_demo.dart")).expect("read generated file");
+         assert!(content.contains("List<int> listify(List<int> values) {"));
+-        assert!(content.contains("Map<String, int> counts(Map<String, int> items) {"));
++        assert!(content.contains("Map<String, BigInt> counts(Map<String, BigInt> items) {"));
+         assert!(content.contains("String? maybeName(String? value) {"));
+         assert!(content.contains("List<Uint8List> chunk(List<Uint8List> input) {"));
+         assert!(content.contains("import 'dart:typed_data';"));
+@@ -1693,6 +1772,7 @@ namespace models {};
+ dictionary Person {
+   string name;
+   u32 age;
++  u64 quota;
+   string? nickname;
+ };
+ 
+@@ -1720,6 +1800,8 @@ interface Outcome {
+         let content = fs::read_to_string(out_dir.join("models.dart")).expect("read generated");
+         assert!(content.contains("class Person {"));
+         assert!(content.contains("const Person({"));
++        assert!(content.contains("final BigInt quota;"));
++        assert!(content.contains("BigInt quota"));
+         assert!(content.contains("Person copyWith({"));
+         assert!(content.contains("enum Color {"));
+         assert!(content.contains("sealed class Outcome {"));
+@@ -1836,12 +1918,14 @@ interface Outcome {
+             module_name: "models",
+             ffi_class_name: "ModelsFfi",
+             library_name: "uniffi_models",
++            ffi_namespace: "models",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &[],
+@@ -1897,7 +1981,7 @@ interface Outcome {
+             trait_methods: UdlObjectTraitMethods::default(),
+         }];
+ 
+-        let content = render_data_models(&[], &enums, &[], false, &HashMap::new());
++        let content = render_data_models(&[], &enums, &[], false, false, &HashMap::new());
+         assert!(
+             content.contains("low(1),"),
+             "expected low(1), got:\n{content}"
+@@ -1947,7 +2031,7 @@ interface Outcome {
+             trait_methods: UdlObjectTraitMethods::default(),
+         }];
+ 
+-        let content = render_data_models(&[], &enums, &[], false, &HashMap::new());
++        let content = render_data_models(&[], &enums, &[], false, false, &HashMap::new());
+         assert!(
+             content.contains("  red,\n"),
+             "expected plain variant, got:\n{content}"
+@@ -2067,6 +2151,32 @@ interface Outcome {
+                     throws_type: None,
+                     args: vec![],
+                 },
++                UdlObjectMethod {
++                    name: "label".to_string(),
++                    ffi_symbol: Some("uniffi_demo_method_widget_label".to_string()),
++                    ffi_arg_types: vec![FfiType::Handle],
++                    ffi_return_type: Some(FfiType::RustBuffer(None)),
++                    ffi_has_rust_call_status: true,
++                    runtime_unsupported: Some("placeholder".to_string()),
++                    docstring: None,
++                    is_async: false,
++                    return_type: Some(Type::String),
++                    throws_type: None,
++                    args: vec![],
++                },
++                UdlObjectMethod {
++                    name: "payload".to_string(),
++                    ffi_symbol: Some("uniffi_demo_method_widget_payload".to_string()),
++                    ffi_arg_types: vec![FfiType::Handle],
++                    ffi_return_type: Some(FfiType::RustBuffer(None)),
++                    ffi_has_rust_call_status: true,
++                    runtime_unsupported: Some("placeholder".to_string()),
++                    docstring: None,
++                    is_async: false,
++                    return_type: Some(Type::Bytes),
++                    throws_type: None,
++                    args: vec![],
++                },
+                 UdlObjectMethod {
+                     name: "async_label".to_string(),
+                     ffi_symbol: Some("uniffi_demo_method_widget_async_label".to_string()),
+@@ -2093,12 +2203,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &[],
+@@ -2112,6 +2224,10 @@ interface Outcome {
+         assert!(content.contains("uniffi_ffibuffer_demo_ctor_widget_new"));
+         assert!(content.contains("_widgetValueFfiBuffer"));
+         assert!(content.contains("uniffi_ffibuffer_demo_method_widget_value"));
++        assert!(content.contains("_widgetLabelFfiBuffer"));
++        assert!(content.contains("utf8.decode(retBytes)"));
++        assert!(content.contains("_widgetPayloadFfiBuffer"));
++        assert!(content.contains("retReader.readBytes(__len)"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (new)');"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (value)');"));
+         // async_label has a String RustBuffer arg which is now handled by the
+@@ -2146,12 +2262,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &functions,
+@@ -2162,7 +2280,7 @@ interface Outcome {
+         });
+ 
+         assert!(content.contains("uniffi_ffibuffer_uniffi_demo_fn_func_greet_async"));
+-        assert!(content.contains("ffi_uniffi_demo_rust_future_complete_rust_buffer"));
++        assert!(content.contains("ffi_demo_rust_future_complete_rust_buffer"));
+         assert!(content.contains("Future<String> greetAsync(String name) {"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (greet_async)');"));
+     }
+@@ -2219,12 +2337,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &functions,
+@@ -2240,7 +2360,7 @@ interface Outcome {
+         // Should have typed error dispatch
+         assert!(content.contains("_uniffiLiftMathErrorException(errorBytes)"));
+         // Should still have the ffi-buffer async polling infrastructure
+-        assert!(content.contains("ffi_uniffi_demo_rust_future_poll_u32"));
++        assert!(content.contains("ffi_demo_rust_future_poll_u32"));
+         assert!(content.contains("Future<int> divideAsync(int a, int b)"));
+     }
+ 
+diff --git a/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs b/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
+index ff76e80..fd5f536 100644
+--- a/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
++++ b/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
+@@ -425,10 +425,16 @@ pub(super) fn render_toplevel_functions(
+                                     ret_type,
+                                     ctx.custom_types,
+                                 ),
+-                                Type::Bytes => {
+-                                    lift_custom_if_needed("retBytes", ret_type, ctx.custom_types)
++                                Type::Bytes => render_uniffi_binary_read_expression(
++                                    ret_type,
++                                    "retReader",
++                                    ctx.enums,
++                                    ctx.custom_types,
++                                ),
++                                Type::Record { name, .. } => {
++                                    format!("{}FfiCodec.decode(retBytes)", to_upper_camel(name))
+                                 }
+-                                Type::Record { name, .. } | Type::Enum { name, .. } => {
++                                Type::Enum { name, .. } => {
+                                     format!("_uniffiDecode{}(retBytes)", to_upper_camel(name))
+                                 }
+                                 _ => render_uniffi_binary_read_expression(
+@@ -450,9 +456,7 @@ pub(super) fn render_toplevel_functions(
+                             );
+                             if matches!(
+                                 runtime_unwrapped_type(ret_type),
+-                                Type::String
+-                                    | Type::Bytes
+-                                    | Type::Record { .. }
++                                Type::String | Type::Record { .. }
+                                     | Type::Enum { .. }
+                             ) {
+                                 out.push_str(&format!(
+@@ -493,6 +497,8 @@ pub(super) fn render_toplevel_functions(
+                             };
+                             if union_field == "ptr" {
+                                 out.push_str("      return (returnBuf + 0).ref.ptr;\n");
++                            } else if matches!(runtime_unwrapped_type(ret_type), Type::UInt64) {
++                                out.push_str("      return _uniffiU64ToBigInt((returnBuf + 0).ref.u64);\n");
+                             } else {
+                                 out.push_str(&format!(
+                                     "      return (returnBuf + 0).ref.{union_field};\n"
+diff --git a/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs b/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
+index 55adb44..a31a343 100644
+--- a/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
++++ b/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
+@@ -914,10 +914,26 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                         }
+                         Some(ret_type) => match ffi_return_type.as_ref() {
+                             Some(FfiType::RustBuffer(_)) => {
+-                                let is_map_type =
+-                                    matches!(runtime_unwrapped_type(ret_type), Type::Map { .. });
++                                let uses_ret_reader = matches!(
++                                    runtime_unwrapped_type(ret_type),
++                                    Type::Bytes | Type::Map { .. }
++                                );
+                                 let decode_expr = match runtime_unwrapped_type(ret_type) {
+-                                    Type::Record { name, .. } | Type::Enum { name, .. } => {
++                                    Type::String => lift_custom_if_needed(
++                                        "utf8.decode(retBytes)",
++                                        ret_type,
++                                        custom_types,
++                                    ),
++                                    Type::Bytes => render_uniffi_binary_read_expression(
++                                        ret_type,
++                                        "retReader",
++                                        enums,
++                                        custom_types,
++                                    ),
++                                    Type::Record { name, .. } => {
++                                        format!("{}FfiCodec.decode(retBytes)", to_upper_camel(name))
++                                    }
++                                    Type::Enum { name, .. } => {
+                                         format!("_uniffiDecode{}(retBytes)", to_upper_camel(name))
+                                     }
+                                     Type::Map { .. } => render_uniffi_binary_read_expression(
+@@ -945,7 +961,7 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                                     out.push_str(
+                                         "      final Uint8List retBytes = retBufPtr.ref.len == 0 ? Uint8List(0) : Uint8List.fromList(retBufPtr.ref.data.asTypedList(retBufPtr.ref.len));\n",
+                                     );
+-                                    if is_map_type {
++                                    if uses_ret_reader {
+                                         out.push_str("      final _UniFfiBinaryReader retReader = _UniFfiBinaryReader(retBytes);\n");
+                                     }
+                                     out.push_str(&format!("      return {decode_expr};\n"));
+@@ -970,6 +986,8 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                                 };
+                                 if union_field == "ptr" {
+                                     out.push_str("      return (returnBuf + 0).ref.ptr;\n");
++                                } else if matches!(runtime_unwrapped_type(ret_type), Type::UInt64) {
++                                    out.push_str("      return _uniffiU64ToBigInt((returnBuf + 0).ref.u64);\n");
+                                 } else {
+                                     out.push_str(&format!(
+                                         "      return (returnBuf + 0).ref.{union_field};\n"
+diff --git a/crates/ubdg_bindgen/src/dart/render_data_models.rs b/crates/ubdg_bindgen/src/dart/render_data_models.rs
+index 84b699d..8a5e883 100644
+--- a/crates/ubdg_bindgen/src/dart/render_data_models.rs
++++ b/crates/ubdg_bindgen/src/dart/render_data_models.rs
+@@ -16,6 +16,7 @@ pub(super) fn render_data_models(
+     enums: &[UdlEnum],
+     callback_interfaces: &[UdlCallbackInterface],
+     emit_uniffi_error_lift_helpers: bool,
++    readonly_collections: bool,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     let mut out = String::new();
+@@ -34,7 +35,13 @@ pub(super) fn render_data_models(
+         if record.fields.is_empty() {
+             out.push_str(&format!("  const {class_name}();\n\n"));
+         } else {
+-            out.push_str(&format!("  const {class_name}({{\n"));
++            let readonly_record =
++                readonly_collections && record.fields.iter().any(|f| is_collection_type(&f.type_));
++            if readonly_record {
++                out.push_str(&format!("  {class_name}({{\n"));
++            } else {
++                out.push_str(&format!("  const {class_name}({{\n"));
++            }
+             for field in &record.fields {
+                 out.push_str(&render_doc_comment(field.docstring.as_deref(), "    "));
+                 let field_name = safe_dart_identifier(&to_lower_camel(&field.name));
+@@ -43,12 +50,44 @@ pub(super) fn render_data_models(
+                     .as_ref()
+                     .and_then(|d| render_default_value_expr(d, &field.type_, enums, custom_types))
+                 {
+-                    out.push_str(&format!("    this.{field_name} = {default_expr},\n"));
++                    if readonly_record && is_collection_type(&field.type_) {
++                        out.push_str(&format!(
++                            "    {} {field_name} = {default_expr},\n",
++                            map_uniffi_type_to_dart(&field.type_, custom_types)
++                        ));
++                    } else {
++                        out.push_str(&format!("    this.{field_name} = {default_expr},\n"));
++                    }
+                 } else {
+-                    out.push_str(&format!("    required this.{field_name},\n"));
++                    if readonly_record && is_collection_type(&field.type_) {
++                        out.push_str(&format!(
++                            "    required {} {field_name},\n",
++                            map_uniffi_type_to_dart(&field.type_, custom_types)
++                        ));
++                    } else {
++                        out.push_str(&format!("    required this.{field_name},\n"));
++                    }
+                 }
+             }
+-            out.push_str("  });\n\n");
++            if readonly_record {
++                out.push_str("  })");
++                let mut first_initializer = true;
++                for field in &record.fields {
++                    if !is_collection_type(&field.type_) {
++                        continue;
++                    }
++                    let field_name = safe_dart_identifier(&to_lower_camel(&field.name));
++                    out.push_str(&format!(
++                        "{} {field_name} = {}",
++                        if first_initializer { ":" } else { "," },
++                        render_readonly_value(&field_name, &field.type_, custom_types)
++                    ));
++                    first_initializer = false;
++                }
++                out.push_str(";\n\n");
++            } else {
++                out.push_str("  });\n\n");
++            }
+         }
+         for field in &record.fields {
+             out.push_str(&render_doc_comment(field.docstring.as_deref(), "  "));
+@@ -676,6 +715,45 @@ pub(super) fn render_data_models(
+     out
+ }
+ 
++fn is_collection_type(type_: &Type) -> bool {
++    match type_ {
++        Type::Optional { inner_type } => is_collection_type(inner_type),
++        Type::Sequence { .. } | Type::Map { .. } => true,
++        _ => false,
++    }
++}
++
++fn render_readonly_value(
++    expr: &str,
++    type_: &Type,
++    custom_types: &HashMap<String, CustomTypeConfig>,
++) -> String {
++    match type_ {
++        Type::Optional { inner_type } => format!(
++            "({expr} == null ? null : {})",
++            render_readonly_value(expr, inner_type, custom_types)
++        ),
++        Type::Sequence { inner_type } => {
++            let inner = map_uniffi_type_to_dart(inner_type, custom_types);
++            let mapped = render_readonly_value("item", inner_type, custom_types);
++            format!("UnmodifiableListView<{inner}>({expr}.map((item) => {mapped}).toList())")
++        }
++        Type::Map {
++            key_type,
++            value_type,
++        } => {
++            let key = map_uniffi_type_to_dart(key_type, custom_types);
++            let value = map_uniffi_type_to_dart(value_type, custom_types);
++            let mapped_key = render_readonly_value("key", key_type, custom_types);
++            let mapped_value = render_readonly_value("item", value_type, custom_types);
++            format!(
++                "UnmodifiableMapView<{key}, {value}>({expr}.map((key, item) => MapEntry({mapped_key}, {mapped_value})))"
++            )
++        }
++        _ => expr.to_string(),
++    }
++}
++
+ /// Render `toString`, `operator ==`, and `hashCode` for a record class or
+ /// sealed enum variant class. All value types always get these three methods
+ /// for idiomatic Dart structural equality and debugging.
+diff --git a/crates/ubdg_bindgen/src/dart/render_helpers.rs b/crates/ubdg_bindgen/src/dart/render_helpers.rs
+index bb6dce2..720580f 100644
+--- a/crates/ubdg_bindgen/src/dart/render_helpers.rs
++++ b/crates/ubdg_bindgen/src/dart/render_helpers.rs
+@@ -78,8 +78,8 @@ pub(super) fn render_type_default_expr(
+         | Type::Int64
+         | Type::UInt8
+         | Type::UInt16
+-        | Type::UInt32
+-        | Type::UInt64 => Some("0".to_string()),
++        | Type::UInt32 => Some("0".to_string()),
++        Type::UInt64 => Some("BigInt.zero".to_string()),
+         Type::Float32 | Type::Float64 => Some("0.0".to_string()),
+         Type::Bytes => Some("Uint8List(0)".to_string()),
+         Type::Timestamp => Some("DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true)".to_string()),
+@@ -478,6 +478,8 @@ pub(super) fn append_runtime_arg_marshalling(
+             to_upper_camel(object_name)
+         ));
+         call_args.push(handle_name);
++    } else if matches!(runtime_unwrapped_type(type_), Type::UInt64) {
++        call_args.push(format!("_uniffiBigIntToU64({arg_name})"));
+     } else if is_runtime_optional_primitive_type(type_) {
+         let native_name = format!("{arg_name}Native");
+         let json_name = format!("{native_name}Json");
+diff --git a/crates/ubdg_bindgen/src/dart/type_map.rs b/crates/ubdg_bindgen/src/dart/type_map.rs
+index eb1e0ae..d9f171b 100644
+--- a/crates/ubdg_bindgen/src/dart/type_map.rs
++++ b/crates/ubdg_bindgen/src/dart/type_map.rs
+@@ -168,6 +168,7 @@ pub(super) fn render_plain_ffi_decode_expr(
+     let decoded = match runtime_unwrapped_type(type_) {
+         Type::Timestamp => format!("DateTime.fromMicrosecondsSinceEpoch({call_expr}, isUtc: true)"),
+         Type::Duration => format!("Duration(microseconds: {call_expr})"),
++        Type::UInt64 => format!("_uniffiU64ToBigInt({call_expr})"),
+         _ => call_expr.to_string(),
+     };
+     lift_custom_if_needed(&decoded, type_, custom_types)
+@@ -184,13 +185,23 @@ pub(super) fn lift_custom_if_needed(
+ ) -> String {
+     if let Type::Custom { name, .. } = type_ {
+         if let Some(cfg) = custom_types.get(name.as_str()) {
+-            return cfg.lift_expr(decoded_expr);
++            let lifted = cfg.lift_expr(decoded_expr);
++            return if cfg.nominal == Some(true) && cfg.lift.is_none() {
++                format!("{}.fromValue({lifted})", custom_type_name(name, cfg))
++            } else {
++                lifted
++            };
+         }
+     }
+     if let Type::Optional { inner_type } = type_ {
+         if let Type::Custom { name, .. } = inner_type.as_ref() {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
+-                return cfg.lift_expr(decoded_expr);
++                let lifted = cfg.lift_expr(decoded_expr);
++                return if cfg.nominal == Some(true) && cfg.lift.is_none() {
++                    format!("{}.fromValue({lifted})", custom_type_name(name, cfg))
++                } else {
++                    lifted
++                };
+             }
+         }
+     }
+@@ -206,19 +217,35 @@ pub(super) fn lower_custom_if_needed(
+ ) -> String {
+     if let Type::Custom { name, .. } = type_ {
+         if let Some(cfg) = custom_types.get(name.as_str()) {
+-            return cfg.lower_expr(value_expr);
++            let lowered = cfg.lower_expr(value_expr);
++            return if cfg.nominal == Some(true) && cfg.lower.is_none() {
++                format!("{lowered}.value")
++            } else {
++                lowered
++            };
+         }
+     }
+     if let Type::Optional { inner_type } = type_ {
+         if let Type::Custom { name, .. } = inner_type.as_ref() {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
+-                return cfg.lower_expr(value_expr);
++                let lowered = cfg.lower_expr(value_expr);
++                return if cfg.nominal == Some(true) && cfg.lower.is_none() {
++                    format!("{lowered}.value")
++                } else {
++                    lowered
++                };
+             }
+         }
+     }
+     value_expr.to_string()
+ }
+ 
++pub(super) fn custom_type_name(name: &str, cfg: &CustomTypeConfig) -> String {
++    cfg.type_name
++        .clone()
++        .unwrap_or_else(|| to_upper_camel(name))
++}
++
+ pub(super) fn map_uniffi_type_to_dart(
+     type_: &Type,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+@@ -230,8 +257,8 @@ pub(super) fn map_uniffi_type_to_dart(
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64 => "int".to_string(),
++        Type::UInt64 => "BigInt".to_string(),
+         Type::Float32 | Type::Float64 => "double".to_string(),
+         Type::Boolean => "bool".to_string(),
+         Type::String => "String".to_string(),
+@@ -259,6 +286,9 @@ pub(super) fn map_uniffi_type_to_dart(
+         | Type::CallbackInterface { name, .. } => to_upper_camel(name),
+         Type::Custom { name, builtin, .. } => {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
++                if cfg.nominal == Some(true) {
++                    return custom_type_name(name, cfg);
++                }
+                 if let Some(type_name) = &cfg.type_name {
+                     return type_name.clone();
+                 }
+@@ -684,7 +714,15 @@ mod tests {
+         let customs = no_customs();
+         assert_eq!(map_uniffi_type_to_dart(&Type::UInt8, &customs), "int");
+         assert_eq!(map_uniffi_type_to_dart(&Type::Int32, &customs), "int");
+-        assert_eq!(map_uniffi_type_to_dart(&Type::UInt64, &customs), "int");
++        assert_eq!(map_uniffi_type_to_dart(&Type::UInt64, &customs), "BigInt");
++    }
++
++    #[test]
++    fn plain_uint64_decode_lifts_the_ffi_bit_pattern_to_bigint() {
++        assert_eq!(
++            render_plain_ffi_decode_expr(&Type::UInt64, "raw", &no_customs()),
++            "_uniffiU64ToBigInt(raw)"
++        );
+     }
+ 
+     #[test]
+@@ -835,6 +873,9 @@ mod tests {
+                 imports: None,
+                 lift: Some("Uri.parse({})".to_string()),
+                 lower: Some("{}.toString()".to_string()),
++                nominal: None,
++                safe_value: None,
++                validator: None,
+             },
+         );
+         customs

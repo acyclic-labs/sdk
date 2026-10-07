@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-07",
+  "status": "qualified-installed-current-main-cross-platform",
+  "candidate": {
+    "root": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "head": "75404e290d0da674d91c43e643fccaa6ba536bff",
+    "headMessage": "Add default for current-head marker",
+    "gitStatus": [
+      " M rust/crates/actors-uniffi/Cargo.toml",
+      " M rust/crates/actors-uniffi/src/lib.rs",
+      "?? research/",
+      "?? rust/crates/actors-uniffi/generator-patches/",
+      "?? rust/crates/actors-uniffi/uniffi.nominal.toml",
+      "?? tmp/",
+      "?? typescript/packages/actors/research/"
+    ],
+    "ffiBufferPatch": "producer-actors-uniffi-ffi-buffer-current-main-20261007.patch"
+  },
+  "native": {},
+  "runtime": {
+    "windows": {
+      "analyzer": "PASS",
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "staticNegative": "expected analyzer error: int -> PositiveU64"
+    },
+    "wslLinux": {
+      "analyzer": "PASS",
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "staticNegative": "expected analyzer error: int -> PositiveU64"
+    },
+    "macosIvar": {
+      "analyzer": "PASS",
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "staticNegative": "expected analyzer error: int -> PositiveU64"
+    }
+  },
+  "semanticRoots": {
+    "records": 24,
+    "enums": 3,
+    "oneofVariants": 2,
+    "nominalCustomTypes": [
+      "ActorId",
+      "CodeSha256",
+      "CurrentHeadMarker",
+      "PositiveU64"
+    ],
+    "operations": [
+      "create",
+      "update",
+      "inspect",
+      "add",
+      "remove",
+      "resume",
+      "checkpoint",
+      "invoke"
+    ],
+    "checks": [
+      "caller-supplied request/result shapes",
+      "typed errors",
+      "UInt64 BigInt 0, 2^63, 2^64-1",
+      "missing/null presence",
+      "readonly generated collections",
+      "Rust-backed nominal validators",
+      "CurrentHeadMarker true-only constructor",
+      "in-flight cancellation with server active=0"
+    ]
+  },
+  "primary": "C:\\Users\\varun\\.codex\\worktrees\\rust-source-foundation\\sdk\\rust\\crates\\sdk-generation\\research\\qualified-prototypes\\dart-actors-ffi-buffer"
+}

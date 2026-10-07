@@ -1,0 +1,9 @@
+Original Actors solver live snapshot — 2026-10-07
+
+Read-only WSL `ps` observation; no restart, signal, or PTY mutation:
+
+1031718 R+ 03:18:48 99.5 2406468 cbmc --no-malloc-may-fail --no-undefined-shift-check --no-signed-overflow-check --nan-check --no-self-loops-to-assumptions --no-pointer-primitive-check --object-bits 16 --unwind 2 --sat-solver cadical --slice-formula /tmp/kani-domain-ingress-03bb/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/b68fdd67a286fa59/out/acyclic_actors-b68fdd67a286fa59__RNvNtNtCsg7OSMarvtUN_14acyclic_actors6domain11kani_proofs51update_request_try_from_preserves_expected_revision.out --verbosity 9 --json-ui
+
+Result: LIVE (`R+`), elapsed `03:18:48`, CPU `99.5%`, RSS `2406468 KiB` at capture. PTY: `17660`. The command is source-bound to the historical `Q:/sdk/work/sdkgen-main-actual03bb` snapshot and remains distinct from c8 marker proofs.
+
+The active output tail repeatedly reports CaDiCaL SAT instances around `4,281,081` variables and `17,780,052` clauses, increasing by one per nearby instance. No terminal `SUMMARY`, verification result, or exit code exists yet. The solver remains untouched.

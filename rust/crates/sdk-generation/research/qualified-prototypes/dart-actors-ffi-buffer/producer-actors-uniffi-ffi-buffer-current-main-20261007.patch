@@ -1,0 +1,11 @@
+diff --git a/rust/crates/actors-uniffi/Cargo.toml b/rust/crates/actors-uniffi/Cargo.toml
+index 9b396d249a..9517c3d5e0 100644
+--- a/rust/crates/actors-uniffi/Cargo.toml
++++ b/rust/crates/actors-uniffi/Cargo.toml
+@@ -23,5 +23,5 @@ required-features = ["bindgen"]
+ acyclic-actors = { path = "../actors", features = ["uniffi"] }
+ thiserror = "2.0.17"
+ tokio-util = "=0.7.19"
+-uniffi = { version = "=0.31.0", features = ["tokio"] }
++uniffi = { version = "=0.31.0", features = ["tokio", "scaffolding-ffi-buffer-fns"] }
+ 

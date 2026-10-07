@@ -40,3 +40,9 @@ The generated Ruby source exposes the typed `ActorsClient` methods and `Cancella
 - Task-owned WSL runtime is now installed from pinned Ubuntu Jammy packages: PHP 8.1.2 with `FFI` enabled and `php-config` 8.1.2; a libc `strlen` FFI smoke call returned `6`. The Alef adapter reached compilation against the exact producer before failing on generated adapter type/signature mismatches. Local Windows PHP 8.5.11 still reports `PHP_FFI_EXTENSION=absent`.
 
 No package or producer files are modified by this evidence.
+
+## Ruby: current source candidate re-export qualification (2026-10-07)
+
+The current Actors candidate at `Q:/sdk/work/sdkgen-main-port-current` uses a Rust-owned facade and maintained UniFFI Ruby source patch. The facade materializes the nominal `ActorId`, domain roots, request records, presence, readonly accessors, and all eight operations through Rust metadata; no handwritten Ruby ABI mirror is used. Windows and WSL generated Ruby packages pass the all-eight fixture, full-u64, typed-error, and pending cancellation probes. WSL uses a task-owned local TLS fixture bound to `0.0.0.0`, reached at `127.0.0.1`, with a SAN certificate, so this scope has no Windows localhost dependency.
+
+Exact artifact hashes, source pre/post hashes, runtime versions, and terminal output are in [`ruby-candidate-reexports-runtime-20261007.json`](ruby-candidate-reexports-runtime-20261007.json) and [`ruby-candidate-reexports-runtime-terminal-20261007.txt`](ruby-candidate-reexports-runtime-terminal-20261007.txt). The historical macOS receipt remains [`ruby-async-sourcefix-20261007-receipt.json`](ruby-async-sourcefix-20261007-receipt.json).

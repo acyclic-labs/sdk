@@ -1,0 +1,216 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.26
+   Compiling quote v1.0.47
+   Compiling syn v3.0.6
+   Compiling syn v2.0.119
+   Compiling libc v0.2.190
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling anyhow v1.0.104
+   Compiling bytes v1.12.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling serde_core v1.0.229
+   Compiling autocfg v1.5.1
+   Compiling memchr v2.8.3
+   Compiling pin-project-lite v0.2.17
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling synstructure v0.14.0
+   Compiling futures-core v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling itoa v1.0.18
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling once_cell v1.21.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling num-traits v0.2.19
+   Compiling either v1.19.0
+   Compiling itertools v0.14.0
+   Compiling zerofrom-derive v0.1.8
+   Compiling serde v1.0.229
+   Compiling zerofrom v0.1.8
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling prost-derive v0.14.4
+   Compiling yoke-derive v0.8.4
+   Compiling socket2 v0.6.5
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling mio v1.2.4
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio-macros v2.7.2
+   Compiling serde_derive v1.0.229
+   Compiling equivalent v1.0.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling thiserror v2.0.21
+   Compiling stable_deref_trait v1.2.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling yoke v0.8.3
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tokio v1.53.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling hashbrown v0.17.1
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling indexmap v2.14.2
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling http v1.5.0
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling winnow v1.0.4
+   Compiling futures-macro v0.3.34
+   Compiling zerovec-derive v0.11.6
+   Compiling thiserror-impl v2.0.21
+   Compiling futures-task v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling slab v0.4.12
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling futures-util v0.3.34
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling zerovec v0.11.8
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tracing-core v0.1.36
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+   Compiling tracing-attributes v0.1.31

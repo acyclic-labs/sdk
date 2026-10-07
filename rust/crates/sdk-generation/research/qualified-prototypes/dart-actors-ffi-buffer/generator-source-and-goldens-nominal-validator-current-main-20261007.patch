@@ -1,0 +1,4307 @@
+diff --git a/crates/ubdg_bindgen/src/dart/callback.rs b/crates/ubdg_bindgen/src/dart/callback.rs
+index f6acf2a..8589873 100644
+--- a/crates/ubdg_bindgen/src/dart/callback.rs
++++ b/crates/ubdg_bindgen/src/dart/callback.rs
+@@ -906,6 +906,10 @@ pub(super) fn render_callback_arg_decode_expr(
+             format!("DateTime.fromMicrosecondsSinceEpoch({arg_name}, isUtc: true)")
+         }
+         Type::Duration => format!("Duration(microseconds: {arg_name})"),
++        // Keep the public callback signature semantic (`BigInt`) while the
++        // native callback ABI continues to carry the 64-bit bit pattern in
++        // Dart's FFI `int` slot.
++        Type::UInt64 => format!("_uniffiU64ToBigInt({arg_name})"),
+         _ => arg_name.to_string(),
+     };
+     // Apply lift template if the original type is Custom (stripped by runtime_unwrapped_type above).
+@@ -961,6 +965,7 @@ pub(super) fn render_callback_return_encode_expr(
+         }
+         Type::Timestamp => format!("{lowered}.toUtc().microsecondsSinceEpoch"),
+         Type::Duration => format!("{lowered}.inMicroseconds"),
++        Type::UInt64 => format!("_uniffiBigIntToU64({lowered})"),
+         // Result struct field is @ffi.Bool() / external bool — no int conversion needed.
+         Type::Boolean => lowered,
+         _ => lowered,
+@@ -1040,6 +1045,30 @@ mod tests {
+         assert_eq!(callback_interface_name_from_type(&Type::String), None);
+     }
+ 
++    #[test]
++    fn callback_uint64_crosses_the_public_bigint_boundary() {
++        assert_eq!(
++            render_callback_arg_decode_expr(
++                &Type::UInt64,
++                "value",
++                &[],
++                &[],
++                &HashMap::new(),
++            ),
++            "_uniffiU64ToBigInt(value)"
++        );
++        assert_eq!(
++            render_callback_return_encode_expr(
++                &Type::UInt64,
++                "value",
++                &[],
++                &[],
++                &HashMap::new(),
++            ),
++            "_uniffiBigIntToU64(value)"
++        );
++    }
++
+     // Trait callback naming helpers (defined in render_objects.rs).
+     use super::super::render_objects::{
+         trait_callback_bridge_class_name, trait_callback_init_done_field_name,
+diff --git a/crates/ubdg_bindgen/src/dart/codec.rs b/crates/ubdg_bindgen/src/dart/codec.rs
+index 792138a..4804d9a 100644
+--- a/crates/ubdg_bindgen/src/dart/codec.rs
++++ b/crates/ubdg_bindgen/src/dart/codec.rs
+@@ -14,7 +14,6 @@ fn is_identity_json_encode(type_: &Type, custom_types: &HashMap<String, CustomTy
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64
+         | Type::Float32
+         | Type::Float64
+@@ -42,7 +41,6 @@ fn is_simple_json_decode(type_: &Type, custom_types: &HashMap<String, CustomType
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64
+         | Type::Float32
+         | Type::Float64 => true,
+@@ -63,6 +61,7 @@ pub(super) fn render_json_encode_expr(
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     match type_ {
++        Type::UInt64 => format!("{value_expr}.toString()"),
+         Type::Timestamp => format!("{value_expr}.toUtc().microsecondsSinceEpoch"),
+         Type::Duration => format!("{value_expr}.inMicroseconds"),
+         Type::Bytes => format!("base64Encode({value_expr})"),
+@@ -101,13 +100,9 @@ pub(super) fn render_json_encode_expr(
+                 format!("{value_expr}.map((key, value) => MapEntry(key, {inner}))")
+             }
+         }
+-        Type::Custom { name, builtin, .. } => {
+-            if let Some(cfg) = custom_types.get(name.as_str()) {
+-                let lowered = cfg.lower_expr(value_expr);
+-                render_json_encode_expr(&lowered, builtin, custom_types)
+-            } else {
+-                render_json_encode_expr(value_expr, builtin, custom_types)
+-            }
++        Type::Custom { name: _name, builtin, .. } => {
++            let lowered = lower_custom_if_needed(value_expr, type_, custom_types);
++            render_json_encode_expr(&lowered, builtin, custom_types)
+         }
+         Type::Record { .. } => format!("{value_expr}.toJson()"),
+         Type::Object { name, .. } => {
+@@ -126,13 +121,13 @@ pub(super) fn render_json_decode_expr(
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     match type_ {
++        Type::UInt64 => format!("{value_expr} is String ? BigInt.parse({value_expr}) : BigInt.from(({value_expr} as num).toInt())"),
+         Type::UInt8
+         | Type::Int8
+         | Type::UInt16
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64 => format!("({value_expr} as num).toInt()"),
+         Type::Float32 | Type::Float64 => format!("({value_expr} as num).toDouble()"),
+         Type::Boolean => format!("{value_expr} as bool"),
+@@ -171,13 +166,9 @@ pub(super) fn render_json_decode_expr(
+             let inner = render_json_decode_expr("value", value_type, custom_types);
+             format!("({value_expr} as Map<String, dynamic>).map((key, value) => MapEntry(key, {inner}))")
+         }
+-        Type::Custom { name, builtin, .. } => {
++        Type::Custom { name: _name, builtin, .. } => {
+             let builtin_decoded = render_json_decode_expr(value_expr, builtin, custom_types);
+-            if let Some(cfg) = custom_types.get(name.as_str()) {
+-                cfg.lift_expr(&builtin_decoded)
+-            } else {
+-                builtin_decoded
+-            }
++            lift_custom_if_needed(&builtin_decoded, type_, custom_types)
+         }
+         Type::Record { name, .. } => format!(
+             "{}.fromJson({value_expr} as Map<String, dynamic>)",
+@@ -230,12 +221,20 @@ fn is_binary_supported_type(type_: &Type, enums: &[UdlEnum]) -> bool {
+         } => {
+             is_binary_supported_type(key_type, enums) && is_binary_supported_type(value_type, enums)
+         }
++        // Handles and callbacks are represented by opaque u64 values in the
++        // ffibuffer stream; their generated codecs already lower/lift those
++        // handles, so they are valid fields inside compound results.
++        Type::Object { .. } | Type::CallbackInterface { .. } => true,
+         Type::Record { .. } => true,
+         Type::Enum { .. } if is_runtime_enum_type(type_, enums) => true,
+         _ => false,
+     }
+ }
+ 
++pub(super) fn render_uint64_helpers() -> String {
++    "int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();\nBigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);\n\n".to_string()
++}
++
+ pub(super) fn render_uniffi_binary_helpers(
+     records: &[UdlRecord],
+     enums: &[UdlEnum],
+@@ -426,6 +425,16 @@ pub(super) fn render_uniffi_binary_helpers(
+         out.push_str("}\n\n");
+     }
+ 
++    // Records may be owned by a separate UniFFI component. Expose a small
++    // public codec facade so another generated Dart library can import the
++    // canonical record implementation without copying its fields.
++    for record in records {
++        let type_name = to_upper_camel(&record.name);
++        out.push_str(&format!(
++            "final class {type_name}FfiCodec {{\n  const {type_name}FfiCodec._();\n\n  static Uint8List encode({type_name} value) => _uniffiEncode{type_name}(value);\n\n  static {type_name} decode(Uint8List bytes) => _uniffiDecode{type_name}(bytes);\n}}\n\n"
++        ));
++    }
++
+     for enum_ in enums {
+         let type_name = to_upper_camel(&enum_.name);
+         let is_flat_enum = !enum_.is_error && enum_.variants.iter().all(|v| v.fields.is_empty());
+@@ -599,12 +608,8 @@ pub(super) fn render_uniffi_binary_write_statement(
+     indent: &str,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+-    if let Type::Custom { name, builtin, .. } = type_ {
+-        let effective_value = if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(value_expr)
+-        } else {
+-            value_expr.to_string()
+-        };
++    if let Type::Custom { builtin, .. } = type_ {
++        let effective_value = lower_custom_if_needed(value_expr, type_, custom_types);
+         return render_uniffi_binary_write_statement(
+             builtin,
+             &effective_value,
+@@ -621,7 +626,7 @@ pub(super) fn render_uniffi_binary_write_statement(
+         Type::Int16 => format!("{indent}{writer}.writeI16({value_expr});\n"),
+         Type::UInt32 => format!("{indent}{writer}.writeU32({value_expr});\n"),
+         Type::Int32 => format!("{indent}{writer}.writeI32({value_expr});\n"),
+-        Type::UInt64 => format!("{indent}{writer}.writeU64({value_expr});\n"),
++        Type::UInt64 => format!("{indent}{writer}.writeU64(_uniffiBigIntToU64({value_expr}));\n"),
+         Type::Int64 => format!("{indent}{writer}.writeI64({value_expr});\n"),
+         Type::Float32 => format!("{indent}{writer}.writeF32({value_expr});\n"),
+         Type::Float64 => format!("{indent}{writer}.writeF64({value_expr});\n"),
+@@ -685,6 +690,12 @@ pub(super) fn render_uniffi_binary_write_statement(
+             let enum_name = to_upper_camel(name);
+             format!("{indent}_uniffiWrite{enum_name}({value_expr}, {writer});\n")
+         }
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            let object_name = to_upper_camel(name);
++            format!(
++                "{indent}{writer}.writeU64({object_name}FfiCodec.lower({value_expr}));\n"
++            )
++        }
+         _ => format!(
+             "{indent}throw UnsupportedError('UniFFI binary write not implemented for {}');\n",
+             map_uniffi_type_to_dart(type_, custom_types)
+@@ -698,14 +709,10 @@ pub(super) fn render_uniffi_binary_read_expression(
+     enums: &[UdlEnum],
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+-    if let Type::Custom { name, builtin, .. } = type_ {
++    if let Type::Custom { builtin, .. } = type_ {
+         let builtin_expr =
+             render_uniffi_binary_read_expression(builtin, reader, enums, custom_types);
+-        return if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lift_expr(&builtin_expr)
+-        } else {
+-            builtin_expr
+-        };
++        return lift_custom_if_needed(&builtin_expr, type_, custom_types);
+     }
+     match type_ {
+         Type::UInt8 => format!("{reader}.readU8()"),
+@@ -714,7 +721,7 @@ pub(super) fn render_uniffi_binary_read_expression(
+         Type::Int16 => format!("{reader}.readI16()"),
+         Type::UInt32 => format!("{reader}.readU32()"),
+         Type::Int32 => format!("{reader}.readI32()"),
+-        Type::UInt64 => format!("{reader}.readU64()"),
++        Type::UInt64 => format!("_uniffiU64ToBigInt({reader}.readU64())"),
+         Type::Int64 => format!("{reader}.readI64()"),
+         Type::Float32 => format!("{reader}.readF32()"),
+         Type::Float64 => format!("{reader}.readF64()"),
+@@ -757,6 +764,12 @@ pub(super) fn render_uniffi_binary_read_expression(
+         Type::Enum { name, .. } if is_runtime_enum_type(type_, enums) => {
+             format!("_uniffiRead{}({reader})", to_upper_camel(name))
+         }
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            format!(
++                "{}FfiCodec.lift({reader}.readU64())",
++                to_upper_camel(name)
++            )
++        }
+         _ => format!(
+             "throw UnsupportedError('UniFFI binary read not implemented for {}')",
+             map_uniffi_type_to_dart(type_, custom_types)
+@@ -774,6 +787,22 @@ mod tests {
+         HashMap::new()
+     }
+ 
++    #[test]
++    fn uint64_helpers_preserve_the_entire_unsigned_domain_as_bit_patterns() {
++        assert_eq!(
++            render_uint64_helpers(),
++            "int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();\nBigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);\n\n"
++        );
++        assert_eq!(
++            render_json_encode_expr("value", &Type::UInt64, &no_customs()),
++            "value.toString()"
++        );
++        assert_eq!(
++            render_json_decode_expr("value", &Type::UInt64, &no_customs()),
++            "value is String ? BigInt.parse(value) : BigInt.from((value as num).toInt())"
++        );
++    }
++
+     // ── render_json_encode_expr ──────────────────────────────────────────
+ 
+     #[test]
+@@ -1099,6 +1128,27 @@ mod tests {
+         assert!(result.contains("writer.writeI32(value!)"));
+     }
+ 
++    #[test]
++    fn binary_write_object_uses_opaque_handle_codec() {
++        let ty = Type::Object {
++            module_path: String::new(),
++            name: "my_counter".to_string(),
++            imp: ObjectImpl::Struct,
++        };
++        let result = render_uniffi_binary_write_statement(
++            &ty,
++            "value",
++            "writer",
++            &[],
++            "  ",
++            &no_customs(),
++        );
++        assert_eq!(
++            result,
++            "  writer.writeU64(MyCounterFfiCodec.lower(value));\n"
++        );
++    }
++
+     #[test]
+     fn binary_write_sequence_string() {
+         let ty = Type::Sequence {
+diff --git a/crates/ubdg_bindgen/src/dart/config.rs b/crates/ubdg_bindgen/src/dart/config.rs
+index 0b2823f..f651668 100644
+--- a/crates/ubdg_bindgen/src/dart/config.rs
++++ b/crates/ubdg_bindgen/src/dart/config.rs
+@@ -17,6 +17,8 @@ pub struct DartBindingsConfig {
+     pub rename: HashMap<String, String>,
+     pub exclude: Vec<String>,
+     pub external_packages: HashMap<String, String>,
++    /// Store generated record collections as recursively unmodifiable values.
++    pub readonly_collections: Option<bool>,
+     pub custom_types: HashMap<String, CustomTypeConfig>,
+ }
+ 
+@@ -31,6 +33,13 @@ pub struct CustomTypeConfig {
+     pub lift: Option<String>,
+     /// Template converting custom → builtin: `"{}.toString()"`.
+     pub lower: Option<String>,
++    /// Generate a nominal Dart wrapper for this Rust UniFFI custom type.
++    pub nominal: Option<bool>,
++    /// Optional Rust-owned semantic marker: `non-empty-string`, `non-zero-u64`, or
++    /// `fixed-bytes-32`. The generator does not duplicate Rust validation.
++    pub safe_value: Option<String>,
++    /// Rust-exported function called by the public nominal factory.
++    pub validator: Option<String>,
+ }
+ 
+ impl CustomTypeConfig {
+diff --git a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs b/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
+index 8e84591..dee1c25 100644
+--- a/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
++++ b/crates/ubdg_bindgen/src/dart/ffi_buffer.rs
+@@ -18,8 +18,11 @@ pub(super) fn ffi_type_contains_rust_buffer(type_: &FfiType) -> bool {
+ pub(super) fn runtime_unsupported_reason_for_ffi_func(
+     ffi_func: &uniffi_bindgen::interface::FfiFunction,
+ ) -> Option<String> {
++    // Every UniFFI 0.31 function carries RustCallStatus as an out-argument in
++    // the direct ABI.  The maintained ffibuffer renderer consumes that status
++    // from the return buffer, so keep these functions on its generated path.
+     if ffi_func.has_rust_call_status_arg() {
+-        return Some("runtime invocation for this UniFFI ABI (RustCallStatus out-arg) is not implemented yet".to_string());
++        return Some("runtime invocation requires the UniFFI ffibuffer path for RustCallStatus out-arg".to_string());
+     }
+     if ffi_func
+         .arguments()
+@@ -94,7 +97,8 @@ pub(super) fn ffibuffer_primitive_union_field(ffi_type: &FfiType) -> Option<&'st
+         FfiType::Int16 => Some("i16"),
+         FfiType::UInt32 => Some("u32"),
+         FfiType::Int32 => Some("i32"),
+-        FfiType::UInt64 | FfiType::Int64 | FfiType::Handle => Some("u64"),
++        FfiType::UInt64 | FfiType::Handle => Some("u64"),
++        FfiType::Int64 => Some("i64"),
+         FfiType::Float32 => Some("float32"),
+         FfiType::Float64 => Some("float64"),
+         FfiType::Reference(inner) | FfiType::MutReference(inner)
+@@ -243,18 +247,11 @@ pub(super) fn render_ffibuffer_rustbuffer_arg_serialization(
+     let arg_name = safe_dart_identifier(&to_lower_camel(&arg.name));
+     // Compute the lowered expression for custom types (used in encode paths
+     // that bypass render_uniffi_binary_write_statement).
+-    let lowered_arg = if let Type::Custom { name, .. } = &arg.type_ {
+-        if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(&arg_name)
+-        } else {
+-            arg_name.clone()
+-        }
+-    } else {
+-        arg_name.clone()
+-    };
++    let lowered_arg = lower_custom_if_needed(&arg_name, &arg.type_, custom_types);
+     let needs_writer = matches!(
+         runtime_unwrapped_type(&arg.type_),
+-        Type::Map { .. }
++        Type::Bytes
++            | Type::Map { .. }
+             | Type::Sequence { .. }
+             | Type::Optional { .. }
+             | Type::Timestamp
+@@ -262,13 +259,16 @@ pub(super) fn render_ffibuffer_rustbuffer_arg_serialization(
+     );
+     let writer_name = format!("{arg_name}Writer");
+     let encode_expr = match runtime_unwrapped_type(&arg.type_) {
+-        Type::Record { name, .. } | Type::Enum { name, .. } => {
++        Type::Record { name, .. } => {
++            format!("{}FfiCodec.encode({lowered_arg})", to_upper_camel(name))
++        }
++        Type::Enum { name, .. } => {
+             format!("_uniffiEncode{}({lowered_arg})", to_upper_camel(name))
+         }
+         Type::String => {
+             format!("Uint8List.fromList(utf8.encode({lowered_arg}))")
+         }
+-        Type::Bytes => lowered_arg.clone(),
++        Type::Bytes => format!("{writer_name}.toBytes()"),
+         Type::Map { .. }
+         | Type::Sequence { .. }
+         | Type::Optional { .. }
+@@ -382,14 +382,13 @@ pub(super) fn render_ffibuffer_primitive_arg_write(
+ ) {
+     let arg_name = safe_dart_identifier(&to_lower_camel(&arg.name));
+     // Apply lower transform for custom types backed by primitives.
+-    let lowered_arg = if let Type::Custom { name, .. } = &arg.type_ {
+-        if let Some(cfg) = custom_types.get(name.as_str()) {
+-            cfg.lower_expr(&arg_name)
+-        } else {
+-            arg_name.clone()
++    let lowered_arg = match runtime_unwrapped_type(&arg.type_) {
++        Type::Object { name, .. } | Type::CallbackInterface { name, .. } => {
++            format!("{}FfiCodec.lower({arg_name})", to_upper_camel(name))
++        }
++        _ => {
++            lower_custom_if_needed(&arg_name, &arg.type_, custom_types)
+         }
+-    } else {
+-        arg_name.clone()
+     };
+     let Some(union_field) = ffibuffer_primitive_union_field(ffi_type) else {
+         out.push_str(&format!(
+@@ -403,12 +402,13 @@ pub(super) fn render_ffibuffer_primitive_arg_write(
+             offset, lowered_arg
+         ));
+     } else {
+-        let value_expr =
+-            if union_field == "i8" && matches!(runtime_unwrapped_type(&arg.type_), Type::Boolean) {
+-                format!("{lowered_arg} ? 1 : 0")
+-            } else {
+-                lowered_arg.clone()
+-            };
++        let value_expr = if matches!(runtime_unwrapped_type(&arg.type_), Type::UInt64) {
++            format!("_uniffiBigIntToU64({lowered_arg})")
++        } else if union_field == "i8" && matches!(runtime_unwrapped_type(&arg.type_), Type::Boolean) {
++            format!("{lowered_arg} ? 1 : 0")
++        } else {
++            lowered_arg.clone()
++        };
+         out.push_str(&format!(
+             "      (argBuf + {}).ref.{} = {};\n",
+             offset, union_field, value_expr
+@@ -466,7 +466,10 @@ pub(super) fn render_ffibuffer_async_complete_and_decode(
+                     lift_custom_if_needed("utf8.decode(resultBytes)", ret_type, custom_types)
+                 }
+                 Type::Bytes => lift_custom_if_needed("resultBytes", ret_type, custom_types),
+-                Type::Record { name, .. } | Type::Enum { name, .. } => {
++                Type::Record { name, .. } => {
++                    format!("{}FfiCodec.decode(resultBytes)", to_upper_camel(name))
++                }
++                Type::Enum { name, .. } => {
+                     format!("_uniffiDecode{}(resultBytes)", to_upper_camel(name))
+                 }
+                 _ => render_uniffi_binary_read_expression(
+@@ -936,6 +939,54 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn primitive_write_object_lowers_opaque_handle() {
++        let arg = UdlArg {
++            name: "actor_id".into(),
++            type_: Type::Object {
++                name: "actor_id".into(),
++                module_path: String::new(),
++                imp: ObjectImpl::Struct,
++            },
++            docstring: None,
++            default: None,
++        };
++        let mut result = String::new();
++        render_ffibuffer_primitive_arg_write(
++            &mut result,
++            &arg,
++            &FfiType::Handle,
++            1,
++            "unsupported",
++            "probe",
++            &HashMap::new(),
++        );
++        assert_eq!(result, "      (argBuf + 1).ref.u64 = ActorIdFfiCodec.lower(actorId);\n");
++    }
++
++    #[test]
++    fn rustbuffer_bytes_argument_uses_uniffi_sequence_encoding() {
++        let arg = UdlArg {
++            name: "value".into(),
++            type_: Type::Bytes,
++            docstring: None,
++            default: None,
++        };
++        let mut result = String::new();
++        render_ffibuffer_rustbuffer_arg_serialization(
++            &mut result,
++            &arg,
++            0,
++            "unsupported",
++            "probe",
++            &[],
++            &HashMap::new(),
++        );
++        assert!(result.contains("final valueWriter = _UniFfiBinaryWriter();"));
++        assert!(result.contains("valueWriter.writeI32(value.length);"));
++        assert!(result.contains("final Uint8List valueBytes = valueWriter.toBytes();"));
++    }
++
+     #[test]
+     fn ffi_type_from_float64() {
+         assert_eq!(
+diff --git a/crates/ubdg_bindgen/src/dart/mod.rs b/crates/ubdg_bindgen/src/dart/mod.rs
+index af40db9..42f96d6 100644
+--- a/crates/ubdg_bindgen/src/dart/mod.rs
++++ b/crates/ubdg_bindgen/src/dart/mod.rs
+@@ -66,12 +66,14 @@ pub fn generate_bindings(args: &GenerateArgs) -> Result<()> {
+         module_name: &module_name,
+         ffi_class_name: &ffi_class_name,
+         library_name: &library_name,
++        ffi_namespace: &namespace,
+         namespace_docstring: metadata.namespace_docstring.as_deref(),
+         local_module_path: &metadata.local_module_path,
+         uniffi_contract_version: metadata.uniffi_contract_version,
+         ffi_uniffi_contract_version_symbol: metadata.ffi_uniffi_contract_version_symbol.as_deref(),
+         api_checksums: &metadata.api_checksums,
+         external_packages: &cfg.external_packages,
++        readonly_collections: cfg.readonly_collections == Some(true),
+         custom_types: &cfg.custom_types,
+         api_overrides: ApiOverrides::new(&cfg.rename, &cfg.exclude),
+         functions: &metadata.functions,
+@@ -95,12 +97,14 @@ struct RenderContext<'a> {
+     module_name: &'a str,
+     ffi_class_name: &'a str,
+     library_name: &'a str,
++    ffi_namespace: &'a str,
+     namespace_docstring: Option<&'a str>,
+     local_module_path: &'a str,
+     uniffi_contract_version: Option<u32>,
+     ffi_uniffi_contract_version_symbol: Option<&'a str>,
+     api_checksums: &'a [UdlApiChecksum],
+     custom_types: &'a HashMap<String, CustomTypeConfig>,
++    readonly_collections: bool,
+     external_packages: &'a HashMap<String, String>,
+     api_overrides: ApiOverrides,
+     functions: &'a [UdlFunction],
+@@ -110,17 +114,62 @@ struct RenderContext<'a> {
+     enums: &'a [UdlEnum],
+ }
+ 
++fn render_nominal_custom_type(
++    name: &str,
++    builtin_dart_type: &str,
++    safe_value: Option<&str>,
++    validator: Option<&str>,
++) -> String {
++    let mut out = String::new();
++    out.push_str(&format!("final class {name} {{\n"));
++    if let Some(validator) = validator {
++        if safe_value == Some("fixed-bytes-32") {
++            out.push_str(&format!(
++                "  factory {name}({builtin_dart_type} value) {{\n    final {builtin_dart_type} copied = Uint8List.fromList(value);\n    {validator}(copied);\n    return {name}._(copied);\n  }}\n"
++            ));
++        } else {
++            out.push_str(&format!(
++                "  factory {name}({builtin_dart_type} value) {{\n    {validator}(value);\n    return {name}._(value);\n  }}\n"
++            ));
++        }
++    } else if safe_value == Some("fixed-bytes-32") {
++        // The Rust custom-type lift/lower implementation owns validation.  The
++        // Dart factory only copies bytes so callers cannot mutate the wrapper
++        // through the list used to construct it.
++        out.push_str(&format!(
++            "  factory {name}({builtin_dart_type} value) => {name}._(Uint8List.fromList(value));\n"
++        ));
++    } else {
++        out.push_str(&format!(
++            "  factory {name}({builtin_dart_type} value) => {name}._(value);\n"
++        ));
++    }
++    out.push_str(&format!("  const {name}._(this.value);\n\n"));
++    out.push_str(&format!("  final {builtin_dart_type} value;\n\n"));
++    out.push_str(&format!("  factory {name}.fromValue({builtin_dart_type} value) => {name}._(value);\n"));
++    out.push_str(&format!("  {builtin_dart_type} toValue() => value;\n\n"));
++    out.push_str("  @override\n  String toString() => value.toString();\n\n");
++    out.push_str("  @override\n  bool operator ==(Object other) => identical(this, other) || other is ");
++    out.push_str(name);
++    out.push_str(" && value == other.value;\n\n");
++    out.push_str("  @override\n  int get hashCode => value.hashCode;\n");
++    out.push_str("}\n\n");
++    out
++}
++
+ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+     let RenderContext {
+         module_name,
+         ffi_class_name,
+         library_name,
++        ffi_namespace,
+         namespace_docstring,
+         local_module_path,
+         uniffi_contract_version,
+         ffi_uniffi_contract_version_symbol,
+         api_checksums,
+         custom_types,
++        readonly_collections,
+         external_packages,
+         ref api_overrides,
+         functions,
+@@ -191,7 +240,10 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+                 .flat_map(|e| e.methods.iter())
+                 .any(method_uses_non_string_map)
+     };
+-    let needs_binary_helpers = has_runtime_unsupported || has_non_string_map_boundary;
++    // A record-only component can be referenced by a second UniFFI
++    // component. Keep its binary codecs available even without local methods.
++    let needs_binary_helpers =
++        has_runtime_unsupported || has_non_string_map_boundary || !records.is_empty() || !enums.is_empty();
+     let needs_typed_data = has_runtime_unsupported
+         || functions.iter().any(function_uses_bytes)
+         || objects.iter().any(|o| {
+@@ -201,13 +253,16 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+             })
+         })
+         || records.iter().any(|r| {
+-            r.methods.iter().any(|m| {
++            r.fields.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
++                || r.methods.iter().any(|m| {
+                 m.return_type.as_ref().is_some_and(uniffi_type_uses_bytes)
+                     || m.args.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
+             })
+         })
+         || enums.iter().any(|e| {
+-            e.methods.iter().any(|m| {
++            e.variants.iter().any(|v| {
++                v.fields.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
++            }) || e.methods.iter().any(|m| {
+                 m.return_type.as_ref().is_some_and(uniffi_type_uses_bytes)
+                     || m.args.iter().any(|a| uniffi_type_uses_bytes(&a.type_))
+             })
+@@ -370,6 +425,9 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+     if needs_typed_data {
+         out.push_str("import 'dart:typed_data';\n");
+     }
++    if readonly_collections {
++        out.push_str("import 'dart:collection';\n");
++    }
+     for uri in &external_import_uris {
+         out.push_str(&format!("import '{uri}';\n"));
+     }
+@@ -388,6 +446,13 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         }
+     }
+     out.push('\n');
++    if readonly_collections {
++        out.push_str("dynamic _uniffiDeepReadonly(dynamic value) {\n");
++        out.push_str("  if (value is List) return UnmodifiableListView(value.map(_uniffiDeepReadonly).toList());\n");
++        out.push_str("  if (value is Map) return UnmodifiableMapView(value.map((key, item) => MapEntry(key, _uniffiDeepReadonly(item))));\n");
++        out.push_str("  return value;\n");
++        out.push_str("}\n\n");
++    }
+     // Emit typedefs for custom types that appear in the UDL.
+     {
+         let mut customs = std::collections::BTreeMap::new();
+@@ -444,11 +509,23 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         }
+         if !customs.is_empty() {
+             for (name, builtin_dart_type) in &customs {
+-                let dart_type = custom_types
+-                    .get(name.as_str())
+-                    .and_then(|cfg| cfg.type_name.as_deref())
+-                    .unwrap_or(builtin_dart_type);
+-                out.push_str(&format!("typedef {name} = {dart_type};\n"));
++                if let Some(cfg) = custom_types.get(name.as_str()) {
++                    if cfg.nominal == Some(true) {
++                        let wrapper_name = custom_type_name(name, cfg);
++                        out.push_str(&render_nominal_custom_type(
++                            &wrapper_name,
++                            builtin_dart_type,
++                            cfg.safe_value.as_deref(),
++                            cfg.validator.as_deref(),
++                        ));
++                        continue;
++                    }
++                    if let Some(type_name) = &cfg.type_name {
++                        out.push_str(&format!("typedef {name} = {type_name};\n"));
++                        continue;
++                    }
++                }
++                out.push_str(&format!("typedef {name} = {builtin_dart_type};\n"));
+             }
+             out.push('\n');
+         }
+@@ -535,11 +612,13 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         out.push_str("const int _rustFuturePollReady = 0;\n");
+         out.push_str("const int _rustFuturePollWake = 1;\n\n");
+     }
++    out.push_str(&render_uint64_helpers());
+     out.push_str(&render_data_models(
+         records,
+         enums,
+         callback_interfaces,
+         has_runtime_unsupported,
++        readonly_collections,
+         custom_types,
+     ));
+     if needs_binary_helpers {
+@@ -636,7 +715,7 @@ fn render_dart_scaffold(ctx: &RenderContext<'_>) -> String {
+         functions,
+         objects,
+         callback_interfaces,
+-        library_name,
++        ffi_namespace,
+         local_module_path,
+         records,
+         enums,
+@@ -1351,7 +1430,7 @@ namespace compound_demo {
+         let content =
+             fs::read_to_string(out_dir.join("compound_demo.dart")).expect("read generated file");
+         assert!(content.contains("List<int> listify(List<int> values) {"));
+-        assert!(content.contains("Map<String, int> counts(Map<String, int> items) {"));
++        assert!(content.contains("Map<String, BigInt> counts(Map<String, BigInt> items) {"));
+         assert!(content.contains("String? maybeName(String? value) {"));
+         assert!(content.contains("List<Uint8List> chunk(List<Uint8List> input) {"));
+         assert!(content.contains("import 'dart:typed_data';"));
+@@ -1693,6 +1772,7 @@ namespace models {};
+ dictionary Person {
+   string name;
+   u32 age;
++  u64 quota;
+   string? nickname;
+ };
+ 
+@@ -1720,6 +1800,8 @@ interface Outcome {
+         let content = fs::read_to_string(out_dir.join("models.dart")).expect("read generated");
+         assert!(content.contains("class Person {"));
+         assert!(content.contains("const Person({"));
++        assert!(content.contains("final BigInt quota;"));
++        assert!(content.contains("BigInt quota"));
+         assert!(content.contains("Person copyWith({"));
+         assert!(content.contains("enum Color {"));
+         assert!(content.contains("sealed class Outcome {"));
+@@ -1836,12 +1918,14 @@ interface Outcome {
+             module_name: "models",
+             ffi_class_name: "ModelsFfi",
+             library_name: "uniffi_models",
++            ffi_namespace: "models",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &[],
+@@ -1897,7 +1981,7 @@ interface Outcome {
+             trait_methods: UdlObjectTraitMethods::default(),
+         }];
+ 
+-        let content = render_data_models(&[], &enums, &[], false, &HashMap::new());
++        let content = render_data_models(&[], &enums, &[], false, false, &HashMap::new());
+         assert!(
+             content.contains("low(1),"),
+             "expected low(1), got:\n{content}"
+@@ -1947,7 +2031,7 @@ interface Outcome {
+             trait_methods: UdlObjectTraitMethods::default(),
+         }];
+ 
+-        let content = render_data_models(&[], &enums, &[], false, &HashMap::new());
++        let content = render_data_models(&[], &enums, &[], false, false, &HashMap::new());
+         assert!(
+             content.contains("  red,\n"),
+             "expected plain variant, got:\n{content}"
+@@ -2067,6 +2151,32 @@ interface Outcome {
+                     throws_type: None,
+                     args: vec![],
+                 },
++                UdlObjectMethod {
++                    name: "label".to_string(),
++                    ffi_symbol: Some("uniffi_demo_method_widget_label".to_string()),
++                    ffi_arg_types: vec![FfiType::Handle],
++                    ffi_return_type: Some(FfiType::RustBuffer(None)),
++                    ffi_has_rust_call_status: true,
++                    runtime_unsupported: Some("placeholder".to_string()),
++                    docstring: None,
++                    is_async: false,
++                    return_type: Some(Type::String),
++                    throws_type: None,
++                    args: vec![],
++                },
++                UdlObjectMethod {
++                    name: "payload".to_string(),
++                    ffi_symbol: Some("uniffi_demo_method_widget_payload".to_string()),
++                    ffi_arg_types: vec![FfiType::Handle],
++                    ffi_return_type: Some(FfiType::RustBuffer(None)),
++                    ffi_has_rust_call_status: true,
++                    runtime_unsupported: Some("placeholder".to_string()),
++                    docstring: None,
++                    is_async: false,
++                    return_type: Some(Type::Bytes),
++                    throws_type: None,
++                    args: vec![],
++                },
+                 UdlObjectMethod {
+                     name: "async_label".to_string(),
+                     ffi_symbol: Some("uniffi_demo_method_widget_async_label".to_string()),
+@@ -2093,12 +2203,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &[],
+@@ -2112,6 +2224,10 @@ interface Outcome {
+         assert!(content.contains("uniffi_ffibuffer_demo_ctor_widget_new"));
+         assert!(content.contains("_widgetValueFfiBuffer"));
+         assert!(content.contains("uniffi_ffibuffer_demo_method_widget_value"));
++        assert!(content.contains("_widgetLabelFfiBuffer"));
++        assert!(content.contains("utf8.decode(retBytes)"));
++        assert!(content.contains("_widgetPayloadFfiBuffer"));
++        assert!(content.contains("retReader.readBytes(__len)"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (new)');"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (value)');"));
+         // async_label has a String RustBuffer arg which is now handled by the
+@@ -2146,12 +2262,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &functions,
+@@ -2162,7 +2280,7 @@ interface Outcome {
+         });
+ 
+         assert!(content.contains("uniffi_ffibuffer_uniffi_demo_fn_func_greet_async"));
+-        assert!(content.contains("ffi_uniffi_demo_rust_future_complete_rust_buffer"));
++        assert!(content.contains("ffi_demo_rust_future_complete_rust_buffer"));
+         assert!(content.contains("Future<String> greetAsync(String name) {"));
+         assert!(!content.contains("throw UnsupportedError('placeholder (greet_async)');"));
+     }
+@@ -2219,12 +2337,14 @@ interface Outcome {
+             module_name: "demo",
+             ffi_class_name: "DemoFfi",
+             library_name: "uniffi_demo",
++            ffi_namespace: "demo",
+             namespace_docstring: None,
+             local_module_path: "crate_name",
+             uniffi_contract_version: None,
+             ffi_uniffi_contract_version_symbol: None,
+             api_checksums: &[],
+             custom_types: &HashMap::new(),
++            readonly_collections: false,
+             external_packages: &HashMap::new(),
+             api_overrides: ApiOverrides::new(&HashMap::new(), &[]),
+             functions: &functions,
+@@ -2240,7 +2360,7 @@ interface Outcome {
+         // Should have typed error dispatch
+         assert!(content.contains("_uniffiLiftMathErrorException(errorBytes)"));
+         // Should still have the ffi-buffer async polling infrastructure
+-        assert!(content.contains("ffi_uniffi_demo_rust_future_poll_u32"));
++        assert!(content.contains("ffi_demo_rust_future_poll_u32"));
+         assert!(content.contains("Future<int> divideAsync(int a, int b)"));
+     }
+ 
+diff --git a/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs b/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
+index ff76e80..fd5f536 100644
+--- a/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
++++ b/crates/ubdg_bindgen/src/dart/render_bound_methods/functions.rs
+@@ -425,10 +425,16 @@ pub(super) fn render_toplevel_functions(
+                                     ret_type,
+                                     ctx.custom_types,
+                                 ),
+-                                Type::Bytes => {
+-                                    lift_custom_if_needed("retBytes", ret_type, ctx.custom_types)
++                                Type::Bytes => render_uniffi_binary_read_expression(
++                                    ret_type,
++                                    "retReader",
++                                    ctx.enums,
++                                    ctx.custom_types,
++                                ),
++                                Type::Record { name, .. } => {
++                                    format!("{}FfiCodec.decode(retBytes)", to_upper_camel(name))
+                                 }
+-                                Type::Record { name, .. } | Type::Enum { name, .. } => {
++                                Type::Enum { name, .. } => {
+                                     format!("_uniffiDecode{}(retBytes)", to_upper_camel(name))
+                                 }
+                                 _ => render_uniffi_binary_read_expression(
+@@ -450,9 +456,7 @@ pub(super) fn render_toplevel_functions(
+                             );
+                             if matches!(
+                                 runtime_unwrapped_type(ret_type),
+-                                Type::String
+-                                    | Type::Bytes
+-                                    | Type::Record { .. }
++                                Type::String | Type::Record { .. }
+                                     | Type::Enum { .. }
+                             ) {
+                                 out.push_str(&format!(
+@@ -493,6 +497,8 @@ pub(super) fn render_toplevel_functions(
+                             };
+                             if union_field == "ptr" {
+                                 out.push_str("      return (returnBuf + 0).ref.ptr;\n");
++                            } else if matches!(runtime_unwrapped_type(ret_type), Type::UInt64) {
++                                out.push_str("      return _uniffiU64ToBigInt((returnBuf + 0).ref.u64);\n");
+                             } else {
+                                 out.push_str(&format!(
+                                     "      return (returnBuf + 0).ref.{union_field};\n"
+diff --git a/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs b/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
+index 55adb44..a31a343 100644
+--- a/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
++++ b/crates/ubdg_bindgen/src/dart/render_bound_methods/objects.rs
+@@ -914,10 +914,26 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                         }
+                         Some(ret_type) => match ffi_return_type.as_ref() {
+                             Some(FfiType::RustBuffer(_)) => {
+-                                let is_map_type =
+-                                    matches!(runtime_unwrapped_type(ret_type), Type::Map { .. });
++                                let uses_ret_reader = matches!(
++                                    runtime_unwrapped_type(ret_type),
++                                    Type::Bytes | Type::Map { .. }
++                                );
+                                 let decode_expr = match runtime_unwrapped_type(ret_type) {
+-                                    Type::Record { name, .. } | Type::Enum { name, .. } => {
++                                    Type::String => lift_custom_if_needed(
++                                        "utf8.decode(retBytes)",
++                                        ret_type,
++                                        custom_types,
++                                    ),
++                                    Type::Bytes => render_uniffi_binary_read_expression(
++                                        ret_type,
++                                        "retReader",
++                                        enums,
++                                        custom_types,
++                                    ),
++                                    Type::Record { name, .. } => {
++                                        format!("{}FfiCodec.decode(retBytes)", to_upper_camel(name))
++                                    }
++                                    Type::Enum { name, .. } => {
+                                         format!("_uniffiDecode{}(retBytes)", to_upper_camel(name))
+                                     }
+                                     Type::Map { .. } => render_uniffi_binary_read_expression(
+@@ -945,7 +961,7 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                                     out.push_str(
+                                         "      final Uint8List retBytes = retBufPtr.ref.len == 0 ? Uint8List(0) : Uint8List.fromList(retBufPtr.ref.data.asTypedList(retBufPtr.ref.len));\n",
+                                     );
+-                                    if is_map_type {
++                                    if uses_ret_reader {
+                                         out.push_str("      final _UniFfiBinaryReader retReader = _UniFfiBinaryReader(retBytes);\n");
+                                     }
+                                     out.push_str(&format!("      return {decode_expr};\n"));
+@@ -970,6 +986,8 @@ pub(super) fn render_object_members(out: &mut String, ctx: &RenderMethodContext)
+                                 };
+                                 if union_field == "ptr" {
+                                     out.push_str("      return (returnBuf + 0).ref.ptr;\n");
++                                } else if matches!(runtime_unwrapped_type(ret_type), Type::UInt64) {
++                                    out.push_str("      return _uniffiU64ToBigInt((returnBuf + 0).ref.u64);\n");
+                                 } else {
+                                     out.push_str(&format!(
+                                         "      return (returnBuf + 0).ref.{union_field};\n"
+diff --git a/crates/ubdg_bindgen/src/dart/render_data_models.rs b/crates/ubdg_bindgen/src/dart/render_data_models.rs
+index 84b699d..8a5e883 100644
+--- a/crates/ubdg_bindgen/src/dart/render_data_models.rs
++++ b/crates/ubdg_bindgen/src/dart/render_data_models.rs
+@@ -16,6 +16,7 @@ pub(super) fn render_data_models(
+     enums: &[UdlEnum],
+     callback_interfaces: &[UdlCallbackInterface],
+     emit_uniffi_error_lift_helpers: bool,
++    readonly_collections: bool,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+ ) -> String {
+     let mut out = String::new();
+@@ -34,7 +35,13 @@ pub(super) fn render_data_models(
+         if record.fields.is_empty() {
+             out.push_str(&format!("  const {class_name}();\n\n"));
+         } else {
+-            out.push_str(&format!("  const {class_name}({{\n"));
++            let readonly_record =
++                readonly_collections && record.fields.iter().any(|f| is_collection_type(&f.type_));
++            if readonly_record {
++                out.push_str(&format!("  {class_name}({{\n"));
++            } else {
++                out.push_str(&format!("  const {class_name}({{\n"));
++            }
+             for field in &record.fields {
+                 out.push_str(&render_doc_comment(field.docstring.as_deref(), "    "));
+                 let field_name = safe_dart_identifier(&to_lower_camel(&field.name));
+@@ -43,12 +50,44 @@ pub(super) fn render_data_models(
+                     .as_ref()
+                     .and_then(|d| render_default_value_expr(d, &field.type_, enums, custom_types))
+                 {
+-                    out.push_str(&format!("    this.{field_name} = {default_expr},\n"));
++                    if readonly_record && is_collection_type(&field.type_) {
++                        out.push_str(&format!(
++                            "    {} {field_name} = {default_expr},\n",
++                            map_uniffi_type_to_dart(&field.type_, custom_types)
++                        ));
++                    } else {
++                        out.push_str(&format!("    this.{field_name} = {default_expr},\n"));
++                    }
+                 } else {
+-                    out.push_str(&format!("    required this.{field_name},\n"));
++                    if readonly_record && is_collection_type(&field.type_) {
++                        out.push_str(&format!(
++                            "    required {} {field_name},\n",
++                            map_uniffi_type_to_dart(&field.type_, custom_types)
++                        ));
++                    } else {
++                        out.push_str(&format!("    required this.{field_name},\n"));
++                    }
+                 }
+             }
+-            out.push_str("  });\n\n");
++            if readonly_record {
++                out.push_str("  })");
++                let mut first_initializer = true;
++                for field in &record.fields {
++                    if !is_collection_type(&field.type_) {
++                        continue;
++                    }
++                    let field_name = safe_dart_identifier(&to_lower_camel(&field.name));
++                    out.push_str(&format!(
++                        "{} {field_name} = {}",
++                        if first_initializer { ":" } else { "," },
++                        render_readonly_value(&field_name, &field.type_, custom_types)
++                    ));
++                    first_initializer = false;
++                }
++                out.push_str(";\n\n");
++            } else {
++                out.push_str("  });\n\n");
++            }
+         }
+         for field in &record.fields {
+             out.push_str(&render_doc_comment(field.docstring.as_deref(), "  "));
+@@ -676,6 +715,45 @@ pub(super) fn render_data_models(
+     out
+ }
+ 
++fn is_collection_type(type_: &Type) -> bool {
++    match type_ {
++        Type::Optional { inner_type } => is_collection_type(inner_type),
++        Type::Sequence { .. } | Type::Map { .. } => true,
++        _ => false,
++    }
++}
++
++fn render_readonly_value(
++    expr: &str,
++    type_: &Type,
++    custom_types: &HashMap<String, CustomTypeConfig>,
++) -> String {
++    match type_ {
++        Type::Optional { inner_type } => format!(
++            "({expr} == null ? null : {})",
++            render_readonly_value(expr, inner_type, custom_types)
++        ),
++        Type::Sequence { inner_type } => {
++            let inner = map_uniffi_type_to_dart(inner_type, custom_types);
++            let mapped = render_readonly_value("item", inner_type, custom_types);
++            format!("UnmodifiableListView<{inner}>({expr}.map((item) => {mapped}).toList())")
++        }
++        Type::Map {
++            key_type,
++            value_type,
++        } => {
++            let key = map_uniffi_type_to_dart(key_type, custom_types);
++            let value = map_uniffi_type_to_dart(value_type, custom_types);
++            let mapped_key = render_readonly_value("key", key_type, custom_types);
++            let mapped_value = render_readonly_value("item", value_type, custom_types);
++            format!(
++                "UnmodifiableMapView<{key}, {value}>({expr}.map((key, item) => MapEntry({mapped_key}, {mapped_value})))"
++            )
++        }
++        _ => expr.to_string(),
++    }
++}
++
+ /// Render `toString`, `operator ==`, and `hashCode` for a record class or
+ /// sealed enum variant class. All value types always get these three methods
+ /// for idiomatic Dart structural equality and debugging.
+diff --git a/crates/ubdg_bindgen/src/dart/render_helpers.rs b/crates/ubdg_bindgen/src/dart/render_helpers.rs
+index bb6dce2..720580f 100644
+--- a/crates/ubdg_bindgen/src/dart/render_helpers.rs
++++ b/crates/ubdg_bindgen/src/dart/render_helpers.rs
+@@ -78,8 +78,8 @@ pub(super) fn render_type_default_expr(
+         | Type::Int64
+         | Type::UInt8
+         | Type::UInt16
+-        | Type::UInt32
+-        | Type::UInt64 => Some("0".to_string()),
++        | Type::UInt32 => Some("0".to_string()),
++        Type::UInt64 => Some("BigInt.zero".to_string()),
+         Type::Float32 | Type::Float64 => Some("0.0".to_string()),
+         Type::Bytes => Some("Uint8List(0)".to_string()),
+         Type::Timestamp => Some("DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true)".to_string()),
+@@ -478,6 +478,8 @@ pub(super) fn append_runtime_arg_marshalling(
+             to_upper_camel(object_name)
+         ));
+         call_args.push(handle_name);
++    } else if matches!(runtime_unwrapped_type(type_), Type::UInt64) {
++        call_args.push(format!("_uniffiBigIntToU64({arg_name})"));
+     } else if is_runtime_optional_primitive_type(type_) {
+         let native_name = format!("{arg_name}Native");
+         let json_name = format!("{native_name}Json");
+diff --git a/crates/ubdg_bindgen/src/dart/type_map.rs b/crates/ubdg_bindgen/src/dart/type_map.rs
+index eb1e0ae..d9f171b 100644
+--- a/crates/ubdg_bindgen/src/dart/type_map.rs
++++ b/crates/ubdg_bindgen/src/dart/type_map.rs
+@@ -168,6 +168,7 @@ pub(super) fn render_plain_ffi_decode_expr(
+     let decoded = match runtime_unwrapped_type(type_) {
+         Type::Timestamp => format!("DateTime.fromMicrosecondsSinceEpoch({call_expr}, isUtc: true)"),
+         Type::Duration => format!("Duration(microseconds: {call_expr})"),
++        Type::UInt64 => format!("_uniffiU64ToBigInt({call_expr})"),
+         _ => call_expr.to_string(),
+     };
+     lift_custom_if_needed(&decoded, type_, custom_types)
+@@ -184,13 +185,23 @@ pub(super) fn lift_custom_if_needed(
+ ) -> String {
+     if let Type::Custom { name, .. } = type_ {
+         if let Some(cfg) = custom_types.get(name.as_str()) {
+-            return cfg.lift_expr(decoded_expr);
++            let lifted = cfg.lift_expr(decoded_expr);
++            return if cfg.nominal == Some(true) && cfg.lift.is_none() {
++                format!("{}.fromValue({lifted})", custom_type_name(name, cfg))
++            } else {
++                lifted
++            };
+         }
+     }
+     if let Type::Optional { inner_type } = type_ {
+         if let Type::Custom { name, .. } = inner_type.as_ref() {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
+-                return cfg.lift_expr(decoded_expr);
++                let lifted = cfg.lift_expr(decoded_expr);
++                return if cfg.nominal == Some(true) && cfg.lift.is_none() {
++                    format!("{}.fromValue({lifted})", custom_type_name(name, cfg))
++                } else {
++                    lifted
++                };
+             }
+         }
+     }
+@@ -206,19 +217,35 @@ pub(super) fn lower_custom_if_needed(
+ ) -> String {
+     if let Type::Custom { name, .. } = type_ {
+         if let Some(cfg) = custom_types.get(name.as_str()) {
+-            return cfg.lower_expr(value_expr);
++            let lowered = cfg.lower_expr(value_expr);
++            return if cfg.nominal == Some(true) && cfg.lower.is_none() {
++                format!("{lowered}.value")
++            } else {
++                lowered
++            };
+         }
+     }
+     if let Type::Optional { inner_type } = type_ {
+         if let Type::Custom { name, .. } = inner_type.as_ref() {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
+-                return cfg.lower_expr(value_expr);
++                let lowered = cfg.lower_expr(value_expr);
++                return if cfg.nominal == Some(true) && cfg.lower.is_none() {
++                    format!("{lowered}.value")
++                } else {
++                    lowered
++                };
+             }
+         }
+     }
+     value_expr.to_string()
+ }
+ 
++pub(super) fn custom_type_name(name: &str, cfg: &CustomTypeConfig) -> String {
++    cfg.type_name
++        .clone()
++        .unwrap_or_else(|| to_upper_camel(name))
++}
++
+ pub(super) fn map_uniffi_type_to_dart(
+     type_: &Type,
+     custom_types: &HashMap<String, CustomTypeConfig>,
+@@ -230,8 +257,8 @@ pub(super) fn map_uniffi_type_to_dart(
+         | Type::Int16
+         | Type::UInt32
+         | Type::Int32
+-        | Type::UInt64
+         | Type::Int64 => "int".to_string(),
++        Type::UInt64 => "BigInt".to_string(),
+         Type::Float32 | Type::Float64 => "double".to_string(),
+         Type::Boolean => "bool".to_string(),
+         Type::String => "String".to_string(),
+@@ -259,6 +286,9 @@ pub(super) fn map_uniffi_type_to_dart(
+         | Type::CallbackInterface { name, .. } => to_upper_camel(name),
+         Type::Custom { name, builtin, .. } => {
+             if let Some(cfg) = custom_types.get(name.as_str()) {
++                if cfg.nominal == Some(true) {
++                    return custom_type_name(name, cfg);
++                }
+                 if let Some(type_name) = &cfg.type_name {
+                     return type_name.clone();
+                 }
+@@ -684,7 +714,15 @@ mod tests {
+         let customs = no_customs();
+         assert_eq!(map_uniffi_type_to_dart(&Type::UInt8, &customs), "int");
+         assert_eq!(map_uniffi_type_to_dart(&Type::Int32, &customs), "int");
+-        assert_eq!(map_uniffi_type_to_dart(&Type::UInt64, &customs), "int");
++        assert_eq!(map_uniffi_type_to_dart(&Type::UInt64, &customs), "BigInt");
++    }
++
++    #[test]
++    fn plain_uint64_decode_lifts_the_ffi_bit_pattern_to_bigint() {
++        assert_eq!(
++            render_plain_ffi_decode_expr(&Type::UInt64, "raw", &no_customs()),
++            "_uniffiU64ToBigInt(raw)"
++        );
+     }
+ 
+     #[test]
+@@ -835,6 +873,9 @@ mod tests {
+                 imports: None,
+                 lift: Some("Uri.parse({})".to_string()),
+                 lower: Some("{}.toString()".to_string()),
++                nominal: None,
++                safe_value: None,
++                validator: None,
+             },
+         );
+         customs
+diff --git a/fixtures/compound-demo/expected/compound_demo.dart b/fixtures/compound-demo/expected/compound_demo.dart
+index 2c0664f..cfb9e6c 100644
+--- a/fixtures/compound-demo/expected/compound_demo.dart
++++ b/fixtures/compound-demo/expected/compound_demo.dart
+@@ -21,6 +21,9 @@ final class _RustBufferVec extends ffi.Struct {
+   external int len;
+ }
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class CompoundDemoFfi {
+   CompoundDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+@@ -116,8 +119,8 @@ class CompoundDemoFfi {
+ 
+   late final ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> items) _counts = _lib.lookupFunction<ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> items), ffi.Pointer<Utf8> Function(ffi.Pointer<Utf8> items)>('counts');
+ 
+-  Map<String, int> counts(Map<String, int> items) {
+-    final String itemsNativeJson = jsonEncode(items);
++  Map<String, BigInt> counts(Map<String, BigInt> items) {
++    final String itemsNativeJson = jsonEncode(items.map((key, value) => MapEntry(key, value.toString())));
+     final ffi.Pointer<Utf8> itemsNative = itemsNativeJson.toNativeUtf8();
+     try {
+       final ffi.Pointer<Utf8> resultPtr = _counts(itemsNative);
+@@ -126,7 +129,7 @@ class CompoundDemoFfi {
+       }
+       try {
+         final String payload = resultPtr.toDartString();
+-        return (jsonDecode(payload) as Map<String, dynamic>).map((key, value) => MapEntry(key, (value as num).toInt()));
++        return (jsonDecode(payload) as Map<String, dynamic>).map((key, value) => MapEntry(key, value is String ? BigInt.parse(value) : BigInt.from((value as num).toInt())));
+       } finally {
+         _rustStringFree(resultPtr);
+       }
+@@ -192,7 +195,7 @@ List<Uint8List> chunk(List<Uint8List> input) {
+   return _bindings().chunk(input);
+ }
+ 
+-Map<String, int> counts(Map<String, int> items) {
++Map<String, BigInt> counts(Map<String, BigInt> items) {
+   return _bindings().counts(items);
+ }
+ 
+diff --git a/fixtures/coverall-demo/expected/coverall_demo.dart b/fixtures/coverall-demo/expected/coverall_demo.dart
+index e68c16e..72072f0 100644
+--- a/fixtures/coverall-demo/expected/coverall_demo.dart
++++ b/fixtures/coverall-demo/expected/coverall_demo.dart
+@@ -25,6 +25,9 @@ const int _rustCallStatusSuccess = 0;
+ const int _rustCallStatusError = 1;
+ const int _rustCallStatusUnexpectedError = 2;
+ const int _rustCallStatusCancelled = 3;
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ const _sentinel = Object();
+ 
+ /// Record with default values — tests default field generation.
+@@ -237,16 +240,16 @@ class SimpleDict {
+   });
+ 
+   final String text;
+-  final int maybeCount;
++  final BigInt maybeCount;
+   final bool flag;
+   final Color color;
+   final List<String> tags;
+-  final Map<String, int> counts;
++  final Map<String, BigInt> counts;
+   final String? maybeText;
+   final Patch? maybePatch;
+   final int? maybeU8;
+   final int? maybeU16;
+-  final int? maybeU64;
++  final BigInt? maybeU64;
+   final int? maybeI8;
+   final int? maybeI64;
+   final double? maybeF32;
+@@ -259,16 +262,16 @@ class SimpleDict {
+   Map<String, dynamic> toJson() {
+     return {
+       'text': this.text,
+-      'maybeCount': this.maybeCount,
++      'maybeCount': this.maybeCount.toString(),
+       'flag': this.flag,
+       'color': ColorFfiCodec.encode(this.color),
+       'tags': this.tags,
+-      'counts': this.counts,
++      'counts': this.counts.map((key, value) => MapEntry(key, value.toString())),
+       'maybeText': this.maybeText,
+       'maybePatch': this.maybePatch == null ? null : (() { final __tmp = this.maybePatch!; return PatchFfiCodec.lower(__tmp); })(),
+       'maybeU8': this.maybeU8,
+       'maybeU16': this.maybeU16,
+-      'maybeU64': this.maybeU64,
++      'maybeU64': this.maybeU64 == null ? null : (() { final __tmp = this.maybeU64!; return __tmp.toString(); })(),
+       'maybeI8': this.maybeI8,
+       'maybeI64': this.maybeI64,
+       'maybeF32': this.maybeF32,
+@@ -283,16 +286,16 @@ class SimpleDict {
+   factory SimpleDict.fromJson(Map<String, dynamic> json) {
+     return SimpleDict(
+       text: json['text'] as String,
+-      maybeCount: (json['maybeCount'] as num).toInt(),
++      maybeCount: json['maybeCount'] is String ? BigInt.parse(json['maybeCount']) : BigInt.from((json['maybeCount'] as num).toInt()),
+       flag: json['flag'] as bool,
+       color: ColorFfiCodec.decode(json['color'] as String),
+       tags: (json['tags'] as List).map((item) => item as String).toList(),
+-      counts: (json['counts'] as Map<String, dynamic>).map((key, value) => MapEntry(key, (value as num).toInt())),
++      counts: (json['counts'] as Map<String, dynamic>).map((key, value) => MapEntry(key, value is String ? BigInt.parse(value) : BigInt.from((value as num).toInt()))),
+       maybeText: json['maybeText'] == null ? null : json['maybeText'] as String,
+       maybePatch: json['maybePatch'] == null ? null : (() { final __tmp = json['maybePatch']; return PatchFfiCodec.lift((__tmp as num).toInt()); })(),
+       maybeU8: json['maybeU8'] == null ? null : (json['maybeU8'] as num).toInt(),
+       maybeU16: json['maybeU16'] == null ? null : (json['maybeU16'] as num).toInt(),
+-      maybeU64: json['maybeU64'] == null ? null : (json['maybeU64'] as num).toInt(),
++      maybeU64: json['maybeU64'] == null ? null : (() { final __tmp = json['maybeU64']; return __tmp is String ? BigInt.parse(__tmp) : BigInt.from((__tmp as num).toInt()); })(),
+       maybeI8: json['maybeI8'] == null ? null : (json['maybeI8'] as num).toInt(),
+       maybeI64: json['maybeI64'] == null ? null : (json['maybeI64'] as num).toInt(),
+       maybeF32: json['maybeF32'] == null ? null : (json['maybeF32'] as num).toDouble(),
+@@ -306,11 +309,11 @@ class SimpleDict {
+ 
+   SimpleDict copyWith({
+     String? text,
+-    int? maybeCount,
++    BigInt? maybeCount,
+     bool? flag,
+     Color? color,
+     List<String>? tags,
+-    Map<String, int>? counts,
++    Map<String, BigInt>? counts,
+     Object? maybeText = _sentinel,
+     Object? maybePatch = _sentinel,
+     Object? maybeU8 = _sentinel,
+@@ -336,7 +339,7 @@ class SimpleDict {
+       maybePatch: maybePatch == _sentinel ? this.maybePatch : maybePatch as Patch?,
+       maybeU8: maybeU8 == _sentinel ? this.maybeU8 : maybeU8 as int?,
+       maybeU16: maybeU16 == _sentinel ? this.maybeU16 : maybeU16 as int?,
+-      maybeU64: maybeU64 == _sentinel ? this.maybeU64 : maybeU64 as int?,
++      maybeU64: maybeU64 == _sentinel ? this.maybeU64 : maybeU64 as BigInt?,
+       maybeI8: maybeI8 == _sentinel ? this.maybeI8 : maybeI8 as int?,
+       maybeI64: maybeI64 == _sentinel ? this.maybeI64 : maybeI64 as int?,
+       maybeF32: maybeF32 == _sentinel ? this.maybeF32 : maybeF32 as double?,
+@@ -1352,19 +1355,35 @@ EmptyStruct _uniffiDecodeEmptyStruct(Uint8List bytes) {
+ }
+ 
+ void _uniffiWriteRepair(Repair value, _UniFfiBinaryWriter writer) {
+-  throw UnsupportedError('UniFFI binary encode not fully supported for Repair');
++  final Duration __epochOffset = value.when_.difference(DateTime.fromMillisecondsSinceEpoch(0, isUtc: true));
++  int __seconds = __epochOffset.inSeconds;
++  int __nanos = (__epochOffset.inMicroseconds.remainder(1000000)) * 1000;
++  if (__nanos < 0) { __nanos = -__nanos; }
++  writer.writeI64(__seconds);
++  writer.writeU32(__nanos);
++  writer.writeU64(PatchFfiCodec.lower(value.patch));
+ }
+ 
+ Uint8List _uniffiEncodeRepair(Repair value) {
+-  throw UnsupportedError('UniFFI binary encode not fully supported for Repair');
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteRepair(value, writer);
++  return writer.toBytes();
+ }
+ 
+ Repair _uniffiReadRepair(_UniFfiBinaryReader reader) {
+-  throw UnsupportedError('UniFFI binary decode not fully supported for Repair');
++  return Repair(
++    when_: throw UnsupportedError('UniFFI binary read not implemented for DateTime'),
++    patch: PatchFfiCodec.lift(reader.readU64()),
++  );
+ }
+ 
+ Repair _uniffiDecodeRepair(Uint8List bytes) {
+-  throw UnsupportedError('UniFFI binary decode not fully supported for Repair');
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadRepair(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Repair');
++  }
++  return value;
+ }
+ 
+ void _uniffiWriteReturnOnlyDict(ReturnOnlyDict value, _UniFfiBinaryWriter writer) {
+@@ -1393,19 +1412,173 @@ ReturnOnlyDict _uniffiDecodeReturnOnlyDict(Uint8List bytes) {
+ }
+ 
+ void _uniffiWriteSimpleDict(SimpleDict value, _UniFfiBinaryWriter writer) {
+-  throw UnsupportedError('UniFFI binary encode not fully supported for SimpleDict');
++  writer.writeString(value.text);
++  writer.writeU64(_uniffiBigIntToU64(value.maybeCount));
++  writer.writeBool(value.flag);
++  _uniffiWriteColor(value.color, writer);
++  writer.writeI32(value.tags.length);
++  for (final item in value.tags) {
++    writer.writeString(item);
++  }
++  writer.writeI32(value.counts.length);
++  for (final entry in value.counts.entries) {
++    writer.writeString(entry.key);
++    writer.writeU64(_uniffiBigIntToU64(entry.value));
++  }
++  if (value.maybeText == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeString(value.maybeText!);
++  }
++  if (value.maybePatch == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeU64(PatchFfiCodec.lower(value.maybePatch!));
++  }
++  if (value.maybeU8 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeU8(value.maybeU8!);
++  }
++  if (value.maybeU16 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeU16(value.maybeU16!);
++  }
++  if (value.maybeU64 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeU64(_uniffiBigIntToU64(value.maybeU64!));
++  }
++  if (value.maybeI8 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeI8(value.maybeI8!);
++  }
++  if (value.maybeI64 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeI64(value.maybeI64!);
++  }
++  if (value.maybeF32 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeF32(value.maybeF32!);
++  }
++  if (value.maybeF64 == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeF64(value.maybeF64!);
++  }
++  if (value.maybeBool == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeBool(value.maybeBool!);
++  }
++  if (value.maybeBytes == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeI32(value.maybeBytes!.length);
++    writer.writeBytes(value.maybeBytes!);
++  }
++  writer.writeI32(value.someBytes.length);
++  writer.writeBytes(value.someBytes);
++  if (value.coveralls == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeU64(CoverallsFfiCodec.lower(value.coveralls!));
++  }
+ }
+ 
+ Uint8List _uniffiEncodeSimpleDict(SimpleDict value) {
+-  throw UnsupportedError('UniFFI binary encode not fully supported for SimpleDict');
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteSimpleDict(value, writer);
++  return writer.toBytes();
+ }
+ 
+ SimpleDict _uniffiReadSimpleDict(_UniFfiBinaryReader reader) {
+-  throw UnsupportedError('UniFFI binary decode not fully supported for SimpleDict');
++  return SimpleDict(
++    text: reader.readString(),
++    maybeCount: _uniffiU64ToBigInt(reader.readU64()),
++    flag: reader.readBool(),
++    color: _uniffiReadColor(reader),
++    tags: (() { final int __len = reader.readI32(); final out = <String>[]; for (var i = 0; i < __len; i++) { out.add(reader.readString()); } return out; })(),
++    counts: (() { final int __len = reader.readI32(); final out = <String, BigInt>{}; for (var i = 0; i < __len; i++) { final key = reader.readString(); final value = _uniffiU64ToBigInt(reader.readU64()); out[key] = value; } return out; })(),
++    maybeText: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readString(); })(),
++    maybePatch: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return PatchFfiCodec.lift(reader.readU64()); })(),
++    maybeU8: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readU8(); })(),
++    maybeU16: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readU16(); })(),
++    maybeU64: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return _uniffiU64ToBigInt(reader.readU64()); })(),
++    maybeI8: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readI8(); })(),
++    maybeI64: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readI64(); })(),
++    maybeF32: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readF32(); })(),
++    maybeF64: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readF64(); })(),
++    maybeBool: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readBool(); })(),
++    maybeBytes: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return (() { final int __len = reader.readI32(); return reader.readBytes(__len); })(); })(),
++    someBytes: (() { final int __len = reader.readI32(); return reader.readBytes(__len); })(),
++    coveralls: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return CoverallsFfiCodec.lift(reader.readU64()); })(),
++  );
+ }
+ 
+ SimpleDict _uniffiDecodeSimpleDict(Uint8List bytes) {
+-  throw UnsupportedError('UniFFI binary decode not fully supported for SimpleDict');
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadSimpleDict(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding SimpleDict');
++  }
++  return value;
++}
++
++final class DictWithDefaultsFfiCodec {
++  const DictWithDefaultsFfiCodec._();
++
++  static Uint8List encode(DictWithDefaults value) => _uniffiEncodeDictWithDefaults(value);
++
++  static DictWithDefaults decode(Uint8List bytes) => _uniffiDecodeDictWithDefaults(bytes);
++}
++
++final class EmptyStructFfiCodec {
++  const EmptyStructFfiCodec._();
++
++  static Uint8List encode(EmptyStruct value) => _uniffiEncodeEmptyStruct(value);
++
++  static EmptyStruct decode(Uint8List bytes) => _uniffiDecodeEmptyStruct(bytes);
++}
++
++final class RepairFfiCodec {
++  const RepairFfiCodec._();
++
++  static Uint8List encode(Repair value) => _uniffiEncodeRepair(value);
++
++  static Repair decode(Uint8List bytes) => _uniffiDecodeRepair(bytes);
++}
++
++final class ReturnOnlyDictFfiCodec {
++  const ReturnOnlyDictFfiCodec._();
++
++  static Uint8List encode(ReturnOnlyDict value) => _uniffiEncodeReturnOnlyDict(value);
++
++  static ReturnOnlyDict decode(Uint8List bytes) => _uniffiDecodeReturnOnlyDict(bytes);
++}
++
++final class SimpleDictFfiCodec {
++  const SimpleDictFfiCodec._();
++
++  static Uint8List encode(SimpleDict value) => _uniffiEncodeSimpleDict(value);
++
++  static SimpleDict decode(Uint8List bytes) => _uniffiDecodeSimpleDict(bytes);
+ }
+ 
+ void _uniffiWriteColor(Color value, _UniFfiBinaryWriter writer) {
+@@ -1600,12 +1773,46 @@ HTMLError _uniffiDecodeHTMLError(Uint8List bytes) {
+   return value;
+ }
+ 
++void _uniffiWriteMaybeObject(MaybeObject value, _UniFfiBinaryWriter writer) {
++  if (value is MaybeObjectObj) {
++    writer.writeI32(1);
++    writer.writeU64(PatchFfiCodec.lower(value.p));
++  }
++  else if (value is MaybeObjectNah) {
++    writer.writeI32(2);
++  }
++  else {
++    throw StateError('Unknown MaybeObject variant instance: $value');
++  }
++}
++
+ Uint8List _uniffiEncodeMaybeObject(MaybeObject value) {
+-  throw UnsupportedError('UniFFI binary encode not fully supported for MaybeObject');
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteMaybeObject(value, writer);
++  return writer.toBytes();
++}
++
++MaybeObject _uniffiReadMaybeObject(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return MaybeObjectObj(
++        p: PatchFfiCodec.lift(reader.readU64()),
++      );
++    case 2:
++      return const MaybeObjectNah();
++    default:
++      throw StateError('Unknown MaybeObject variant tag: $tag');
++  }
+ }
+ 
+ MaybeObject _uniffiDecodeMaybeObject(Uint8List bytes) {
+-  throw UnsupportedError('UniFFI binary decode not fully supported for MaybeObject');
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadMaybeObject(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding MaybeObject');
++  }
++  return value;
+ }
+ 
+ void _uniffiWriteMaybeSimpleDict(MaybeSimpleDict value, _UniFfiBinaryWriter writer) {
+@@ -2100,19 +2307,19 @@ class CoverallDemoFfi {
+ 
+   late final _RustBuffer Function(int key, int value) _getIntMap = _lib.lookupFunction<_RustBuffer Function(ffi.Uint32 key, ffi.Uint64 value), _RustBuffer Function(int key, int value)>('get_int_map');
+ 
+-  Map<int, int> getIntMap(int key, int value) {
+-      final _RustBuffer resultBuf = _getIntMap(key, value);
++  Map<int, BigInt> getIntMap(int key, BigInt value) {
++      final _RustBuffer resultBuf = _getIntMap(key, _uniffiBigIntToU64(value));
+       final ffi.Pointer<ffi.Uint8> resultData = resultBuf.data;
+       final int resultLen = resultBuf.len;
+       if (resultData == ffi.nullptr) {
+         _rustBytesFree(resultBuf);
+         final mapReader = _UniFfiBinaryReader(Uint8List(0));
+-        return (() { final int __len = mapReader.readI32(); final out = <int, int>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = mapReader.readU64(); out[key] = value; } return out; })();
++        return (() { final int __len = mapReader.readI32(); final out = <int, BigInt>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = _uniffiU64ToBigInt(mapReader.readU64()); out[key] = value; } return out; })();
+       }
+       try {
+         final Uint8List resultBytes = Uint8List.fromList(resultData.asTypedList(resultLen));
+         final mapReader = _UniFfiBinaryReader(resultBytes);
+-        return (() { final int __len = mapReader.readI32(); final out = <int, int>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = mapReader.readU64(); out[key] = value; } return out; })();
++        return (() { final int __len = mapReader.readI32(); final out = <int, BigInt>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = _uniffiU64ToBigInt(mapReader.readU64()); out[key] = value; } return out; })();
+       } finally {
+         _rustBytesFree(resultBuf);
+       }
+@@ -2197,7 +2404,7 @@ class CoverallDemoFfi {
+ 
+   late final int Function() _getNumAlive = _lib.lookupFunction<ffi.Uint64 Function(), int Function()>('get_num_alive');
+ 
+-  int getNumAlive() {
++  BigInt getNumAlive() {
+       return _getNumAlive();
+   }
+   // WARNING: Function 'make_rust_getters()' was omitted because
+@@ -2440,16 +2647,16 @@ class CoverallDemoFfi {
+ 
+   late final ffi.Pointer<Utf8> Function(int handle, ffi.Pointer<Utf8> key, int value) _coverallsGetDict2 = _lib.lookupFunction<ffi.Pointer<Utf8> Function(ffi.Uint64 handle, ffi.Pointer<Utf8> key, ffi.Uint64 value), ffi.Pointer<Utf8> Function(int handle, ffi.Pointer<Utf8> key, int value)>('coveralls_get_dict2');
+ 
+-  Map<String, int> coverallsInvokeGetDict2(int handle, String key, int value) {
++  Map<String, BigInt> coverallsInvokeGetDict2(int handle, String key, BigInt value) {
+     final ffi.Pointer<Utf8> keyNative = key.toNativeUtf8();
+     try {
+-    final ffi.Pointer<Utf8> resultPtr = _coverallsGetDict2(handle, keyNative, value);
++    final ffi.Pointer<Utf8> resultPtr = _coverallsGetDict2(handle, keyNative, _uniffiBigIntToU64(value));
+     if (resultPtr == ffi.nullptr) {
+       throw StateError('Rust returned null for coveralls_get_dict2');
+     }
+     try {
+       final String payload = resultPtr.toDartString();
+-      return (jsonDecode(payload) as Map<String, dynamic>).map((key, value) => MapEntry(key, (value as num).toInt()));
++      return (jsonDecode(payload) as Map<String, dynamic>).map((key, value) => MapEntry(key, value is String ? BigInt.parse(value) : BigInt.from((value as num).toInt())));
+     } finally {
+       _rustStringFree(resultPtr);
+     }
+@@ -2460,19 +2667,19 @@ class CoverallDemoFfi {
+ 
+   late final _RustBuffer Function(int handle, int key, int value) _coverallsGetDict3 = _lib.lookupFunction<_RustBuffer Function(ffi.Uint64 handle, ffi.Uint32 key, ffi.Uint64 value), _RustBuffer Function(int handle, int key, int value)>('coveralls_get_dict3');
+ 
+-  Map<int, int> coverallsInvokeGetDict3(int handle, int key, int value) {
+-    final _RustBuffer resultBuf = _coverallsGetDict3(handle, key, value);
++  Map<int, BigInt> coverallsInvokeGetDict3(int handle, int key, BigInt value) {
++    final _RustBuffer resultBuf = _coverallsGetDict3(handle, key, _uniffiBigIntToU64(value));
+     final ffi.Pointer<ffi.Uint8> resultData = resultBuf.data;
+     final int resultLen = resultBuf.len;
+     if (resultData == ffi.nullptr) {
+       _rustBytesFree(resultBuf);
+       final mapReader = _UniFfiBinaryReader(Uint8List(0));
+-      return (() { final int __len = mapReader.readI32(); final out = <int, int>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = mapReader.readU64(); out[key] = value; } return out; })();
++      return (() { final int __len = mapReader.readI32(); final out = <int, BigInt>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = _uniffiU64ToBigInt(mapReader.readU64()); out[key] = value; } return out; })();
+     }
+     try {
+       final Uint8List resultBytes = Uint8List.fromList(resultData.asTypedList(resultLen));
+       final mapReader = _UniFfiBinaryReader(resultBytes);
+-      return (() { final int __len = mapReader.readI32(); final out = <int, int>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = mapReader.readU64(); out[key] = value; } return out; })();
++      return (() { final int __len = mapReader.readI32(); final out = <int, BigInt>{}; for (var i = 0; i < __len; i++) { final key = mapReader.readU32(); final value = _uniffiU64ToBigInt(mapReader.readU64()); out[key] = value; } return out; })();
+     } finally {
+       _rustBytesFree(resultBuf);
+     }
+@@ -2699,8 +2906,8 @@ class CoverallDemoFfi {
+ 
+   late final int Function(int handle) _coverallsStrongCount = _lib.lookupFunction<ffi.Uint64 Function(ffi.Uint64 handle), int Function(int handle)>('coveralls_strong_count');
+ 
+-  int coverallsInvokeStrongCount(int handle) {
+-    return _coverallsStrongCount(handle);
++  BigInt coverallsInvokeStrongCount(int handle) {
++    return _uniffiU64ToBigInt(_coverallsStrongCount(handle));
+   }
+ 
+   late final void Function(int handle, int other) _coverallsTakeOther = _lib.lookupFunction<ffi.Void Function(ffi.Uint64 handle, ffi.Uint64 other), void Function(int handle, int other)>('coveralls_take_other');
+@@ -2858,8 +3065,8 @@ class CoverallDemoFfi {
+ 
+   late final int Function(int handle) _threadsafeCounterGetCount = _lib.lookupFunction<ffi.Uint64 Function(ffi.Uint64 handle), int Function(int handle)>('threadsafecounter_get_count');
+ 
+-  int threadsafeCounterInvokeGetCount(int handle) {
+-    return _threadsafeCounterGetCount(handle);
++  BigInt threadsafeCounterInvokeGetCount(int handle) {
++    return _uniffiU64ToBigInt(_threadsafeCounterGetCount(handle));
+   }
+ 
+   late final void Function(int handle) _threadsafeCounterIncrement = _lib.lookupFunction<ffi.Void Function(ffi.Uint64 handle), void Function(int handle)>('threadsafecounter_increment');
+@@ -2933,13 +3140,13 @@ final class Coveralls {
+   }
+ 
+   /// Return a string-keyed map.
+-  Map<String, int> getDict2(String key, int value) {
++  Map<String, BigInt> getDict2(String key, BigInt value) {
+     _ensureOpen();
+     return _ffi.coverallsInvokeGetDict2(_handle, key, value);
+   }
+ 
+   /// Return a non-string-keyed map.
+-  Map<int, int> getDict3(int key, int value) {
++  Map<int, BigInt> getDict3(int key, BigInt value) {
+     _ensureOpen();
+     return _ffi.coverallsInvokeGetDict3(_handle, key, value);
+   }
+@@ -3014,7 +3221,7 @@ final class Coveralls {
+   }
+ 
+   /// Strong reference count (tests Self=ByArc on the Rust side).
+-  int strongCount() {
++  BigInt strongCount() {
+     _ensureOpen();
+     return _ffi.coverallsInvokeStrongCount(_handle);
+   }
+@@ -3303,7 +3510,7 @@ final class ThreadsafeCounter {
+     return _bindings().threadsafeCounterCreateNew();
+   }
+ 
+-  int getCount() {
++  BigInt getCount() {
+     _ensureOpen();
+     return _ffi.threadsafeCounterInvokeGetCount(_handle);
+   }
+@@ -3371,7 +3578,7 @@ double divideByText(double value, String divisor) {
+ }
+ 
+ /// Round-trip a map with non-string keys (record<u32, u64>).
+-Map<int, int> getIntMap(int key, int value) {
++Map<int, BigInt> getIntMap(int key, BigInt value) {
+   return _bindings().getIntMap(key, value);
+ }
+ 
+@@ -3401,7 +3608,7 @@ MaybeSimpleDict getMaybeSimpleDict(int index) {
+ }
+ 
+ /// Return the number of live Coveralls instances (tracking via constructor/destructor).
+-int getNumAlive() {
++BigInt getNumAlive() {
+   return _bindings().getNumAlive();
+ }
+ 
+diff --git a/fixtures/custom-types-demo/expected/custom_types_demo.dart b/fixtures/custom-types-demo/expected/custom_types_demo.dart
+index 8b86124..11c9e06 100644
+--- a/fixtures/custom-types-demo/expected/custom_types_demo.dart
++++ b/fixtures/custom-types-demo/expected/custom_types_demo.dart
+@@ -40,6 +40,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class CustomTypesDemoFfi {
+   CustomTypesDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/docstrings-demo/expected/docstrings_demo.dart b/fixtures/docstrings-demo/expected/docstrings_demo.dart
+index f7e5e35..9b8ad1b 100644
+--- a/fixtures/docstrings-demo/expected/docstrings_demo.dart
++++ b/fixtures/docstrings-demo/expected/docstrings_demo.dart
+@@ -7,6 +7,9 @@ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ /// 2D point value.
+ class Point {
+   const Point({
+@@ -90,6 +93,173 @@ final class MoodFfiCodec {
+   static Mood decode(String raw) => _decodeMood(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWritePoint(Point value, _UniFfiBinaryWriter writer) {
++  writer.writeI32(value.x);
++  writer.writeI32(value.y);
++}
++
++Uint8List _uniffiEncodePoint(Point value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWritePoint(value, writer);
++  return writer.toBytes();
++}
++
++Point _uniffiReadPoint(_UniFfiBinaryReader reader) {
++  return Point(
++    x: reader.readI32(),
++    y: reader.readI32(),
++  );
++}
++
++Point _uniffiDecodePoint(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadPoint(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Point');
++  }
++  return value;
++}
++
++final class PointFfiCodec {
++  const PointFfiCodec._();
++
++  static Uint8List encode(Point value) => _uniffiEncodePoint(value);
++
++  static Point decode(Uint8List bytes) => _uniffiDecodePoint(bytes);
++}
++
++void _uniffiWriteMood(Mood value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    Mood.happy => 1,
++    Mood.sad => 2,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeMood(Mood value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteMood(value, writer);
++  return writer.toBytes();
++}
++
++Mood _uniffiReadMood(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return Mood.happy;
++    case 2:
++      return Mood.sad;
++    default:
++      throw StateError('Unknown Mood variant tag: $tag');
++  }
++}
++
++Mood _uniffiDecodeMood(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadMood(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Mood');
++  }
++  return value;
++}
++
+ /// Callback reporter.
+ abstract interface class Reporter {
+   /// Reports a message.
+diff --git a/fixtures/error-types-demo/expected/error_types_demo.dart b/fixtures/error-types-demo/expected/error_types_demo.dart
+index 52dae74..434c3be 100644
+--- a/fixtures/error-types-demo/expected/error_types_demo.dart
++++ b/fixtures/error-types-demo/expected/error_types_demo.dart
+@@ -6,6 +6,9 @@ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class ErrorTypesDemoBindings {
+   ErrorTypesDemoBindings({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+@@ -79,8 +82,8 @@ class ErrorTypesDemoBindings {
+ 
+   late final ffi.Pointer<Utf8> Function(int handle, int index) _errorInterfaceLink = _lib.lookupFunction<ffi.Pointer<Utf8> Function(ffi.Uint64 handle, ffi.Uint64 index), ffi.Pointer<Utf8> Function(int handle, int index)>('errorinterface_link');
+ 
+-  String? errorInterfaceInvokeLink(int handle, int index) {
+-    final ffi.Pointer<Utf8> resultPtr = _errorInterfaceLink(handle, index);
++  String? errorInterfaceInvokeLink(int handle, BigInt index) {
++    final ffi.Pointer<Utf8> resultPtr = _errorInterfaceLink(handle, _uniffiBigIntToU64(index));
+     if (resultPtr == ffi.nullptr) {
+       return null;
+     }
+@@ -191,7 +194,7 @@ final class ErrorInterface implements Exception {
+     return _ffi.errorInterfaceInvokeChain(_handle);
+   }
+ 
+-  String? link(int index) {
++  String? link(BigInt index) {
+     _ensureOpen();
+     return _ffi.errorInterfaceInvokeLink(_handle, index);
+   }
+diff --git a/fixtures/ext-types-demo/expected/ext_types_demo.dart b/fixtures/ext-types-demo/expected/ext_types_demo.dart
+index 236b0e0..38662c3 100644
+--- a/fixtures/ext-types-demo/expected/ext_types_demo.dart
++++ b/fixtures/ext-types-demo/expected/ext_types_demo.dart
+@@ -22,6 +22,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class WrapperRecord {
+   const WrapperRecord({
+     required this.inner,
+@@ -69,6 +72,138 @@ class WrapperRecord {
+   int get hashCode => Object.hash(inner, label);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteWrapperRecord(WrapperRecord value, _UniFfiBinaryWriter writer) {
++  _uniffiWriteRemoteThing(value.inner, writer);
++  writer.writeString(value.label);
++}
++
++Uint8List _uniffiEncodeWrapperRecord(WrapperRecord value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteWrapperRecord(value, writer);
++  return writer.toBytes();
++}
++
++WrapperRecord _uniffiReadWrapperRecord(_UniFfiBinaryReader reader) {
++  return WrapperRecord(
++    inner: _uniffiReadRemoteThing(reader),
++    label: reader.readString(),
++  );
++}
++
++WrapperRecord _uniffiDecodeWrapperRecord(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadWrapperRecord(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding WrapperRecord');
++  }
++  return value;
++}
++
++final class WrapperRecordFfiCodec {
++  const WrapperRecordFfiCodec._();
++
++  static Uint8List encode(WrapperRecord value) => _uniffiEncodeWrapperRecord(value);
++
++  static WrapperRecord decode(Uint8List bytes) => _uniffiDecodeWrapperRecord(bytes);
++}
++
+ class ExtTypesDemoFfi {
+   ExtTypesDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/futures-stress/expected/futures_stress.dart b/fixtures/futures-stress/expected/futures_stress.dart
+index 10b6638..b620e66 100644
+--- a/fixtures/futures-stress/expected/futures_stress.dart
++++ b/fixtures/futures-stress/expected/futures_stress.dart
+@@ -45,6 +45,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ sealed class AsyncError {
+   const AsyncError();
+ }
+@@ -177,6 +180,142 @@ final class AsyncErrorExceptionFfiCodec {
+   static AsyncErrorException decode(Object? raw) => _decodeAsyncErrorException(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteAsyncError(AsyncError value, _UniFfiBinaryWriter writer) {
++  if (value is AsyncErrorNotFound) {
++    writer.writeI32(1);
++  }
++  else if (value is AsyncErrorInvalidInput) {
++    writer.writeI32(2);
++  }
++  else {
++    throw StateError('Unknown AsyncError variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeAsyncError(AsyncError value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteAsyncError(value, writer);
++  return writer.toBytes();
++}
++
++AsyncError _uniffiReadAsyncError(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return const AsyncErrorNotFound();
++    case 2:
++      return const AsyncErrorInvalidInput();
++    default:
++      throw StateError('Unknown AsyncError variant tag: $tag');
++  }
++}
++
++AsyncError _uniffiDecodeAsyncError(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadAsyncError(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding AsyncError');
++  }
++  return value;
++}
++
+ class FuturesStressFfi {
+   FuturesStressFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/keywords-demo/expected/keywords_demo.dart b/fixtures/keywords-demo/expected/keywords_demo.dart
+index d2d560e..59f49af 100644
+--- a/fixtures/keywords-demo/expected/keywords_demo.dart
++++ b/fixtures/keywords-demo/expected/keywords_demo.dart
+@@ -6,6 +6,9 @@ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class Break {
+   const Break({
+     required this.class_,
+@@ -222,6 +225,217 @@ final class ThrowExceptionFfiCodec {
+   static ThrowException decode(Object? raw) => _decodeThrowException(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteBreak(Break value, _UniFfiBinaryWriter writer) {
++  writer.writeString(value.class_);
++  writer.writeU32(value.return_);
++  writer.writeBool(value.is_);
++}
++
++Uint8List _uniffiEncodeBreak(Break value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteBreak(value, writer);
++  return writer.toBytes();
++}
++
++Break _uniffiReadBreak(_UniFfiBinaryReader reader) {
++  return Break(
++    class_: reader.readString(),
++    return_: reader.readU32(),
++    is_: reader.readBool(),
++  );
++}
++
++Break _uniffiDecodeBreak(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadBreak(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Break');
++  }
++  return value;
++}
++
++final class BreakFfiCodec {
++  const BreakFfiCodec._();
++
++  static Uint8List encode(Break value) => _uniffiEncodeBreak(value);
++
++  static Break decode(Uint8List bytes) => _uniffiDecodeBreak(bytes);
++}
++
++void _uniffiWriteAsync(Async value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    Async.void_ => 1,
++    Async.yield_ => 2,
++    Async.await_ => 3,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeAsync(Async value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteAsync(value, writer);
++  return writer.toBytes();
++}
++
++Async _uniffiReadAsync(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return Async.void_;
++    case 2:
++      return Async.yield_;
++    case 3:
++      return Async.await_;
++    default:
++      throw StateError('Unknown Async variant tag: $tag');
++  }
++}
++
++Async _uniffiDecodeAsync(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadAsync(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Async');
++  }
++  return value;
++}
++
++void _uniffiWriteThrow(Throw value, _UniFfiBinaryWriter writer) {
++  if (value is ThrowCatch) {
++    writer.writeI32(1);
++  }
++  else if (value is ThrowRethrow) {
++    writer.writeI32(2);
++  }
++  else {
++    throw StateError('Unknown Throw variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeThrow(Throw value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteThrow(value, writer);
++  return writer.toBytes();
++}
++
++Throw _uniffiReadThrow(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return const ThrowCatch();
++    case 2:
++      return const ThrowRethrow();
++    default:
++      throw StateError('Unknown Throw variant tag: $tag');
++  }
++}
++
++Throw _uniffiDecodeThrow(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadThrow(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Throw');
++  }
++  return value;
++}
++
+ class KeywordsDemoFfi {
+   KeywordsDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/model-types-demo/expected/model_types_demo.dart b/fixtures/model-types-demo/expected/model_types_demo.dart
+index f165e97..55d0d42 100644
+--- a/fixtures/model-types-demo/expected/model_types_demo.dart
++++ b/fixtures/model-types-demo/expected/model_types_demo.dart
+@@ -5,6 +5,9 @@ library model_types_demo;
+ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ const _sentinel = Object();
+ 
+ class Person {
+@@ -180,6 +183,230 @@ final class OutcomeFfiCodec {
+   static Outcome decode(String raw) => _decodeOutcome(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWritePerson(Person value, _UniFfiBinaryWriter writer) {
++  writer.writeString(value.name);
++  writer.writeU32(value.age);
++  if (value.nickname == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeString(value.nickname!);
++  }
++}
++
++Uint8List _uniffiEncodePerson(Person value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWritePerson(value, writer);
++  return writer.toBytes();
++}
++
++Person _uniffiReadPerson(_UniFfiBinaryReader reader) {
++  return Person(
++    name: reader.readString(),
++    age: reader.readU32(),
++    nickname: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readString(); })(),
++  );
++}
++
++Person _uniffiDecodePerson(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadPerson(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Person');
++  }
++  return value;
++}
++
++final class PersonFfiCodec {
++  const PersonFfiCodec._();
++
++  static Uint8List encode(Person value) => _uniffiEncodePerson(value);
++
++  static Person decode(Uint8List bytes) => _uniffiDecodePerson(bytes);
++}
++
++void _uniffiWriteColor(Color value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    Color.red => 1,
++    Color.green => 2,
++    Color.blue => 3,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeColor(Color value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteColor(value, writer);
++  return writer.toBytes();
++}
++
++Color _uniffiReadColor(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return Color.red;
++    case 2:
++      return Color.green;
++    case 3:
++      return Color.blue;
++    default:
++      throw StateError('Unknown Color variant tag: $tag');
++  }
++}
++
++Color _uniffiDecodeColor(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadColor(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Color');
++  }
++  return value;
++}
++
++void _uniffiWriteOutcome(Outcome value, _UniFfiBinaryWriter writer) {
++  if (value is OutcomeSuccess) {
++    writer.writeI32(1);
++    writer.writeString(value.message);
++  }
++  else if (value is OutcomeFailure) {
++    writer.writeI32(2);
++    writer.writeI32(value.code);
++    writer.writeString(value.reason);
++  }
++  else {
++    throw StateError('Unknown Outcome variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeOutcome(Outcome value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteOutcome(value, writer);
++  return writer.toBytes();
++}
++
++Outcome _uniffiReadOutcome(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return OutcomeSuccess(
++        message: reader.readString(),
++      );
++    case 2:
++      return OutcomeFailure(
++        code: reader.readI32(),
++        reason: reader.readString(),
++      );
++    default:
++      throw StateError('Unknown Outcome variant tag: $tag');
++  }
++}
++
++Outcome _uniffiDecodeOutcome(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadOutcome(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Outcome');
++  }
++  return value;
++}
++
+ class ModelTypesDemoFfi {
+   ModelTypesDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/non-exhaustive-demo/expected/non_exhaustive_demo.dart b/fixtures/non-exhaustive-demo/expected/non_exhaustive_demo.dart
+index 0a2ebed..5d41696 100644
+--- a/fixtures/non-exhaustive-demo/expected/non_exhaustive_demo.dart
++++ b/fixtures/non-exhaustive-demo/expected/non_exhaustive_demo.dart
+@@ -5,6 +5,9 @@ library non_exhaustive_demo;
+ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ sealed class AppError {
+   const AppError();
+ }
+@@ -196,6 +199,178 @@ final class AppErrorExceptionFfiCodec {
+   static AppErrorException decode(Object? raw) => _decodeAppErrorException(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteAppError(AppError value, _UniFfiBinaryWriter writer) {
++  if (value is AppErrorNotFound) {
++    writer.writeI32(1);
++  }
++  else if (value is AppErrorPermissionDenied) {
++    writer.writeI32(2);
++  }
++  else {
++    throw StateError('Unknown AppError variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeAppError(AppError value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteAppError(value, writer);
++  return writer.toBytes();
++}
++
++AppError _uniffiReadAppError(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return const AppErrorNotFound();
++    case 2:
++      return const AppErrorPermissionDenied();
++    default:
++      return const AppErrorUnknown();
++  }
++}
++
++AppError _uniffiDecodeAppError(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadAppError(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding AppError');
++  }
++  return value;
++}
++
++void _uniffiWriteStatus(Status value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    Status.active => 1,
++    Status.inactive => 2,
++    Status.unknown => throw StateError('Cannot encode unknown Status variant'),
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeStatus(Status value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteStatus(value, writer);
++  return writer.toBytes();
++}
++
++Status _uniffiReadStatus(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return Status.active;
++    case 2:
++      return Status.inactive;
++    default:
++      return Status.unknown;
++  }
++}
++
++Status _uniffiDecodeStatus(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadStatus(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Status');
++  }
++  return value;
++}
++
+ class NonExhaustiveDemoFfi {
+   NonExhaustiveDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/regressions/async-object-lift-demo/expected/async_object_lift_demo.dart b/fixtures/regressions/async-object-lift-demo/expected/async_object_lift_demo.dart
+index 69d93a1..6995eb7 100644
+--- a/fixtures/regressions/async-object-lift-demo/expected/async_object_lift_demo.dart
++++ b/fixtures/regressions/async-object-lift-demo/expected/async_object_lift_demo.dart
+@@ -21,6 +21,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class AsyncObjectLiftDemoFfi {
+   AsyncObjectLiftDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/regressions/callback-custom-async-demo/expected/callback_custom_async_demo.dart b/fixtures/regressions/callback-custom-async-demo/expected/callback_custom_async_demo.dart
+index f3d2fe2..239c474 100644
+--- a/fixtures/regressions/callback-custom-async-demo/expected/callback_custom_async_demo.dart
++++ b/fixtures/regressions/callback-custom-async-demo/expected/callback_custom_async_demo.dart
+@@ -22,6 +22,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ abstract interface class Labeller {
+   Future<String> labelAsync(String input);
+ }
+diff --git a/fixtures/regressions/custom-shadow-demo/expected/custom_shadow_demo.dart b/fixtures/regressions/custom-shadow-demo/expected/custom_shadow_demo.dart
+index 18faee2..85ac023 100644
+--- a/fixtures/regressions/custom-shadow-demo/expected/custom_shadow_demo.dart
++++ b/fixtures/regressions/custom-shadow-demo/expected/custom_shadow_demo.dart
+@@ -24,6 +24,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class CustomShadowDemoFfi {
+   CustomShadowDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/regressions/defaults-demo/expected/defaults_demo.dart b/fixtures/regressions/defaults-demo/expected/defaults_demo.dart
+index 8f4f70f..5816a71 100644
+--- a/fixtures/regressions/defaults-demo/expected/defaults_demo.dart
++++ b/fixtures/regressions/defaults-demo/expected/defaults_demo.dart
+@@ -6,6 +6,9 @@ import 'dart:convert';
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ const _sentinel = Object();
+ 
+ class Config {
+@@ -67,6 +70,147 @@ class Config {
+   int get hashCode => Object.hash(name, timeout, verbose, label);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteConfig(Config value, _UniFfiBinaryWriter writer) {
++  writer.writeString(value.name);
++  writer.writeU32(value.timeout);
++  writer.writeBool(value.verbose);
++  if (value.label == null) {
++    writer.writeI8(0);
++  } else {
++    writer.writeI8(1);
++    writer.writeString(value.label!);
++  }
++}
++
++Uint8List _uniffiEncodeConfig(Config value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteConfig(value, writer);
++  return writer.toBytes();
++}
++
++Config _uniffiReadConfig(_UniFfiBinaryReader reader) {
++  return Config(
++    name: reader.readString(),
++    timeout: reader.readU32(),
++    verbose: reader.readBool(),
++    label: (() { final int __tag = reader.readI8(); if (__tag == 0) return null; if (__tag != 1) throw StateError('invalid optional tag: $__tag'); return reader.readString(); })(),
++  );
++}
++
++Config _uniffiDecodeConfig(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadConfig(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Config');
++  }
++  return value;
++}
++
++final class ConfigFfiCodec {
++  const ConfigFfiCodec._();
++
++  static Uint8List encode(Config value) => _uniffiEncodeConfig(value);
++
++  static Config decode(Uint8List bytes) => _uniffiDecodeConfig(bytes);
++}
++
+ class DefaultsDemoFfi {
+   DefaultsDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/regressions/forward-refs-demo/expected/forward_refs_demo.dart b/fixtures/regressions/forward-refs-demo/expected/forward_refs_demo.dart
+index d36d608..aa06e77 100644
+--- a/fixtures/regressions/forward-refs-demo/expected/forward_refs_demo.dart
++++ b/fixtures/regressions/forward-refs-demo/expected/forward_refs_demo.dart
+@@ -5,6 +5,9 @@ library forward_refs_demo;
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class ForwardRefsDemoFfi {
+   ForwardRefsDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/rename-demo/expected/rename_demo.dart b/fixtures/rename-demo/expected/rename_demo.dart
+index d495c44..9ae2d39 100644
+--- a/fixtures/rename-demo/expected/rename_demo.dart
++++ b/fixtures/rename-demo/expected/rename_demo.dart
+@@ -5,6 +5,9 @@ library rename_demo;
+ import 'dart:ffi' as ffi;
+ import 'package:ffi/ffi.dart';
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class RenameDemoFfi {
+   RenameDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/simple-fns/expected/simple_fns.dart b/fixtures/simple-fns/expected/simple_fns.dart
+index 75b65eb..a0349d5 100644
+--- a/fixtures/simple-fns/expected/simple_fns.dart
++++ b/fixtures/simple-fns/expected/simple_fns.dart
+@@ -49,6 +49,9 @@ const int _rustCallStatusCancelled = 3;
+ const int _rustFuturePollReady = 0;
+ const int _rustFuturePollWake = 1;
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class Person {
+   const Person({
+     required this.name,
+@@ -359,6 +362,265 @@ final class MathErrorExceptionFfiCodec {
+   static MathErrorException decode(Object? raw) => _decodeMathErrorException(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWritePerson(Person value, _UniFfiBinaryWriter writer) {
++  writer.writeString(value.name);
++  writer.writeU32(value.age);
++}
++
++Uint8List _uniffiEncodePerson(Person value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWritePerson(value, writer);
++  return writer.toBytes();
++}
++
++Person _uniffiReadPerson(_UniFfiBinaryReader reader) {
++  return Person(
++    name: reader.readString(),
++    age: reader.readU32(),
++  );
++}
++
++Person _uniffiDecodePerson(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadPerson(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Person');
++  }
++  return value;
++}
++
++final class PersonFfiCodec {
++  const PersonFfiCodec._();
++
++  static Uint8List encode(Person value) => _uniffiEncodePerson(value);
++
++  static Person decode(Uint8List bytes) => _uniffiDecodePerson(bytes);
++}
++
++void _uniffiWriteColor(Color value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    Color.red => 1,
++    Color.green => 2,
++    Color.blue => 3,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeColor(Color value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteColor(value, writer);
++  return writer.toBytes();
++}
++
++Color _uniffiReadColor(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return Color.red;
++    case 2:
++      return Color.green;
++    case 3:
++      return Color.blue;
++    default:
++      throw StateError('Unknown Color variant tag: $tag');
++  }
++}
++
++Color _uniffiDecodeColor(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadColor(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Color');
++  }
++  return value;
++}
++
++void _uniffiWriteMathError(MathError value, _UniFfiBinaryWriter writer) {
++  if (value is MathErrorDivisionByZero) {
++    writer.writeI32(1);
++  }
++  else if (value is MathErrorNegativeInput) {
++    writer.writeI32(2);
++    writer.writeI32(value.value);
++  }
++  else {
++    throw StateError('Unknown MathError variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeMathError(MathError value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteMathError(value, writer);
++  return writer.toBytes();
++}
++
++MathError _uniffiReadMathError(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return const MathErrorDivisionByZero();
++    case 2:
++      return MathErrorNegativeInput(
++        value: reader.readI32(),
++      );
++    default:
++      throw StateError('Unknown MathError variant tag: $tag');
++  }
++}
++
++MathError _uniffiDecodeMathError(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadMathError(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding MathError');
++  }
++  return value;
++}
++
++void _uniffiWriteOutcome(Outcome value, _UniFfiBinaryWriter writer) {
++  if (value is OutcomeSuccess) {
++    writer.writeI32(1);
++    writer.writeString(value.message);
++  }
++  else if (value is OutcomeFailure) {
++    writer.writeI32(2);
++    writer.writeI32(value.code);
++    writer.writeString(value.reason);
++  }
++  else {
++    throw StateError('Unknown Outcome variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeOutcome(Outcome value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteOutcome(value, writer);
++  return writer.toBytes();
++}
++
++Outcome _uniffiReadOutcome(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return OutcomeSuccess(
++        message: reader.readString(),
++      );
++    case 2:
++      return OutcomeFailure(
++        code: reader.readI32(),
++        reason: reader.readString(),
++      );
++    default:
++      throw StateError('Unknown Outcome variant tag: $tag');
++  }
++}
++
++Outcome _uniffiDecodeOutcome(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadOutcome(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding Outcome');
++  }
++  return value;
++}
++
+ abstract interface class Adder {
+   int add(int left, int right);
+   Future<int> addAsync(int left, int right);
+@@ -1040,8 +1302,8 @@ class SimpleFnsBindings {
+ 
+   late final int Function(int left, int right) _addU64 = _lib.lookupFunction<ffi.Uint64 Function(ffi.Uint64 left, ffi.Uint64 right), int Function(int left, int right)>('add_u64');
+ 
+-  int addU64(int left, int right) {
+-      return _addU64(left, right);
++  BigInt addU64(BigInt left, BigInt right) {
++      return _addU64(_uniffiBigIntToU64(left), _uniffiBigIntToU64(right));
+   }
+ 
+   late final int Function(int adder, int left, int right) _applyAdder = _lib.lookupFunction<ffi.Uint32 Function(ffi.Uint64 adder, ffi.Uint32 left, ffi.Uint32 right), int Function(int adder, int left, int right)>('apply_adder');
+@@ -4606,26 +4868,26 @@ class SimpleFnsBindings {
+ 
+   late final bool Function(int handle, int other) _counterUniffiTraitEq = _lib.lookupFunction<ffi.Bool Function(ffi.Uint64 handle, ffi.Uint64 other), bool Function(int handle, int other)>('counter_uniffi_trait_eq');
+ 
+-  bool counterInvokeUniffiTraitEq(int handle, int other) {
+-    return _counterUniffiTraitEq(handle, other);
++  bool counterInvokeUniffiTraitEq(int handle, BigInt other) {
++    return _counterUniffiTraitEq(handle, _uniffiBigIntToU64(other));
+   }
+ 
+   late final int Function(int handle) _counterUniffiTraitHash = _lib.lookupFunction<ffi.Uint64 Function(ffi.Uint64 handle), int Function(int handle)>('counter_uniffi_trait_hash');
+ 
+-  int counterInvokeUniffiTraitHash(int handle) {
+-    return _counterUniffiTraitHash(handle);
++  BigInt counterInvokeUniffiTraitHash(int handle) {
++    return _uniffiU64ToBigInt(_counterUniffiTraitHash(handle));
+   }
+ 
+   late final bool Function(int handle, int other) _counterUniffiTraitNe = _lib.lookupFunction<ffi.Bool Function(ffi.Uint64 handle, ffi.Uint64 other), bool Function(int handle, int other)>('counter_uniffi_trait_ne');
+ 
+-  bool counterInvokeUniffiTraitNe(int handle, int other) {
+-    return _counterUniffiTraitNe(handle, other);
++  bool counterInvokeUniffiTraitNe(int handle, BigInt other) {
++    return _counterUniffiTraitNe(handle, _uniffiBigIntToU64(other));
+   }
+ 
+   late final int Function(int handle, int other) _counterUniffiTraitOrdCmp = _lib.lookupFunction<ffi.Int8 Function(ffi.Uint64 handle, ffi.Uint64 other), int Function(int handle, int other)>('counter_uniffi_trait_ord_cmp');
+ 
+-  int counterInvokeUniffiTraitOrdCmp(int handle, int other) {
+-    return _counterUniffiTraitOrdCmp(handle, other);
++  int counterInvokeUniffiTraitOrdCmp(int handle, BigInt other) {
++    return _counterUniffiTraitOrdCmp(handle, _uniffiBigIntToU64(other));
+   }
+ }
+ 
+@@ -4913,7 +5175,7 @@ DateTime addSeconds(DateTime when_, int seconds) {
+   return _bindings().addSeconds(when_, seconds);
+ }
+ 
+-int addU64(int left, int right) {
++BigInt addU64(BigInt left, BigInt right) {
+   return _bindings().addU64(left, right);
+ }
+ 
+diff --git a/fixtures/trait-demo/expected/trait_demo.dart b/fixtures/trait-demo/expected/trait_demo.dart
+index bed7cd4..a0dd762 100644
+--- a/fixtures/trait-demo/expected/trait_demo.dart
++++ b/fixtures/trait-demo/expected/trait_demo.dart
+@@ -17,6 +17,9 @@ const int _rustCallStatusSuccess = 0;
+ const int _rustCallStatusError = 1;
+ const int _rustCallStatusUnexpectedError = 2;
+ const int _rustCallStatusCancelled = 3;
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ class TraitRecord {
+   const TraitRecord({
+     required this.name,
+@@ -184,6 +187,223 @@ final class TraitShapeFfiCodec {
+   static TraitShape decode(String raw) => _decodeTraitShape(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteTraitRecord(TraitRecord value, _UniFfiBinaryWriter writer) {
++  writer.writeString(value.name);
++  writer.writeU32(value.value);
++}
++
++Uint8List _uniffiEncodeTraitRecord(TraitRecord value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteTraitRecord(value, writer);
++  return writer.toBytes();
++}
++
++TraitRecord _uniffiReadTraitRecord(_UniFfiBinaryReader reader) {
++  return TraitRecord(
++    name: reader.readString(),
++    value: reader.readU32(),
++  );
++}
++
++TraitRecord _uniffiDecodeTraitRecord(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadTraitRecord(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding TraitRecord');
++  }
++  return value;
++}
++
++final class TraitRecordFfiCodec {
++  const TraitRecordFfiCodec._();
++
++  static Uint8List encode(TraitRecord value) => _uniffiEncodeTraitRecord(value);
++
++  static TraitRecord decode(Uint8List bytes) => _uniffiDecodeTraitRecord(bytes);
++}
++
++void _uniffiWriteTraitColor(TraitColor value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    TraitColor.red => 1,
++    TraitColor.green => 2,
++    TraitColor.blue => 3,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeTraitColor(TraitColor value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteTraitColor(value, writer);
++  return writer.toBytes();
++}
++
++TraitColor _uniffiReadTraitColor(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return TraitColor.red;
++    case 2:
++      return TraitColor.green;
++    case 3:
++      return TraitColor.blue;
++    default:
++      throw StateError('Unknown TraitColor variant tag: $tag');
++  }
++}
++
++TraitColor _uniffiDecodeTraitColor(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadTraitColor(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding TraitColor');
++  }
++  return value;
++}
++
++void _uniffiWriteTraitShape(TraitShape value, _UniFfiBinaryWriter writer) {
++  if (value is TraitShapeCircle) {
++    writer.writeI32(1);
++    writer.writeF64(value.radius);
++  }
++  else if (value is TraitShapeRectangle) {
++    writer.writeI32(2);
++    writer.writeF64(value.width);
++    writer.writeF64(value.height);
++  }
++  else {
++    throw StateError('Unknown TraitShape variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeTraitShape(TraitShape value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteTraitShape(value, writer);
++  return writer.toBytes();
++}
++
++TraitShape _uniffiReadTraitShape(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return TraitShapeCircle(
++        radius: reader.readF64(),
++      );
++    case 2:
++      return TraitShapeRectangle(
++        width: reader.readF64(),
++        height: reader.readF64(),
++      );
++    default:
++      throw StateError('Unknown TraitShape variant tag: $tag');
++  }
++}
++
++TraitShape _uniffiDecodeTraitShape(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadTraitShape(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding TraitShape');
++  }
++  return value;
++}
++
+ class TraitDemoFfi {
+   TraitDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+diff --git a/fixtures/type-limits-demo/expected/type_limits_demo.dart b/fixtures/type-limits-demo/expected/type_limits_demo.dart
+index 15df6fa..0868e40 100644
+--- a/fixtures/type-limits-demo/expected/type_limits_demo.dart
++++ b/fixtures/type-limits-demo/expected/type_limits_demo.dart
+@@ -14,6 +14,9 @@ final class _RustBuffer extends ffi.Struct {
+   external int len;
+ }
+ 
++int _uniffiBigIntToU64(BigInt value) => value.toUnsigned(64).toSigned(64).toInt();
++BigInt _uniffiU64ToBigInt(int value) => BigInt.from(value).toUnsigned(64);
++
+ enum LargeEnum {
+   variant1,
+   variant2,
+@@ -1466,6 +1469,461 @@ final class LargeErrorExceptionFfiCodec {
+   static LargeErrorException decode(Object? raw) => _decodeLargeErrorException(raw);
+ }
+ 
++final class _UniFfiBinaryWriter {
++  final BytesBuilder _builder = BytesBuilder(copy: false);
++
++  void writeU8(int value) => _builder.add([value & 0xFF]);
++  void writeI8(int value) => _builder.add([(value) & 0xFF]);
++  void writeU16(int value) {
++    final data = ByteData(2)..setUint16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI16(int value) {
++    final data = ByteData(2)..setInt16(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU32(int value) {
++    final data = ByteData(4)..setUint32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI32(int value) {
++    final data = ByteData(4)..setInt32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeU64(int value) {
++    final data = ByteData(8)..setUint64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeI64(int value) {
++    final data = ByteData(8)..setInt64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF32(double value) {
++    final data = ByteData(4)..setFloat32(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeF64(double value) {
++    final data = ByteData(8)..setFloat64(0, value, Endian.big);
++    _builder.add(data.buffer.asUint8List());
++  }
++  void writeBool(bool value) => writeI8(value ? 1 : 0);
++  void writeBytes(Uint8List bytes) => _builder.add(bytes);
++  void writeString(String value) {
++    final bytes = Uint8List.fromList(utf8.encode(value));
++    writeI32(bytes.length);
++    writeBytes(bytes);
++  }
++
++  Uint8List toBytes() => _builder.takeBytes();
++}
++
++final class _UniFfiBinaryReader {
++  _UniFfiBinaryReader(this._bytes);
++  final Uint8List _bytes;
++  int _offset = 0;
++
++  bool get isDone => _offset == _bytes.length;
++
++  ByteData _readData(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload');
++    }
++    final data = ByteData.sublistView(_bytes, _offset, _offset + len);
++    _offset += len;
++    return data;
++  }
++
++  int readU8() => _readData(1).getUint8(0);
++  int readI8() => _readData(1).getInt8(0);
++  int readU16() => _readData(2).getUint16(0, Endian.big);
++  int readI16() => _readData(2).getInt16(0, Endian.big);
++  int readU32() => _readData(4).getUint32(0, Endian.big);
++  int readI32() => _readData(4).getInt32(0, Endian.big);
++  int readU64() => _readData(8).getUint64(0, Endian.big);
++  int readI64() => _readData(8).getInt64(0, Endian.big);
++  double readF32() => _readData(4).getFloat32(0, Endian.big);
++  double readF64() => _readData(8).getFloat64(0, Endian.big);
++  bool readBool() {
++    final value = readI8();
++    if (value == 0) return false;
++    if (value == 1) return true;
++    throw StateError('invalid boolean payload value: $value');
++  }
++  Uint8List readBytes(int len) {
++    if (_offset + len > _bytes.length) {
++      throw StateError('buffer underflow while decoding UniFFI payload bytes');
++    }
++    final out = Uint8List.fromList(_bytes.sublist(_offset, _offset + len));
++    _offset += len;
++    return out;
++  }
++  String readString() {
++    final len = readI32();
++    if (len < 0) {
++      throw StateError('invalid string length in UniFFI payload: $len');
++    }
++    return utf8.decode(readBytes(len));
++  }
++}
++
++void _uniffiWriteLargeEnum(LargeEnum value, _UniFfiBinaryWriter writer) {
++  final int tag = switch (value) {
++    LargeEnum.variant1 => 1,
++    LargeEnum.variant2 => 2,
++    LargeEnum.variant3 => 3,
++    LargeEnum.variant4 => 4,
++    LargeEnum.variant5 => 5,
++    LargeEnum.variant6 => 6,
++    LargeEnum.variant7 => 7,
++    LargeEnum.variant8 => 8,
++    LargeEnum.variant9 => 9,
++    LargeEnum.variant10 => 10,
++    LargeEnum.variant11 => 11,
++    LargeEnum.variant12 => 12,
++    LargeEnum.variant13 => 13,
++    LargeEnum.variant14 => 14,
++    LargeEnum.variant15 => 15,
++    LargeEnum.variant16 => 16,
++    LargeEnum.variant17 => 17,
++    LargeEnum.variant18 => 18,
++    LargeEnum.variant19 => 19,
++    LargeEnum.variant20 => 20,
++    LargeEnum.variant21 => 21,
++    LargeEnum.variant22 => 22,
++    LargeEnum.variant23 => 23,
++    LargeEnum.variant24 => 24,
++    LargeEnum.variant25 => 25,
++    LargeEnum.variant26 => 26,
++    LargeEnum.variant27 => 27,
++    LargeEnum.variant28 => 28,
++    LargeEnum.variant29 => 29,
++    LargeEnum.variant30 => 30,
++    LargeEnum.variant31 => 31,
++    LargeEnum.variant32 => 32,
++    LargeEnum.variant33 => 33,
++    LargeEnum.variant34 => 34,
++    LargeEnum.variant35 => 35,
++    LargeEnum.variant36 => 36,
++    LargeEnum.variant37 => 37,
++    LargeEnum.variant38 => 38,
++    LargeEnum.variant39 => 39,
++    LargeEnum.variant40 => 40,
++    LargeEnum.variant41 => 41,
++    LargeEnum.variant42 => 42,
++    LargeEnum.variant43 => 43,
++    LargeEnum.variant44 => 44,
++    LargeEnum.variant45 => 45,
++    LargeEnum.variant46 => 46,
++    LargeEnum.variant47 => 47,
++    LargeEnum.variant48 => 48,
++    LargeEnum.variant49 => 49,
++    LargeEnum.variant50 => 50,
++  };
++  writer.writeI32(tag);
++}
++
++Uint8List _uniffiEncodeLargeEnum(LargeEnum value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteLargeEnum(value, writer);
++  return writer.toBytes();
++}
++
++LargeEnum _uniffiReadLargeEnum(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return LargeEnum.variant1;
++    case 2:
++      return LargeEnum.variant2;
++    case 3:
++      return LargeEnum.variant3;
++    case 4:
++      return LargeEnum.variant4;
++    case 5:
++      return LargeEnum.variant5;
++    case 6:
++      return LargeEnum.variant6;
++    case 7:
++      return LargeEnum.variant7;
++    case 8:
++      return LargeEnum.variant8;
++    case 9:
++      return LargeEnum.variant9;
++    case 10:
++      return LargeEnum.variant10;
++    case 11:
++      return LargeEnum.variant11;
++    case 12:
++      return LargeEnum.variant12;
++    case 13:
++      return LargeEnum.variant13;
++    case 14:
++      return LargeEnum.variant14;
++    case 15:
++      return LargeEnum.variant15;
++    case 16:
++      return LargeEnum.variant16;
++    case 17:
++      return LargeEnum.variant17;
++    case 18:
++      return LargeEnum.variant18;
++    case 19:
++      return LargeEnum.variant19;
++    case 20:
++      return LargeEnum.variant20;
++    case 21:
++      return LargeEnum.variant21;
++    case 22:
++      return LargeEnum.variant22;
++    case 23:
++      return LargeEnum.variant23;
++    case 24:
++      return LargeEnum.variant24;
++    case 25:
++      return LargeEnum.variant25;
++    case 26:
++      return LargeEnum.variant26;
++    case 27:
++      return LargeEnum.variant27;
++    case 28:
++      return LargeEnum.variant28;
++    case 29:
++      return LargeEnum.variant29;
++    case 30:
++      return LargeEnum.variant30;
++    case 31:
++      return LargeEnum.variant31;
++    case 32:
++      return LargeEnum.variant32;
++    case 33:
++      return LargeEnum.variant33;
++    case 34:
++      return LargeEnum.variant34;
++    case 35:
++      return LargeEnum.variant35;
++    case 36:
++      return LargeEnum.variant36;
++    case 37:
++      return LargeEnum.variant37;
++    case 38:
++      return LargeEnum.variant38;
++    case 39:
++      return LargeEnum.variant39;
++    case 40:
++      return LargeEnum.variant40;
++    case 41:
++      return LargeEnum.variant41;
++    case 42:
++      return LargeEnum.variant42;
++    case 43:
++      return LargeEnum.variant43;
++    case 44:
++      return LargeEnum.variant44;
++    case 45:
++      return LargeEnum.variant45;
++    case 46:
++      return LargeEnum.variant46;
++    case 47:
++      return LargeEnum.variant47;
++    case 48:
++      return LargeEnum.variant48;
++    case 49:
++      return LargeEnum.variant49;
++    case 50:
++      return LargeEnum.variant50;
++    default:
++      throw StateError('Unknown LargeEnum variant tag: $tag');
++  }
++}
++
++LargeEnum _uniffiDecodeLargeEnum(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadLargeEnum(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding LargeEnum');
++  }
++  return value;
++}
++
++void _uniffiWriteLargeError(LargeError value, _UniFfiBinaryWriter writer) {
++  if (value is LargeErrorCase1) {
++    writer.writeI32(1);
++  }
++  else if (value is LargeErrorCase2) {
++    writer.writeI32(2);
++  }
++  else if (value is LargeErrorCase3) {
++    writer.writeI32(3);
++  }
++  else if (value is LargeErrorCase4) {
++    writer.writeI32(4);
++  }
++  else if (value is LargeErrorCase5) {
++    writer.writeI32(5);
++  }
++  else if (value is LargeErrorCase6) {
++    writer.writeI32(6);
++  }
++  else if (value is LargeErrorCase7) {
++    writer.writeI32(7);
++  }
++  else if (value is LargeErrorCase8) {
++    writer.writeI32(8);
++  }
++  else if (value is LargeErrorCase9) {
++    writer.writeI32(9);
++  }
++  else if (value is LargeErrorCase10) {
++    writer.writeI32(10);
++  }
++  else if (value is LargeErrorCase11) {
++    writer.writeI32(11);
++  }
++  else if (value is LargeErrorCase12) {
++    writer.writeI32(12);
++  }
++  else if (value is LargeErrorCase13) {
++    writer.writeI32(13);
++  }
++  else if (value is LargeErrorCase14) {
++    writer.writeI32(14);
++  }
++  else if (value is LargeErrorCase15) {
++    writer.writeI32(15);
++  }
++  else if (value is LargeErrorCase16) {
++    writer.writeI32(16);
++  }
++  else if (value is LargeErrorCase17) {
++    writer.writeI32(17);
++  }
++  else if (value is LargeErrorCase18) {
++    writer.writeI32(18);
++  }
++  else if (value is LargeErrorCase19) {
++    writer.writeI32(19);
++  }
++  else if (value is LargeErrorCase20) {
++    writer.writeI32(20);
++  }
++  else if (value is LargeErrorCase21) {
++    writer.writeI32(21);
++  }
++  else if (value is LargeErrorCase22) {
++    writer.writeI32(22);
++  }
++  else if (value is LargeErrorCase23) {
++    writer.writeI32(23);
++  }
++  else if (value is LargeErrorCase24) {
++    writer.writeI32(24);
++  }
++  else if (value is LargeErrorCase25) {
++    writer.writeI32(25);
++  }
++  else if (value is LargeErrorCase26) {
++    writer.writeI32(26);
++  }
++  else if (value is LargeErrorCase27) {
++    writer.writeI32(27);
++  }
++  else if (value is LargeErrorCase28) {
++    writer.writeI32(28);
++  }
++  else if (value is LargeErrorCase29) {
++    writer.writeI32(29);
++  }
++  else if (value is LargeErrorCase30) {
++    writer.writeI32(30);
++  }
++  else {
++    throw StateError('Unknown LargeError variant instance: $value');
++  }
++}
++
++Uint8List _uniffiEncodeLargeError(LargeError value) {
++  final writer = _UniFfiBinaryWriter();
++  _uniffiWriteLargeError(value, writer);
++  return writer.toBytes();
++}
++
++LargeError _uniffiReadLargeError(_UniFfiBinaryReader reader) {
++  final int tag = reader.readI32();
++  switch (tag) {
++    case 1:
++      return const LargeErrorCase1();
++    case 2:
++      return const LargeErrorCase2();
++    case 3:
++      return const LargeErrorCase3();
++    case 4:
++      return const LargeErrorCase4();
++    case 5:
++      return const LargeErrorCase5();
++    case 6:
++      return const LargeErrorCase6();
++    case 7:
++      return const LargeErrorCase7();
++    case 8:
++      return const LargeErrorCase8();
++    case 9:
++      return const LargeErrorCase9();
++    case 10:
++      return const LargeErrorCase10();
++    case 11:
++      return const LargeErrorCase11();
++    case 12:
++      return const LargeErrorCase12();
++    case 13:
++      return const LargeErrorCase13();
++    case 14:
++      return const LargeErrorCase14();
++    case 15:
++      return const LargeErrorCase15();
++    case 16:
++      return const LargeErrorCase16();
++    case 17:
++      return const LargeErrorCase17();
++    case 18:
++      return const LargeErrorCase18();
++    case 19:
++      return const LargeErrorCase19();
++    case 20:
++      return const LargeErrorCase20();
++    case 21:
++      return const LargeErrorCase21();
++    case 22:
++      return const LargeErrorCase22();
++    case 23:
++      return const LargeErrorCase23();
++    case 24:
++      return const LargeErrorCase24();
++    case 25:
++      return const LargeErrorCase25();
++    case 26:
++      return const LargeErrorCase26();
++    case 27:
++      return const LargeErrorCase27();
++    case 28:
++      return const LargeErrorCase28();
++    case 29:
++      return const LargeErrorCase29();
++    case 30:
++      return const LargeErrorCase30();
++    default:
++      throw StateError('Unknown LargeError variant tag: $tag');
++  }
++}
++
++LargeError _uniffiDecodeLargeError(Uint8List bytes) {
++  final reader = _UniFfiBinaryReader(bytes);
++  final value = _uniffiReadLargeError(reader);
++  if (!reader.isDone) {
++    throw StateError('extra bytes remaining while decoding LargeError');
++  }
++  return value;
++}
++
+ class TypeLimitsDemoFfi {
+   TypeLimitsDemoFfi({ffi.DynamicLibrary? dynamicLibrary, String? libraryPath})
+       : _dynamicLibrary = dynamicLibrary,
+@@ -1634,8 +2092,8 @@ class TypeLimitsDemoFfi {
+ 
+   late final int Function(int v) _takeU64 = _lib.lookupFunction<ffi.Uint64 Function(ffi.Uint64 v), int Function(int v)>('take_u64');
+ 
+-  int takeU64(int v) {
+-      return _takeU64(v);
++  BigInt takeU64(BigInt v) {
++      return _takeU64(_uniffiBigIntToU64(v));
+   }
+ 
+   late final int Function(int v) _takeU8 = _lib.lookupFunction<ffi.Uint8 Function(ffi.Uint8 v), int Function(int v)>('take_u8');
+@@ -1705,7 +2163,7 @@ int takeU32(int v) {
+   return _bindings().takeU32(v);
+ }
+ 
+-int takeU64(int v) {
++BigInt takeU64(BigInt v) {
+   return _bindings().takeU64(v);
+ }
+ 

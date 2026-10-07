@@ -1,0 +1,98 @@
+{
+  "date": "2026-10-07",
+  "candidate": {
+    "root": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "head": "737775737a54c31c1d50b11c677ca9ae900b45b2",
+    "headMessage": "Document native Actors trust root option",
+    "gitStatus": [
+      " M Cargo.lock",
+      " M rust/crates/actors-uniffi/Cargo.toml",
+      " M rust/crates/actors-uniffi/src/lib.rs",
+      "?? research/",
+      "?? rust/crates/actors-uniffi/generator-patches/",
+      "?? rust/crates/actors-uniffi/uniffi.nominal.toml",
+      "?? tmp/",
+      "?? typescript/packages/actors/research/"
+    ],
+    "sourceFiles": {
+      "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+      "rust/crates/actors-uniffi/src/lib.rs": "C1AD6B61B170882BC0AB05770D98918DAFB56945D465F709084149A55C14920A",
+      "rust/crates/actors/src/domain.rs": "80B5268F5FD56703B05B51F586C827051FD04B0A48D34B4C75B07D7CD6613A10",
+      "Cargo.lock": "667F0C498F90DD32613CD4D9F41689E980AD0B0F783AC077DD0A5B91983F08E7",
+      "rust/crates/actors-uniffi/uniffi.nominal.toml": "42B2C246C83F0EEE9D29754B4094A6603B508B9A277B9AF2A233B487D82D391C"
+    },
+    "ffiBufferPatch": "producer-actors-uniffi-ffi-buffer-current-main-20261007.patch",
+    "ffiBufferPatchSha256": "8425403FC0A35BCFBFE417DF3768E677063F49D6C4B1848F1BB95AEC09366B3E"
+  },
+  "generator": {
+    "root": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source",
+    "baseRevision": "c2a2ee53cc2dc1ef2d6e8e8f41168d71e3098c6f",
+    "binary": "Q:\\sdk\\work\\uniffi-bindgen-dart-013-source\\target-local2\\debug\\uniffi-bindgen-dart.exe",
+    "binaryBytes": 7885312,
+    "binarySha256": "4B1A584DE1F0593961879743C9C014739BF7290BB417F8F4395A51CB98AFF0A7",
+    "sourcePatch": "generator-source-nominal-validator-current-main-20261007.patch",
+    "sourcePatchSha256": "9DF8FF21298EA1067441C01712A6418046A66134B6A4162C83324CB8DD2E833E",
+    "sourceAndGoldensPatch": "generator-source-and-goldens-nominal-validator-current-main-20261007.patch",
+    "sourceAndGoldensPatchSha256": "43265A4AD1175AFD33608BB467C8D1AE06C51E378DADD3F5CD345F1D0FAA1A42",
+    "tests": "225 unit; 21 golden"
+  },
+  "package": {
+    "root": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-final-20261007",
+    "files": {
+      "probe-cancel.dart": "40B9AFE384B2FBF97605FD6C660ED1347E4650CB63EFC95C9D2FA6AA190CEB13",
+      "pubspec.yaml": "C3B50D55A4CE988ABD5E93C49904766FACA6CC1C9F7128835DE8D311CB1426F4",
+      "dart-domain.toml": "B6A853F94E35225B9F740EA8A7450A74E98A3C5F74BEF7F243D7975E68A28B46",
+      "pubspec.lock": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+      "dart-facade.toml": "DF32CB3E5CD8E9DFB68A8333D674F1E0C2F2DB676CC1FE74DBC95D0137364E81",
+      "generated/acyclic_actors.dart": "00518B93C5E850B1F279318A70FB7D704B5A85917B50197AB2F554993C56F52F",
+      "generated/acyclic_actors_uniffi.dart": "D284FAAA8D23C039DDC3E34B68EFA205A510B8F9B5FA6087F0D186E9C6E6F443",
+      "probe-all8.dart": "04694C98215970F783CBDA9A3F057CFD91E75D28781541662AB59A1752B617B1",
+      "probe-static-negative.dart": "EB7416CE7E6C3EB5D237A00C434FD0096C84E0F77A516DBF12E8AAD69084BC93",
+      "uniffi.nominal.toml": "819F591E389606E93B93FB72C707DC94F446BE370B5DA38B9556A30C27142535"
+    },
+    "archive": "Q:\\sdk\\work\\actors-uniffi-dart-production-c8-final-20261007.zip",
+    "archiveBytes": 33614986,
+    "archiveSha256": "D38327EDBAF2135C4FF70B568FCC120997A1A331616EC3AA07F120DD3E1C16CD"
+  },
+  "native": {
+    "native/windows-x64/acyclic_actors_uniffi.dll": {
+      "bytes": 8722432,
+      "sha256": "9BF600BC29521DB617D29F8FAE7105012EC39D84F1D6C50E6AAFA8845FF3C61B"
+    },
+    "native/macos-arm64/libacyclic_actors_uniffi.dylib": {
+      "bytes": 16390272,
+      "sha256": "539914AE33A0CFBAC11258AF0BAD16D5EE0EA1AF204C94FC4B6CF4011D25E5AD"
+    },
+    "native/linux-x64/libacyclic_actors_uniffi.so": {
+      "bytes": 105062368,
+      "sha256": "216F4FCB0EADC93E537EA75F96E5C16E4C37C9A1B72A0BAE24E737D7D42F00F6"
+    }
+  },
+  "runtime": {
+    "windows": "all8 PASS; cancellation PASS; analyzer PASS",
+    "wslLinux": "all8 PASS; cancellation PASS; analyzer PASS",
+    "ivarMacOS": "all8 PASS; cancellation PASS; analyzer PASS"
+  },
+  "semantic": {
+    "operations": [
+      "create",
+      "update",
+      "inspect",
+      "add",
+      "remove",
+      "resume",
+      "checkpoint",
+      "invoke"
+    ],
+    "checks": [
+      "caller-supplied request/result shapes",
+      "typed errors",
+      "UInt64 BigInt 0, 2^63, 2^64-1",
+      "missing/null presence",
+      "readonly generated collections",
+      "nominal ActorId/CodeSha256/PositiveU64 wrappers",
+      "in-flight cancellation with server active=0"
+    ],
+    "currentHead": "Current producer exposes SubscriptionStart.CurrentHead(bool); Rust projection accepts true only. No Dart-only false predicate is added; false remains rejected by Rust projection."
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "schema": "acyclic.kani-domain-c8-marker-receipt/v1",
+  "artifact": "kani-domain-c8-marker-current-20261007",
+  "status": "pass_current_production_marker_and_oneof",
+  "source_checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+  "source_revision": "84a508449ea247297a0170db67377dd65a1baa41",
+  "source_dirty": "Actors domain and Kani proof files clean at capture; shared worktree has unrelated peer changes including actors-uniffi metadata",
+  "source_inventory": "audit/c8-source-inventory.json",
+  "production_module": "contract::generated::domain",
+  "production_harness_module": "contract::generated::domain::kani_proofs",
+  "module_path_fix": "Kani-only #[path = \"domain/kani_proofs.rs\"]",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "offline": true,
+    "jobs": 1,
+    "default_unwind": 2,
+    "target": "/tmp/kani-domain-c8-minimal-list"
+  },
+  "runs": [
+    {
+      "harness": "contract::generated::domain::kani_proofs::subscription_start_ingress_accepts_only_true_current_head_payload",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 100 failed",
+      "verification_time": "0.28435937s",
+      "raw_log": "audit/subscription-start-c8-ingress-kani068.raw.txt",
+      "raw_log_sha256": "2E9EE7BED469F066CEB7BBBEADD4525EDE03367A5300E72A84D3F1B34F12DD49",
+      "theorem": "For every symbolic wire bool, actual production TryFrom accepts CurrentHead(true) and rejects CurrentHead(false); successful semantic value has no cursor and current-head presence."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::current_head_marker_is_true_only_and_lowers_to_true_wire_payload",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 136 failed",
+      "verification_time": "0.11473847s",
+      "raw_log": "audit/current-head-marker-kani068.raw.txt",
+      "raw_log_sha256": "E17327BCE95318DC9C5DE2398FF9856105642BDC8F344E5A4C8B85DA9D0A5E66",
+      "theorem": "For every symbolic bool, actual CurrentHeadMarker::try_from accepts exactly true; marker lowers to true; production no-argument constructor lowers to true wire oneof."
+    },
+    {
+      "harness": "contract::generated::domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+      "terminal_exit": 0,
+      "cbmc_summary": "0 of 141 failed",
+      "verification_time": "0.610279s",
+      "raw_log": "audit/subscription-start-c8-oneof-kani068.raw.txt",
+      "raw_log_sha256": "7F9A93152B21C170B94767D7A30D0E53107586DB90A1D9C1636FBDF795F52370",
+      "theorem": "For every symbolic cursor u64 and the true current-head oneof, actual production conversion and From round-trip preserve oneof identity and cursor value."
+    }
+  ],
+  "exclusions": [
+    "arbitrary strings",
+    "transport behavior",
+    "whole-message clone",
+    "long expected-revision proof",
+    "foreign binding behavior"
+  ],
+  "original_actors_solver": {
+    "pty": 17660,
+    "cbmc_pid": 1031718,
+    "action": "untouched",
+    "observation": "separate long solver remains active; no restart"
+  },
+  "scope_audit": "audit/c8-marker-proof-scope.md",
+  "codegen_probe": {
+    "harness": "contract::generated::domain::kani_proofs::update_request_try_from_preserves_expected_revision",
+    "mode": "compile_only",
+    "terminal_exit": 0,
+    "cbmc_summary": null,
+    "source_revision_at_launch": "84a508449ea247297a0170db67377dd65a1baa41",
+    "source_revision_at_capture": "737775737a54c31c1d50b11c677ca9ae900b45b2",
+    "target": "/tmp/kani-domain-c8-minimal-codegen-expected",
+    "raw_log": "audit/update-request-expected-revision-c8-only-codegen.raw.txt",
+    "raw_log_sha256": "09FF6F99FD59190BC7B3B34A9C048403C7903AB3886492837EA77097CE4A1EDB",
+    "claim": "Compile and source binding only; no CBMC theorem result",
+    "audit": "audit/expected-revision-optimization.md"
+  }
+}

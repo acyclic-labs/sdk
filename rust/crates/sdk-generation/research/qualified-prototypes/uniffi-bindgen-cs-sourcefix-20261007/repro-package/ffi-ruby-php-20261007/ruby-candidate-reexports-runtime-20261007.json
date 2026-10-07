@@ -1,0 +1,70 @@
+{
+  "schema": "uniffi-ruby-maintained-runtime-qualification.v2",
+  "generatedAt": "2026-10-07",
+  "scope": "current source candidate Ruby qualification after Rust-owned metadata re-export fix; historical macOS receipt preserved",
+  "source": {
+    "checkout": "Q:/sdk/work/sdkgen-main-port-current",
+    "revisionAtBuild": "0093da12d7d4205d56db1c25fb75d50b59de11d6",
+    "cargoPackage": "acyclic-actors-uniffi",
+    "cargoVersion": "0.2.0",
+    "manifestSha256": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+    "generator": "UniFFI 0.31.0 maintained source with ruby-generator-source.patch",
+    "sourcePatch": "rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-ruby-async.patch",
+    "sourcePatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "generatorBinarySha256": "E46814AEF975CE51750E42F41C0DD32C48DC8B94455FEE7FD654CFF124F9763F",
+    "facadeSourceBeforeSha256": "823F66AAE85BDBFF699D8D33067EA2A6BF0487A0652D2C28BEC92B19E38EFF34",
+    "facadeSourceAfterSha256": "FF1B1F97DB44CDB2228209C6F41C4B9FC212EBBE3D935293BA26E4B155D175A",
+    "metadataModuleSha256": {
+      "ruby_generation_metadata.rs": "1022E2393BF72EEF38ADE1E97C862551DD9E7EB8CCB019383770A7ECC3552610",
+      "cancellation_metadata.rs": "D13CE8677FC302E5414B3E6B611770B7AAC3EA931CBCBE01D84B58D0BA778389",
+      "kotlin_generation_metadata.rs": "3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9"
+    },
+    "semanticFix": "Rust-owned facade wrappers and metadata modules materialize ActorId, all domain roots, nominal records/enums, presence, readonly and request constructors through maintained UniFFI metadata; no handwritten Ruby ABI mirror"
+  },
+  "artifacts": {
+    "windowsNative": {
+      "path": "C:/Users/varun/AppData/Local/Temp/sdkgen-main-port-current-ruby-reexports-20261007/release/acyclic_actors_uniffi.dll",
+      "sha256": "2184FE9F94B574C536D6831EEA2CB819E9A98C9C46B4D6B510108A1615812997",
+      "bytes": 4718080
+    },
+    "windowsGeneratedRuby": {
+      "path": "C:/Users/varun/AppData/Local/Temp/ruby-candidate-reexports-20261007/acyclic_actors_uniffi.rb",
+      "sha256": "898FEF4011BE38C85EF3815822477AEFBB0DDA77BA5B558AA51EE63A8E1E901E",
+      "syntax": "PASS"
+    },
+    "wslNative": {
+      "path": "/tmp/ruby-candidate-wsl-reexports-20261007/release/libacyclic_actors_uniffi.so",
+      "sha256": "B7D323516B4306BEEA0BDBDBE8DE402614B61C72C31C442CC6094A5D8E4E109F",
+      "bytes": 6656440
+    },
+    "wslGeneratedRuby": {
+      "path": "C:/Users/varun/AppData/Local/Temp/ruby-candidate-wsl-reexports-20261007/acyclic_actors_uniffi.rb",
+      "sha256": "D2CC18C4D97CE954AC706808FB1BDA232A7DAEB8C4FA2B7672FA303A19040F6C",
+      "syntax": "PASS"
+    }
+  },
+  "windows": {
+    "runtime": {"ruby": "4.0.7", "ffi": "1.17.4-x64-mingw-ucrt", "gemHome": "C:/Users/varun/AppData/Local/Temp/ruby-ffi-qualification-20261007-go-generator"},
+    "fixture": "task-owned local Node TLS/HTTP2 conformance fixture",
+    "allEight": "PASS: connect/create/update/inspect/inspect-request/add/remove/resume/checkpoint",
+    "fullU64": "PASS: subscription cursor 9007199254740993",
+    "presenceReadonlyNominal": "PASS: ActorId/ActorLimits/CodeSha256/PositiveU64/Binding and record/request roots generated",
+    "typedErrors": "PASS: ActorId integer TypeError; u64 2**64 RangeError; wrong bearer BindingError::Service grpc_code=16",
+    "pendingCancellation": "PASS: pending InspectActor thread cancellation and cleanup marker"
+  },
+  "wsl": {
+    "runtime": {"ruby": "3.0.2p107", "rubygems": "3.3.5", "ffi": "1.17.4-x86_64-linux-gnu task-local unpack", "gemHome": "/tmp/ruby-ffi-qualification-20261007-go-generator"},
+    "fixture": "task-owned WSL-local Node TLS/HTTP2 fixture; server bound 0.0.0.0 and client used 127.0.0.1; no Windows localhost dependency",
+    "fixtureCertificateSha256": "de00cb52d56b62ac38e105862453e47126cd4f3b0883ae8fb3eecb5a5e42881b",
+    "fixtureCertificateSAN": "DNS:localhost, IP:127.0.0.1",
+    "allEight": "PASS: connect/create/update/inspect/inspect-request/add/remove/resume/checkpoint",
+    "fullU64": "PASS: subscription cursor 9007199254740993",
+    "presenceReadonlyNominal": "PASS: generated ActorId and domain/request roots loaded and exercised",
+    "typedErrors": "PASS: same installed generated package probes",
+    "pendingCancellation": "PASS: generated CancellationHandle.cancel() while InspectActor pending; BindingError::Cancelled returned; cleanup marker observed",
+    "runtimeQualification": "PASS"
+  },
+  "historicalMacReceipt": "ruby-async-sourcefix-20261007-receipt.json",
+  "terminalEvidence": "ruby-candidate-reexports-runtime-terminal-20261007.txt",
+  "publish": false
+}

@@ -309,3 +309,33 @@ Remote Actors review WIP b75c841225de17676c2b241e1d83b563f7206a67 is verified.
 All language qualification must follow the actual main-based producer; historical
 cohorts remain evidence only. Actors alone does not close other service-family
 streaming, recovery, embedded, documentation, or language requirements.
+
+## Filesystem frozen source and remote preservation — 2026-10-07
+
+Verified Filesystem source HEAD 7cef9472f2fb69aa5c2cdf9cf394774025ee7985,
+tree c63ad0c27e8fa430326f0b47bc797de3235175ad, signed and pushed on
+codex/filesystem-main-port-c8. Remote main remains c8bef0be476cbfd5d4fa30d1f8d017fa5336d964.
+Fresh package SHA-256 143AF0B1BE845410E2047A8FF11C457FCCE3EBA592CBF1F08B7B6D7753ED1C1D;
+Windows native binding SHA-256 9A2AFD21C5A6CE593731A4B5A98DEB31E4E7796B219A3CC3980BF1E1AD774498.
+Independent installed 36-case WASM/N-API matrix passed with unchanged hashes and
+exact generated counter keys. Receipt remains diagnostic because untracked
+research makes its source state dirty; clean-source admission and Linux/macOS
+qualification remain outstanding. Manual ABI enum projections remain an authority
+gap; canonical optional OSS derives are being compared with extending existing
+metadata generation in an isolated prototype. The authored TypeScript source
+change is 118 added /147 removed lines (29 net removed), not a bulk deletion.
+
+Draft Filesystem PR creation attempted via gh GraphQL and REST. Both APIs returned
+server failures; latest REST response HTTP500 empty body, request
+D189:2B9331:5B701A:5FE1F3:6AC66238. Subsequent PR list shows no PR for the branch.
+PR title/body are preserved at Q:/sdk/work/filesystem-c8-pr-body.md. No new merge.
+
+Verified remote unqualified WIP checkpoints:
+- Docs current-main port: b488143ad07a3d1e00dbcb439dfd536b449d8e95 on codex/docs-c8-source-wip-checkpoint-20261007.
+- Stream actual compiler invocation capture: d766aded1fc3195b14eb599153c34328b2c0556f on codex/stream-build-inputs-wip-checkpoint-20261007.
+
+Actors source advanced to75404e290d0da674d91c43e643fccaa6ba536bff and now explicitly
+exports a NAPI transport getter. Installed84a508 artifact still lacked that getter;
+rebuilding and requalification are required rather than transferring the old receipt.
+Formal expected-revision solver remains verified live; compile-only c8 audit is
+not a completed theorem. All16 useful subagent slots are assigned. Goal remains active.
