@@ -51,3 +51,71 @@ The same current c8 source-bound Kani module also passed the two smallest nomina
 - `actor_limits_constructor_accepts_exactly_positive_values`: arbitrary handler, memory, and checkpoint `u64` values; actual production `ActorLimits::new` accepts exactly the all-positive tuple and accessors preserve all three values (`0 of 127 failed`).
 
 Existing source-bound harnesses cover the generated oneof/presence and roundtrip obligations for subscription starts, failed cursors, Actor checkpoint/configuration fields, optional Create/Update response actors, and enum unknown-state rejection. No additional smallest direct-production nominal gap was identified in this review.
+
+## Direct production roundtrip/presence audit
+
+This review checked the maintained source declarations in
+`Q:\sdk\work\sdkgen-actors-c8-minimal\rust\crates\actors\src\domain.rs`
+against the harness calls in `domain/kani_proofs.rs`; the harnesses invoke the
+generated `TryFrom<wire::...>` and `Into<wire::...>` implementations produced
+for those declarations. The current checkout was observed at HEAD
+`1ac5b398644d9d7056a95cd579c6a5315dd98db8`, with `domain.rs` SHA-256
+`361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257` and
+`domain/kani_proofs.rs` SHA-256
+`FC6C30F64E9056E8D1C80A5CB15AF90824B00A301F68D99DACF1ACE388F4CD57`.
+
+The existing direct calls establish the following narrow properties:
+
+- `subscription_start_valid_wire_round_trip_preserves_oneof_identity` calls
+  production ingress and egress for arbitrary `u64` cursor payloads and the
+  valid `CurrentHead(true)` branch, preserving the selected oneof case and
+  cursor value. The adjacent ingress harness proves `None` and
+  `CurrentHead(false)` reject, while `current_head_marker_is_true_only...`
+  checks the maintained marker conversion.
+- `subscription_observation_try_from_preserves_u64_and_failed_cursor_presence`
+  calls production ingress/egress with arbitrary delivered, completed, and
+  recoverable cursors plus symbolic `Option<u64>` failed-cursor presence. It
+  asserts every field and wire roundtrip, including `Some(0)` versus `None`.
+- `actor_observation_try_from_preserves_u64_presence_and_fixed_bytes` calls
+  production ingress/egress with arbitrary checkpoint timestamp presence,
+  checkpoint epoch, configuration revision, and a symbolic 32-byte digest.
+  It distinguishes the production all-zero digest rejection from successful
+  fixed-byte roundtrip.
+- `actor_response_try_from_preserves_optional_actor_presence` calls production
+  ingress/egress for absent and present actors on both `CreateActorResponse`
+  and `UpdateActorResponse`; the present actor fixture includes `u64::MAX`
+  checkpoint/configuration values and a valid fixed digest.
+- `enum_numeric_mappings_are_inverse_and_lossless`, together with the direct
+  unknown-state ingress harnesses, calls the production enum conversions and
+  preserves unknown numeric values as the documented `DomainError` variants.
+
+Accordingly, no smaller missing pure invariant was found in the requested
+cursor, checkpoint/epoch/configuration, response-actor presence, or oneof
+roundtrip set. The audit does not imply arbitrary string, repeated-message,
+transport, or complete-validator coverage; those remain outside the PASS
+claims recorded above.
+
+## Signed-tree comparison
+
+The signed review checkout `Q:\sdk\work\sdkgen-actors-c8-minimal-signed` is
+at `1269511d636b8ceeea1604a23919a9c1448241fa` (`Actors Rust authority and
+installable facade`). Its production `domain.rs` is byte-identical to the
+current c8 production domain (`361C8584C3C9C5A4E1974B97B9341226D4A2C816A1E1684D18A3BE5D8BFDB257`).
+The signed proof module is
+`0D4C0F6F7D95111E6727D6E7AE885EF755B42887C3439B9AF57EE9211154F576`.
+
+Every signed rule-local production harness is present in the current dirty
+module: canonical update admission acceptance, duplicate-binding rejection,
+unknown subscription-state rejection, unknown actor-state rejection, and the
+nominal PositiveU64/ActorLimits obligations. The current module additionally
+has the empty-binding fixture and isolated missing-limits, empty-actor-id,
+zero-digest, empty-idempotency, and zero-timeout rejection harnesses. No
+signed rule-local harness is missing, so no additional foundation patch is
+justified by this comparison.
+
+The signed combined harness
+`update_request_expected_revision_only_after_production_admission` was
+deliberately decomposed in the current module into the production conversion
+theorem and a separate canonical admission acceptance probe. This preserves
+the signed semantic coverage while keeping the expected-revision theorem's
+assumptions explicit; it is not a missing rule-local admission theorem.

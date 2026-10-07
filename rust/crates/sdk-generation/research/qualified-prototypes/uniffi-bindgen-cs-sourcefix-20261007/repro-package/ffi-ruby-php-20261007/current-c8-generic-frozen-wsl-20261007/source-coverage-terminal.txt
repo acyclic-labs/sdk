@@ -1,0 +1,5 @@
+records_and_ffi_source_coverage=PASS
+nominal_types=ActorId,CodeSha256,PositiveU64,CurrentHeadMarker
+operations=8
+async_scheduler=uniffi_rust_call_async
+immutable_value_objects=freeze

@@ -1,0 +1,14 @@
+[bindings.ruby]
+cdylib_path = "/tmp/ruby-c8-wsl-native-target-20261007/release/libacyclic_actors_uniffi.so"
+[bindings.ruby.custom_types.ActorId]
+nominal = true
+validator = "validate_actor_id"
+[bindings.ruby.custom_types.CodeSha256]
+nominal = true
+validator = "validate_code_sha256"
+[bindings.ruby.custom_types.PositiveU64]
+nominal = true
+validator = "validate_positive_u64"
+[bindings.ruby.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "validate_current_head_marker"

@@ -1,0 +1,70 @@
+{
+  "schema": "acyclic.ruby.current-c8-generic-frozen.v1",
+  "status": "QUALIFIED_WSL_LINUX_X86_64_CURRENT_SOURCE",
+  "date": "2026-10-07",
+  "scope": "WSL2 Ubuntu Jammy x86_64; current producer revision 737775737a54c31c1d50b11c677ca9ae900b45b2; Mac historical receipt preserved separately",
+  "producer": {
+    "checkout": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "revision": "737775737a54c31c1d50b11c677ca9ae900b45b2",
+    "sourceFiles": {
+      "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+      "rust/crates/actors/src/domain.rs": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+      "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+      "Cargo.lock.sourceAuthority": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+      ".cargo/config.toml.sourceAuthority": "B0BAFCC74B1675391E1C26780708F70BFE0F64555A6949BC8D444A6C182AAE41",
+      "Cargo.lock.taskBuildPostPatch": "667F0C498F90DD32613CD4D9F41689E980AD0B0F783AC077DD0A5B91983F08E7",
+      ".cargo/config.toml.taskBuildPostPatch": "6EF1F85D98620DAA507A661FB1B3008843C143158D0079195A693ED4FDEA7BF0"
+    },
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "cargo": "cargo 1.98.1 (797e8a9bc 2026-08-05)",
+    "ruby": "ruby 3.0.2p107 x86_64-linux-gnu"
+  },
+  "native": { "path": "libacyclic_actors_uniffi.so", "sha256": "E2FD67B3CADBC4EA18044F20ABF21887B8A237A23C7F11E1B1B96F97C9E3D137", "bytes": 6607792 },
+  "generator": {
+    "version": "uniffi_bindgen 0.31.0",
+    "binary": "actors-uniffi-bindgen",
+    "sha256": "7EF6F8829A97F0616949454340D220A23FE5A263BE39235D21C6C2E8DA1DCA97",
+    "asyncPatch": "uniffi-0.31.0-ruby-async.patch",
+    "asyncPatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "genericFrozenPatch": "uniffi-0.31.0-ruby-generic-external-frozen.patch",
+    "genericFrozenPatchSha256": "3A1E96D5C94BB8C635D5320BFFD68B064E570274FE205A52C01394D50C006DBC",
+    "config": "ruby-config.toml",
+    "configSha256": "E12EB4E70F1CF73A16BEDCB31FCA46083DD397C0FDF93BA5D0DE19C606B3973E"
+  },
+  "generated": {
+    "records": "acyclic_actors.rb",
+    "recordsSha256": "6E8597AD742FA22A4DEAA75AF0C79BE81340540DE23445550C1239A497F08B9B",
+    "ffi": "acyclic_actors_uniffi.rb",
+    "ffiSha256": "B66863DE966D861C8ADEF7DEB003E04672EEBB70A37AF91FEFAB1884B36D549C",
+    "syntax": "PASS",
+    "sourceCoverage": "source-coverage-terminal.txt",
+    "types": "ActorId,CodeSha256,PositiveU64,CurrentHeadMarker",
+    "operations": 8,
+    "asyncScheduler": "uniffi_rust_call_async"
+  },
+  "package": {
+    "gem": "gem/acyclic_actors_uniffi_c8_frozen-0.2.0.c8frozen20261007.gem",
+    "version": "0.2.0.c8frozen20261007",
+    "sha256": "D02C9A78656C32F2558A6338C6D060BAB9329B3637B2953255AFDEE1C642EE93",
+    "installed": "PASS",
+    "consumer": "installed-all8.rb",
+    "consumerTerminal": "installed-all8-terminal.txt"
+  },
+  "runtime": {
+    "fixture": "/mnt/q/sdk/work/go-remote-primitive-current/fixture-options-linux.json",
+    "all8": "PASS",
+    "all8Terminal": "all8-terminal.txt",
+    "pendingCancellation": "PASS",
+    "pendingCancelTerminal": "pending-cancel-terminal.txt",
+    "fixtureState": { "started": 8, "aborted": 8, "active": 0 },
+    "typedCancellation": "AcyclicActorsUniffi::BindingError::Cancelled",
+    "nominalNegative": "PASS",
+    "negativeTerminal": "negative-terminal.txt",
+    "fullU64": ["9223372036854775808", "18446744073709551615", "9007199254740993"],
+    "wireRoundTrip": "u64-frozen-terminal.txt",
+    "frozenReadonly": "record_frozen, nominal_frozen, record_readonly, enum_private_factory PASS",
+    "windows": "not claimed in this receipt",
+    "macOS": "historical current-c8-generic-mac-20261007 receipt preserved; not retagged"
+  }
+}
+

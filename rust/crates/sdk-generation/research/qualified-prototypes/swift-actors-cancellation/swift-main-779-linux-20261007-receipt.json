@@ -43,6 +43,7 @@
   },
   "notes": [
     "Current 779 source and maintained generator were inspected and generated artifacts produced. Official Swift 6.4.0 Ubuntu 22.04 archive acquisition was attempted task-locally; repeated official CDN TLS resets/timeouts prevented complete archive and therefore no Swift compiler/runtime result is claimed. Static nominal/immutable/cancellation adapter checks passed; historical 84a receipt remains unchanged.",
-    "The shared producer workspace advanced after the pinned build to e38646cf52; this receipt intentionally records the exact 7799780578 source revision used for the generated library and does not relabel or silently update it."
+    "The shared producer workspace advanced after the pinned build to e38646cf52; this receipt intentionally records the exact 7799780578 source revision used for the generated library and does not relabel or silently update it.",
+    "A task-owned ivar fixture was staged with generated Actors JS and local npm dependencies; Rust 1.98 certificate build was launched, but ivar became unreachable during startup and no Mac Swift runtime claim is recorded."
   ]
 }

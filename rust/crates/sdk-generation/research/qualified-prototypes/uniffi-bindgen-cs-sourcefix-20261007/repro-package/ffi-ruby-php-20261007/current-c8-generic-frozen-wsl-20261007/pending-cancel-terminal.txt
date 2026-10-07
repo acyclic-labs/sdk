@@ -1,0 +1,6 @@
+pending_started=8
+pending_aborted=8
+pending_active=0
+cancel_handle_is_cancelled=true
+cancel_error=AcyclicActorsUniffi::BindingError::Cancelled:AcyclicActorsUniffi::BindingError::Cancelled()
+RUBY_CURRENT_C8_GENERIC_PENDING_CANCEL_PASS

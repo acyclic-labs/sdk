@@ -1,0 +1,10 @@
+positive_u64_9223372036854775808=PASS
+positive_u64_18446744073709551615=PASS
+actor_limits_wire_u64=PASS
+cursor_wire_u64_9223372036854775808=PASS
+cursor_wire_u64_18446744073709551615=PASS
+record_frozen=PASS
+nominal_frozen=PASS
+record_readonly=PASS
+enum_private_factory=PASS
+RUBY_CURRENT_C8_GENERIC_FROZEN_U64_PASS

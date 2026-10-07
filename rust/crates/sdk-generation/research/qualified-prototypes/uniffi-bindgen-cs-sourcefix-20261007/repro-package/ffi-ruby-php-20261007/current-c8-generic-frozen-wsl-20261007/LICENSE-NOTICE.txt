@@ -1,0 +1,3 @@
+Maintained generator provenance and license
+
+The generator is Mozilla UniFFI bindgen 0.31.0, sourced from the locked Cargo dependency and used through the task-owned source patch. UniFFI is distributed under the Mozilla Public License 2.0; the source headers and upstream license remain authoritative. This artifact carries minimal async and generic Ruby source diffs only; it does not vendor or redistribute a full UniFFI source tree. The Rust producer is the source-owned Actors component at the exact revision recorded in receipt.json.
