@@ -325,7 +325,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    node scripts/clippy-feature-sets.mjs
+    node scripts/clippy-feature-sets.mjs 2
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
       https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
