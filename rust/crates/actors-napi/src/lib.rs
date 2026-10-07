@@ -62,6 +62,7 @@ pub struct NativeActorsConnectResult {
     pub error: Option<NativeActorsErrorMetadata>,
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "N-API error conversion receives owned metadata from fallible boundary adapters")]
 fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
     let reason = serde_json::to_string(&metadata)
         .unwrap_or_else(|_| String::from(r#"{"code":"internal","message":"Actors error"}"#));
@@ -97,6 +98,7 @@ pub fn actor_id(value: String) -> Result<String> {
 
 /// Validate and return a nominal SHA-256 digest.
 #[napi(js_name = "CodeSha256")]
+#[allow(clippy::needless_pass_by_value, reason = "N-API receives typed byte buffers by value")]
 pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
     domain::CodeSha256::new(value.as_ref().to_vec())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
@@ -105,6 +107,7 @@ pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
 
 /// Validate and return a nominal positive integer.
 #[napi(js_name = "PositiveU64")]
+#[allow(clippy::needless_pass_by_value, reason = "N-API receives BigInt handles by value")]
 pub fn positive_u64(value: BigInt) -> Result<BigInt> {
     let (sign, raw, lossless) = value.get_u64();
     if sign || !lossless {
@@ -123,7 +126,6 @@ fn grpc_name(code: i32) -> &'static str {
     match code {
         0 => "ok",
         1 => "cancelled",
-        2 => "unknown",
         3 => "invalid_argument",
         4 => "deadline_exceeded",
         5 => "not_found",
@@ -216,6 +218,7 @@ where
     })
 }
 
+#[allow(clippy::result_large_err, reason = "The structured N-API error is intentionally lossless at the ABI boundary")]
 fn encode<T: Message>(
     value: &T,
     operation: &str,
@@ -269,6 +272,7 @@ impl NativeActorsCancellation {
     }
 }
 
+#[allow(clippy::result_large_err, reason = "The structured N-API error is intentionally lossless at the ABI boundary")]
 async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>>>(
     future: F,
     cancellation: Option<CancellationState>,
@@ -382,7 +386,7 @@ impl NativeActorsClient {
 #[napi]
 impl NativeActorsClient {
     #[napi(js_name = "createActorResult")]
-    /// Execute CreateActor and return encoded bytes or structured error.
+    /// Execute `CreateActor` and return encoded bytes or structured error.
     pub async fn create_actor_result(
         &self,
         request: Buffer,
@@ -412,7 +416,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "updateActorResult")]
-    /// Execute UpdateActor and return encoded bytes or structured error.
+    /// Execute `UpdateActor` and return encoded bytes or structured error.
     pub async fn update_actor_result(
         &self,
         request: Buffer,
@@ -442,7 +446,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "inspectActorResult")]
-    /// Execute InspectActor and return encoded bytes or structured error.
+    /// Execute `InspectActor` and return encoded bytes or structured error.
     pub async fn inspect_actor_result(
         &self,
         request: Buffer,
@@ -472,7 +476,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "addSubscriptionResult")]
-    /// Execute AddSubscription and return encoded bytes or structured error.
+    /// Execute `AddSubscription` and return encoded bytes or structured error.
     pub async fn add_subscription_result(
         &self,
         request: Buffer,
@@ -505,7 +509,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "removeSubscriptionResult")]
-    /// Execute RemoveSubscription and return encoded bytes or structured error.
+    /// Execute `RemoveSubscription` and return encoded bytes or structured error.
     pub async fn remove_subscription_result(
         &self,
         request: Buffer,
@@ -538,7 +542,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "resumeSubscriptionResult")]
-    /// Execute ResumeSubscription and return encoded bytes or structured error.
+    /// Execute `ResumeSubscription` and return encoded bytes or structured error.
     pub async fn resume_subscription_result(
         &self,
         request: Buffer,
@@ -571,7 +575,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "checkpointActorResult")]
-    /// Execute CheckpointActor and return encoded bytes or structured error.
+    /// Execute `CheckpointActor` and return encoded bytes or structured error.
     pub async fn checkpoint_actor_result(
         &self,
         request: Buffer,
@@ -604,7 +608,7 @@ impl NativeActorsClient {
         })
     }
     #[napi(js_name = "invokeActorResult")]
-    /// Execute InvokeActor and return encoded bytes or structured error.
+    /// Execute `InvokeActor` and return encoded bytes or structured error.
     pub async fn invoke_actor_result(
         &self,
         request: Buffer,
