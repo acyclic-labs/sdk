@@ -48,7 +48,7 @@ try {
   }
   assert.equal(methods, 15);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
-  await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "service" || error.code === "unauthenticated");
+  await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
   const cancellation = new AbortController();
   const pending = actors.inspectActor({ actorId: "cancel" }, { signal: cancellation.signal });
   setTimeout(() => cancellation.abort(), 0);
