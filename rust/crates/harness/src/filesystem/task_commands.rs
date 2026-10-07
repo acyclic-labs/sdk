@@ -6,7 +6,7 @@ use crate::{
     context::ContextPipeline,
     conversation::FileRef,
     durable_tool::DurableToolRunner,
-    executor::{ExecutionJournal, TurnInput},
+    executor::{ExecutionJournal, StockTurnProgress, TurnInput},
     model::{Model, ModelContent, ModelProvider},
     projection::SelectedModelContext,
     runtime::{DurableTaskHost, TaskContext, ToolContext},
@@ -189,7 +189,7 @@ where
                 .await?;
             let progress = match command.kind.as_str() {
                 MODEL_TASK_COMMAND_KIND => {
-                    self.model_command(task, fence.clone(), command.operation_id, payload)
+                    Box::pin(self.model_command(task, fence.clone(), command.operation_id, payload))
                         .await
                 }
                 TOOL_TASK_COMMAND_KIND => {
@@ -308,6 +308,15 @@ where
                 Box::pin(
                     self.runtime
                         .tool_approval_ready(context, &definition, &invocation),
+                )
+                .await
+            }
+            MODEL_TASK_COMMAND_KIND => {
+                let input: ModelTaskCommand = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                Box::pin(
+                    self.runtime
+                        .model_approval_ready(context, command.operation_id, &input),
                 )
                 .await
             }
@@ -434,15 +443,21 @@ where
             Some(maximum) => execution.with_max_output_tokens(maximum)?,
             None => execution,
         };
-        let output = execution
-            .execute(TurnInput {
+        let progress = execution
+            .execute_progress(TurnInput {
                 operation_id: execution.operation_id(),
                 input: input.input,
                 selected_context: input.selected_context,
                 max_steps: input.max_steps,
             })
             .await?;
-        ready(Outcome::Succeeded(output))
+        match progress {
+            StockTurnProgress::Ready(output) => ready(Outcome::Succeeded(output)),
+            StockTurnProgress::Pending(_) => Ok(TaskCommandProgress::Pending),
+            StockTurnProgress::Rejected(reason) => ready(Outcome::<Value>::Failed {
+                message: reason.to_string(),
+            }),
+        }
     }
 
     async fn tool_command(

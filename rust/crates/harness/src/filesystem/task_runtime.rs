@@ -11,7 +11,7 @@ use crate::{
     core::{AuthorityVerifier, SchemaRegistry, Scope},
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
-    executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, StockExecutor, StockTurnProgress, TurnInput, TurnOutput},
     interaction::{Interaction, InteractionOutcome},
     model::{Model, ModelProvider},
     runtime::{
@@ -446,6 +446,164 @@ where
             .await?
             .and_then(|(_, resolution)| resolution)
             .is_some_and(|resolution| resolution.outcome.is_terminal()))
+    }
+
+    /// Inspects retained model/tool artifacts without constructing an executor
+    /// or granting a passive task a lease. Wake publication rechecks suspension.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one read-only readiness proof keeps claims, retained request and tool settlement checks in order"
+    )]
+    pub(super) async fn model_approval_ready(
+        &self,
+        context: &TaskContext,
+        turn: OperationId,
+        input: &super::ModelTaskCommand,
+    ) -> Result<bool> {
+        use crate::executor::{
+            ExecutionEvent, ExecutionReplay, completed_tool_projection, replay_execution,
+            retained_model_step,
+        };
+        let scope = context.scope();
+        if !scope.grants().contains("model:generate") {
+            return Err(Error::Unauthorized(
+                "task scope lacks model:generate".into(),
+            ));
+        }
+        let limits = scope.limits();
+        if input.max_steps == 0
+            || u64::from(input.max_steps) > limits.model_steps as u64
+            || scope
+                .run_limits()
+                .max_steps
+                .is_some_and(|bound| u64::from(input.max_steps) > bound as u64)
+        {
+            return Err(Error::Unauthorized(
+                "model wait exceeds admitted steps".into(),
+            ));
+        }
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("model wait has no task".into()))?;
+        let operation = execution_operation(task, turn);
+        let journal = FilesystemExecutionJournal::new(
+            self.stream.clone(),
+            self.filesystem.clone(),
+            self.volume.clone(),
+            self.verifier.clone(),
+            self.signed.clone(),
+            self.maximum_payload_bytes.min(limits.file_bytes),
+        )?;
+        let mut replay = ExecutionReplay::new(operation);
+        let mut latest = None;
+        while let Some(page) = replay.next_page(&journal).await? {
+            self.host
+                .verify_model_history(task, operation, &page)
+                .await?;
+            for record in page {
+                if let ExecutionEvent::ModelStarted { step, .. } = record.event {
+                    if step >= input.max_steps {
+                        return Err(Error::Conflict(
+                            "retained model step exceeds command".into(),
+                        ));
+                    }
+                    latest = Some(latest.map_or(step, |previous: u32| previous.max(step)));
+                }
+            }
+        }
+        let Some(step) = latest else {
+            return Ok(false);
+        };
+        let (_, records) = replay_execution(
+            &journal,
+            operation,
+            limits.model_events_per_step.saturating_add(1),
+            |event| {
+                matches!(event,
+                ExecutionEvent::ModelStarted { step: recorded, .. }
+                | ExecutionEvent::Model { step: recorded, .. } if *recorded == step)
+            },
+        )
+        .await?;
+        let retained = retained_model_step(&journal, &records, step, limits).await?;
+        if !retained.admission.completed() {
+            return Err(Error::Indeterminate(operation));
+        }
+        let request = retained.request.ok_or(Error::Indeterminate(operation))?;
+        for message in &request.request().messages {
+            for file in message.content.file_refs() {
+                context.read_file(file).await?;
+            }
+        }
+        for event in retained.events {
+            if let crate::model::ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } = event
+            {
+                let invocation = crate::tool::ToolInvocation::for_model_call(
+                    operation, step, call_id, name, arguments,
+                );
+                let (_, records) = replay_execution(&journal, operation, 3, |event| {
+                    matches!(event,
+                        ExecutionEvent::ToolStarted { step: recorded, call_id, .. }
+                        | ExecutionEvent::ToolCompleted { step: recorded, call_id, .. }
+                        | ExecutionEvent::ToolFailed { step: recorded, call_id, .. }
+                        if *recorded == step && call_id == &invocation.call_id)
+                })
+                .await?;
+                if records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolFailed { .. }))
+                {
+                    return Err(Error::Invalid("retained model tool failed".into()));
+                }
+                if records
+                    .iter()
+                    .any(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+                {
+                    completed_tool_projection(
+                        &journal,
+                        &records,
+                        step,
+                        &invocation,
+                        &request.request().tools,
+                    )
+                    .await?;
+                    continue;
+                }
+                if !records.is_empty() {
+                    return Err(Error::Indeterminate(invocation.operation_id));
+                }
+                let pinned = request
+                    .request()
+                    .tools
+                    .iter()
+                    .find(|definition| definition.name == invocation.name)
+                    .ok_or_else(|| {
+                        Error::Conflict("approval tool is absent from model request".into())
+                    })?;
+                let definition = self.tool_definition(&pinned.name, &pinned.revision)?;
+                if &definition != pinned {
+                    return Err(Error::Conflict(
+                        "approval tool differs from model request".into(),
+                    ));
+                }
+                if !scope
+                    .grants()
+                    .contains(&crate::contract::capability::tool_call(&pinned.name))
+                {
+                    return Err(Error::Unauthorized(
+                        "model wait lacks tool capability".into(),
+                    ));
+                }
+                return self
+                    .tool_approval_ready(context, &definition, &invocation)
+                    .await;
+            }
+        }
+        Ok(false)
     }
 
     fn bind_interaction_owner(
@@ -913,7 +1071,10 @@ where
                 Ok(TaskCommandProgress::Pending) => {
                     return Ok(CommandDispatch::Pending {
                         command: command.operation_id,
-                        guard_execution: command.kind == super::TOOL_TASK_COMMAND_KIND,
+                        guard_execution: matches!(
+                            command.kind.as_str(),
+                            super::TOOL_TASK_COMMAND_KIND | super::MODEL_TASK_COMMAND_KIND
+                        ),
                     });
                 }
                 Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
@@ -1017,6 +1178,10 @@ where
 
     /// Executes or reconciles using the bound journal and existing stock loop.
     pub async fn execute(&self, input: TurnInput) -> Result<TurnOutput> {
+        self.execute_progress(input).await?.into_output()
+    }
+
+    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<StockTurnProgress> {
         if input.operation_id != self.operation_id {
             return Err(Error::Unauthorized(
                 "turn belongs to another task execution".into(),
@@ -1031,6 +1196,6 @@ where
                 "turn exceeds admitted task step ceiling".into(),
             ));
         }
-        self.executor.execute(input, &self.journal).await
+        self.executor.execute_progress(input, &self.journal).await
     }
 }

@@ -57,6 +57,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
 
 struct InterruptedModel {
+    approval_tool: bool,
     observed_events: usize,
     output_tokens: AtomicU64,
     generated: AtomicUsize,
@@ -101,12 +102,17 @@ where
 }
 
 struct InterruptedTool {
+    model_call: bool,
     executed: AtomicUsize,
     reconciled: AtomicUsize,
 }
 
 impl ToolExecutor for InterruptedTool {
     fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        if self.model_call {
+            self.executed.fetch_add(1, Ordering::SeqCst);
+            return Box::pin(async { Err(Error::Storage("lost model tool result".into())) });
+        }
         Box::pin(async { Err(Error::Unsupported("scoped tool context required".into())) })
     }
 
@@ -131,6 +137,14 @@ impl ToolExecutor for InterruptedTool {
     }
 
     fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        if self.model_call {
+            self.reconciled.fetch_add(1, Ordering::SeqCst);
+            return Box::pin(async {
+                Ok(Some(ToolResult {
+                    value: json!("tool-restored"),
+                }))
+            });
+        }
         Box::pin(async { Err(Error::Unsupported("scoped reconciliation required".into())) })
     }
 
@@ -169,7 +183,25 @@ impl ModelProvider for InterruptedModel {
             u64::from(request.request().max_output_tokens.unwrap_or(0)),
             Ordering::SeqCst,
         );
-        self.generated.fetch_add(1, Ordering::SeqCst);
+        let attempt = self.generated.fetch_add(1, Ordering::SeqCst);
+        if self.approval_tool {
+            return Box::pin(futures::stream::iter([
+                Ok(if attempt == 0 {
+                    ModelEvent::ToolCall {
+                        call_id: "provider-call".into(),
+                        name: "test.restore".into(),
+                        arguments: json!({"approval":true}),
+                    }
+                } else {
+                    ModelEvent::Content {
+                        delta: "partial-restored".into(),
+                    }
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]));
+        }
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::Content {
                 delta: "partial-".into(),
@@ -363,6 +395,7 @@ async fn resolve_worker_approval<P, A, O>(
     owner_scope: acyclic_harness::core::Scope,
     volume: VolumeRef,
     agent: AgentId,
+    approved: bool,
 ) -> Result<()>
 where
     P: StreamProvider + Send + Sync + 'static,
@@ -419,7 +452,7 @@ where
             responder,
             acyclic_harness::InteractionId::from_bytes(*ticket.id.as_bytes()),
             1,
-            true,
+            approved,
             None,
         )
         .await?;
@@ -429,6 +462,26 @@ where
 #[tokio::test]
 async fn pending_approval_releases_slot_and_wakes_after_store_reopen() -> Result<()> {
     worker_restart(WorkerCommand::ApprovalWaitTool).await
+}
+
+#[tokio::test]
+async fn model_approval_releases_slot_and_reconciles_tool_after_store_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::ApprovalWaitModel).await
+}
+
+#[tokio::test]
+async fn declined_model_approval_wakes_without_tool_dispatch_after_store_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::ApprovalDeclinedModel).await
+}
+
+#[tokio::test]
+async fn cancelled_model_approval_is_not_woken_after_store_reopen() -> Result<()> {
+    Box::pin(worker_restart_with_options(
+        WorkerCommand::ApprovalWaitModel,
+        true,
+        true,
+    ))
+    .await
 }
 
 #[tokio::test]
@@ -456,6 +509,8 @@ enum WorkerCommand {
     Tool,
     PolicyTool,
     ApprovalWaitTool,
+    ApprovalWaitModel,
+    ApprovalDeclinedModel,
     Timer,
     TimerThenMail,
     MailSend,
@@ -555,6 +610,19 @@ impl ResumableMachine for CommandMachine {
                     .ok_or_else(|| Error::Invalid("missing command result".into()))?,
             )
             .map_err(|error| Error::Invalid(error.to_string()))?;
+            if self.command == WorkerCommand::ApprovalDeclinedModel {
+                assert_eq!(
+                    outcome,
+                    Outcome::Failed {
+                        message: "declined".into()
+                    }
+                );
+                return Ok(MachineTransition {
+                    state: state.clone(),
+                    commands: Vec::new(),
+                    status: MachineStatus::Completed { value: json!(7) },
+                });
+            }
             let Outcome::Succeeded(value) = outcome else {
                 return Err(Error::Invalid("unexpected command outcome".into()));
             };
@@ -602,7 +670,17 @@ async fn worker_restart_with_options(
     allow_mail_read: bool,
     cancel_wait: bool,
 ) -> Result<()> {
-    let with_approval_wait = command == WorkerCommand::ApprovalWaitTool;
+    let with_model_approval = matches!(
+        command,
+        WorkerCommand::ApprovalWaitModel | WorkerCommand::ApprovalDeclinedModel
+    );
+    let declined = command == WorkerCommand::ApprovalDeclinedModel;
+    let with_approval_wait = matches!(
+        command,
+        WorkerCommand::ApprovalWaitTool
+            | WorkerCommand::ApprovalWaitModel
+            | WorkerCommand::ApprovalDeclinedModel
+    );
     let with_child = command == WorkerCommand::Child;
     let with_command = command != WorkerCommand::Wait;
     let with_mail_send = command == WorkerCommand::MailSend;
@@ -619,11 +697,19 @@ async fn worker_restart_with_options(
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let with_tool = matches!(
         command,
-        WorkerCommand::Tool | WorkerCommand::PolicyTool | WorkerCommand::ApprovalWaitTool
+        WorkerCommand::Tool
+            | WorkerCommand::PolicyTool
+            | WorkerCommand::ApprovalWaitTool
+            | WorkerCommand::ApprovalWaitModel
+            | WorkerCommand::ApprovalDeclinedModel
     );
     let with_policy = matches!(
         command,
-        WorkerCommand::PolicyTool | WorkerCommand::PolicyModel | WorkerCommand::ApprovalWaitTool
+        WorkerCommand::PolicyTool
+            | WorkerCommand::PolicyModel
+            | WorkerCommand::ApprovalWaitTool
+            | WorkerCommand::ApprovalWaitModel
+            | WorkerCommand::ApprovalDeclinedModel
     );
     let policy = Arc::new(RestartPolicy {
         evaluated: AtomicUsize::new(0),
@@ -754,12 +840,14 @@ async fn worker_restart_with_options(
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
+        approval_tool: with_model_approval,
         observed_events: 1,
         output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
     let tool = Arc::new(InterruptedTool {
+        model_call: with_model_approval,
         executed: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
     });
@@ -840,7 +928,7 @@ async fn worker_restart_with_options(
                 active_tasks: 1,
                 total_tasks: if with_child { 2 } else { 1 },
                 depth: if with_child { 2 } else { 1 },
-                model_steps: 1,
+                model_steps: if with_model_approval { 2 } else { 1 },
             },
             1,
             65_536,
@@ -873,7 +961,7 @@ async fn worker_restart_with_options(
                     active_tasks: 1,
                     total_tasks: 1,
                     depth: 1,
-                    model_steps: 1,
+                    model_steps: if with_model_approval { 2 } else { 1 },
                 },
                 1,
                 65_536,
@@ -929,7 +1017,7 @@ async fn worker_restart_with_options(
                     serde_json::to_value(TimerTaskCommand {
                         deadline_unix_ms: 200,
                     })
-                } else if with_tool {
+                } else if with_tool && !with_model_approval {
                     let file = payloads.stage(operation, "tool-input", b"hello").await?;
                     serde_json::to_value(ToolTaskCommand {
                         name: "test.restore".into(),
@@ -942,9 +1030,16 @@ async fn worker_restart_with_options(
                     })
                 } else {
                     serde_json::to_value(ModelTaskCommand {
-                        input: ModelContent::Text("hello".into()),
+                        input: if with_model_approval {
+                            ModelContent::Part(acyclic_harness::model::ModelContentPart::File {
+                                file: payloads.stage(operation, "model-input", b"hello").await?,
+                                policy: acyclic_harness::model::FileProjectionPolicy::Reference,
+                            })
+                        } else {
+                            ModelContent::Text("hello".into())
+                        },
                         selected_context: None,
-                        max_steps: 1,
+                        max_steps: if with_model_approval { 2 } else { 1 },
                         max_output_tokens: Some(8_192),
                     })
                 }
@@ -1089,6 +1184,7 @@ async fn worker_restart_with_options(
                     conversation_scope.clone(),
                     volume.clone(),
                     agent,
+                    !declined,
                 ))
                 .await?;
             }
@@ -1107,10 +1203,16 @@ async fn worker_restart_with_options(
             );
             if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let evaluations = policy.evaluated.load(Ordering::SeqCst);
+                let generated = model.generated.load(Ordering::SeqCst);
+                let reconciled = model.reconciled.load(Ordering::SeqCst);
+                let executed = tool.executed.load(Ordering::SeqCst);
                 assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert!(!runtime.poll_task_wake(task).await?);
                 assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
+                assert_eq!(model.generated.load(Ordering::SeqCst), generated);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), reconciled);
+                assert_eq!(tool.executed.load(Ordering::SeqCst), executed);
                 if with_two_waits {
                     let first_wake = coordinator
                         .pull(&worker)
@@ -1430,7 +1532,7 @@ async fn worker_restart_with_options(
                         Err(Error::Conflict(_))
                     ));
                 }
-                if with_tool {
+                if with_tool && !with_model_approval {
                     let context = runtime.harness().durable_context(task, operation).await?;
                     let admission = runtime.task_host().observe_admission(task).await?;
                     let file = serde_json::from_value(admission.input)
@@ -1491,6 +1593,7 @@ async fn worker_restart_with_options(
                                     conversation_scope.clone(),
                                     volume.clone(),
                                     agent,
+                                    true,
                                 ))
                                 .await?;
                             }
@@ -1537,7 +1640,7 @@ async fn worker_restart_with_options(
         } else {
             runtime.run_task(lease.clone(), &NoCommands, 1).await?
         };
-        let outcome = if with_approval_wait && reopened {
+        let outcome = if with_approval_wait && reopened && !declined {
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
             );
@@ -1545,7 +1648,15 @@ async fn worker_restart_with_options(
             assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
             assert!(coordinator.pull(&worker).await?.is_none());
             match runtime
-                .resume_task(lease.clone(), &runtime.commands(), 2)
+                .resume_task(
+                    lease.clone(),
+                    &runtime.commands().with_model(
+                        Model::new("test", "interrupted", "1", Value::Null)?,
+                        model.clone(),
+                        ContextPipeline::default(),
+                    ),
+                    2,
+                )
                 .await
             {
                 TaskWorkerAttempt::Progress(progress) => progress,
@@ -1599,17 +1710,30 @@ async fn worker_restart_with_options(
             assert_eq!(reader.read(result).await?, b"7");
             assert!(coordinator.pull(&worker).await?.is_none());
             if with_command {
-                if matches!(command, WorkerCommand::Model | WorkerCommand::PolicyModel) {
+                if matches!(
+                    command,
+                    WorkerCommand::Model
+                        | WorkerCommand::PolicyModel
+                        | WorkerCommand::ApprovalWaitModel
+                        | WorkerCommand::ApprovalDeclinedModel
+                ) {
                     assert_eq!(model.output_tokens.load(Ordering::SeqCst), 8_192);
                 }
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
-                    usize::from(matches!(
-                        command,
-                        WorkerCommand::Model | WorkerCommand::PolicyModel
-                    ))
+                    if with_model_approval {
+                        if declined { 1 } else { 2 }
+                    } else {
+                        usize::from(matches!(
+                            command,
+                            WorkerCommand::Model | WorkerCommand::PolicyModel
+                        ))
+                    }
                 );
-                assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
+                assert_eq!(
+                    tool.executed.load(Ordering::SeqCst),
+                    usize::from(with_tool && !declined)
+                );
                 assert_eq!(
                     model.reconciled.load(Ordering::SeqCst),
                     usize::from(matches!(
@@ -1619,7 +1743,7 @@ async fn worker_restart_with_options(
                 );
                 assert_eq!(
                     tool.reconciled.load(Ordering::SeqCst),
-                    usize::from(with_tool)
+                    usize::from(with_tool && !declined)
                 );
             }
         } else {
@@ -1645,6 +1769,7 @@ async fn worker_restart_with_options(
         }
         if !reopened && (with_timer || with_mail_receive || with_child || with_approval_wait) {
             let evaluations = policy.evaluated.load(Ordering::SeqCst);
+            let generated = model.generated.load(Ordering::SeqCst);
             let first = runtime.poll_task_wake_page(None, 1).await?;
             assert_eq!(first.events_read, 1);
             assert!(first.woken.is_empty());
@@ -1655,6 +1780,13 @@ async fn worker_restart_with_options(
                 serde_json::to_vec(&cursor).map_err(|error| Error::Invalid(error.to_string()))?,
             );
             assert_eq!(policy.evaluated.load(Ordering::SeqCst), evaluations);
+            assert_eq!(model.generated.load(Ordering::SeqCst), generated);
+            if with_model_approval {
+                assert_eq!(generated, 1);
+                assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+                assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+            }
         }
         if with_timer {
             let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
@@ -1700,9 +1832,16 @@ async fn worker_restart_with_options(
         // All provider, runtime and coordinator handles are dropped here.
     }
     if with_policy && with_tool {
-        assert!(policy.evaluated.load(Ordering::SeqCst) >= 3);
-        assert_eq!(tool.executed.load(Ordering::SeqCst), 1);
-        assert_eq!(tool.reconciled.load(Ordering::SeqCst), 1);
+        if declined {
+            assert_eq!(policy.evaluated.load(Ordering::SeqCst), 2);
+        } else {
+            assert!(policy.evaluated.load(Ordering::SeqCst) >= 3);
+        }
+        assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(!declined));
+        assert_eq!(
+            tool.reconciled.load(Ordering::SeqCst),
+            usize::from(!declined)
+        );
     }
     Ok(())
 }
@@ -1823,6 +1962,7 @@ async fn stock_restart_with_publication_fault(fault: Option<ExecutionFaultMode>)
     };
     let mut previous_lease = None;
     let model = Arc::new(InterruptedModel {
+        approval_tool: false,
         observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
         output_tokens: AtomicU64::new(0),
         generated: AtomicUsize::new(0),

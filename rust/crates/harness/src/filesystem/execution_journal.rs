@@ -1087,24 +1087,25 @@ where
                     Err(Error::Conflict("interaction identity reused".into()))
                 };
             }
-            let ticket = self
-                .interactions()?
-                .stage_request(id, &interaction, None)
-                .await?;
+            // Staging and publication must not inflate this journal future's inline state.
+            let ticket =
+                Box::pin(self.interactions()?.stage_request(id, &interaction, None)).await?;
             let owner_scope = self.interactions()?.owner_scope();
             let publication = if let Some((owner, _)) = &self.owner {
-                self.interactions()?
-                    .open_owned(
-                        interaction_operation(id, "open"),
-                        owner_scope,
-                        ticket,
-                        owner,
-                    )
-                    .await
+                Box::pin(self.interactions()?.open_owned(
+                    interaction_operation(id, "open"),
+                    owner_scope,
+                    ticket,
+                    owner,
+                ))
+                .await
             } else {
-                self.interactions()?
-                    .open(interaction_operation(id, "open"), owner_scope, ticket)
-                    .await
+                Box::pin(self.interactions()?.open(
+                    interaction_operation(id, "open"),
+                    owner_scope,
+                    ticket,
+                ))
+                .await
             };
             if let Some((owner, _)) = &self.owner {
                 owner.verify(false).await?;

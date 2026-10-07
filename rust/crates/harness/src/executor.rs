@@ -372,6 +372,16 @@ pub(crate) enum StockTurnProgress {
     Rejected(crate::InteractionRejection),
 }
 
+impl StockTurnProgress {
+    pub(crate) fn into_output(self) -> Result<TurnOutput> {
+        match self {
+            Self::Ready(output) => Ok(output),
+            Self::Pending(operation) => Err(Error::Indeterminate(operation)),
+            Self::Rejected(reason) => Err(Error::InteractionRejected(reason)),
+        }
+    }
+}
+
 enum ToolCallProgress {
     Settled,
     Pending(OperationId),
@@ -1377,9 +1387,9 @@ impl StockExecutor {
             for step in 0..input.max_steps {
                 let mut calls = Vec::new();
                 let mut completed = None;
-                let model_events = self
-                    .run_model_step(journal, &input, step, &prior_messages)
-                    .await?;
+                // Keep nested durable provider futures within native worker stacks.
+                let model_events =
+                    Box::pin(self.run_model_step(journal, &input, step, &prior_messages)).await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
@@ -1433,15 +1443,14 @@ impl StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    match self
-                        .resolve_tool_call(
-                            journal,
-                            input.operation_id,
-                            step,
-                            invocation,
-                            &mut prior_messages,
-                        )
-                        .await?
+                    match Box::pin(self.resolve_tool_call(
+                        journal,
+                        input.operation_id,
+                        step,
+                        invocation,
+                        &mut prior_messages,
+                    ))
+                    .await?
                     {
                         ToolCallProgress::Settled => {}
                         ToolCallProgress::Pending(wait) => {
@@ -1464,17 +1473,11 @@ impl Executor for StockExecutor {
         input: TurnInput,
         journal: &'a dyn ExecutionJournal,
     ) -> BoxFuture<'a, Result<TurnOutput>> {
-        Box::pin(async move {
-            match self.execute_progress(input, journal).await? {
-                StockTurnProgress::Ready(output) => Ok(output),
-                StockTurnProgress::Pending(operation) => Err(Error::Indeterminate(operation)),
-                StockTurnProgress::Rejected(reason) => Err(Error::InteractionRejected(reason)),
-            }
-        })
+        Box::pin(async move { self.execute_progress(input, journal).await?.into_output() })
     }
 }
 
-async fn completed_tool_projection(
+pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal,
     records: &[ExecutionRecord],
     step: u32,
