@@ -4,7 +4,7 @@ let initialization: Promise<void> | undefined;
 
 /** Every JS function used by either Harness initialization path. */
 export const REQUIRED_HARNESS_WASM_EXPORTS = [
-  "validateContract", "verifyFileBytes", "decodeAttachmentManifest",
+  "validateContract", "validateWorkflowAdmission", "verifyFileBytes", "decodeAttachmentManifest",
   "encodeAttachmentManifest", "forkSeedFromReport", "validateToolValue",
   "validateWireHandshake", "validateWireCommand", "validateWireCommandProtocol",
   "validateWireResume", "validateWireObserve", "validateWireCancel",

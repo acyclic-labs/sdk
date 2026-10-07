@@ -422,12 +422,26 @@ export interface ComponentIdentity {
 /** A scoped policy retains both pinned implementations instead of claiming either one alone. */
 export type PolicyIdentity = ComponentIdentity | Readonly<{ composition: readonly [PolicyIdentity, PolicyIdentity] }>;
 export async function policyIdentity(name: string, version: string, digest: Uint8Array): Promise<ComponentIdentity> {
-  await validateComponentLabel(name, "policy name");
-  await validateComponentLabel(version, "policy version");
-  if (digest.length !== 32 || !digest.some(byte => byte !== 0)) {
-    throw new TypeError("policy implementation digest must be a nonzero 32-byte value");
+  return admitPolicyIdentity({ name, version, digest: Object.freeze([...digest]) });
+}
+
+async function admitPolicyIdentity(identity: MachineIdentityWire): Promise<ComponentIdentity> {
+  let admitted: MachineIdentityWire;
+  try {
+    admitted = (await NativeContracts.create()).validate("machine_identity", identity);
+  } catch (error) {
+    // Rust's fixed array deserializer rejects a short digest before the
+    // semantic validator can provide its stable field-level message.
+    if (identity.digest.length !== 32) {
+      throw new TypeError("policy implementation digest must be a nonzero 32-byte value", { cause: error });
+    }
+    throw error;
   }
-  return Object.freeze({ name, version, digest: Object.freeze([...digest]) as PolicyDigest });
+  return Object.freeze({
+    name: admitted.name,
+    version: admitted.version,
+    digest: Object.freeze([...admitted.digest]) as PolicyDigest,
+  });
 }
 export interface Policy {
   /** Immutable implementation revision, checked at admission and again at host dispatch. */
@@ -2704,12 +2718,8 @@ async function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentity
     if (Object.keys(identity).sort().join("\0") !== "digest\0name\0version") {
       throw new TypeError("policy identity has unexpected fields");
     }
-    if (!Array.isArray(identity.digest) || identity.digest.length !== 32
-      || !identity.digest.some(byte => byte !== 0)
-      || identity.digest.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
-      throw new TypeError("policy implementation digest must be a nonzero 32-byte value");
-    }
-    return await policyIdentity(identity.name, identity.version, Uint8Array.from(identity.digest));
+    if (!Array.isArray(identity.digest)) throw new TypeError("policy implementation digest must be an array");
+    return await admitPolicyIdentity(identity);
   } finally {
     ancestors.delete(identity);
   }

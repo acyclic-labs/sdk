@@ -45,7 +45,7 @@ use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
-use tsify::Tsify;
+use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -453,6 +453,24 @@ struct WasmBatchAdmissionRequest {
 #[derive(Serialize)]
 struct WasmGroupPolicy {
     kind: BatchGroupPolicy,
+}
+
+/// Public Rust projection for the immutable workflow admission envelope.
+///
+/// The validator still consumes the canonical `WorkflowAdmission`; this DTO
+/// only gives the generated TypeScript surface the exact serde shape and
+/// bigint treatment used by the Rust value.
+#[derive(Clone, Debug, Serialize, Tsify)]
+#[tsify(large_number_types_as_bigints)]
+pub struct WasmWorkflowAdmissionWire {
+    #[tsify(type = "string")]
+    operation_id: String,
+    #[tsify(type = "readonly number[]")]
+    request_digest: Vec<u8>,
+    #[tsify(
+        type = "Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>"
+    )]
+    initial: crate::workflow::MachineCheckpoint,
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -1463,6 +1481,23 @@ fn conversation_page_data(
             .ok_or_else(|| JsValue::from_str("conversation page range is invalid"))?,
         next_sequence: (end < conversation.messages.len()).then_some(end as u64),
     })
+}
+
+/// Validates and projects one immutable workflow admission through Rust.
+/// Hosts retain this detached value before any replay or dispatch begins.
+#[wasm_bindgen(js_name = validateWorkflowAdmission)]
+pub fn validate_workflow_admission(
+    #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
+) -> Result<Ts<WasmWorkflowAdmissionWire>, JsValue> {
+    let value: crate::workflow::WorkflowAdmission = from_js(value)?;
+    value.validate().map_err(js_error)?;
+    WasmWorkflowAdmissionWire {
+        operation_id: value.operation_id.to_string(),
+        request_digest: value.request_digest.to_vec(),
+        initial: value.initial,
+    }
+    .into_ts()
+    .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Pure v2 contract admission shared by native and JavaScript hosts. The

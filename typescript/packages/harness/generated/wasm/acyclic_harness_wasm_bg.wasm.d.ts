@@ -59,6 +59,7 @@ export const validateWireHandshake: (a: number, b: number, c: number, d: number)
 export const validateWireObserve: (a: number, b: number) => [number, number];
 export const validateWireResume: (a: number, b: number) => [number, number];
 export const validateWireStatus: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateWorkflowAdmission: (a: any) => [number, number, number];
 export const verifyFileBytes: (a: any, b: number, c: number) => [number, number];
 export const wasmcontentstore_generation: (a: number) => [number, number, number];
 export const wasmcontentstore_has: (a: number, b: any) => [number, number, number];
