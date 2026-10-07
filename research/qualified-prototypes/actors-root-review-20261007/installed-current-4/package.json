@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@acyclic-labs/actors": "file:../../../../typescript/packages/actors/acyclic-labs-actors-0.2.0.tgz"
+  }
+}

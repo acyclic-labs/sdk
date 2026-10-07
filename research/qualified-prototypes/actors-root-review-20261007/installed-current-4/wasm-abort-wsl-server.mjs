@@ -1,0 +1,10 @@
+import { ActorsClient } from '@acyclic-labs/actors';
+const request={actorId:'actor-a',method:'POST',url:'/invoke',body:new Uint8Array([4,5]),headers:[{name:'content-type',value:'application/json'}]};
+await fetch('http://127.0.0.1:41997/set-hold?value=1');
+const c=new ActorsClient({endpoint:'http://127.0.0.1:41997',token:'fixture-token'});
+const ac=new AbortController(); const pending=c.invokeActor(request,{signal:ac.signal}); setTimeout(()=>ac.abort(),80);
+let rejected=false, reason=''; try { await Promise.race([pending,new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),1000))]); } catch(e) { rejected=true; reason=e.message; }
+await new Promise(r=>setTimeout(r,120)); const afterAbort=await fetch('http://127.0.0.1:41997/metrics').then(r=>r.json());
+const pre=new AbortController(); pre.abort(); let preRejected=false; try { await c.invokeActor(request,{signal:pre.signal}); } catch { preRejected=true; }
+const afterPre=await fetch('http://127.0.0.1:41997/metrics').then(r=>r.json());
+console.log(JSON.stringify({transport:await c.transport,rejected,reason,preRejected,afterAbort,afterPre}));

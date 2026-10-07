@@ -35,6 +35,10 @@ validator = "acyclic_actors_uniffi.validate_code_sha256"
 nominal = true
 validator = "acyclic_actors_uniffi.validate_positive_u64"
 
+[bindings.python.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_current_head"
+
 # Other bindings may opt into nominal wrappers only after their generator
 # exposes the same Rust-backed validator hook. Semantic predicates must remain
 # in the Rust domain and must not be repeated in this config.
@@ -59,3 +63,9 @@ imports = ["acyclic_actors_uniffi.dart"]
 
 # CurrentHead remains a Rust-owned true-only oneof payload. The generated Dart
 # enum retains the Rust shape; invalid false is rejected by Rust projection.
+
+[bindings.dart.custom_types.CurrentHeadMarker]
+nominal = true
+safe_value = "true-only-current-head"
+validator = "validateCurrentHead"
+imports = ["acyclic_actors_uniffi.dart"]

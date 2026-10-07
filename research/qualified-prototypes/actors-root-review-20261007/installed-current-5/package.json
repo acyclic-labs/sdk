@@ -1,0 +1,5 @@
+{
+  "dependencies": {
+    "@acyclic-labs/actors": "file:../package-archive-b320/acyclic-labs-actors-0.2.0.tgz"
+  }
+}

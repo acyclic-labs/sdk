@@ -19,10 +19,16 @@ client results.
 
 `ActorsClient` selects the native Rust companion on Node/Bun when installed and
 the packaged Rust/WASM bridge in browsers (or as the Node fallback). It accepts
-`{ endpoint, token }` and exposes every operation from generated Rust route
-metadata. `HttpActorsClient` remains a compatibility alias while callers move
-to the platform-neutral name. Actor invocation includes request and response
-headers.
+`{ endpoint, token }` and exposes every operation from the maintained
+`ActorsService` descriptor. The typed facade is regenerated with
+`bun run generate:client` after the Rust contract's Protobuf output changes;
+there is no hand-maintained operation list in the client. `HttpActorsClient`
+remains a compatibility alias while callers move to the platform-neutral name.
+Actor invocation includes request and response headers.
+
+Native callers connecting to a private endpoint may additionally provide
+`caCertificate` as DER or PEM bytes. The option is carried to the Rust N-API
+TLS connector; browser calls continue to use the browser trust store.
 
 `bun run build` rebuilds the WASM bridge before TypeScript declarations. The
 package tarball includes that bridge and the generated Protobuf artifacts; no

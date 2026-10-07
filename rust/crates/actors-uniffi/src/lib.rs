@@ -97,6 +97,14 @@ pub fn validate_current_head(value: bool) -> Result<(), BindingError> {
         .map_err(domain_error)
 }
 
+/// Validates the Rust-owned marker custom type used by the `Start` oneof.
+/// This is an export-name bridge for generated foreign custom-type factories;
+/// the canonical admission rule remains `CurrentHeadMarker::try_from`.
+#[uniffi::export]
+pub fn validate_current_head_marker(value: bool) -> Result<(), BindingError> {
+    validate_current_head(value)
+}
+
 fn client_error(error: client::Error) -> BindingError {
     match error {
         client::Error::Configuration(detail_message) => {
