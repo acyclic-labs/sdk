@@ -7,7 +7,9 @@ use zeroize::Zeroizing;
 
 use crate::contract;
 use crate::wire;
-use crate::{DESCRIPTOR, MAXIMUM_MESSAGE_BYTES};
+use crate::MAXIMUM_MESSAGE_BYTES;
+#[cfg(test)]
+use crate::DESCRIPTOR;
 
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
@@ -165,7 +167,8 @@ impl Inference {
             .list(self.request(wire::ListModelsRequest {})?)
             .await?
             .into_inner();
-        contract::validate_model_capabilities(&response).map_err(contract_error)?;
+        contract::validate_model_capabilities(&response)
+            .map_err(|error| contract_error(&error))?;
         Ok(response.models)
     }
 
@@ -797,7 +800,8 @@ impl GenerateRun {
             .await?
             .into_inner();
         let view = response.run.ok_or(Error::Invalid("missing Run response"))?;
-        contract::validate_generated_run_view(&view, run_id, context).map_err(contract_error)?;
+        contract::validate_generated_run_view(&view, run_id, context)
+            .map_err(|error| contract_error(&error))?;
         Ok(Run {
             client: self.client.clone(),
             run_id,
@@ -846,7 +850,8 @@ impl Run {
     /// Returns transport or authenticated service rejection before the stream is established.
     pub async fn watch(&self, from_sequence: u64) -> Result<RunEvents, Error> {
         let view = self.inspect().await?;
-        let state = contract::watch_run_start(&view, from_sequence).map_err(contract_error)?;
+        let state = contract::watch_run_start(&view, from_sequence)
+            .map_err(|error| contract_error(&error))?;
         if state.is_terminal() {
             return Ok(RunEvents {
                 stream: None,
@@ -904,17 +909,18 @@ impl RunEvents {
             self.state.finish().map_err(Error::Invalid)?;
             return Ok(None);
         };
-        contract::watch_run_event(&mut self.state, &event).map_err(contract_error)?;
+        contract::watch_run_event(&mut self.state, &event)
+            .map_err(|error| contract_error(&error))?;
         Ok(Some(event))
     }
 }
 
-fn contract_error(error: contract::Error) -> Error {
+fn contract_error(error: &contract::Error) -> Error {
     Error::Invalid(error.message())
 }
 
 fn validate_evaluation_spec(spec: &wire::EvaluationSpec) -> Result<(), Error> {
-    contract::validate_evaluation_spec(spec).map_err(contract_error)
+    contract::validate_evaluation_spec(spec).map_err(|error| contract_error(&error))
 }
 
 fn validate_evaluation_admission(
@@ -922,19 +928,20 @@ fn validate_evaluation_admission(
     expected: [u8; 16],
     spec: &wire::EvaluationSpec,
 ) -> Result<(), Error> {
-    contract::validate_evaluation_admission(view, expected, spec).map_err(contract_error)
+    contract::validate_evaluation_admission(view, expected, spec)
+        .map_err(|error| contract_error(&error))
 }
 
 fn validate_evaluation_view(view: &wire::EvaluationView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_evaluation_view(view, expected).map_err(contract_error)
+    contract::validate_evaluation_view(view, expected).map_err(|error| contract_error(&error))
 }
 
 fn validate_run_view(view: &wire::RunView, expected: [u8; 16]) -> Result<(), Error> {
-    contract::validate_run_view(view, expected).map_err(contract_error)
+    contract::validate_run_view(view, expected).map_err(|error| contract_error(&error))
 }
 
 fn validate_context_view(view: &wire::ContextView, expected: [u8; 32]) -> Result<(), Error> {
-    contract::validate_context_view(view, expected).map_err(contract_error)
+    contract::validate_context_view(view, expected).map_err(|error| contract_error(&error))
 }
 
 fn validate_warm_view(
@@ -943,7 +950,7 @@ fn validate_warm_view(
     expected_commitment: Option<[u8; 32]>,
 ) -> Result<(), Error> {
     contract::validate_warm_view(view, expected_context, expected_commitment)
-        .map_err(contract_error)
+        .map_err(|error| contract_error(&error))
 }
 
 /// Replayable mutation with a pre-dispatch command identity, not an execution retry.
@@ -978,7 +985,7 @@ impl ContextMutation {
 }
 
 fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
-    contract::validate_receipt(receipt).map_err(contract_error)
+    contract::validate_receipt(receipt).map_err(|error| contract_error(&error))
 }
 
 fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {

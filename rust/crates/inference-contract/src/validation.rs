@@ -858,7 +858,7 @@ mod tests {
     }
 
     #[test]
-    fn model_capabilities_validate_idle_kv_profiles() {
+    fn model_capabilities_validate_idle_kv_profiles() -> Result<(), &'static str> {
         let profile = wire::RetentionProfile {
             profile: vec![6; 32],
             minimum_duration_ms: 1,
@@ -878,12 +878,23 @@ mod tests {
         assert!(validate_model_capabilities(&response).is_ok());
 
         let mut invalid = response.clone();
-        invalid.models[0].idle_kv_profiles[0].profile = vec![6; 31];
+        let model = invalid.models.first_mut().ok_or("model missing")?;
+        let invalid_profile = model
+            .idle_kv_profiles
+            .first_mut()
+            .ok_or("idle profile missing")?;
+        invalid_profile.profile = vec![6; 31];
         assert!(validate_model_capabilities(&invalid).is_err());
 
         let mut duplicate = response;
-        duplicate.models[0].idle_kv_profiles.push(profile);
+        duplicate
+            .models
+            .first_mut()
+            .ok_or("model missing")?
+            .idle_kv_profiles
+            .push(profile);
         assert!(validate_model_capabilities(&duplicate).is_err());
+        Ok(())
     }
 
     #[test]
@@ -915,8 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn idle_admission_and_renewal_bind_exact_policy_without_resetting_baseline()
-    -> Result<(), &'static str> {
+    fn idle_admission_binds_exact_policy_and_request_context() -> Result<(), &'static str> {
         let mut view = idle_view();
         let request = wire::RetainWarmRequest {
             identity: Some(wire::RequestIdentity {
@@ -970,8 +980,22 @@ mod tests {
             )
             .is_err()
         );
+        let mixed = wire::RetainWarmRequest {
+            latency_profile: vec![9; 32],
+            ..request
+        };
+        assert!(validate_retain_request(&mixed).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn idle_renewal_binds_exact_policy_and_request_commitment() -> Result<(), &'static str> {
+        let mut view = idle_view();
         let renewal = wire::RenewWarmRequest {
-            identity: request.identity.clone(),
+            identity: Some(wire::RequestIdentity {
+                client_instance: vec![1; 16],
+                request_id: vec![2; 16],
+            }),
             commitment: vec![1; 32],
             idle_timeout_ms: Some(20),
             ..Default::default()
@@ -1016,11 +1040,6 @@ mod tests {
             )
             .is_err()
         );
-        let mixed = wire::RetainWarmRequest {
-            latency_profile: vec![9; 32],
-            ..request
-        };
-        assert!(validate_retain_request(&mixed).is_err());
         let mixed = wire::RenewWarmRequest {
             expires_at_ms: 120,
             ..renewal
