@@ -681,14 +681,15 @@ impl Scheduler {
                         } else {
                             operation.cancellation_requested = true;
                         }
-                        if target != operation_id {
-                            operation.revision = next_revision(operation.revision)?;
-                        }
+                        operation.revision = next_revision(operation.revision)?;
                     }
                     if terminalized {
                         self.completion_order.push(target);
                     }
                 }
+                // Like a duplicate completion, cancelling a terminal operation
+                // commits nothing to it, so its revision stays put.
+                return Ok(());
             }
             SchedulerEvent::Completed {
                 operation_id,
@@ -813,6 +814,9 @@ impl Scheduler {
                 for child_id in &cancel {
                     let mut terminalized = false;
                     let child = self.mutable(*child_id)?;
+                    if child.phase == OperationPhase::Terminal {
+                        continue;
+                    }
                     if matches!(
                         child.phase,
                         OperationPhase::WaitingForDependencies
@@ -823,7 +827,7 @@ impl Scheduler {
                         child.phase = OperationPhase::Terminal;
                         child.outcome = Some(Outcome::Cancelled);
                         terminalized = true;
-                    } else if child.phase != OperationPhase::Terminal {
+                    } else {
                         child.cancellation_requested = true;
                     }
                     child.revision = next_revision(child.revision)?;
@@ -1670,13 +1674,7 @@ mod tests {
                     let current = scheduler.operations.get(id);
                     prop_assert!(current.is_some_and(|current| current.revision >= prior.revision));
                     if prior.phase == OperationPhase::Terminal {
-                        // Terminal is absorbing; only an idempotent request
-                        // may still advance its revision.
-                        let current = current.map(|current| OperationState {
-                            revision: prior.revision,
-                            ..current.clone()
-                        });
-                        prop_assert_eq!(current.as_ref(), Some(prior), "terminal is absorbing");
+                        prop_assert_eq!(current, Some(prior), "terminal is absorbing");
                     }
                 }
                 for operation in scheduler.operations.values() {
