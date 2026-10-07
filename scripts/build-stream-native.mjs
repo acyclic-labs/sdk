@@ -276,7 +276,7 @@ const rustc = args.shift();
 if (!rustc) process.exit(1);
 writeFileSync(join(${JSON.stringify(captureDirectory)}, \`${"${process.pid}"}-${randomUUID()}.json\`), JSON.stringify({ rustc, args }));
 const environment = { ...process.env };
-${delegate === null ? "delete environment.RUSTC_WRAPPER;" : `environment.RUSTC_WRAPPER = ${JSON.stringify(delegate)};`}
+${delegate === null ? "delete environment.RUSTC_WORKSPACE_WRAPPER;" : `environment.RUSTC_WORKSPACE_WRAPPER = ${JSON.stringify(delegate)};`}
 const command = ${delegate === null ? "rustc" : JSON.stringify(delegate)};
 const commandArgs = ${delegate === null ? "args" : "[rustc, ...args]"};
 const batch = process.platform === "win32" && /\\.(?:cmd|bat)$/iu.test(command);
@@ -293,116 +293,22 @@ process.exit(result.status ?? 1);
 `;
 }
 
-function windowsNativeCaptureWrapperSource(delegate, captureDirectory) {
-  const rustString = value => JSON.stringify(value).replaceAll("\\u2028", "\\u{2028}").replaceAll("\\u2029", "\\u{2029}");
-  const delegateLiteral = delegate === null ? "None" : `Some(${rustString(delegate)})`;
-  return `use std::env;
-use std::ffi::{OsStr, OsString};
-use std::fs::write;
-use std::path::PathBuf;
-use std::process::{Command, exit};
-use std::os::windows::process::CommandExt;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn json_string(value: &OsStr) -> String {
-    let mut output = String::from("\\\"");
-    for character in value.to_string_lossy().chars() {
-        match character {
-            '\\\\' => output.push_str("\\\\\\\\"),
-            '\\"' => output.push_str("\\\\\\\""),
-            '\\n' => output.push_str("\\\\n"),
-            '\\r' => output.push_str("\\\\r"),
-            '\\t' => output.push_str("\\\\t"),
-            character if character.is_control() => output.push_str(&format!("\\\\u{:04x}", character as u32)),
-            character => output.push(character),
-        }
-    }
-    output.push('\\"');
-    output
-}
-
-fn windows_command_arg(value: &OsStr) -> String {
-    let text = value.to_string_lossy();
-    format!("\\\"{}\\\"", text.replace('\\\"', "\\\"\\\"") )
-}
-
-fn batch_command(program: &OsStr, arguments: &[OsString]) -> Command {
-    let mut command_line = format!("call {}", windows_command_arg(program));
-    for argument in arguments { command_line.push(' '); command_line.push_str(&windows_command_arg(argument)); }
-    let mut command = Command::new(env::var_os("ComSpec").unwrap_or_else(|| OsString::from("cmd.exe")));
-    command.raw_arg(format!("/d /s /c {}", command_line));
-    command
-}
-
-fn main() {
-    let mut arguments = env::args_os();
-    let _wrapper = arguments.next();
-    let rustc = arguments.next().unwrap_or_default();
-    let rustc_arguments: Vec<OsString> = arguments.collect();
-    if rustc.is_empty() { exit(1); }
-
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
-    let mut record = format!("{{\\\"rustc\\\":{},\\\"args\\\":[", json_string(&rustc));
-    for (index, argument) in rustc_arguments.iter().enumerate() {
-        if index != 0 { record.push(','); }
-        record.push_str(&json_string(argument));
-    }
-    record.push_str("]}");
-    let capture_path = PathBuf::from(${rustString(captureDirectory)}).join(format!("{}-{}.json", std::process::id(), timestamp));
-    if write(capture_path, record).is_err() { exit(1); }
-
-    let delegate: Option<&str> = ${delegateLiteral};
-    let mut command;
-    if let Some(delegate) = delegate {
-        let delegate_path = OsString::from(delegate);
-        if delegate.to_ascii_lowercase().ends_with(".cmd") || delegate.to_ascii_lowercase().ends_with(".bat") {
-            let mut arguments = vec![rustc.clone()];
-            arguments.extend(rustc_arguments.iter().cloned());
-            command = batch_command(&delegate_path, &arguments);
-        } else {
-            command = Command::new(delegate_path);
-            command.arg(&rustc);
-            command.args(&rustc_arguments);
-        }
-        command.env("RUSTC_WRAPPER", delegate);
-    } else {
-        if rustc.to_string_lossy().to_ascii_lowercase().ends_with(".cmd") || rustc.to_string_lossy().to_ascii_lowercase().ends_with(".bat") {
-            command = batch_command(&rustc, &rustc_arguments);
-        } else {
-            command = Command::new(&rustc);
-            command.args(&rustc_arguments);
-        }
-        command.env_remove("RUSTC_WRAPPER");
-    }
-    match command.status() {
-        Ok(status) => exit(status.code().unwrap_or(1)),
-        Err(_) => exit(1),
-    }
-}
-`;
-}
-
 export async function createRustcInvocationCapture() {
   const directory = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-capture-"));
   const invocations = resolve(directory, "invocations");
   await mkdir(invocations);
-  const delegate = envValue("RUSTC_WRAPPER");
-  const source = resolve(directory, process.platform === "win32" ? "capture.rs" : "capture");
+  const delegate = envValue("RUSTC_WORKSPACE_WRAPPER");
+  const source = resolve(directory, process.platform === "win32" ? "capture.mjs" : "capture");
   await writeFile(source, captureWrapperSource(delegate, invocations), { mode: 0o700 });
   let wrapper = source;
   if (process.platform === "win32") {
-    await writeFile(source, windowsNativeCaptureWrapperSource(delegate, invocations));
-    wrapper = resolve(directory, "capture.exe");
-    const environment = { ...process.env };
-    delete environment.RUSTC_WRAPPER;
-    delete environment.RUSTFLAGS;
-    delete environment.CARGO_ENCODED_RUSTFLAGS;
-    execFileSync("rustc", ["--edition=2021", source, "-o", wrapper], { env: environment, stdio: "inherit" });
+    wrapper = resolve(directory, "capture.cmd");
+    await writeFile(wrapper, `@echo off\r\n"${process.execPath}" "${source}" %*\r\nexit /b %errorlevel%\r\n`);
   } else {
     await writeFile(source, `#!/usr/bin/env node\n${captureWrapperSource(delegate, invocations)}`, { mode: 0o700 });
     await chmod(source, 0o700);
   }
-  process.env.RUSTC_WRAPPER = wrapper;
+  process.env.RUSTC_WORKSPACE_WRAPPER = wrapper;
   return {
     wrapper,
     async read(target) {
@@ -427,8 +333,8 @@ export async function createRustcInvocationCapture() {
       };
     },
     async close() {
-      if (delegate === null) delete process.env.RUSTC_WRAPPER;
-      else process.env.RUSTC_WRAPPER = delegate;
+      if (delegate === null) delete process.env.RUSTC_WORKSPACE_WRAPPER;
+      else process.env.RUSTC_WORKSPACE_WRAPPER = delegate;
       await rm(directory, { recursive: true, force: true });
     },
   };
