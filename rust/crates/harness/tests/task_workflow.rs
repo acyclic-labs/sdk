@@ -2,7 +2,7 @@
 #![cfg(feature = "filesystem-local")]
 #![allow(clippy::too_many_lines)]
 
-use acyclic_fs::{Fs, LocalOptions};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::context::ContextPipeline;
 use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
@@ -17,7 +17,7 @@ use acyclic_harness::filesystem::{
     MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
     TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
     TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost, TaskCommandProgress,
-    TaskObserveCommand, TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
+    TaskObserveCommand, TaskWakeCursor, TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -40,7 +40,8 @@ use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
 };
 use acyclic_stream::{
-    LocalStream, LocalStreamLimits, StreamClient, SystemUnixMillisClock, UnixMillisClock,
+    LocalStream, LocalStreamLimits, StreamClient, StreamProvider, SystemUnixMillisClock,
+    UnixMillisClock,
 };
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
@@ -51,6 +52,43 @@ use std::{collections::BTreeMap, sync::Arc};
 struct InterruptedModel {
     generated: AtomicUsize,
     reconciled: AtomicUsize,
+}
+
+async fn discover_wakes<P, A, O>(
+    runtime: &FilesystemTaskRuntime<P, A, O>,
+    initial_cursor: Option<TaskWakeCursor>,
+) -> Result<Vec<TaskId>>
+where
+    P: StreamProvider + Send + Sync + 'static,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let mut cursor = initial_cursor;
+    let mut snapshot = initial_cursor.map(|cursor| cursor.through_revision);
+    let mut inspected = initial_cursor.map_or(0, |cursor| cursor.after_revision);
+    let mut woken = Vec::new();
+    loop {
+        let page = runtime.poll_task_wake_page(cursor, 1).await?;
+        assert!(page.events_read <= 1);
+        assert!(page.tasks_polled <= page.events_read);
+        assert!(page.woken.len() <= page.tasks_polled as usize);
+        if let Some(snapshot) = snapshot {
+            assert_eq!(page.through_revision, snapshot);
+        } else {
+            snapshot = Some(page.through_revision);
+        }
+        inspected += u64::from(page.events_read);
+        woken.extend(page.woken);
+        let Some(next) = page.cursor else {
+            assert_eq!(Some(inspected), snapshot);
+            return Ok(woken);
+        };
+        assert_eq!(next.after_revision, inspected);
+        let bytes = serde_json::to_vec(&next).map_err(|error| Error::Invalid(error.to_string()))?;
+        cursor = Some(
+            serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?,
+        );
+    }
 }
 
 struct InterruptedTool {
@@ -498,6 +536,7 @@ async fn worker_restart_with_options(
         labels: BTreeMap::new(),
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
+    let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
         generated: AtomicUsize::new(0),
         reconciled: AtomicUsize::new(0),
@@ -636,10 +675,49 @@ async fn worker_restart_with_options(
             .with_payload_store(payloads.clone());
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task).await?);
+            if with_timer || with_mail_receive || with_child {
+                let cursor = discovery_cursor
+                    .as_ref()
+                    .map(|bytes: &Vec<u8>| serde_json::from_slice(bytes))
+                    .transpose()
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                assert!(discover_wakes(&runtime, cursor).await?.is_empty());
+                for maximum in [0, 65] {
+                    assert!(matches!(
+                        runtime.poll_task_wake_page(None, maximum).await,
+                        Err(Error::Invalid(_))
+                    ));
+                }
+                assert!(matches!(
+                    runtime
+                        .poll_task_wake_page(
+                            Some(TaskWakeCursor {
+                                after_revision: 1,
+                                through_revision: 0,
+                            }),
+                            1
+                        )
+                        .await,
+                    Err(Error::Invalid(_))
+                ));
+                assert!(matches!(
+                    runtime
+                        .poll_task_wake_page(
+                            Some(TaskWakeCursor {
+                                after_revision: 0,
+                                through_revision: u64::MAX,
+                            }),
+                            1
+                        )
+                        .await,
+                    Err(Error::Invalid(_))
+                ));
+            }
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
                 runtime.task_host().cancel(task).await?;
                 assert!(!runtime.poll_task_wake(task).await?);
+                assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
                     runtime.task_host().outcome(task).await?,
                     Some(Outcome::Cancelled)
@@ -717,7 +795,8 @@ async fn worker_restart_with_options(
                     .is_err()
             );
             if with_timer || with_mail_receive || with_child {
-                assert!(runtime.poll_task_wake(task).await?);
+                assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
+                assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert!(!runtime.poll_task_wake(task).await?);
                 if with_two_waits {
                     let first_wake = coordinator
@@ -743,7 +822,7 @@ async fn worker_restart_with_options(
                         .task_host()
                         .send(task, task, OperationId::from_bytes([30; 16]), file)
                         .await?;
-                    assert!(runtime.poll_task_wake(task).await?);
+                    assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                     assert!(!runtime.poll_task_wake(task).await?);
                 }
                 let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
@@ -1128,6 +1207,17 @@ async fn worker_restart_with_options(
                 );
             }
             old_lease = Some(lease.clone());
+        }
+        if !reopened && (with_timer || with_mail_receive || with_child) {
+            let first = runtime.poll_task_wake_page(None, 1).await?;
+            assert_eq!(first.events_read, 1);
+            assert!(first.woken.is_empty());
+            let cursor = first
+                .cursor
+                .ok_or_else(|| Error::NotFound("cold discovery cursor".into()))?;
+            discovery_cursor = Some(
+                serde_json::to_vec(&cursor).map_err(|error| Error::Invalid(error.to_string()))?,
+            );
         }
         if with_timer {
             let timers = stream.stream(format!("harness/v2/timers/{task}"))?;

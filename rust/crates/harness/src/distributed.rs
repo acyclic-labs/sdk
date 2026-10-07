@@ -620,6 +620,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         &self.scheduler
     }
 
+    #[cfg(feature = "filesystem")]
+    pub(crate) const fn revision(&self) -> u64 {
+        self.revision
+    }
+
     /// Returns one operation only after verifying the owner's signed scope.
     pub fn observe_operation(
         &self,

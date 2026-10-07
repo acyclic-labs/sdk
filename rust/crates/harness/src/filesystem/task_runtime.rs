@@ -58,6 +58,32 @@ enum CommandDispatch {
     Indeterminate,
 }
 
+/// Resume hint for one finite coordinator discovery sweep. It conveys no
+/// execution authority and can be serialized by the caller across restarts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskWakeCursor {
+    /// Last inspected coordinator revision.
+    pub after_revision: u64,
+    /// Fixed inclusive revision at which this sweep ends.
+    pub through_revision: u64,
+}
+
+/// One bounded discovery/poll result; no task queue or watcher is retained.
+#[derive(Debug)]
+pub struct TaskWakePage {
+    /// Next page of the same snapshot, or none when the sweep is complete.
+    pub cursor: Option<TaskWakeCursor>,
+    /// Inclusive coordinator revision captured for this sweep.
+    pub through_revision: u64,
+    /// Coordinator events inspected, at most the requested page allowance.
+    pub events_read: u32,
+    /// Distinct currently owned passive tasks polled, at most `events_read`.
+    pub tasks_polled: u32,
+    /// Tasks whose existing authenticated wake slot was filled.
+    pub woken: Vec<TaskId>,
+}
+
 /// A bounded worker turn retains no suspended future or second queue.
 pub enum TaskWorkerOutcome {
     /// Checkpoint retained and reservation released until an authorized wake.
@@ -288,6 +314,49 @@ where
         self.harness
             .open_registered_task(task, fence, journal)
             .await
+    }
+
+    /// Inspects one page of a finite coordinator snapshot and polls its owned
+    /// passive waits. The allowance must be 1..=64. A cursor is only a resume
+    /// hint: each candidate's current owner, wait and command are rechecked.
+    ///
+    /// Pass None to begin a sweep; persist/reuse the returned cursor until None
+    /// marks completion. Start another sweep later to revisit waits that were
+    /// not ready, including timers and inboxes without new coordinator events.
+    /// A failed page may be retried with the same cursor: earlier wake fills are
+    /// idempotent and are not another execution or accounting charge. This page
+    /// bound does not bound the existing resident coordinator's refresh costs.
+    pub async fn poll_task_wake_page(
+        &self,
+        cursor: Option<TaskWakeCursor>,
+        maximum_events: u32,
+    ) -> Result<TaskWakePage> {
+        let page = self
+            .host
+            .workflow_wait_page(
+                cursor.map_or(0, |cursor| cursor.after_revision),
+                cursor.map(|cursor| cursor.through_revision),
+                maximum_events,
+            )
+            .await?;
+        let tasks_polled = u32::try_from(page.tasks.len())
+            .map_err(|_| Error::Storage("wake candidate count exceeds its allowance".into()))?;
+        let mut woken = Vec::new();
+        for task in page.tasks {
+            if self.poll_task_wake(task).await? {
+                woken.push(task);
+            }
+        }
+        Ok(TaskWakePage {
+            cursor: (page.next_revision < page.through_revision).then_some(TaskWakeCursor {
+                after_revision: page.next_revision,
+                through_revision: page.through_revision,
+            }),
+            through_revision: page.through_revision,
+            events_read: page.events_read,
+            tasks_polled,
+            woken,
+        })
     }
 
     /// Polls one durable passive wait and fills its existing authenticated wake

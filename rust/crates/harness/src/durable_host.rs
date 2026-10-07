@@ -55,6 +55,14 @@ struct TimerEvent {
     deadline_unix_ms: u64,
 }
 
+#[cfg(feature = "filesystem")]
+pub(crate) struct WorkflowWaitPage {
+    pub(crate) next_revision: u64,
+    pub(crate) through_revision: u64,
+    pub(crate) events_read: u32,
+    pub(crate) tasks: Vec<TaskId>,
+}
+
 #[derive(Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BatchCancellation {
@@ -645,6 +653,89 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         Ok(())
+    }
+
+    /// One bounded source page, filtered by the current signed owner projection.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn workflow_wait_page(
+        &self,
+        after_revision: u64,
+        through_revision: Option<u64>,
+        limit: u32,
+    ) -> Result<WorkflowWaitPage> {
+        if limit == 0 || limit > 64 {
+            return Err(Error::Invalid("wake page limit is out of bounds".into()));
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        self.verifier.verify_audience(&self.owner)?;
+        self.verifier.verify(&self.owner_scope)?;
+        if !self
+            .owner_scope
+            .capabilities()
+            .contains("operation:observe")
+        {
+            return Err(Error::Unauthorized(
+                "wake discovery requires operation:observe".into(),
+            ));
+        }
+        let through_revision = through_revision.unwrap_or(coordinator.revision());
+        if after_revision > through_revision || through_revision > coordinator.revision() {
+            return Err(Error::Invalid(
+                "wake cursor exceeds its coordinator snapshot".into(),
+            ));
+        }
+        let count = u32::try_from(u64::from(limit).min(through_revision - after_revision))
+            .map_err(|_| Error::Storage("wake page count exceeds its allowance".into()))?;
+        let events = if count == 0 {
+            Vec::new()
+        } else {
+            crate::distributed::read_coordinator_event_page(&self.stream, after_revision, count)
+                .await?
+        };
+        if events.len() != count as usize {
+            return Err(Error::Storage("wake snapshot has missing events".into()));
+        }
+        let mut tasks = BTreeSet::new();
+        for event in events {
+            if !matches!(
+                event.event,
+                crate::scheduler::SchedulerEvent::WorkflowSuspended {
+                    waiting_command: Some(_),
+                    ..
+                }
+            ) {
+                continue;
+            }
+            let operation = coordinator
+                .scheduler()
+                .operation(event.operation_id)
+                .ok_or_else(|| Error::Storage("wake event operation is absent".into()))?;
+            if operation.spec.owner.authority() != &self.owner {
+                continue;
+            }
+            let operation = coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                event.operation_id,
+            )?;
+            if operation.phase == crate::scheduler::OperationPhase::Suspended
+                && !operation.cancellation_requested
+                && operation
+                    .workflow
+                    .as_ref()
+                    .is_some_and(|slot| slot.waiting_command.is_some())
+            {
+                tasks.insert(TaskId::from_bytes(event.operation_id.into_bytes()));
+            }
+        }
+        Ok(WorkflowWaitPage {
+            next_revision: after_revision + u64::from(count),
+            through_revision,
+            events_read: count,
+            tasks: tasks.into_iter().collect(),
+        })
     }
 
     /// Authenticated read of a passive slot; never claims execution ownership.
@@ -2475,6 +2566,159 @@ mod tests {
     struct BatchMachine {
         identity: MachineIdentity,
         schema: Value,
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn wake_discovery_pages_filter_owners_and_recheck_current_cancellation() -> Result<()> {
+        use crate::scheduler::{LeaseFence, Reservation, SchedulerEvent};
+        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+        let payloads = Arc::new(MemoryPayloads::new()?);
+        let owner = Authority {
+            kind: AggregateKind::Task,
+            id: "discovery-owner".into(),
+        };
+        let foreign = Authority {
+            kind: AggregateKind::Task,
+            id: "foreign-owner".into(),
+        };
+        let issuer = AuthorityIssuer::new("discovery", [7; 32], owner.clone());
+        let foreign_issuer = AuthorityIssuer::new("discovery", [8; 32], foreign.clone());
+        let scope = issuer.root(
+            "owner",
+            Capabilities::new(["operation:declare", "operation:observe", "operation:cancel"]),
+        );
+        let foreign_scope = foreign_issuer.root("owner", scope.capabilities().clone());
+        let mut coordinator = DistributedCoordinator::open(&stream, payloads.clone()).await?;
+        for index in 1..=18u8 {
+            let operation = OperationId::from_bytes([index; 16]);
+            let state = payloads.stage(operation, "state", b"null").await?;
+            let fence = LeaseFence {
+                reservation_id: format!("lease-{index}"),
+                placement: "worker".into(),
+            };
+            let events = [
+                SchedulerEvent::Declared {
+                    spec: Box::new(OperationSpec {
+                        operation_id: operation,
+                        parent: None,
+                        owner: DurableOwner::Attached {
+                            authority: if index % 2 == 0 {
+                                foreign.clone()
+                            } else {
+                                owner.clone()
+                            },
+                        },
+                        entrypoint: EntrypointRef {
+                            name: "test.discovery".into(),
+                            version: "1".into(),
+                            digest: [2; 32],
+                            result_schema: serde_json::json!({}),
+                        },
+                        dependencies: BTreeSet::new(),
+                        resources: ResourceRequest::default(),
+                        placement: BTreeMap::new(),
+                        orchestration: Orchestration::Leaf,
+                        state,
+                    }),
+                },
+                SchedulerEvent::WaitingForCapacity {
+                    operation_id: operation,
+                },
+                SchedulerEvent::Admitted {
+                    operation_id: operation,
+                    reservation: Reservation {
+                        id: fence.reservation_id.clone(),
+                        placement: fence.placement.clone(),
+                        admitted: ResourceRequest::default(),
+                    },
+                },
+                SchedulerEvent::Started {
+                    operation_id: operation,
+                    fence: fence.clone(),
+                },
+                SchedulerEvent::WorkflowSuspended {
+                    operation_id: operation,
+                    fence,
+                    workflow_revision: 1,
+                    waiting_command: (index != 1).then_some(OperationId::from_bytes([99; 16])),
+                },
+            ];
+            for (step, event) in events.into_iter().enumerate() {
+                let key = IdempotencyKey::new(format!("discovery-{index}-{step}"))?;
+                if let SchedulerEvent::Declared { spec } = event {
+                    let (authority, signed, verifier) = if index % 2 == 0 {
+                        (&foreign, &foreign_scope, foreign_issuer.verifier())
+                    } else {
+                        (&owner, &scope, issuer.verifier())
+                    };
+                    coordinator
+                        .declare_operation(authority, signed, &verifier, *spec, key)
+                        .await?;
+                } else {
+                    coordinator.apply(operation, key, event).await?;
+                }
+            }
+        }
+        let cancel = |index| SchedulerEvent::CancellationRequested {
+            operation_id: OperationId::from_bytes([index; 16]),
+            recursive: false,
+        };
+        coordinator
+            .apply(
+                OperationId::from_bytes([3; 16]),
+                IdempotencyKey::new("discovery-cancel-3")?,
+                cancel(3),
+            )
+            .await?;
+        let host = CoordinatorTaskHost::new(
+            coordinator,
+            stream.clone(),
+            payloads.clone(),
+            payloads,
+            owner,
+            scope.clone(),
+            issuer.verifier(),
+            RuntimeScope::new(scope.capabilities().clone(), Limits::default())?,
+            TaskRegistry::default(),
+            MachineRegistry::default(),
+            Arc::new(SystemUnixMillisClock),
+        )?;
+        let first = host.workflow_wait_page(0, None, 64).await?;
+        assert_eq!(first.events_read, 64);
+        assert_eq!(first.next_revision, 64);
+        assert_eq!(first.through_revision, 91);
+        assert_eq!(
+            first.tasks,
+            [5, 7, 9, 11].map(|index| TaskId::from_bytes([index; 16]))
+        );
+        host.coordinator
+            .lock()
+            .await
+            .apply(
+                OperationId::from_bytes([17; 16]),
+                IdempotencyKey::new("discovery-cancel-17")?,
+                cancel(17),
+            )
+            .await?;
+        let second = host
+            .workflow_wait_page(first.next_revision, Some(first.through_revision), 64)
+            .await?;
+        assert_eq!(second.events_read, 27);
+        assert_eq!(second.next_revision, 91);
+        assert_eq!(second.through_revision, 91);
+        assert_eq!(
+            second.tasks,
+            [13, 15].map(|index| TaskId::from_bytes([index; 16]))
+        );
+        let finished = host.workflow_wait_page(91, Some(91), 64).await?;
+        assert_eq!(finished.events_read, 0);
+        assert!(finished.tasks.is_empty());
+        let retry = host.workflow_wait_page(64, Some(91), 64).await?;
+        assert_eq!(retry.tasks, second.tasks);
+        let new_snapshot = host.workflow_wait_page(0, None, 1).await?;
+        assert_eq!(new_snapshot.through_revision, 92);
+        Ok(())
     }
 
     impl ResumableMachine for BatchMachine {
