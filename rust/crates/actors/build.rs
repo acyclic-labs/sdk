@@ -1,8 +1,5 @@
 //! Build the Actors descriptor and transport directly from the Rust contract.
 
-#[cfg(feature = "uniffi")]
-uniffi::setup_scaffolding!();
-
 /// Build-time marker used by fallible Protify contract conversions.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ContractError {

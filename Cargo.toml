@@ -3,7 +3,6 @@
 # single product binary are listed explicitly so retired crates cannot return.
 members = [
   "rust/crates/actors",
-  "rust/crates/actors-uniffi",
   "rust/crates/actors-napi",
   "rust/crates/actors-wasm",
   "rust/crates/conformance",

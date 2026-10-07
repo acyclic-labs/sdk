@@ -14,7 +14,7 @@ use protify::*;
 use ts_rs::{Config, ExportError, TS};
 
 #[cfg(kani)]
-#[path = "domain/kani_proofs.rs"]
+#[path = "domain/formal_proofs.rs"]
 mod kani_proofs;
 
 /// A non-empty Actor identity.
@@ -23,11 +23,6 @@ mod kani_proofs;
 #[ts(type = "string & { readonly __brand: unique symbol }")]
 pub struct ActorId(String);
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(ActorId, String, {
-	 lower: |value| value.0,
-	 try_lift: |value| Ok(ActorId::try_from(value)?),
-});
 
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
@@ -35,11 +30,6 @@ uniffi::custom_type!(ActorId, String, {
 #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(CodeSha256, Vec<u8>, {
-	 lower: |value| value.0.to_vec(),
-	 try_lift: |value| Ok(CodeSha256::new(value)?),
-});
 
 /// A strictly positive unsigned 64-bit value.
 ///
@@ -50,11 +40,6 @@ uniffi::custom_type!(CodeSha256, Vec<u8>, {
 #[ts(type = "bigint & { readonly __brand: unique symbol }")]
 pub struct PositiveU64(NonZeroU64);
 
-#[cfg(feature = "uniffi")]
-uniffi::custom_type!(PositiveU64, u64, {
-	 lower: |value| value.get(),
-	 try_lift: |value| Ok(PositiveU64::new(value)?),
-});
 
 /// Failure while constructing a semantic value from customer or wire input.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, thiserror::Error)]
@@ -256,7 +241,6 @@ impl From<CodeSha256> for protify::Bytes {
 /// A lossless invocation header.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Header.ts")]
 #[ts(rename_all = "camelCase")]
@@ -286,7 +270,6 @@ impl Header {
 /// Resource binding admitted by the canonical create/update validators.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
@@ -341,7 +324,6 @@ impl Binding {
 /// Positive limits admitted by the canonical create/update validators.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
@@ -395,7 +377,6 @@ impl ActorLimits {
 /// declaration, preserving cursor zero and the current-head boolean payload.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
 #[ts(type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }")]
@@ -463,15 +444,9 @@ pub mod subscription_start {
         }
     }
 
-    #[cfg(feature = "uniffi")]
-    uniffi::custom_type!(CurrentHeadMarker, bool, {
-        lower: |value| bool::from(value),
-        try_lift: |value| Ok(CurrentHeadMarker::try_from(value)?),
-    });
 
     /// The semantic oneof for [`super::SubscriptionStart`].
     #[proto_oneof(proxied, fallible = DomainError)]
-    #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     pub enum Start {
         /// Start at the exact stream cursor, including cursor zero.
@@ -528,7 +503,6 @@ impl SubscriptionStart {
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
@@ -601,7 +575,6 @@ impl SubscriptionSpec {
 /// than normalized to `Unspecified`.
 #[proto_enum(error = DomainError, unknown = DomainError::UnknownSubscriptionState)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
 #[ts(type = "0 | 1 | 2")]
@@ -618,7 +591,6 @@ pub enum SubscriptionState {
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[proto_enum(error = DomainError, unknown = DomainError::UnknownActorState)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(TS)]
 #[ts(export_to = "actors/ActorState.ts")]
 #[ts(type = "0 | 1 | 2 | 3")]
@@ -637,7 +609,6 @@ pub enum ActorState {
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
 #[proto_enum(error = DomainError, unknown = DomainError::UnknownErrorCode)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
 #[ts(type = "0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10")]
@@ -670,7 +641,6 @@ pub enum ErrorCode {
 /// A service error with a typed known code and lossless message.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
@@ -712,7 +682,6 @@ impl ServiceError {
 /// Lossless semantic view of a subscription observation.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
 #[ts(rename_all = "camelCase")]
@@ -784,7 +753,6 @@ impl SubscriptionObservation {
 /// Lossless semantic view of a server Actor observation.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
 #[ts(rename_all = "camelCase")]
@@ -846,7 +814,6 @@ macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
 	        #[proto_message(proxied, fallible = DomainError)]
 	        #[proto(file = ACTORS_FILE)]
-	        #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
         #[ts(rename_all = "camelCase")]
@@ -878,7 +845,6 @@ actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 /// Create request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -947,7 +913,6 @@ impl CreateActorRequest {
 /// Update request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1020,7 +985,6 @@ impl UpdateActorRequest {
 /// Actor identity rule is applied by this conversion.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1046,7 +1010,6 @@ impl InspectActorRequest {
 /// Add subscription request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1095,7 +1058,6 @@ impl AddSubscriptionRequest {
 /// strings remain unbranded and are carried exactly as received.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1137,7 +1099,6 @@ impl RemoveSubscriptionRequest {
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1180,7 +1141,6 @@ impl ResumeSubscriptionRequest {
 /// applied and the idempotency key remains an ordinary string.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1217,7 +1177,6 @@ impl CheckpointActorRequest {
 /// existing wire contract without adding new validation rules.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1278,7 +1237,6 @@ impl InvokeActorRequest {
 /// Typed invocation response with byte-preserving body and headers.
 #[proto_message(proxied, fallible = DomainError)]
 #[proto(file = ACTORS_FILE)]
-#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
 #[ts(rename_all = "camelCase")]
