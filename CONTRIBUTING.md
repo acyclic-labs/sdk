@@ -46,6 +46,8 @@ Beyond rustfmt and clippy's defaults, the workspace enables an additional lint s
   the panic unreachable.
 - **`unsafe` is opt-in per function**, carrying `#[allow(unsafe_code, reason = "...")]`
   naming the invariant.
+- **Tracing follows [docs/observability.md](docs/observability.md)**: span names, levels,
+  forbidden fields, cost rules, and no `tracing` in wasm32 builds.
 - **Duplication under 3% of tokens** (`jscpd`, config in `.jscpd.json`, not yet wired
   into CI — run manually with `npx jscpd@4.3.0 --config .jscpd.json .`).
 
@@ -73,6 +75,14 @@ warms the full lanes), and every other run restores main's newest entry.
 Successful jobs and their declared outputs may be reused only for the identical
 source tree, manifest semantics, toolchain, lockfile, operating system, and
 architecture.
+
+Every lane's job summary shows the wall time of each top-level `qualify-ci.sh`
+command, the slowest Rust and TypeScript tests with per-binary and per-file
+totals, and sccache hit rates (`scripts/ci-summary.mjs`); the raw JUnit, step,
+and cache files are kept for seven days as the `timings-<lane>` artifact. Linux
+and macOS run Rust tests with pinned cargo-nextest, whose `ci` profile
+(`.config/nextest.toml`) flags tests slower than 30 seconds. Doctests, coverage,
+the serial live-mount suites, and the Windows lane stay on `cargo test`.
 
 The policy lane verifies and runs pinned cargo-deny and gitleaks archives from the
 tool cache. The secret scanner keeps all default rules. Blacksmith's Windows image does

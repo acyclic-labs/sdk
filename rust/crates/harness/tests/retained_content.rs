@@ -1,5 +1,8 @@
 //! Durable content retention across workspace advances, restart, and local GC.
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 #![cfg(feature = "filesystem-local")]
 
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};

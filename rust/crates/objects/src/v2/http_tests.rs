@@ -40,7 +40,10 @@ fn frames<T: Message + Default>(name: &str, bytes: &[u8]) -> Result<Vec<T>, Erro
     }
     Ok(frames)
 }
-#[allow(clippy::too_many_lines)] // Explicit fixture dispatch covers every canonical route in one inventory.
+#[allow(
+    clippy::too_many_lines,
+    reason = "explicit fixture dispatch covers every canonical route in one inventory"
+)]
 async fn operation(
     fixture: &Fixture,
     route: &str,

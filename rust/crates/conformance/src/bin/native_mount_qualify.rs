@@ -807,7 +807,10 @@ fn resolve_existing_ancestor(path: &Path) -> Result<PathBuf, Failure> {
     Ok(resolved)
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     let root = tempfile::tempdir()?;
     let store = root.path().join("store");
@@ -1051,7 +1054,6 @@ async fn add_large_windows_fixture(
     Ok(())
 }
 
-#[allow(clippy::match_same_arms)]
 fn wait_for_watch(
     receiver: &mpsc::Receiver<notify::Result<notify::Event>>,
     sentinel: &Path,
@@ -1063,9 +1065,8 @@ fn wait_for_watch(
             Ok(Ok(event)) if event.paths.iter().any(|path| path == sentinel) => {
                 return Ok(());
             }
-            Ok(Ok(_)) => {}
+            Ok(Ok(_)) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Ok(Err(error)) => last_error = Some(error),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(format!("watcher channel failed: {error}").into()),
         }
     }
@@ -1776,8 +1777,6 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
         loop {
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
-        #[allow(unreachable_code)]
-        Ok::<(), Failure>(())
     })
 }
 

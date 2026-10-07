@@ -1,6 +1,9 @@
 //! Ref-only scheduler completion and aggregate publication against real providers.
 #![cfg(feature = "filesystem")]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::conversation::{

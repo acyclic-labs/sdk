@@ -536,7 +536,6 @@ fn success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> ObjectResult<
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::storage::ObjectKind;

@@ -1,6 +1,9 @@
 //! Linux positional I/O through one owned Compio completion path.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "positional I/O submits raw descriptors to the Compio driver"
+)]
 
 use std::fs::File;
 use std::io;

@@ -494,7 +494,10 @@ impl TaskAdmissionRecord {
     /// Constructs and validates an exact admission envelope from the fields
     /// supplied by an SDK boundary. Identity derivation and all invariants are
     /// deliberately owned here so native and WASM callers share one path.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "flat SDK-boundary constructor taking each envelope field"
+    )]
     pub fn from_parts(
         operation_id: OperationId,
         name: &str,
@@ -4529,7 +4532,10 @@ impl DurableBatchRequest {
     /// Constructs and validates an exact immutable batch envelope from SDK
     /// boundary fields. Inputs and task identities are projected in Rust so
     /// all members and native hosts use the same admission semantics.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "flat SDK-boundary constructor taking each envelope field"
+    )]
     pub fn from_parts(
         group_id: GroupId,
         batch_id: BatchId,

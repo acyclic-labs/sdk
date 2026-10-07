@@ -240,7 +240,10 @@ pub struct WasmSimulatedMachines {
 }
 
 #[wasm_bindgen]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "wasm-bindgen documents the generated JavaScript bindings"
+)]
 impl WasmSimulatedMachines {
     /// Creates an isolated process-local simulator.
     #[wasm_bindgen(constructor)]

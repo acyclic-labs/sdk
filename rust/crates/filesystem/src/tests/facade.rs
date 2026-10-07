@@ -912,7 +912,6 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn facade_helper_state_machines_are_total_and_preserve_typed_failures()
 -> Result<(), Box<dyn std::error::Error>> {
     let file_id = FileId::from_bytes([1; 16]);
@@ -1250,7 +1249,6 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let control = Arc::new(FaultControl::disabled());
@@ -2248,7 +2246,6 @@ fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
 -> Result<(), Box<dyn std::error::Error>> {
     let control = Arc::new(FaultControl::disabled());
@@ -2675,7 +2672,6 @@ fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn every_object_cut_preserves_diff_export_and_merge_preparation()
 -> Result<(), Box<dyn std::error::Error>> {
     let control = Arc::new(FaultControl::disabled());
@@ -2889,7 +2885,6 @@ fn every_object_cut_preserves_authenticated_publication_retry()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn indeterminate_post_append_retry_resolves_one_durable_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let control = Arc::new(FaultControl::disabled());
@@ -2997,7 +2992,6 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -3256,7 +3250,6 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn tracking_reads_capture_only_their_exact_terminal_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -3422,7 +3415,6 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -3679,7 +3671,6 @@ fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_overlap()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -3822,7 +3813,6 @@ fn sparse_local_writes_rebase_across_disjoint_remote_ranges_and_conflict_on_over
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -4018,7 +4008,6 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -4129,7 +4118,6 @@ fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn direct_live_mutations_retry_only_across_exactly_safe_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -4324,7 +4312,6 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn explicit_live_refresh_advances_only_across_unobserved_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -4467,7 +4454,6 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -5323,7 +5309,6 @@ fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -5689,7 +5674,6 @@ fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -5921,7 +5905,6 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -6122,7 +6105,6 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn public_query_and_identity_failures_preserve_the_checkout_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -6621,7 +6603,6 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -6828,7 +6809,6 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -7034,7 +7014,6 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn authored_special_operations_are_profile_exact_and_fail_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -7177,7 +7156,6 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
 -> Result<(), Box<dyn std::error::Error>> {
     let source = Fs::memory();
@@ -7683,7 +7661,6 @@ fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! cancelled {
@@ -7862,7 +7839,6 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -8132,7 +8108,6 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -8754,7 +8729,6 @@ async fn local_facade_shares_bounded_object_acceleration_across_handles()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn public_identity_and_posix_special_surfaces_share_one_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -9398,7 +9372,6 @@ async fn local_facade_waits_per_root_without_serializing_independent_roots()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -9546,7 +9519,6 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -9675,7 +9647,6 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn three_way_merge_combines_independent_directory_bindings_and_publishes()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -9870,7 +9841,6 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
@@ -10058,9 +10028,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     Ok(())
 }
 
-#[allow(clippy::expect_used)]
 #[test]
-#[allow(clippy::too_many_lines)]
 fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = crate::memory::MemoryObjectStore::default();
@@ -10660,7 +10628,6 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let generation_root = ObjectId {
         kind: ObjectKind::GenerationRoot,
@@ -10944,7 +10911,6 @@ fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn st
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn profile_folded_admission_covers_directories_links_and_renames()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -11287,7 +11253,6 @@ fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -11439,7 +11404,6 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn grouped_changes_land_together_and_each_keeps_its_own_result()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -11558,7 +11522,6 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn repeated_lookups_observe_the_base_once_and_still_conflict()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();

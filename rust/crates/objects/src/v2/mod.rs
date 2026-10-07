@@ -90,7 +90,13 @@ mod http_tests;
 mod tests;
 
 /// Generated Objects v2 public request, response and transport bindings.
-#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
+#[allow(
+    missing_docs,
+    clippy::all,
+    clippy::pedantic,
+    clippy::allow_attributes_without_reason,
+    reason = "generated prost and tonic bindings"
+)]
 pub mod wire {
     include!("../generated/acyclic.objects.v2.rs");
 }

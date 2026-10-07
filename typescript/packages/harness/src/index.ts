@@ -35,6 +35,7 @@ export * from "./extension.js";
 export * from "./client.js";
 export * from "./pagination.js";
 export * from "./wire-transport.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
 export * from "./runtime.js";
 export * from "./openai.js";
 export * from "./projection.js";

@@ -6,7 +6,10 @@
 //! as proof that the watched subtree was unchanged. A same-volume checkpoint
 //! write advances the journal itself, so it cannot use this fast path.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "reads the USN journal through Win32 volume control calls"
+)]
 
 use crate::NativeRootIdentity;
 use crate::native_host::HostRoot;

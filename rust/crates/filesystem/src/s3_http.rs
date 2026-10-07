@@ -827,7 +827,10 @@ where
 }
 
 #[async_trait]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the s3s trait implementation maps every supported S3 operation in one impl"
+)]
 impl<R, A, O> S3 for FilesystemS3Adapter<R, A, O>
 where
     R: FilesystemS3Resolver<A, O>,

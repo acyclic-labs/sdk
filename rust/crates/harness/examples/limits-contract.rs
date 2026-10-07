@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::conversation::{
     Limits, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_LIMIT_ATTACHMENTS,

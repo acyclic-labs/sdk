@@ -2147,7 +2147,6 @@ fn authority_success<T>(value: T, work: WorkCounters, budget: WorkBudget) -> Aut
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::kernel::{VolumeCreated, encode_publication_payload, encode_volume_created};

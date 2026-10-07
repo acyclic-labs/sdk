@@ -306,7 +306,6 @@ fn replay_stops_at_the_payload_bound_after_contiguous_progress()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
@@ -582,7 +581,6 @@ fn object_admission_rejects_size_identity_absence_and_batch_bounds()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn defensive_memory_state_failures_are_typed_and_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let authority_id = AuthorityId::from_bytes([40; 16]);
@@ -734,7 +732,6 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn poisoned_memory_locks_reject_every_surface_with_exact_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let authority_id = AuthorityId::from_bytes([46; 16]);

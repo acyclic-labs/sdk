@@ -64,7 +64,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
     Ok(())
 }
 
-#[allow(clippy::expect_used)]
 mod properties {
     use super::*;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};

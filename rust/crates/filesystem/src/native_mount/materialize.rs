@@ -243,7 +243,6 @@ pub(crate) async fn materialize_checkout_with_mode<A: AsyncAuthorityStore, O: As
 /// path are not included in the receipt; the selected node and its subtree
 /// are. Hard links within that subtree retain their shared identity; a link
 /// to a node outside the selected subtree becomes an independent copy.
-#[allow(clippy::too_many_lines)]
 pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     path: &NamespacePath,
@@ -265,7 +264,6 @@ pub async fn materialize_checkout_path<A: AsyncAuthorityStore, O: AsyncObjectSto
 ///
 /// All selected paths share one destination capability, cumulative work
 /// receipt, and file-identity table, preserving hard links across siblings.
-#[allow(clippy::too_many_lines)]
 pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     paths: &[NamespacePath],
@@ -284,7 +282,10 @@ pub async fn materialize_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectSt
     .await
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one traversal materializes every requested path with shared hard-link and budget state"
+)]
 pub(crate) async fn materialize_checkout_paths_with_mode<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -978,7 +979,11 @@ fn recover_live_mount_replacement(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one entry needs the reader, host root, both paths, its record, options, budget, cancellation, and the shared link and pending maps"
+)]
 async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<HostRoot>,
@@ -1221,7 +1226,7 @@ async fn materialize_entry<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "marks the file sparse with DeviceIoControl")]
 fn mark_sparse(file: &File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE};
@@ -1263,8 +1268,14 @@ fn mark_sparse(file: &File) -> std::io::Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "writes one sparse file from the reader under the options, budget, cancellation, and shared receipt"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered pass reads, writes, and punches every extent of the file"
+)]
 async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     path: &NamespacePath,
@@ -1401,7 +1412,6 @@ async fn materialize_sparse_file<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     Ok(metadata)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     reads: Vec<ResolvedFileRangeReadRequest<'_, A, O>>,
@@ -1471,7 +1481,6 @@ fn queue_zero_writes(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn apply_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     reader: &PinnedReader<A, O>,
     host_root: &Arc<HostRoot>,
@@ -1587,7 +1596,10 @@ async fn apply_host_attributes_offloaded(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-#[allow(clippy::unused_async)]
+#[allow(
+    clippy::unused_async,
+    reason = "keeps the async signature of the Linux and macOS variants"
+)]
 async fn apply_host_attributes_offloaded(
     _host_root: &Arc<HostRoot>,
     _host_path: &Path,
@@ -1778,11 +1790,14 @@ fn create_file(
         let file = host_root
             .create_overlapped_file(path)
             .map_err(|error| OperationFailure::new(error.into(), work))?;
+        #[allow(
+            unsafe_code,
+            reason = "adopts the overlapped handle into the native runtime"
+        )]
         // SAFETY: HostRoot created this handle with FILE_FLAG_OVERLAPPED,
         // capability-relative to the authorized root. It is newly created,
         // has no completion-port association, and is moved directly into the
         // sole native I/O owner without any independent file I/O.
-        #[allow(unsafe_code)]
         unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
             .map_err(|error| OperationFailure::new(error.into(), work))
     }
@@ -1795,7 +1810,10 @@ fn create_file(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the failure by value"
+)]
 fn map_engine_failure<E: std::fmt::Display>(
     failure: OperationFailure<E>,
     prior: WorkCounters,
@@ -1914,9 +1932,12 @@ mod windows_name_tests {
         let root = HostRoot::open(directory.path())?;
         let path = Path::new("sparse-control.bin");
         let file = root.create_overlapped_file(path)?;
+        #[allow(
+            unsafe_code,
+            reason = "adopts the overlapped handle into the native runtime"
+        )]
         // SAFETY: the new capability-rooted handle is overlapped, unattached
         // to an IOCP, and moved directly to its sole native owner.
-        #[allow(unsafe_code)]
         let native =
             unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file)? };
         native.control_async(mark_sparse).await?;

@@ -25,7 +25,7 @@
 //! writer's close of a descriptor opened for writing does, so they are
 //! reported then, as NFS reports them (close-to-open).
 
-#![allow(unsafe_code)]
+#![allow(unsafe_code, reason = "watches through the Linux inotify API")]
 
 use super::{Delivery, HostChange};
 use std::collections::{BTreeMap, HashMap};

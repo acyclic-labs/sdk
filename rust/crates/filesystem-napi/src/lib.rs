@@ -51,7 +51,10 @@ use std::sync::Arc;
 
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent capability reported to JavaScript"
+)]
 pub struct NativeCapabilities {
     /// Canonical package version.
     pub version: String,
@@ -1302,7 +1305,10 @@ pub struct NativeOperationWindowCoordinator {
 
 /// One durable workspace-lineage record.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceLineageRecord {
     pub version: u32,
     pub revision: BigInt,
@@ -1316,7 +1322,10 @@ pub struct NativeWorkspaceLineageRecord {
 
 /// One overlapping filesystem-tool lease.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowLease {
     pub workspace_id: Buffer,
     pub lease_id: Buffer,
@@ -1326,7 +1335,10 @@ pub struct NativeOperationWindowLease {
 
 /// Stable, compact operation-window phase projection.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowPhase {
     pub kind: String,
     pub ticket: Option<Buffer>,
@@ -1337,7 +1349,10 @@ pub struct NativeOperationWindowPhase {
 
 /// Result of closing one operation-window lease.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowClose {
     pub kind: String,
     pub remaining: Option<u32>,
@@ -1606,7 +1621,10 @@ pub struct NativeTransactionRebaseResult {
 
 /// One exact transaction dependency conflict.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeTransactionConflict {
     pub region: String,
     pub file_id: Option<Buffer>,
@@ -1623,7 +1641,10 @@ pub struct NativeTransactionConflict {
 
 /// One exact customer-visible path stat without storage topology.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceStat {
     pub file_id: Buffer,
     pub kind: String,
@@ -1634,7 +1655,10 @@ pub struct NativeWorkspaceStat {
 
 /// Scalar cross-profile metadata and opaque-payload presence.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceMetadata {
     pub posix_mode: Option<u32>,
     pub posix_uid: Option<u32>,
@@ -1652,7 +1676,10 @@ pub struct NativeWorkspaceMetadata {
 
 /// One exact encoded directory name.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceName {
     pub encoding: String,
     pub bytes: Buffer,
@@ -1660,7 +1687,10 @@ pub struct NativeWorkspaceName {
 
 /// One child in a bounded directory page.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceDirectoryEntry {
     pub name: NativeWorkspaceName,
     pub file_id: Buffer,
@@ -1669,7 +1699,10 @@ pub struct NativeWorkspaceDirectoryEntry {
 
 /// One bounded authenticated directory page.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceDirectoryPage {
     pub entries: Vec<NativeWorkspaceDirectoryEntry>,
     pub has_more: bool,
@@ -1677,7 +1710,10 @@ pub struct NativeWorkspaceDirectoryPage {
 
 /// One topology-free sparse extent span.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceExtentSpan {
     pub offset: BigInt,
     pub length: BigInt,
@@ -1687,14 +1723,23 @@ pub struct NativeWorkspaceExtentSpan {
 
 /// One bounded topology-free sparse extent plan.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceExtentPlan {
     pub spans: Vec<NativeWorkspaceExtentSpan>,
 }
 
 #[napi]
-#[allow(missing_docs)]
-#[allow(clippy::missing_errors_doc)]
+#[allow(
+    missing_docs,
+    reason = "the read_range, stat, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
+)]
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
+)]
 impl NativeWorkspace {
     /// Canonical customer workspace name.
     #[must_use]
@@ -2281,8 +2326,14 @@ impl NativeJoinPlan {
 }
 
 #[napi]
-#[allow(missing_docs)]
-#[allow(clippy::missing_errors_doc)]
+#[allow(
+    missing_docs,
+    reason = "the read_range, stat, list_directory, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
+)]
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
+)]
 impl NativeGeneration {
     /// Content-addressed generation identity.
     #[must_use]
@@ -3066,7 +3117,10 @@ fn workspace_commit(
 #[napi]
 impl NativeGitCompatRepository {
     /// Opens compatibility state in a private companion namespace.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API owns JavaScript strings and buffers at the ABI boundary"
+    )]
     #[napi(factory)]
     pub fn open(state_root: String, workspace_id: Buffer) -> Result<Self> {
         let workspace_id = WorkspaceId::from_bytes(fixed_16(&workspace_id)?);
@@ -3237,7 +3291,6 @@ impl NativeGitCompatRepository {
     }
 
     /// Records a compatibility commit after ignore-aware generation capture.
-    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub async fn record_commit_json(
         &self,
@@ -3688,7 +3741,10 @@ impl NativeFs {
     /// # Errors
     ///
     /// Returns an error for malformed identities or invalid speculation bounds.
-    #[allow(clippy::needless_pass_by_value)] // N-API owns JavaScript buffers at the ABI boundary.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API owns JavaScript buffers at the ABI boundary"
+    )]
     #[napi]
     pub fn create_speculation(
         &self,
@@ -7064,7 +7120,10 @@ fn native_name(name: &str, config: VolumeConfig) -> Result<LogicalName> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match lowers every native transaction operation"
+)]
 fn native_authored_transaction(
     operation: NativeTransactionOperation,
     config: VolumeConfig,
@@ -7551,7 +7610,10 @@ fn native_workspace_metadata(value: WorkspaceMetadata) -> NativeWorkspaceMetadat
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "consumes the stat it projects into the N-API shape"
+)]
 fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     NativeWorkspaceStat {
         file_id: Buffer::from(value.file_id.into_bytes().to_vec()),
@@ -7562,7 +7624,10 @@ fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "consumes the JavaScript name it validates"
+)]
 fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
@@ -7667,7 +7732,6 @@ fn boundary_budget() -> WorkBudget {
 }
 
 #[cfg(test)]
-#[allow(clippy::large_futures)]
 mod tests {
     use super::*;
 

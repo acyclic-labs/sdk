@@ -444,7 +444,10 @@ async fn load_path_lookups<S: AsyncObjectStore>(
     Ok((paths, path_bytes))
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "loads every identity lookup a plan needs in one bounded pass"
+)]
 async fn load_identity_lookups<S: AsyncObjectStore>(
     context: &FreshnessContext<'_, S>,
     plan: &MutationPlan,
@@ -569,7 +572,10 @@ struct TransactionState {
 }
 
 impl TransactionState {
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "builds the whole transaction state from one validated plan"
+    )]
     fn new(
         plan: &MutationPlan,
         lookups: InitialLookups,
@@ -799,7 +805,10 @@ impl TransactionState {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive simulation over every mutation kind in plan order"
+    )]
     async fn simulate<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -1119,7 +1128,10 @@ impl TransactionState {
         })
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the copy_file_range shape: operation, two offsets, and a length, plus store, config, and cancellation"
+    )]
     async fn clone_regular<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -1148,7 +1160,10 @@ impl TransactionState {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the copy_file_range shape: two identities, two offsets, and a length, plus store, config, and cancellation"
+    )]
     async fn clone_regular_ids<S: AsyncObjectStore>(
         &mut self,
         store: &S,
@@ -1629,9 +1644,10 @@ impl TransactionState {
         Ok((name, bytes))
     }
 
-    // Every caller obtains the operation from a planner-owned `PathState`,
-    // which can only be constructed for a path-bearing mutation.
-    #[allow(clippy::expect_used)]
+    #[allow(
+        clippy::expect_used,
+        reason = "every caller obtains the operation from a planner-owned PathState, which exists only for a path-bearing mutation"
+    )]
     #[allow(
         clippy::indexing_slicing,
         reason = "every caller reaches this only via `clone_terminal_name`, whose `operation` \
@@ -2089,8 +2105,10 @@ fn preflight_generation_mutations(
     Ok(())
 }
 
-// `PathState` is private and exists only for planner-validated path uses.
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "PathState is private and exists only for planner-validated path uses"
+)]
 #[allow(
     clippy::indexing_slicing,
     reason = "every `PathState` is built in `TransactionState::new` from a \

@@ -13,7 +13,11 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 /// Generated tonic client and server surfaces using the canonical Harness messages.
-#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
+#[allow(
+    clippy::pedantic,
+    clippy::allow_attributes_without_reason,
+    reason = "generated tonic bindings"
+)]
 pub mod transport {
     include!(concat!(env!("OUT_DIR"), "/grpc/acyclic.harness.v2.rs"));
 }

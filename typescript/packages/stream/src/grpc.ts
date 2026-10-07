@@ -9,12 +9,14 @@ import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
 
 export interface StreamGrpcOptions {
   readonly endpoint: string;
   readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 
 /** Complete Stream v2 gRPC client, including streaming reads/follow and atomic Commit. */
@@ -29,7 +31,7 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);
   };
-  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  return createClient(StreamService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
 }
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */

@@ -1,4 +1,11 @@
-#![cfg_attr(test, allow(clippy::indexing_slicing, clippy::too_many_lines))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::too_many_lines,
+        reason = "adapter tests run ordered scenarios over fixtures they built"
+    )
+)]
 #![doc = include_str!("../../docs/machines.md")]
 
 mod execution;

@@ -6,13 +6,17 @@ output="$1"
 [[ ! -e "$output" && ! -L "$output" ]] || { echo 'package output must be absent' >&2; exit 2; }
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bun_platform="$(bun -e 'process.stdout.write(process.platform)')"
+work_parent="${TMPDIR:-/tmp}"
 if [[ "$bun_platform" == "win32" ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work_parent="$(wslpath -u "$windows_temp")"
-  work="$(mktemp -d "$work_parent/sdk-harness-package.XXXXXXXX")"
-else
-  work="$(mktemp -d -t sdk-harness-package.XXXXXXXX)"
 fi
+# sccache keys Rust compilations by working directory and source paths, so a
+# fresh mktemp path would miss on every run. A stable per-checkout directory,
+# emptied before and after each run, keeps the package isolated and cached.
+work="$work_parent/sdk-harness-package-$(printf '%s' "$root" | cksum | cut -d' ' -f1)"
+rm -rf -- "$work"
+(umask 077 && mkdir -- "$work")
 trap 'status=$?; rm -rf -- "$work"; exit "$status"' EXIT
 archive="$work/acyclic-harness.tgz"
 # TypeScript resolves the Rust-generated declarations from the package tree.

@@ -355,7 +355,10 @@ async fn write_line(
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::indexing_slicing, clippy::panic)]
+#[allow(
+    clippy::indexing_slicing,
+    reason = "tests index collections whose shape they just built or asserted"
+)]
 mod tests {
     use super::*;
     use tokio::io::AsyncReadExt as _;

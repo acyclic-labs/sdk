@@ -2034,7 +2034,10 @@ mod bindings {
         result
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "used as an Option::map adapter, which hands over the name by value"
+    )]
     fn browser_workspace_name_value(name: LogicalName) -> BrowserWorkspaceName {
         BrowserWorkspaceName {
             encoding: name.encoding().as_str().to_owned(),
@@ -2067,7 +2070,10 @@ mod bindings {
         }
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "consumes the stat it projects into the browser shape"
+    )]
     fn browser_workspace_stat(value: WorkspaceStat) -> BrowserWorkspaceStat {
         BrowserWorkspaceStat {
             file_id: value.file_id.into_bytes().to_vec(),
@@ -2119,7 +2125,10 @@ mod bindings {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    #[allow(clippy::struct_excessive_bools)]
+    #[allow(
+        clippy::struct_excessive_bools,
+        reason = "each flag is one independent capability in the serialized report"
+    )]
     struct Capabilities {
         version: &'static str,
         platform: &'static str,
@@ -2409,7 +2418,10 @@ mod bindings {
     #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
-    #[allow(clippy::struct_field_names)]
+    #[allow(
+        clippy::struct_field_names,
+        reason = "field names match the TypeScript volume-limit keys"
+    )]
     pub struct BrowserVolumeLimits {
         maximum_path_bytes: u32,
         maximum_component_bytes: u32,
@@ -2465,7 +2477,10 @@ mod bindings {
 
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(transparent)]
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "exists only to emit the BrowserPathBatch TypeScript type named by unchecked_param_type"
+    )]
     pub struct BrowserPathBatch(Vec<String>);
 
     #[derive(Deserialize, Serialize, Tsify)]
@@ -3270,7 +3285,10 @@ mod bindings {
         }
 
         /// Validates and canonicalizes a Rust Git output before JS projection.
-        #[allow(clippy::needless_pass_by_value)] // WASM owns JavaScript strings at the ABI boundary.
+        #[allow(
+            clippy::needless_pass_by_value,
+            reason = "WASM owns JavaScript strings at the ABI boundary"
+        )]
         #[wasm_bindgen(js_name = canonicalizeOutputJson)]
         pub fn canonicalize_output_json(&self, value_json: String) -> Result<String, JsValue> {
             canonicalize_git_output_json(&value_json).map_err(js_error)
@@ -3278,7 +3296,10 @@ mod bindings {
 
         /// Validates and canonicalizes a durable pending transition before JS
         /// projection.
-        #[allow(clippy::needless_pass_by_value)] // WASM owns JavaScript strings at the ABI boundary.
+        #[allow(
+            clippy::needless_pass_by_value,
+            reason = "WASM owns JavaScript strings at the ABI boundary"
+        )]
         #[wasm_bindgen(js_name = canonicalizePendingTransitionJson)]
         pub fn canonicalize_pending_transition_json(
             &self,
@@ -6781,7 +6802,10 @@ mod bindings {
             .collect()
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive match lowers every browser transaction operation"
+    )]
     fn authored_transaction(
         operation: TransactionOperation,
         profile: FilesystemProfile,

@@ -18,7 +18,6 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
-#[allow(missing_docs)]
 pub enum StreamErrorCode {
     InvalidPath,
     InvalidArgument,
@@ -40,7 +39,10 @@ fn error_code_str(error: &StreamError) -> &'static str {
     error.code()
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "passed to map_err, which hands over the error by value"
+)]
 fn js_error(error: StreamError) -> JsValue {
     let value = js_sys::Error::new(&error.to_string());
     let _property_result = Reflect::set(

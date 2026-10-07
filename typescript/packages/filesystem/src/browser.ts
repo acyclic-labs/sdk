@@ -13,6 +13,7 @@ import {
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
+export { performanceObserver } from "./observe.js";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;
@@ -34,7 +35,7 @@ export async function openBrowserFs(options: BrowserFsOptions): Promise<FsVolume
   if (options.databaseName.length === 0 || options.maximumObjectBytes <= 0) {
     throw new RangeError("browser filesystem options must be bounded and non-empty");
   }
-  return adaptWasmFs(await (await bindings()).openBrowserFs(options));
+  return adaptWasmFs(await (await bindings()).openBrowserFs(options), options.observer);
 }
 
 /** Opens the canonical Rust merge/publication wire codec. */

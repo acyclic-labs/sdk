@@ -50,6 +50,8 @@ struct State {
     uploads: BTreeMap<String, Upload>,
     receipts: OrdMap<String, Receipt>,
     sequence: u64,
+    /// Body bytes of every stored object, maintained by [`stored_bytes`].
+    object_bytes: usize,
 }
 #[derive(Clone)]
 struct Bucket {
@@ -76,6 +78,51 @@ struct Receipt {
     response: Vec<u8>,
     #[cfg(feature = "local")]
     kind: u32,
+}
+
+/// Updates `next`'s object byte total from `before`'s by walking only the
+/// object subtrees the two states do not share, so quota admission costs the
+/// change, not the store size. Returns that total plus in-progress upload parts.
+fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
+    let sum = |bucket: &Bucket| {
+        bucket.objects.values().try_fold(0_usize, |total, object| {
+            total.checked_add(object.body.len())
+        })
+    };
+    let (mut added, mut removed) = (0_usize, 0_usize);
+    for (name, bucket) in &next.buckets {
+        let Some(old) = before.buckets.get(name) else {
+            added = added.checked_add(sum(bucket)?)?;
+            continue;
+        };
+        for item in old.objects.diff(&bucket.objects) {
+            let (old, new) = match item {
+                imbl::ordmap::DiffItem::Add(_, new) => (0, new.body.len()),
+                imbl::ordmap::DiffItem::Update {
+                    old: (_, old),
+                    new: (_, new),
+                } => (old.body.len(), new.body.len()),
+                imbl::ordmap::DiffItem::Remove(_, old) => (old.body.len(), 0),
+            };
+            added = added.checked_add(new)?;
+            removed = removed.checked_add(old)?;
+        }
+    }
+    for (name, bucket) in &before.buckets {
+        if !next.buckets.contains_key(name) {
+            removed = removed.checked_add(sum(bucket)?)?;
+        }
+    }
+    next.object_bytes = before
+        .object_bytes
+        .checked_add(added)?
+        .checked_sub(removed)?;
+    next.uploads
+        .values()
+        .flat_map(|upload| upload.parts.values())
+        .try_fold(next.object_bytes, |total, (_, body)| {
+            total.checked_add(body.len())
+        })
 }
 
 impl MemoryObjects {
@@ -232,19 +279,7 @@ impl MemoryObjects {
                 .values()
                 .map(|upload| upload.parts.len())
                 .sum::<usize>();
-        let bytes = next
-            .buckets
-            .values()
-            .flat_map(|bucket| bucket.objects.values())
-            .map(|object| object.body.len())
-            .chain(
-                next.uploads
-                    .values()
-                    .flat_map(|upload| upload.parts.values())
-                    .map(|(_, body)| body.len()),
-            )
-            .try_fold(0_usize, usize::checked_add)
-            .ok_or(Error::from(QuotaExceeded))?;
+        let bytes = stored_bytes(guard, &mut next).ok_or(Error::from(QuotaExceeded))?;
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(QuotaExceeded.into());
         }
@@ -395,7 +430,10 @@ fn timestamp() -> Result<prost_types::Timestamp, Error> {
     })
 }
 #[cfg(target_arch = "wasm32")]
-#[allow(clippy::cast_possible_truncation)] // Finite milliseconds are checked within the exact integer range before conversion.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "finite milliseconds are checked within the exact integer range before conversion"
+)]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
     let now = js_sys::Date::now();
     if !now.is_finite() || !(-62_167_219_200_000.0..=253_402_300_799_999.0).contains(&now) {

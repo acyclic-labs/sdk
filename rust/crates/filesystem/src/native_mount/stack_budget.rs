@@ -9,7 +9,10 @@
 //! workspace view and a checkout, over local stores, and fail when a kind
 //! exceeds its budget. Every budget stays a small fraction of the smallest
 //! of those stacks.
-#![allow(unsafe_code, clippy::expect_used)]
+#![allow(
+    unsafe_code,
+    reason = "probes the callback thread's stack with volatile reads below the stack pointer"
+)]
 
 use super::adapter::{CheckoutMountSource, SharedCheckout};
 use super::lazy::LazyMountSource;

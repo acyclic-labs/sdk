@@ -112,7 +112,7 @@ fn sparse_probe(
     })
 }
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "probes copy-on-write cloning with clonefile")]
 fn block_clone_probe(
     directory: &ProbeDirectory,
     cloned_bytes: u64,

@@ -36,7 +36,12 @@ mod wire_codec;
 pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 
 /// Generated canonical Stream v2 protocol.
-#[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
+#[allow(
+    missing_docs,
+    clippy::pedantic,
+    clippy::allow_attributes_without_reason,
+    reason = "generated prost and tonic bindings"
+)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
@@ -997,7 +1002,6 @@ mod token_operation_tests {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod replay_tests {
     use super::*;
     use futures::StreamExt as _;

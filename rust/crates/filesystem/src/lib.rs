@@ -5,13 +5,20 @@
         clippy::indexing_slicing,
         clippy::cognitive_complexity,
         clippy::redundant_clone,
-        clippy::too_many_lines
+        clippy::too_many_lines,
+        reason = "tests index fixtures directly and spell out long scenario matrices"
     )
 )]
 #![doc = include_str!("../README.md")]
 
 /// Generated public gRPC schema and client/server bindings.
-#[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]
+#[allow(
+    missing_docs,
+    clippy::all,
+    clippy::pedantic,
+    clippy::allow_attributes_without_reason,
+    reason = "tonic-build generated code"
+)]
 pub mod wire {
     /// Protocol negotiation shared by every Acyclic service family.
     pub mod protocol {
