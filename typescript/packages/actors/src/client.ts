@@ -1,5 +1,5 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
-import type { MessageInitShape } from "@bufbuild/protobuf";
+import type { Message, MessageInitShape } from "@bufbuild/protobuf";
 import type { GenMessage, GenService } from "@bufbuild/protobuf/codegenv2";
 import {
   AddSubscriptionRequestSchema,
@@ -54,7 +54,7 @@ export type ActorsOperation = Extract<keyof ActorsServiceMethods, string>;
 /** Rust-generated error metadata with the normal JavaScript Error surface. */
 export type ActorsError = Error & Readonly<Record<string, unknown>>;
 
-type ActorsRequest<S extends GenMessage<object>> = MessageInitShape<S>;
+type ActorsRequest<S extends GenMessage<Message>> = MessageInitShape<S>;
 type Assert<T extends true> = T;
 
 /** The Rust-generated request projections must remain directly encodable by Buf. */
@@ -139,7 +139,7 @@ export class ActorsClient {
     return this.call("invokeActor", InvokeActorRequestSchema, InvokeActorResponseSchema, request, signal);
   }
 
-  private async call<I extends object, O extends object>(
+  private async call<I extends Message, O extends Message>(
     operation: ActorsOperation,
     requestSchema: GenMessage<I>,
     responseSchema: GenMessage<O>,

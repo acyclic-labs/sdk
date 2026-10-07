@@ -3,6 +3,7 @@
 /// Files whose contents or dependency selection can change generated
 /// TypeScript or documentation output.
 pub const PATHS: &[&str] = &[
+    "release/cargo-crates.json",
     "rust/crates/actors/src/codegen.rs",
     "rust/crates/actors/src/client.rs",
     "rust/crates/actors/src/contract.rs",

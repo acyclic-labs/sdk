@@ -3,51 +3,15 @@ use std::time::Duration;
 use tonic::Request;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
 
-use crate::MAXIMUM_MESSAGE_BYTES;
 use crate::contract;
 use crate::wire;
+use crate::{DESCRIPTOR, MAXIMUM_MESSAGE_BYTES};
 
-/// Customer-only reflection; no backend descriptors or implementation are packaged.
-pub const DESCRIPTOR: &[u8] = include_bytes!("../inference_descriptor.bin");
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
-
-impl Drop for wire::Item {
-    fn drop(&mut self) {
-        self.payload.zeroize();
-    }
-}
-
-impl Drop for wire::Replace {
-    fn drop(&mut self) {
-        self.payload.zeroize();
-    }
-}
-
-impl Drop for wire::RunEvent {
-    fn drop(&mut self) {
-        scrub_run_event(self);
-    }
-}
-
-impl Drop for wire::RunResult {
-    fn drop(&mut self) {
-        scrub_run_result(self);
-    }
-}
-
-fn scrub_run_event(event: &mut wire::RunEvent) {
-    if let Some(wire::run_event::Event::Output(output)) = event.event.as_mut() {
-        output.zeroize();
-    }
-}
-
-fn scrub_run_result(result: &mut wire::RunResult) {
-    result.output.zeroize();
-}
 
 /// Transport or contract failure. Reuse the same builder to reconcile uncertainty.
 #[derive(Debug, thiserror::Error)]
@@ -201,35 +165,7 @@ impl Inference {
             .list(self.request(wire::ListModelsRequest {})?)
             .await?
             .into_inner();
-        if response.models.is_empty() || response.models.len() > 4_096 {
-            return Err(Error::Invalid("model capability count is invalid"));
-        }
-        let mut names = std::collections::BTreeSet::new();
-        for model in &response.models {
-            let mut retention_profiles = std::collections::BTreeSet::new();
-            if model.model.is_empty()
-                || model.model.len() > 256
-                || !names.insert(model.model.as_str())
-                || fixed::<32>(&model.execution_profile).is_err()
-                || model.maximum_context == 0
-                || model.maximum_output == 0
-                || model.features.is_empty()
-                || model.features.len() > 64
-                || model
-                    .features
-                    .iter()
-                    .any(|feature| feature.is_empty() || feature.len() > 64)
-                || model.retention_profiles.len() > 64
-                || model.retention_profiles.iter().any(|profile| {
-                    fixed::<32>(&profile.profile).is_err()
-                        || profile.minimum_duration_ms == 0
-                        || profile.maximum_duration_ms < profile.minimum_duration_ms
-                        || !retention_profiles.insert(profile.profile.as_slice())
-                })
-            {
-                return Err(Error::Invalid("model capability is invalid"));
-            }
-        }
+        contract::validate_model_capabilities(&response).map_err(contract_error)?;
         Ok(response.models)
     }
 

@@ -70,7 +70,11 @@ case "$lane" in
     # These crates deliberately have independent workspaces; --workspace and
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
-    cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
+    if [[ "$full_qualification" == true ]]; then
+      cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- --include-ignored
+    else
+      cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
+    fi
     if [[ "$full_qualification" != true ]]; then
       cargo test --workspace --locked --lib
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"

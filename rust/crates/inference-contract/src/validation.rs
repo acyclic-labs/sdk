@@ -29,14 +29,14 @@ impl Error {
     }
 }
 
-fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
+pub fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
     if *value == [0; N] {
         return Err(Error::Invalid("zero identity"));
     }
     Ok(())
 }
 
-fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
+pub fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
     let bytes = value
         .try_into()
         .map_err(|_| Error::Invalid("identity length differs"))?;
@@ -46,6 +46,17 @@ fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
 
 /// Validate the bounded model capability inventory, including both retention
 /// profile families advertised by the customer protocol.
+fn validate_profiles(profiles: &[wire::RetentionProfile]) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    profiles.len() <= 64
+        && profiles.iter().all(|profile| {
+            fixed::<32>(&profile.profile).is_ok()
+                && profile.minimum_duration_ms > 0
+                && profile.maximum_duration_ms >= profile.minimum_duration_ms
+                && seen.insert(profile.profile.as_slice())
+        })
+}
+
 pub fn validate_model_capabilities(
     response: &wire::ListModelsResponse,
 ) -> Result<(), Error> {
@@ -54,18 +65,6 @@ pub fn validate_model_capabilities(
     }
     let mut names = std::collections::BTreeSet::new();
     for model in &response.models {
-        let mut retention_profiles = std::collections::BTreeSet::new();
-        let mut idle_profiles = std::collections::BTreeSet::new();
-        let valid_profiles = |profiles: &[wire::RetentionProfile],
-                              seen: &mut std::collections::BTreeSet<&[u8]>| {
-            profiles.len() <= 64
-                && profiles.iter().all(|profile| {
-                    fixed::<32>(&profile.profile).is_ok()
-                        && profile.minimum_duration_ms > 0
-                        && profile.maximum_duration_ms >= profile.minimum_duration_ms
-                        && seen.insert(profile.profile.as_slice())
-                })
-        };
         if model.model.is_empty()
             || model.model.len() > 256
             || !names.insert(model.model.as_str())
@@ -75,8 +74,8 @@ pub fn validate_model_capabilities(
             || model.features.is_empty()
             || model.features.len() > 64
             || model.features.iter().any(|feature| feature.is_empty() || feature.len() > 64)
-            || !valid_profiles(&model.retention_profiles, &mut retention_profiles)
-            || !valid_profiles(&model.idle_kv_profiles, &mut idle_profiles)
+            || !validate_profiles(&model.retention_profiles)
+            || !validate_profiles(&model.idle_kv_profiles)
         {
             return Err(Error::Invalid("model capability is invalid"));
         }
@@ -726,18 +725,26 @@ fn validate_customer_wire_inner(
                 let request = wire::RetainWarmRequest::decode(related)
                     .map_err(|_| Error::Invalid("malformed retention request"))?;
                 validate_retain_request(&request)?;
+                let expected_context = fixed::<32>(expected)?;
+                if request.context.as_slice() != expected_context.as_slice() {
+                    return Err(Error::Invalid("idle retention request identity differs"));
+                }
                 if request.idle_kv.as_ref() != Some(policy) {
                     return Err(Error::Invalid("idle retention policy differs"));
                 }
-                validate_warm_view(&view, Some(fixed::<32>(expected)?), None)
+                validate_warm_view(&view, Some(expected_context), None)
             } else {
                 let request = wire::RenewWarmRequest::decode(related)
                     .map_err(|_| Error::Invalid("malformed renewal request"))?;
                 validate_renew_request(&request)?;
+                let expected_commitment = fixed::<32>(expected)?;
+                if request.commitment.as_slice() != expected_commitment.as_slice() {
+                    return Err(Error::Invalid("idle renewal request identity differs"));
+                }
                 if request.idle_timeout_ms != Some(policy.idle_timeout_ms) {
                     return Err(Error::Invalid("idle renewal timeout differs"));
                 }
-                validate_warm_view(&view, None, Some(fixed::<32>(expected)?))
+                validate_warm_view(&view, None, Some(expected_commitment))
             }
         }
         "mutation_receipt" => validate_receipt(&decode!(wire::MutationReceipt)),
@@ -839,8 +846,40 @@ mod tests {
         );
         // Inspect remains mode-neutral for recovered handles.
         assert!(
+            validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_ok()
+        );
+        assert!(
             validate_customer_wire("warm_commitment", &view.encode_to_vec(), &[1; 32], &[]).is_ok()
         );
+    }
+
+    #[test]
+    fn model_capabilities_validate_idle_kv_profiles() {
+        let profile = wire::RetentionProfile {
+            profile: vec![6; 32],
+            minimum_duration_ms: 1,
+            maximum_duration_ms: 10,
+        };
+        let response = wire::ListModelsResponse {
+            models: vec![wire::ModelCapability {
+                model: "model".to_owned(),
+                execution_profile: vec![1; 32],
+                maximum_context: 1,
+                maximum_output: 1,
+                features: vec!["stream".to_owned()],
+                idle_kv_profiles: vec![profile.clone()],
+                ..Default::default()
+            }],
+        };
+        assert!(validate_model_capabilities(&response).is_ok());
+
+        let mut invalid = response.clone();
+        invalid.models[0].idle_kv_profiles[0].profile = vec![6; 31];
+        assert!(validate_model_capabilities(&invalid).is_err());
+
+        let mut duplicate = response;
+        duplicate.models[0].idle_kv_profiles.push(profile);
+        assert!(validate_model_capabilities(&duplicate).is_err());
     }
 
     #[test]
@@ -898,6 +937,19 @@ mod tests {
             )
             .is_ok()
         );
+        let wrong_context = wire::RetainWarmRequest {
+            context: vec![9; 32],
+            ..request.clone()
+        };
+        assert!(
+            validate_customer_wire(
+                "idle_warm_context",
+                &view.encode_to_vec(),
+                &[2; 32],
+                &wrong_context.encode_to_vec()
+            )
+            .is_err()
+        );
         view.idle_kv
             .as_mut()
             .ok_or("fixture field absent")?
@@ -936,6 +988,19 @@ mod tests {
                 &renewal.encode_to_vec()
             )
             .is_ok()
+        );
+        let wrong_commitment = wire::RenewWarmRequest {
+            commitment: vec![9; 32],
+            ..renewal.clone()
+        };
+        assert!(
+            validate_customer_wire(
+                "idle_warm_commitment",
+                &view.encode_to_vec(),
+                &[1; 32],
+                &wrong_commitment.encode_to_vec()
+            )
+            .is_err()
         );
         view.expires_at_ms = 130;
         assert!(

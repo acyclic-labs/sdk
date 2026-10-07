@@ -430,6 +430,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
 }
 
 #[test]
+#[ignore = "release-only pinned Rustdoc integration; run explicitly during release qualification"]
 fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     let probe = Command::new("rustup")
         .args(["run", "1.98.1", "rustdoc", "--version"])

@@ -214,7 +214,7 @@ chmod +x "$full/bin/rustup" "$full/tools/cargo/bin/cargo-llvm-cov"
 mapfile -t full_cargo_calls <"$full/cargo.log"
 [[ "${#full_cargo_calls[@]}" -eq 4 ]]
 [[ "${full_cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${full_cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked' ]]
+[[ "${full_cargo_calls[1]}" == 'test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- --include-ignored' ]]
 [[ "${full_cargo_calls[2]}" == 'llvm-cov --workspace --all-features --locked --fail-under-lines 70 --lcov --output-path '*'/coverage/lcov.info' ]]
 [[ "${full_cargo_calls[3]}" == 'llvm-cov report --summary-only' ]]
 

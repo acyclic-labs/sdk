@@ -39,6 +39,25 @@ pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-machine
 pub const PROTOCOL_MAJOR: u32 = 1;
 /// Current public protocol minor.
 pub const PROTOCOL_MINOR: u32 = 1;
+
+/// Validates a Machines request protocol version.
+///
+/// Minor revisions are forward-compatible only when they are no newer than
+/// this crate's revision. A missing version and a different major revision
+/// are always invalid. This is the shared rule for transport adapters; the
+/// WASM protobuf decoder applies the same rule at its boundary.
+pub fn validate_protocol(
+    protocol: Option<&wire::ProtocolVersion>,
+) -> Result<(), ProviderError> {
+    let version = protocol
+        .ok_or_else(|| ProviderError::Invalid("protocol version is missing".into()))?;
+    if version.major != PROTOCOL_MAJOR || version.minor > PROTOCOL_MINOR {
+        return Err(ProviderError::Invalid(
+            "unsupported Machines protocol version".into(),
+        ));
+    }
+    Ok(())
+}
 /// Maximum machines returned in one page.
 pub const MAX_PAGE_SIZE: u32 = 256;
 /// Maximum children admitted by one fork request.

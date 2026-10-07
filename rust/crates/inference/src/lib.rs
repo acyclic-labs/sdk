@@ -4,6 +4,13 @@
 /// Transport-independent contract crate, including the sole generated wire
 /// type universe and shared validation implementation.
 pub use acyclic_inference_contract as contract;
+#[cfg(feature = "host")]
+#[allow(missing_docs, unused_qualifications, clippy::all, clippy::pedantic)]
+pub mod wire {
+    pub use acyclic_inference_contract::wire::*;
+    include!(concat!(env!("OUT_DIR"), "/inference.customer.v1.rs"));
+}
+#[cfg(not(feature = "host"))]
 pub use acyclic_inference_contract::wire;
 #[cfg(feature = "http-codec")]
 pub mod http_codec;

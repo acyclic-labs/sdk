@@ -27,18 +27,29 @@ impl Drop for wire::Replace {
 
 impl Drop for wire::RunEvent {
     fn drop(&mut self) {
-        if let Some(wire::run_event::Event::Output(output)) = self.event.as_mut() {
-            output.zeroize();
-        }
+        scrub_run_event(self);
     }
 }
 
 impl Drop for wire::RunResult {
     fn drop(&mut self) {
-        self.output.zeroize();
+        scrub_run_result(self);
     }
 }
 
+/// Zeroize a run event's output bytes before releasing it.
+pub fn scrub_run_event(event: &mut wire::RunEvent) {
+    if let Some(wire::run_event::Event::Output(output)) = event.event.as_mut() {
+        output.zeroize();
+    }
+}
+
+/// Zeroize a run result's output bytes before releasing it.
+pub fn scrub_run_result(result: &mut wire::RunResult) {
+    result.output.zeroize();
+}
+
+#[allow(missing_docs)]
 mod validation;
 
 /// Backwards-compatible name for callers that used the contract crate's
@@ -49,7 +60,7 @@ pub use validation::{
     evaluation_observation_binding, fixed, nonzero, validate_context_view,
     validate_customer_wire, validate_evaluation_admission, validate_evaluation_spec,
     validate_evaluation_view, validate_generated_run_view, validate_model_capabilities,
-    validate_provenance, validate_receipt, validate_retain_request, validate_run_view,
+    validate_receipt, validate_retain_request, validate_run_view,
     validate_warm_view, validate_renew_request, watch_run_event, watch_run_start,
     watch_run_start_state_wire, watch_run_start_wire, Error, WatchRunState,
     MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,

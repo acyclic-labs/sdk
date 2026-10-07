@@ -76,3 +76,6 @@ fn enum_numeric_mappings_are_inverse_and_lossless() {
     let actor_raw: i32 = kani::any();
     assert_actor_state_mapping(actor_raw);
 
+    let error_raw: i32 = kani::any();
+    assert_error_code_mapping(error_raw);
+}
