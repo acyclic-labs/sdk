@@ -435,6 +435,12 @@ pub mod subscription_start {
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
     pub struct CurrentHeadMarker;
 
+    impl Default for CurrentHeadMarker {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl CurrentHeadMarker {
         #[must_use]
         pub const fn new() -> Self {
