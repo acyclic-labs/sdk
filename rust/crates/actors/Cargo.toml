@@ -11,23 +11,44 @@ readme = "README.md"
 
 [dependencies]
 prost.workspace = true
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
-reqwest.workspace = true
 serde_json.workspace = true
+ts-rs = "=12.0.1"
 thiserror.workspace = true
-tonic.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "sync"] }
+tokio-util = { version = "=0.7.19", features = ["rt"] }
 tonic-prost.workspace = true
+uniffi = { version = "=0.31.0", optional = true }
 
-[dev-dependencies]
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+reqwest.workspace = true
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport", "tls-ring", "tls-webpki-roots"] }
+tracing.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen"] }
+tonic-web-wasm-client = "=0.9.2"
+url = "=2.5.8"
+
+[features]
+default = []
+uniffi = ["dep:uniffi"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-workers = { path = "../workers" }
 tokio.workspace = true
 rcgen = "0.14.10"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-tracing.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tracing-subscriber.workspace = true
+
+[build-dependencies]
+prost = "=0.14.4"
+protoc-bin-vendored = "=3.2.0"
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+tonic-prost-build = "=0.14.6"
+ts-rs = "=12.0.1"
+thiserror.workspace = true
+uniffi = "=0.31.0"
 
 [lints]
 workspace = true
