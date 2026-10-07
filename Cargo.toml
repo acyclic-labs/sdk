@@ -69,7 +69,7 @@ s3s = "0.17.0"
 schemars = "1"
 serde-wasm-bindgen = "0.6.5"
 serde_urlencoded = "0.7.1"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 thiserror = "2.0.17"
 subtle = "2.6.1"
 sync_wrapper = { version = "=1.0.2", features = ["futures"] }
