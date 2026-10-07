@@ -379,3 +379,5 @@ asset619087758 fs-native-archive-current-c8-independent-20261007b.tgz9514990byte
 asset619087764 filesystem-7cef-backup-20261007.json explicitlydiagnosticWindowscohort.
 Draftstatusverifiedtrue; no release/registrypublication. DiskcurrentlyC229.9GiB/Q303GiBfree.
 No newmerge. Goal active, broadlanguage/streaming/docs/sourcecoverage stillincomplete.
+
+Root independently found and reviewer reproduced a public TypeScript brand-construction gap: installed package exports no runtime ActorId, CodeSha256 or PositiveU64 constructors; internal import is blocked; no-cast consumer fails. Native and browser invalid inputs are correctly Rust-rejected without network, but public Rust-backed constructors remain a merge gate. Actors WIP is verified remotely at 098e93f31884e45f5d44e096175f073fd88e977d. Kotlin now has real macOS JVM qualification; Swift Linux remains viable and outstanding, not excluded merely for missing tools.

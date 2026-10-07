@@ -1,0 +1,10 @@
+connect_ca=PASS
+create_actor=PASS
+update_actor=PASS
+inspect_actor=PASS
+add_subscription=PASS
+remove_subscription=PASS
+resume_subscription=PASS
+checkpoint_actor=PASS
+invoke_actor=PASS
+RUBY_CURRENT_C8_GENERIC_ALL8_PASS

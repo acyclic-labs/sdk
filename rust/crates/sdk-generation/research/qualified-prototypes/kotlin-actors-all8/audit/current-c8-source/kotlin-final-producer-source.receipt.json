@@ -1,0 +1,96 @@
+{
+  "schema": "acyclic.kotlin.jvm.final-producer-source-receipt.v1",
+  "source_root": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+  "source_commit": "77997805785e8a61f1bf7580ca273e992caee740",
+  "source_worktree_dirty": true,
+  "source_files_sha256": {
+    "Cargo.toml": "FF6CB85EB59BFF8651DFA226AFC4703E17A12086FFE07BDA7D68F983BF073BB0",
+    "Cargo.lock": "7C8703075B8C8DB0F6298CDF876E6741C7D285B3A6E71C879A4B65ECCFB02206",
+    "rust/crates/actors/Cargo.toml": "47C64A09C21007E95DFA52615989D6BF4A645237037E21683FBBEF484EB14927",
+    "rust/crates/actors/src/lib.rs": "12953671CAD77738DB59068976FFAFB47121BEEDD27B215D6B57F99CE9A5F68A",
+    "rust/crates/actors/src/domain.rs": "E57A58E294E96EB2B8A16A2C42326CAAB82D782628BD1804B227490194A828BF",
+    "rust/crates/actors/src/client.rs": "F87E60096E056D672869090765C8A7A09D9EE6929DFAFFC035D858EB5B85E35A",
+    "rust/crates/actors/src/codegen.rs": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6",
+    "rust/crates/actors/src/contract.rs": "735E6CE63A46319700A92C08C32E0AB1FFD35CB99630369BBB05C5C6F5B79275",
+    "rust/crates/actors/src/contract_definitions.rs": "8F763C6BB965BE2DF0C18DE5E041E644F542DE71D61D1A94936218EC556F8CB0",
+    "rust/crates/actors/build.rs": "62A34C706F3E457E81F785E88EE88C4ABCEF177A2144D78CC9E293289A865E54"
+  },
+  "facade_files_sha256": {
+    "rust/crates/actors-uniffi/Cargo.toml": "F2C346FFA95C14D873C3AEF1C2030EADA750768BDD63F9F493B0C78A71D070E7",
+    "rust/crates/actors-uniffi/src/lib.rs": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+    "rust/crates/actors-uniffi/UNIFFI-DOMAIN-CONTRACT.md": "4E2BB38E384601153914B9EDB6EEBF30E14FE545A4FC7DE6DDADB8C822CF8F26"
+  },
+  "final_semantic_producer": {
+    "domain_module": "rust/crates/actors/src/domain.rs",
+    "semantic_export_roots": [
+      "PositiveU64",
+      "ErrorCode",
+      "ServiceError",
+      "CreateActorRequest",
+      "UpdateActorRequest",
+      "InspectActorRequest",
+      "AddSubscriptionRequest",
+      "RemoveSubscriptionRequest",
+      "ResumeSubscriptionRequest",
+      "CheckpointActorRequest",
+      "InvokeActorRequest",
+      "CreateActorResponse",
+      "UpdateActorResponse",
+      "InspectActorResponse",
+      "AddSubscriptionResponse",
+      "RemoveSubscriptionResponse",
+      "ResumeSubscriptionResponse",
+      "CheckpointActorResponse",
+      "InvokeActorResponse"
+    ],
+    "operation_methods": [
+      "create_actor",
+      "update_actor",
+      "inspect_actor",
+      "add_subscription",
+      "remove_subscription",
+      "resume_subscription",
+      "checkpoint_actor",
+      "invoke_actor"
+    ],
+    "http_routes": {
+      "createActor": "v1/actors/create",
+      "updateActor": "v1/actors/update",
+      "inspectActor": "v1/actors/inspect",
+      "addSubscription": "v1/actors/subscriptions/add",
+      "removeSubscription": "v1/actors/subscriptions/remove",
+      "resumeSubscription": "v1/actors/subscriptions/resume",
+      "checkpointActor": "v1/actors/checkpoint",
+      "invokeActor": "v1/actors/invoke"
+    },
+    "extraction": [
+      "domain.rs: export_roots! macro used by export_typescript",
+      "client.rs: operation! macro declarations",
+      "lib.rs: HTTP_ROUTES"
+    ]
+  },
+  "uniffi_contract": {
+    "feature_present": true,
+    "semantic_root_gaps": [],
+    "status": "ready-for-cargo-check"
+  },
+  "current_cutover_gap": {
+    "actors_uniffi_present": true,
+    "required_integration": [
+      "add a maintained UniFFI facade that depends on acyclic-actors by path",
+      "replace duplicate Kotlin type and operation tables with producer metadata extraction",
+      "hash the producer closure and Cargo lock at generation time",
+      "derive Maven version from Cargo metadata and retain standard JNA resource roots"
+    ]
+  },
+  "exact_jar": {
+    "path": "Q:\\sdk\\work\\actors-uniffi-actors-c8-nominal-20261007\\consumer\\target\\acyclic-actors-uniffi-kotlin-0.2.0.jar",
+    "sha256": "C394AC6A30F0ED07654F34A8B42359E729B3E759C4240E04B5EC3ED799141AD8",
+    "standard_jna_resource_prefixes": {
+      "linux-x86-64/": true,
+      "win32-x86-64/": true,
+      "darwin-aarch64/": true
+    },
+    "no_custom_loader_claim": true
+  }
+}

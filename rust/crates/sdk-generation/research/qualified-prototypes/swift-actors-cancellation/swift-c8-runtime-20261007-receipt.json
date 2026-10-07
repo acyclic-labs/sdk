@@ -1,0 +1,64 @@
+{
+  "cohort": "swift-main-c8-runtime-20261007",
+  "status": "PASS_WINDOWS_MACOS_ALL19_BOUNDARIES_AND_WINDOWS_TASK_CANCEL",
+  "historical_receipts_preserved": true,
+  "producer": {
+    "workspace": "Q:/sdk/work/sdkgen-actors-c8-minimal",
+    "source_revision": "84a508449ea247297a0170db67377dd65a1baa41",
+    "source_revision_subject": "Select native Actors artifacts from package metadata",
+    "source_revision_is_old_nominal_snapshot": false,
+    "semantic_marker": "CurrentHeadMarker",
+    "maintained_rust_bridge": "validate_current_head_marker delegates to validate_current_head; Rust CurrentHeadMarker::try_from remains canonical",
+    "actors_uniffi_lib_rs_sha256_current": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E"
+  },
+  "maintained_generator": {
+    "workspace": "Q:/sdk/work/uniffi-swift-oss-prototype/source",
+    "source_revision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "CustomType.swift_sha256": "10A58FB8890C0D2DF102F45E1330BB2ABBB20938A9C8FC2803652C7A0C9B4035",
+    "EnumTemplate.swift_sha256": "C0E66A925F2DB14035C3C80BB3C84E8E2E7F9E2ACD9D41D5EA6469CC47082E81",
+    "patch_scope": "unit-returning Rust validators are called before assigning nominal wrapper rawValue; CurrentHeadMarker factory validates Rust-owned true marker and emits the generated custom field",
+    "config": "generate_immutable_records=true; generate_nominal_custom_types=true; validated_enum_variants=[Start.CurrentHead]",
+    "config_sha256": "3E86798BF102A929B69C25431D5CA9E0BF29E21977E20F4F82640663DF30B8E3"
+  },
+  "fixture": {
+    "source": "Q:/sdk/work/swift-actors-c8-runtime-20261007/fixture/c8-boundary-fixture.mjs",
+    "sha256": "D99F2BDE7BB9FDA5DB66DDEACDAAC9F096361435987A8AD3CBB5CE0AA192416E",
+    "inputs": ["u64::MIN", "2^63", "u64::MAX", "PositiveU64::MAX"],
+    "tls": true,
+    "endpoint_was_task_owned": true,
+    "cleanup": "fixture and SSH tunnel stopped after each run"
+  },
+  "windows": {
+    "toolchain": "Swift 6.4.0+Asserts",
+    "native_dll_actual_loaded_path": "Q:/sdk/work/swift-actors-c8-runtime-20261007/windows/consumer/Native/windows-x86_64/acyclic_actors_uniffi.dll",
+    "native_dll_actual_loaded_sha256": "C8342862411F3078359B2B25BCA172D2E94004B3995ABCA5526FE53461AE27B3",
+    "native_import_lib_sha256": "46F6E7213830F78712EACCC49253858CC6CDE81BA3BA654CE619B04A4D81EBAE",
+    "generated_swift_sha256": "699903753C4E4C378E6D05F36917F7BD51D797A9AB0F9D30033F24324DA35140",
+    "generated_uniffi_swift_sha256": "CC419003CCB5A1BA006B2298C52A37FB3955299C41573AB6B3C9255C4D496855",
+    "consumer_executable_sha256": "DED7E190D2911AE754B634C5D03F0AED80B61E6256542D337387AE13B0772DDF",
+    "consumer_source_sha256": "BFAFF543ECF030AF3161127C82346B4991F8CD2237F62F47385E74737FBD1B05",
+    "all19_runtime": "PASS",
+    "task_cancel": "PASS: Task.cancel produced CancellationError; fixture observed one active request abort and active returned to zero"
+  },
+  "macos_ivar": {
+    "toolchain": "Apple Swift 6.1.2, arm64-apple-macosx15.0",
+    "native_dylib_actual_loaded_path": "/Users/var/swift-c8-runtime-20261007-mac/Native/libacyclic_actors_uniffi.dylib",
+    "native_dylib_sha256": "4b7b9e3b601972b7a4f983010ef241e35dc08a15b3ec28d34caeb595a615c21b",
+    "generated_swift_sha256": "699903753c4e4c378e6d05f36917f7bd51d797a9ab0f9d30033f24324da35140",
+    "generated_uniffi_swift_sha256": "cc419003ccb5a1ba006b2298c52a37fb3955299c41573ab6b3c9255c4d496855",
+    "consumer_executable_sha256": "5139af67306a8025fe02050eb63c72c5c45f455b6ed5e086ccbaed52798863b0",
+    "all19_runtime": "PASS",
+    "task_cancel": "not_qualified: Windows task-owned cancellation fixture passed; the separate macOS reverse-tunnel cancellation attempt lost the TLS transport before request admission, so no cancellation claim is made for macOS"
+  },
+  "linux": {
+    "status": "excluded",
+    "evidence": "available Swift toolchains were Windows 6.4 and macOS ivar 6.1.2; no Linux Swift host/toolchain was available in this qualification lane"
+  },
+  "claims": [
+    "nominal ActorId, CodeSha256, PositiveU64 wrappers call Rust validators and reject empty/short/zero inputs",
+    "readonly generated records compiled and ran",
+    "CurrentHead is generated from the Rust-owned CurrentHeadMarker factory and accepts only the Rust-validated marker",
+    "all19 roots and all eight service operations were exercised against the same boundary fixture",
+    "no historical receipt was retagged"
+  ]
+}

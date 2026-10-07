@@ -1,0 +1,310 @@
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/gen_ruby/mod.rs /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/gen_ruby/mod.rs
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/gen_ruby/mod.rs	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/gen_ruby/mod.rs	2026-10-07 16:42:51
+@@ -8,6 +8,7 @@
+ use heck::{ToShoutySnakeCase, ToSnakeCase, ToUpperCamelCase};
+ use serde::{Deserialize, Serialize};
+ use std::borrow::Borrow;
++use std::collections::{HashMap, HashSet};
+ 
+ use crate::interface::*;
+ 
+@@ -82,8 +83,16 @@
+ pub struct Config {
+     pub(super) cdylib_name: Option<String>,
+     cdylib_path: Option<String>,
++    #[serde(default)]
++    pub(super) custom_types: HashMap<String, CustomTypeConfig>,
+ }
+ 
++#[derive(Debug, Clone, Default, Serialize, Deserialize)]
++pub struct CustomTypeConfig {
++    pub nominal: Option<bool>,
++    pub validator: Option<String>,
++}
++
+ impl Config {
+     pub fn cdylib_name(&self) -> String {
+         self.cdylib_name
+@@ -110,6 +119,22 @@
+     pub fn new(config: Config, ci: &'a ComponentInterface) -> Self {
+         Self { config, ci }
+     }
++
++    /// Namespaces that own types imported by this component. Ruby emits one file per
++    /// component, so imported converters must be resolved through the owning module.
++    pub fn external_namespaces(&self) -> Vec<String> {
++        let mut namespaces = HashSet::new();
++        for ty in self.ci.iter_external_types() {
++            if let Ok(namespace) = self.ci.namespace_for_type(ty) {
++                if namespace != self.ci.namespace() {
++                    namespaces.insert(namespace.to_string());
++                }
++            }
++        }
++        let mut namespaces: Vec<_> = namespaces.into_iter().collect();
++        namespaces.sort();
++        namespaces
++    }
+ }
+ 
+ mod filters {
+@@ -252,7 +277,9 @@
+                     )
+                 }
+             }
+-            Type::Custom { .. } => panic!("No support for custom types, yet"),
++            // Custom values are nominal Ruby wrappers. Their constructor performs
++            // any configured Rust validator; coercion keeps the wrapper intact.
++            Type::Custom { .. } => nm.to_string(),
+         })
+     }
+ 
+@@ -275,6 +302,10 @@
+                 class_name_rb(&canonical_name(type_), &())?,
+                 nm
+             ),
++            Type::Custom { name, .. } => format!(
++                "({}.uniffi_check_lower {nm})",
++                class_name_rb(name, &())?
++            ),
+             _ => "".to_owned(),
+         })
+     }
+@@ -315,7 +346,10 @@
+                 class_name_rb(&canonical_name(type_), &())?,
+                 nm
+             ),
+-            Type::Custom { .. } => panic!("No support for lowering custom types, yet"),
++            Type::Custom { name, .. } => format!(
++                "RustBuffer.alloc_from_{}({nm})",
++                class_name_rb(name, &())?
++            ),
+         })
+     }
+ 
+@@ -360,7 +394,12 @@
+                 nm,
+                 class_name_rb(&canonical_name(type_), &())?
+             ),
+-            Type::Custom { .. } => panic!("No support for lifting custom types, yet"),
++            Type::Custom { name, builtin, .. } => format!(
++                "{}.new({}.consumeInto{})",
++                class_name_rb(name, &())?,
++                nm,
++                class_name_rb(&canonical_name(builtin), &())?
++            ),
+         })
+     }
+ }
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/CustomTypeTemplate.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/CustomTypeTemplate.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/CustomTypeTemplate.rb	1970-01-01 01:00:00
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/CustomTypeTemplate.rb	2026-10-07 16:36:40
+@@ -0,0 +1,36 @@
++{# Generic nominal wrapper for a Rust-owned custom type. The wire representation
++   remains the canonical builtin type; only the Ruby API gains a checked value
++   object. Validators are configured by binding metadata, never handwritten per
++   Actors operation. #}
++class {{ name|class_name_rb }}
++  attr_reader :value
++
++  def initialize(value)
++    value = {{ "value"|coerce_rb(ci.namespace()|class_name_rb, builtin) }}
++    {%- match config.custom_types.get(name.as_str()) %}
++    {%- when Some with (custom_config) %}
++    {%- match custom_config.validator %}
++    {%- when Some with (validator) %}
++    {{ ci.namespace()|class_name_rb }}Uniffi.{{ validator }}(value)
++    {%- when None %}
++    {%- endmatch %}
++    {%- when None %}
++    {%- endmatch %}
++    @value = value
++  end
++
++  def ==(other)
++    other.is_a?(self.class) && other.value == @value
++  end
++
++  def self.uniffi_check_lower(value)
++    unless value.is_a?(self)
++      raise TypeError.new "Expected a {{ name|class_name_rb }} instance, got #{value}"
++    end
++  end
++
++  def self.uniffi_lower(value)
++    uniffi_check_lower(value)
++    value.value
++  end
++end
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/EnumTemplate.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/EnumTemplate.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/EnumTemplate.rb	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/EnumTemplate.rb	2026-10-07 16:31:53
+@@ -17,19 +17,19 @@
+   {% for variant in e.variants() -%}
+   class {{ variant.name()|enum_name_rb }}
+     {% if variant.has_fields() %}
+-    attr_reader {% for field in variant.fields() %}:{{ field.name()|var_name_rb }}{% if loop.last %}{% else %}, {% endif %}{%- endfor %}
++    attr_reader {% for field in variant.fields() %}{% if field.name() == "" %}:field_{{ loop.index0 }}{% else %}:{{ field.name()|var_name_rb }}{% endif %}{% if loop.last %}{% else %}, {% endif %}{%- endfor %}
+     {% endif %}
+-    def initialize({% for field in variant.fields() %}{{ field.name()|var_name_rb }}{% if loop.last %}{% else %}, {% endif %}{% endfor %})
++    def initialize({% for field in variant.fields() %}{% if field.name() == "" %}field_{{ loop.index0 }}{% else %}{{ field.name()|var_name_rb }}{% endif %}{% if loop.last %}{% else %}, {% endif %}{% endfor %})
+       {% if variant.has_fields() %}
+       {%- for field in variant.fields() %}
+-      @{{ field.name()|var_name_rb }} = {{ field.name()|var_name_rb }}
++      {% if field.name() == "" %}@field_{{ loop.index0 }} = field_{{ loop.index0 }}{% else %}@{{ field.name()|var_name_rb }} = {{ field.name()|var_name_rb }}{% endif %}
+       {%- endfor %}
+       {% else %}
+       {% endif %}
+     end
+ 
+     def to_s
+-      "{{ e.name()|class_name_rb }}::{{ variant.name()|enum_name_rb }}({% for field in variant.fields() %}{{ field.name() }}=#{@{{ field.name() }}}{% if loop.last %}{% else %}, {% endif %}{% endfor %})"
++      "{{ e.name()|class_name_rb }}::{{ variant.name()|enum_name_rb }}({% for field in variant.fields() %}{% if field.name() == "" %}field_{{ loop.index0 }}=#{@field_{{ loop.index0 }}}{% else %}{{ field.name() }}=#{@{{ field.name() }}}{% endif %}{% if loop.last %}{% else %}, {% endif %}{% endfor %})"
+     end
+ 
+     def ==(other)
+@@ -37,7 +37,7 @@
+         return false
+       end
+       {%- for field in variant.fields() %}
+-      if @{{ field.name()|var_name_rb }} != other.{{ field.name()|var_name_rb }}
++      {% if field.name() == "" %}if @field_{{ loop.index0 }} != other.field_{{ loop.index0 }}{% else %}if @{{ field.name()|var_name_rb }} != other.{{ field.name()|var_name_rb }}{% endif %}
+         return false
+       end
+       {%- endfor %}
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferBuilder.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferBuilder.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferBuilder.rb	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferBuilder.rb	2026-10-07 16:31:54
+@@ -180,7 +180,7 @@
+     if v.{{ variant.name()|var_name_rb }}?
+       pack_into(4, 'l>', {{ loop.index }})
+       {%- for field in variant.fields() %}
+-      self.write_{{ self::canonical_name(field.as_type().borrow()).borrow()|class_name_rb }}(v.{{ field.name() }})
++      {% if field.name() == "" %}self.write_{{ self::canonical_name(field.as_type().borrow()).borrow()|class_name_rb }}(v.field_{{ loop.index0 }}){% else %}self.write_{{ self::canonical_name(field.as_type().borrow()).borrow()|class_name_rb }}(v.{{ field.name() }}){% endif %}
+       {%- endfor %}
+     end
+     {%- endfor %}
+@@ -231,6 +231,12 @@
+       write_String(k)
+       self.write_{{ self::canonical_name(inner_type).borrow()|class_name_rb }}(v)
+     end
++  end
++
++  {% when Type::Custom { name, builtin, .. } -%}
++  # The nominal custom type {{ name }} uses its canonical builtin wire value.
++  def write_{{ canonical_type_name }}(v)
++    self.write_{{ self::canonical_name(builtin).borrow()|class_name_rb }}(v.value)
+   end
+ 
+   {%- else -%}
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferStream.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferStream.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferStream.rb	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferStream.rb	2026-10-07 16:31:54
+@@ -289,6 +289,12 @@
+ 
+     items
+   end
++
++  {% when Type::Custom { name, builtin, .. } -%}
++  # The nominal custom type {{ name }} uses its canonical builtin wire value.
++  def read{{ canonical_type_name }}
++    {{ name|class_name_rb }}.new(read{{ self::canonical_name(builtin).borrow()|class_name_rb }})
++  end
+   {%- else -%}
+   # This type is not yet supported in the Ruby backend.
+   def read{{ canonical_type_name }}
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferTemplate.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferTemplate.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/RustBufferTemplate.rb	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/RustBufferTemplate.rb	2026-10-07 16:31:55
+@@ -157,7 +157,7 @@
+     {%- for variant in e.variants() %}
+     if v.{{ variant.name()|var_name_rb }}?
+       {%- for field in variant.fields() %}
+-        {{ "v.{}"|format(field.name())|check_lower_rb(field.as_type().borrow()) }}
++        {% if field.name() == "" %}{{ "v.field_{}"|format(loop.index0)|check_lower_rb(field.as_type().borrow()) }}{% else %}{{ "v.{}"|format(field.name())|check_lower_rb(field.as_type().borrow()) }}{% endif %}
+       {%- endfor %}
+       return
+     end
+@@ -231,6 +231,25 @@
+       {{ "k"|check_lower_rb(k.borrow()) }}
+       {{ "v"|check_lower_rb(inner_type.borrow()) }}
+     end
++  end
++
++  def self.alloc_from_{{ canonical_type_name }}(v)
++    RustBuffer.allocWithBuilder do |builder|
++      builder.write_{{ canonical_type_name }}(v)
++      return builder.finalize
++    end
++  end
++
++  def consumeInto{{ canonical_type_name }}
++    consumeWithStream do |stream|
++      return stream.read{{ canonical_type_name }}
++    end
++  end
++
++  {% when Type::Custom { name, .. } -%}
++  # The nominal custom type {{ name }} preserves its Rust-defined wrapper.
++  def self.check_lower_{{ canonical_type_name }}(v)
++    {{ name|class_name_rb }}.uniffi_check_lower(v)
+   end
+ 
+   def self.alloc_from_{{ canonical_type_name }}(v)
+diff -ruN --exclude target /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/wrapper.rb /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/wrapper.rb
+--- /tmp/uniffi-ruby-0.31.0-asyncbase-20261007/src/bindings/ruby/templates/wrapper.rb	2026-10-07 16:52:06
++++ /tmp/uniffi_bindgen-0.31.0-ruby-patched-20261007/src/bindings/ruby/templates/wrapper.rb	2026-10-07 16:50:06
+@@ -51,6 +51,14 @@
+   {% include "RecordTemplate.rb" %}
+   {% endfor %}
+ 
++  {%- for typ in ci.iter_local_types() %}
++  {%- match typ %}
++  {%- when Type::Custom with { name, builtin, .. } %}
++  {% include "CustomTypeTemplate.rb" %}
++  {%- else %}
++  {%- endmatch %}
++  {%- endfor %}
++
+   {% for func in ci.function_definitions() %}
+   {% include "TopLevelFunctionTemplate.rb" %}
+   {% endfor %}
+@@ -58,6 +66,36 @@
+   {% for obj in ci.object_definitions() %}
+   {% include "ObjectTemplate.rb" %}
+   {% endfor %}
+-end
+ 
++  {# Imported components have their own Ruby RustBuffer converters. #}
++  EXTERNAL_RUSTBUFFER_MODULES = [
++  {% for namespace in self.external_namespaces() %}
++    {{ namespace|class_name_rb }}::RustBuffer,
++  {% endfor %}
++  ]
++  class RustBuffer
++    class << self
++      def method_missing(name, *args, &block)
++        converter = EXTERNAL_RUSTBUFFER_MODULES.find { |mod| mod.respond_to?(name) }
++        return converter.public_send(name, *args, &block) if converter
++        super
++      end
++
++      def respond_to_missing?(name, include_private = false)
++        EXTERNAL_RUSTBUFFER_MODULES.any? { |mod| mod.respond_to?(name, include_private) } || super
++      end
++    end
++
++    def method_missing(name, *args, &block)
++      converter = EXTERNAL_RUSTBUFFER_MODULES.find { |mod| mod.public_instance_methods.include?(name) }
++      return converter.new(self.pointer).public_send(name, *args, &block) if converter
++      super
++    end
++
++    def respond_to_missing?(name, include_private = false)
++      EXTERNAL_RUSTBUFFER_MODULES.any? { |mod| mod.public_instance_methods.include?(name) } || super
++    end
++  end
++
+ {% import "macros.rb" as rb %}
++end

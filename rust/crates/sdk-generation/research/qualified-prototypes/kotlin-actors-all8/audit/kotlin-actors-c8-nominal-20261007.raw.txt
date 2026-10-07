@@ -62,3 +62,35 @@ Provenance boundary:
 - all three native resources were rebuilt from the frozen producer source hashes and exact Cargo.lock above; no stale platform byte was assigned this cohort.
 - the JAR keeps standard JNA resource roots and Rust-derived package identity.
 
+
+macOS JVM qualification extension:
+- task-local JDK path on ivar: /tmp/jdk-temurin-17.0.20+8/Contents/Home
+- distribution: Eclipse Temurin OpenJDK 17.0.20+8, HotSpot, macOS arm64
+- archive: OpenJDK17U-jdk_aarch64_mac_hotspot_17.0.20_8.tar.gz
+- archive SHA-256: 524850138c742324fb21fca4ff6ef68ea25f25bf59366a864e45b4a0c45ed0df
+- release metadata: `IMPLEMENTOR="Eclipse Adoptium"`, `JAVA_RUNTIME_VERSION="17.0.20+8"`, `OS_NAME="Darwin"`, `OS_ARCH="aarch64"`.
+- license/provenance: Temurin distribution with OpenJDK legal notices under `Contents/Home/legal/` and `Contents/Home/NOTICE`; no system Java installation or global tool metadata changed.
+- JDK version probe: `openjdk version "17.0.20"`, Temurin-17.0.20+8.
+- exact installed-JAR macOS runtime using task-local JDK and JNA resource: KOTLIN_ALL8_NOMINAL_COMPILE_SHAPE_PASS; KOTLIN_RUST_BACKED_NOMINAL_RUNTIME_PASS; KOTLIN_COROUTINE_CANCELLATION_FORWARD_PASS.
+- full legal unsigned range exercised on macOS: PositiveU64 1, 9223372036854775808, ULong.MAX_VALUE; cursor 9007199254740993 and ULong.MAX_VALUE; zero rejected.
+- external negative Kotlin compile on macOS with task-local Kotlin compiler 1.9.21 and the installed JAR: expected failure, MAC_NEGATIVE_COMPILE_EXIT=1; private ActorId constructor, forged handles, and Boolean-for-ULong mismatch rejected.
+- Kotlin compiler used only task-locally for compile qualification; no global installation or metadata change.
+
+Cohort integrity:
+- native/JAR qualification uses the recorded maintained source hashes and Cargo.lock SHA-256; producer checkout also contains peer-owned changes and maintained actors-uniffi files in a dirty working tree, preserved without cleanup or retagging.
+- JDK release metadata SHA-256: 860DF77F49D1947F1147F70C220F24E492BF77EC96D619921CBB181BCE68E000; JDK NOTICE SHA-256: C02756BCD9FA81922BF0FDA4451BC018414DD44EE35BF09922C24377A475E4B5A; java.base license SHA-256: 4B9ABEBC4338048A7C2DC184E9F800DEB349366BDF28EB23C2677A77B4C87726
+
+Post-review metadata correction (same frozen producer cohort):
+- Removed the remaining Dart `safe_value = "true-only-current-head"` config literal from `rust/crates/actors-uniffi/uniffi.nominal.toml`; all validation remains Rust-backed through `validateCurrentHead`.
+- Producer config SHA-256 after correction: 14503D8ED3A8965B1C0B396A2B4E55A5CDE9F7818EFC72829BE149789CBDF6FE.
+- This is config-only and outside the Kotlin binding section; generated Kotlin sources, native resources, and installed JAR remain the exact recorded bytes. No native rebuild, JAR retag, merge, publish, or deployment was performed.
+- Current source audit receipt: `audit/current-c8-source/kotlin-final-producer-source.receipt.json` and `.raw.txt`.
+- Source audit extracted exactly 19 producer-owned semantic export roots from `domain.rs export_roots!`, exactly 8 operation declarations from `client.rs operation!`, and 8 routes from `lib.rs HTTP_ROUTES`. `semantic_root_gaps=[]`; no handwritten root or operation table was added to the Kotlin generator.
+- Patched generator hashes remain nominal `24DC53FC5EDC354A0368F0766B53D00FAD7FBFA2C8CA74483B4849B1BC4F15C3` and opaque `275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474`; upstream UniFFI source remains task-local pinned 0.31.0 and the global Cargo registry is untouched.
+
+Rust Stream binding proof-gap audit:
+- Actors UniFFI generated Kotlin exposes `streamPath` data fields only; the facade exports no stream/flow/receiver/listener operation.
+- The separate Rust `acyclic-stream` contract defines `RecordStream = BoxStream<'static, Result<Record, StreamError>>` and `ChildStream = BoxStream<'static, Result<Child, StreamError>>`, with `StreamProvider::read`, `follow`, and `children` returning those opaque Rust streams (`rust/crates/stream/src/lib.rs:529-552`).
+- The Actors source has no `tonic::Streaming`, `futures::Stream` export, UniFFI callback stream, or Kotlin Flow adapter. Therefore Kotlin streaming is unproven and remains an explicit gap; adding a foreign recovery/replay implementation would violate the shared Rust algorithm boundary. This audit adds no streaming shim.
+
+

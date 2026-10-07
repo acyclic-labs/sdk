@@ -1,0 +1,3 @@
+cancel_handle_is_cancelled=true
+cancel_error=AcyclicActorsUniffi::BindingError::Cancelled:AcyclicActorsUniffi::BindingError::Cancelled()
+RUBY_CURRENT_C8_GENERIC_CANCEL_PASS

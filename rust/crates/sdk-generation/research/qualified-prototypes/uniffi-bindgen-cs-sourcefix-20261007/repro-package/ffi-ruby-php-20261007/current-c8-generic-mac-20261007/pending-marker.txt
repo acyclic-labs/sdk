@@ -1,0 +1,17 @@
+fixture:ready active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
+InspectActor:entered active=1
+InspectActor:aborted active=0
