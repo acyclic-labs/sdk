@@ -69,8 +69,14 @@ async function main() {
     catch { fail(`TypeScript compilation did not produce ${compiledEntrypoint}`); }
     const parentRoot = join(temporary, "parent");
     const napiConfigPath = join(temporary, "napi-package.json");
-    await cp(packagePath, parentRoot, { recursive: true, filter: (source) => !source.includes(`${join("generated", "native")}`) });
-    await rm(join(parentRoot, "generated/native"), { recursive: true, force: true });
+    // Keep the maintained loader and target manifest in the neutral parent;
+    // only the platform binary belongs in the optional companion package.
+    // Removing the whole directory makes every installed Node consumer use
+    // WASM and prevents a corrupt companion from failing closed.
+    await cp(packagePath, parentRoot, {
+      recursive: true,
+      filter: (source) => !source.endsWith(".node"),
+    });
     await mkdir(output, { recursive: true });
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
 
