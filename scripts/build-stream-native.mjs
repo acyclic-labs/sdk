@@ -198,9 +198,11 @@ function splitRustflags(value) {
 }
 
 export function deterministicRustflags(sourceRoot, targetDir, target, { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+  const prior = encoded !== null && typeof encoded === "string"
+    ? (encoded.length === 0 ? [] : encoded.split("\x1f"))
+    : plain !== null && typeof plain === "string" ? splitRustflags(plain) : [];
   const flags = [
-    ...splitRustflags(plain),
-    ...(typeof encoded === "string" && encoded.length > 0 ? encoded.split("\x1f") : []),
+    ...prior,
     `--remap-path-prefix=${resolve(sourceRoot).replaceAll("\\", "/")}=/__acyclic_stream_source`,
     `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
   ];
