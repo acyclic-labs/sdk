@@ -430,7 +430,7 @@ async fn malformed_frontmatter_has_explicit_outcomes() -> Result<()> {
         "[".repeat(32),
         "]".repeat(32)
     );
-    assert!(parse_skill_metadata(nested.as_bytes(), source).is_err());
+    assert!(parse_skill_metadata(nested.as_bytes(), source).is_ok());
     let mut forged = captured;
     forged
         .skills
@@ -450,6 +450,57 @@ async fn malformed_frontmatter_has_explicit_outcomes() -> Result<()> {
         .fields
         .insert("description".into(), serde_json::json!("overridden"));
     assert!(forged.stage(ContextPlacement::Prepend).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn admitted_frontmatter_has_no_extra_size_or_node_ceilings() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    fixture
+        .put(
+            "skills/a/SKILL.md",
+            b"---\nname: a\ndescription: x\n---\n",
+            "a",
+        )
+        .await?;
+    let mut declaration = fixture.declaration();
+    declaration.instructions.clear();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let source = first_skill(&captured)?.source.clone();
+    let name = "a".repeat(128);
+    let description = "d".repeat(2_048);
+    let payload = "x".repeat(70_000);
+    let items = vec!["0"; 3_000].join(",");
+    let prefix = format!(
+        "---\nname: {name}\ndescription: {description}\npayload: {payload}\nitems: [{items}]\n---\n"
+    );
+    let metadata = parse_skill_metadata(prefix.as_bytes(), source)?;
+    assert_eq!(metadata.name, name);
+    assert_eq!(metadata.description, description);
+    assert_eq!(
+        metadata
+            .fields
+            .get("payload")
+            .and_then(serde_json::Value::as_str),
+        Some(payload.as_str())
+    );
+    assert_eq!(
+        metadata
+            .fields
+            .get("items")
+            .and_then(serde_json::Value::as_array)
+            .map(Vec::len),
+        Some(3_000)
+    );
+    declaration.skills.clear();
+    declaration.limits.header_bytes = 65_537;
+    assert!(
+        declaration
+            .capture(fixture.reader.as_ref())
+            .await?
+            .skills
+            .is_empty()
+    );
     Ok(())
 }
 

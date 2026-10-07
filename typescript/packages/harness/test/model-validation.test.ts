@@ -38,6 +38,19 @@ test("generated skill parser and immutable projection share Rust validation and 
   expect(() => contracts.projectDiscoveredContext({ ...snapshot, skills: [{ ...skill, name: "Invalid" }] }, base, "prepend", DEFAULT_LIMITS)).toThrow();
   expect(() => contracts.parseSkillMetadata(new TextEncoder().encode("---\nname: inspect\ndescription: &x hidden\nmetadata: *x\n---\n"), source)).toThrow();
   expect(() => contracts.parseSkillMetadata(prefix, { ...source, path: ".system/private" })).toThrow();
+  const name = "a".repeat(128);
+  const description = "d".repeat(2048);
+  const payload = "x".repeat(70000);
+  const items = Array(3000).fill("0").join(",");
+  const admitted = contracts.parseSkillMetadata(new TextEncoder().encode(
+    `---\nname: ${name}\ndescription: ${description}\npayload: ${payload}\nitems: [${items}]\nnested: ${"[".repeat(32)}0${"]".repeat(32)}\n---\n`,
+  ), source);
+  expect(admitted.name).toBe(name);
+  expect(admitted.description).toBe(description);
+  expect(admitted.fields.payload).toBe(payload);
+  expect(admitted.fields.items).toHaveLength(3000);
+  expect(() => contracts.projectDiscoveredContext({ instructions: [], skills: [admitted] },
+    base, "prepend", DEFAULT_LIMITS)).not.toThrow();
 });
 
 test("generated context selections and updates use native schemas, placement and bounds", () => {
