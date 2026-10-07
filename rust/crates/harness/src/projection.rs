@@ -218,9 +218,9 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
 }
 
 /// Selects a bounded ordered subset with an explicit provider attachment
-/// ceiling.  The public native convenience keeps the protocol ceiling of
-/// 1,022; remote adapters may choose a lower bound without reimplementing the
-/// projection reducer.
+/// allowance. The native convenience uses the caller-selected attachment
+/// allowance; adapters may explicitly select a narrower projection without
+/// reimplementing the projection reducer.
 #[allow(
     clippy::too_many_lines,
     reason = "projection enforces one bounded ordered selection"
