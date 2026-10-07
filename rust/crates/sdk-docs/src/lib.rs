@@ -239,7 +239,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
         ));
     }
     let repository_root = canonical_repository_root(&input.repository_root)?;
-    let generated_sources = attest_generated_sources(&input.generated_sources)?;
+    let generated_sources = attest_generated_sources(&repository_root, &input.generated_sources)?;
     // Callers may discover rustdoc files through different filesystem traversals.
     // Normalize the order before hashing or projecting so the same inputs always
     // produce the same identity and family order.
@@ -302,10 +302,12 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             &repository_root,
             &generated_sources,
             path,
+            &bytes,
             &krate,
         )?);
     }
-    let final_generated_sources = attest_generated_sources(&input.generated_sources)?;
+    let final_generated_sources =
+        attest_generated_sources(&repository_root, &input.generated_sources)?;
     if final_generated_sources != generated_sources {
         return Err(Error::Invalid(
             "generated source changed while projecting rustdoc".into(),
@@ -699,6 +701,7 @@ fn build_family(
     repository_root: &Path,
     generated_sources: &HashMap<PathBuf, GeneratedSource>,
     json_path: &Path,
+    raw_json: &[u8],
     krate: &Crate,
 ) -> Result<Family, Error> {
     let root_item = krate.index.get(&krate.root).ok_or_else(|| {
@@ -719,7 +722,7 @@ fn build_family(
         .ok_or_else(|| Error::Invalid(format!("{} has no crate name", json_path.display())))?;
     let slug = slugify(&crate_name);
     let title = titleize(&crate_name);
-    let mut public_items = public_api::extract(json_path)?;
+    let mut public_items = public_api::extract(json_path, raw_json)?;
     deduplicate_public_items(&mut public_items);
     let public_occurrence_paths = public_occurrence_paths(&public_items, &crate_name);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
@@ -1069,6 +1072,7 @@ fn canonical_repository_root(path: &Path) -> Result<PathBuf, Error> {
 }
 
 fn attest_generated_sources(
+    repository_root: &Path,
     sources: &[GeneratedSource],
 ) -> Result<HashMap<PathBuf, GeneratedSource>, Error> {
     let mut attested = HashMap::new();
@@ -1085,6 +1089,21 @@ fn attest_generated_sources(
             return Err(Error::Invalid(format!(
                 "generated source logical path is duplicated: {logical_path}"
             )));
+        }
+        let repository_path = repository_root.join(&logical_path);
+        reject_reparse_ancestors(&repository_path)?;
+        match fs::symlink_metadata(&repository_path) {
+            Ok(_) => {
+                return Err(Error::Invalid(format!(
+                    "generated source logical path collides with a repository path: {logical_path}"
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Invalid(format!(
+                    "cannot inspect generated source logical path {logical_path}: {error}"
+                )));
+            }
         }
         reject_reparse_ancestors(&source.physical_path)?;
         let physical_path = source.physical_path.canonicalize().map_err(|error| {
@@ -1143,7 +1162,22 @@ fn normalize_generated_logical_path(path: &Path) -> Result<String, Error> {
     for component in Path::new(&raw).components() {
         match component {
             Component::Normal(component) => {
-                components.push(component.to_string_lossy().into_owned())
+                let component = component.to_string_lossy().into_owned();
+                if component.is_empty()
+                    || !component.bytes().all(|byte| {
+                        byte.is_ascii()
+                            && !byte.is_ascii_control()
+                            && !matches!(byte, b'<' | b'>' | b'"' | b'|' | b'?' | b'*')
+                    })
+                    || component.ends_with('.')
+                    || component.ends_with(' ')
+                    || is_windows_reserved_segment(&component)
+                {
+                    return Err(Error::Invalid(format!(
+                        "generated source logical path contains a non-portable segment: {raw:?}"
+                    )));
+                }
+                components.push(component)
             }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
@@ -1195,16 +1229,15 @@ fn source_span_at_root(
             span.filename.display()
         ))
     })?;
-    let path = if let Ok(relative) = source_path.strip_prefix(&repository_root) {
+    let path = if let Some(generated) = generated_sources.get(&source_path) {
+        normalize_path(&generated.logical_path)
+    } else if let Ok(relative) = source_path.strip_prefix(&repository_root) {
         normalize_path(relative)
     } else {
-        let generated = generated_sources.get(&source_path).ok_or_else(|| {
-            Error::Invalid(format!(
-                "rustdoc source span escapes its source root without an attested generated source: {}",
-                span.filename.display()
-            ))
-        })?;
-        normalize_path(&generated.logical_path)
+        return Err(Error::Invalid(format!(
+            "rustdoc source span escapes its source root without an attested generated source: {}",
+            span.filename.display()
+        )));
     };
     Ok(SourceSpan {
         path,
@@ -1373,10 +1406,19 @@ fn atomic_write(path: &Path, bytes: &[u8], immutable: bool) -> Result<(), Error>
 fn reject_reparse_ancestors(path: &Path) -> Result<(), Error> {
     let mut current = Some(path);
     while let Some(candidate) = current {
-        if let Ok(metadata) = fs::symlink_metadata(candidate) {
-            if is_reparse_or_symlink(&metadata) {
+        match fs::symlink_metadata(candidate) {
+            Ok(metadata) => {
+                if is_reparse_or_symlink(&metadata) {
+                    return Err(Error::Invalid(format!(
+                        "path contains a reparse point or symlink: {}",
+                        candidate.display()
+                    )));
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
                 return Err(Error::Invalid(format!(
-                    "path contains a reparse point or symlink: {}",
+                    "cannot inspect path ancestor {}: {error}",
                     candidate.display()
                 )));
             }
@@ -1488,12 +1530,75 @@ fn release_version(version: &str) -> Result<Version, Error> {
     stable_version(version)
 }
 fn safe_version(version: &str) -> Result<String, Error> {
-    if version.is_empty() || version == "." || version == ".." || version.contains(['/', '\\']) {
+    if version.is_empty() {
         return Err(Error::Invalid(format!(
             "invalid version path segment: {version:?}"
         )));
     }
-    Ok(version.replace(':', "_"))
+
+    // Keep ordinary semver and preview names readable, but encode every byte
+    // outside the portable path alphabet.  Encoding `%` as well makes this
+    // mapping injective (`preview:1` and `preview_1` must remain distinct).
+    let encoded = percent_encode_version(version.as_bytes(), false);
+    let needs_full_encoding = encoded == "."
+        || encoded == ".."
+        || encoded.ends_with('.')
+        || encoded.ends_with(' ')
+        || is_windows_reserved_segment(&encoded);
+
+    if needs_full_encoding {
+        Ok(percent_encode_version(version.as_bytes(), true))
+    } else {
+        Ok(encoded)
+    }
+}
+
+fn is_portable_version_byte(byte: u8) -> bool {
+    byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'-' | b'_')
+}
+
+fn percent_encode_version(bytes: &[u8], encode_all: bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut encoded = String::with_capacity(bytes.len());
+    for byte in bytes {
+        if !encode_all && is_portable_version_byte(*byte) {
+            encoded.push(*byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push(HEX[(*byte >> 4) as usize] as char);
+            encoded.push(HEX[(*byte & 0x0f) as usize] as char);
+        }
+    }
+    encoded
+}
+
+fn is_windows_reserved_segment(segment: &str) -> bool {
+    let stem = segment.split('.').next().unwrap_or_default();
+    matches!(
+        stem.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 fn format_id(id: Id) -> String {
     id.0.to_string()
@@ -1543,17 +1648,34 @@ mod tests {
     }
 
     #[test]
+    fn preview_version_paths_are_injective_and_portable() {
+        assert_eq!(safe_version("preview-1").unwrap(), "preview-1");
+        assert_eq!(safe_version("preview:1").unwrap(), "preview%3A1");
+        assert_eq!(safe_version("preview_1").unwrap(), "preview_1");
+        assert_eq!(safe_version("branch_ABC").unwrap(), "branch_%41%42%43");
+        assert_ne!(
+            safe_version("preview:1").unwrap(),
+            safe_version("preview_1").unwrap()
+        );
+        assert_eq!(safe_version("a%b").unwrap(), "a%25b");
+        assert_eq!(safe_version("CON").unwrap(), "%43%4F%4E");
+        assert_eq!(safe_version("con.txt").unwrap(), "%63%6F%6E%2E%74%78%74");
+        assert_eq!(safe_version("a/b").unwrap(), "a%2Fb");
+    }
+
+    #[test]
     fn generated_source_spans_require_attestation_and_preserve_lines() {
         let suffix = std::process::id();
-        let repository_root = std::env::temp_dir().join(format!(
-            "sdk-docs-generated-source-root-{suffix}"
-        ));
-        let external_root = std::env::temp_dir().join(format!(
-            "sdk-docs-generated-source-external-{suffix}"
-        ));
+        let repository_root =
+            std::env::temp_dir().join(format!("sdk-docs-generated-source-root-{suffix}"));
+        let external_root =
+            std::env::temp_dir().join(format!("sdk-docs-generated-source-external-{suffix}"));
         let _ = fs::remove_dir_all(&repository_root);
         let _ = fs::remove_dir_all(&external_root);
-        fs::create_dir_all(repository_root.join("src")).expect("repository root should be writable");
+        fs::create_dir_all(repository_root.join("src"))
+            .expect("repository root should be writable");
+        fs::create_dir_all(repository_root.join("target/out"))
+            .expect("generated checkout directory should be writable");
         fs::create_dir_all(&external_root).expect("external source root should be writable");
 
         let inside = repository_root.join("src/inside.rs");
@@ -1561,14 +1683,25 @@ mod tests {
         let external = external_root.join("wire.rs");
         let bytes = b"pub struct Wire;\n";
         fs::write(&external, bytes).expect("generated source should be writable");
+        let in_tree = repository_root.join("target/out/wire.rs");
+        let in_tree_bytes = b"pub struct InTreeWire;\n";
+        fs::write(&in_tree, in_tree_bytes).expect("in-tree generated source should be writable");
         let digest = sha256_hex(bytes);
+        let in_tree_generated = GeneratedSource {
+            physical_path: in_tree.clone(),
+            logical_path: PathBuf::from("generated/actors/in-tree-wire.rs"),
+            sha256: sha256_hex(in_tree_bytes),
+        };
         let generated = GeneratedSource {
             physical_path: external.clone(),
             logical_path: PathBuf::from("generated/actors/wire.rs"),
             sha256: digest.clone(),
         };
-        let attested = attest_generated_sources(&[generated.clone()])
-            .expect("matching generated source should be attested");
+        let attested = attest_generated_sources(
+            &repository_root,
+            &[generated.clone(), in_tree_generated.clone()],
+        )
+        .expect("matching generated source should be attested");
         let repository_root = canonical_repository_root(&repository_root)
             .expect("repository fixture should have a canonical path");
 
@@ -1585,6 +1718,15 @@ mod tests {
         assert_eq!(projected.end_line, 8);
         assert_eq!(projected.end_column, 9);
 
+        let in_tree_span = rustdoc_types::Span {
+            filename: in_tree.clone(),
+            begin: (1, 1),
+            end: (1, 24),
+        };
+        let in_tree_projection = source_span_at_root(&repository_root, &attested, &in_tree_span)
+            .expect("attested in-tree generated source should use its logical path");
+        assert_eq!(in_tree_projection.path, "generated/actors/in-tree-wire.rs");
+
         let checkout_span = rustdoc_types::Span {
             filename: PathBuf::from("src/inside.rs"),
             begin: (1, 1),
@@ -1594,41 +1736,121 @@ mod tests {
             .expect("checkout source should take precedence over generated mappings");
         assert_eq!(checkout_projection.path, "src/inside.rs");
 
-        let error = source_span_at_root(
-            &repository_root,
-            &HashMap::new(),
-            &external_span,
-        )
-        .expect_err("unattested external source must be rejected");
-        assert!(error
-            .to_string()
-            .contains("without an attested generated source"));
+        let error = source_span_at_root(&repository_root, &HashMap::new(), &external_span)
+            .expect_err("unattested external source must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("without an attested generated source")
+        );
 
         let mut bad_digest = generated.clone();
         bad_digest.sha256 = "0".repeat(64);
-        let error = attest_generated_sources(&[bad_digest])
+        let error = attest_generated_sources(&repository_root, &[bad_digest])
             .expect_err("incorrect generated digest must be rejected");
         assert!(error.to_string().contains("digest does not match"));
 
         let mut escaping = generated.clone();
         escaping.logical_path = PathBuf::from("../wire.rs");
-        let error = attest_generated_sources(&[escaping])
+        let error = attest_generated_sources(&repository_root, &[escaping])
             .expect_err("escaping generated logical path must be rejected");
-        assert!(error
-            .to_string()
-            .contains("escapes its bundle root"));
+        assert!(error.to_string().contains("escapes its bundle root"));
+
+        for logical_path in [
+            "generated/actors/CON.txt",
+            "generated/actors/unicode-λ.rs",
+            "generated/actors/bad<name.rs",
+            "generated/actors/bad>name.rs",
+            "generated/actors/bad\"name.rs",
+            "generated/actors/bad|name.rs",
+            "generated/actors/bad?name.rs",
+            "generated/actors/bad*name.rs",
+        ] {
+            let mut non_portable = generated.clone();
+            non_portable.logical_path = PathBuf::from(logical_path);
+            let error = attest_generated_sources(&repository_root, &[non_portable])
+                .expect_err("non-portable generated logical path must be rejected");
+            assert!(
+                error
+                    .to_string()
+                    .contains("contains a non-portable segment")
+            );
+        }
+
+        let collision_path = repository_root.join("generated/actors/existing.rs");
+        fs::create_dir_all(
+            collision_path
+                .parent()
+                .expect("collision parent should exist"),
+        )
+        .expect("collision parent should be writable");
+        fs::write(&collision_path, b"pub struct Existing;\n")
+            .expect("collision source should be writable");
+        let mut collision = generated.clone();
+        collision.logical_path = PathBuf::from("generated/actors/existing.rs");
+        let error = attest_generated_sources(&repository_root, &[collision])
+            .expect_err("generated logical path colliding with repository source must be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("collides with a repository path")
+        );
 
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
-        let error = attest_generated_sources(&[generated.clone(), duplicate])
+        let error = attest_generated_sources(&repository_root, &[generated.clone(), duplicate])
             .expect_err("normalized duplicate logical paths must be rejected");
         assert!(error.to_string().contains("logical path is duplicated"));
 
         fs::write(&external, b"pub struct Changed;\n").expect("generated source should be mutable");
-        let error = attest_generated_sources(&[generated])
+        let error = attest_generated_sources(&repository_root, &[generated])
             .expect_err("generated source mutation must invalidate attestation");
         assert!(error.to_string().contains("digest does not match"));
 
+        fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
+        fs::remove_dir_all(&external_root).expect("external fixture should be removed");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn generated_sources_reject_junction_ancestors() {
+        let suffix = std::process::id();
+        let repository_root = std::env::temp_dir().join(format!("sdk-docs-junction-root-{suffix}"));
+        let external_root =
+            std::env::temp_dir().join(format!("sdk-docs-junction-external-{suffix}"));
+        let _ = fs::remove_dir_all(&repository_root);
+        let _ = fs::remove_dir_all(&external_root);
+        fs::create_dir_all(&repository_root).expect("repository fixture should be writable");
+        fs::create_dir_all(&external_root).expect("external fixture should be writable");
+        let external_file = external_root.join("wire.rs");
+        let bytes = b"pub struct Wire;\n";
+        fs::write(&external_file, bytes).expect("generated source should be writable");
+        let junction = repository_root.join("linked");
+        let status = std::process::Command::new("powershell.exe")
+            .env("SDK_DOCS_JUNCTION", &junction)
+            .env("SDK_DOCS_JUNCTION_TARGET", &external_root)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "New-Item -ItemType Junction -Path $env:SDK_DOCS_JUNCTION -Target $env:SDK_DOCS_JUNCTION_TARGET -Force | Out-Null",
+            ])
+            .status()
+            .expect("PowerShell should launch");
+        if !status.success() {
+            let _ = fs::remove_dir_all(&repository_root);
+            let _ = fs::remove_dir_all(&external_root);
+            panic!("PowerShell should create the junction");
+        }
+        let source = GeneratedSource {
+            physical_path: junction.join("wire.rs"),
+            logical_path: PathBuf::from("generated/actors/junction-wire.rs"),
+            sha256: sha256_hex(bytes),
+        };
+        let error = attest_generated_sources(&repository_root, &[source])
+            .expect_err("junction ancestors must be rejected");
+        assert!(error.to_string().contains("reparse point or symlink"));
+        fs::remove_dir(&junction).expect("junction itself should be removable");
         fs::remove_dir_all(&repository_root).expect("repository fixture should be removed");
         fs::remove_dir_all(&external_root).expect("external fixture should be removed");
     }
@@ -2347,6 +2569,12 @@ mod tests {
         data.version = "preview-2".into();
         data.source.revision = "4".repeat(40);
         write_bundle(&data, &output, false).expect("preview should advance");
+        data.version = "branch_abc".into();
+        data.source.revision = "5".repeat(40);
+        write_bundle(&data, &output, false).expect("lowercase preview should write");
+        data.version = "branch_ABC".into();
+        data.source.revision = "6".repeat(40);
+        write_bundle(&data, &output, false).expect("case-distinct preview should write");
         let index: VersionIndex = serde_json::from_slice(
             &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
         )
@@ -2365,7 +2593,17 @@ mod tests {
         );
         assert_eq!(
             index.preview.as_ref().map(|entry| entry.version.as_str()),
-            Some("preview-2")
+            Some("branch_ABC")
+        );
+        assert!(
+            output
+                .join("preview/branch_abc/sdk-docs-data.v1.json")
+                .is_file()
+        );
+        assert!(
+            output
+                .join("preview/branch_%41%42%43/sdk-docs-data.v1.json")
+                .is_file()
         );
         fs::remove_dir_all(output).expect("test output should be removable");
     }
