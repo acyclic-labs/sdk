@@ -132,7 +132,7 @@ describe("Machines simulation", () => {
     expect((await machines.qualifyImage(image)).image).toEqual(image);
     const created = await machines.create({ ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
     expect((await machines.attach(created.id)).id).toBe(created.id);
-    await expect(machines.attach(machineId("missing"))).rejects.toThrow("resource not found");
+    await expect(machines.attach(machineId("missing"))).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
     const operation = await machines.recoverOperation(idempotencyKey("high-level"));
     expect(await machines.recover(operation.id)).toEqual({ id: operation.id, phase: "succeeded" });
     expect(await machines.recoverMutation(idempotencyKey("high-level"))).toHaveProperty("kind", "created");
@@ -205,8 +205,8 @@ describe("Machines simulation", () => {
     const observations = [];
     for await (const observation of provider.watchOperation(operation)) observations.push(observation);
     expect(observations).toEqual([expected]);
-    await expect(provider.recoverOperation("unknown")).rejects.toThrow("resource not found");
-    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toThrow("resource not found");
+    await expect(provider.recoverOperation("unknown")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
+    await expect(provider.inspectOperation("operation:unknown:0")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
   });
 
   test("uses the lineage receipt commitment instead of the retired quantity", async () => {

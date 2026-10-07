@@ -122,9 +122,7 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 fn provider_error(error: ProviderError) -> JsValue {
     let code = match &error {
-        ProviderError::NotFound(message) => {
-            return crate::js_error("not-found", format!("resource not found: {message}"));
-        }
+        ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
         ProviderError::Unsupported(_) => "unsupported",
         ProviderError::Invalid(_) => "invalid",
