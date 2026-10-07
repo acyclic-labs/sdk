@@ -343,6 +343,63 @@ fn update_request_try_from_preserves_expected_revision() {
     assert_eq!(round_trip, wire_value);
 }
 
+fn canonical_update_wire(expected_configuration_revision: u64) -> wire::UpdateActorRequest {
+    wire::UpdateActorRequest {
+        actor_id: "actor".to_owned(),
+        code_sha256: vec![1; 32].into(),
+        bindings: vec![wire::Binding {
+            name: "binding".to_owned(),
+            capability: "capability".to_owned(),
+            resource: "resource".to_owned(),
+        }],
+        limits: Some(wire::ActorLimits {
+            handler_timeout_millis: 1,
+            memory_bytes: 2,
+            checkpoint_bytes: 3,
+        }),
+        expected_configuration_revision,
+        idempotency_key: "idempotency".to_owned(),
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn update_request_expected_revision_only_after_production_admission() {
+    let expected_configuration_revision: u64 = kani::any();
+    let wire_value = canonical_update_wire(expected_configuration_revision);
+    crate::validate_update(&wire_value).expect("canonical fixture passes production admission");
+
+    let parsed = UpdateActorRequest::try_from(wire_value)
+        .expect("canonical fixture passes production conversion");
+    assert_eq!(
+        parsed.expected_configuration_revision(),
+        expected_configuration_revision
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn update_request_production_admission_accepts_canonical_fixture() {
+    let expected_configuration_revision: u64 = kani::any();
+    let wire_value = canonical_update_wire(expected_configuration_revision);
+    assert_eq!(crate::validate_update(&wire_value), Ok(()));
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn update_request_production_admission_rejects_duplicate_binding() {
+    let mut wire_value = canonical_update_wire(0);
+    wire_value.bindings.push(wire::Binding {
+        name: "binding".to_owned(),
+        capability: "other-capability".to_owned(),
+        resource: "other-resource".to_owned(),
+    });
+    assert_eq!(
+        crate::validate_update(&wire_value),
+        Err(crate::ContractError::DuplicateName)
+    );
+}
+
 #[kani::proof]
 #[kani::unwind(2)]
 fn subscription_observation_try_from_rejects_unknown_state() {
