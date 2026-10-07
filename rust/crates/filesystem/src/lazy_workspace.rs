@@ -5130,16 +5130,11 @@ fn account_work(
 
 fn account_nested_with_live_memory(
     current: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, LazyWorkspaceError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(counter_overflow)?;
-    nested.peak_allocation_bytes = 0;
-    let mut combined = current.checked_add(nested)?;
-    combined.peak_allocation_bytes = combined.peak_allocation_bytes.max(simultaneous_peak);
+    let combined = current.with_backend(nested, live_bytes)?;
     combined.verify(budget)?;
     Ok(combined)
 }
