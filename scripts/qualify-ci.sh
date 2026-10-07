@@ -67,9 +67,11 @@ fork_join_conformance() {
 
 case "$lane" in
   gate)
+    # These crates deliberately have independent workspaces; --workspace and
+    # llvm-cov cannot cover them, even during full qualification.
+    cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
     if [[ "$full_qualification" != true ]]; then
       cargo test --workspace --locked --lib
-      cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"
       printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
       exit 0
@@ -146,6 +148,23 @@ case "$lane" in
         range="$before..$head"
       fi
       allow_webflow=true
+    elif [[ "${GITHUB_EVENT_NAME:-}" == "release" ]]; then
+      release_tag="$(jq -er '.release.tag_name' "$GITHUB_EVENT_PATH")"
+      [[ "${GITHUB_REF:-}" == "refs/tags/$release_tag" ]] || {
+        echo 'release ref does not match the event tag' >&2
+        exit 1
+      }
+      [[ "$(git rev-parse "$GITHUB_REF^{commit}")" == "$head" ]] || {
+        echo 'checked-out source does not match the release tag' >&2
+        exit 1
+      }
+      git fetch --no-tags origin main
+      git merge-base --is-ancestor "$head" FETCH_HEAD || {
+        echo 'release source is not part of main' >&2
+        exit 1
+      }
+      range="${head}^..$head"
+      allow_webflow=true
     else
       base="${head}^"
       range="$base..$head"
@@ -164,8 +183,8 @@ case "$lane" in
       if [[ "$verification" == "G" ]]; then
         continue
       fi
-      # GitHub signs squash merges with its web-flow OpenPGP key. Only main
-      # accepts that pinned key; PR commits must still use allowed SSH signers.
+      # GitHub signs squash merges with its web-flow OpenPGP key. Main and
+      # release tags verified as part of main accept it; PR commits use SSH.
       if [[ "$allow_webflow" == true ]]; then
         if [[ -z "$webflow_home" ]]; then
           webflow_home="$(mktemp -d "$SDK_TEMP_DIR/web-flow.XXXXXXXX")"
@@ -274,6 +293,7 @@ case "$lane" in
     test "$("$binary" --version)" = "$expected"
     ;;
   policy)
+    bash scripts/test-qualify-ci-preflight.sh
     if [[ "$full_qualification" != true ]]; then
       cargo clippy --workspace --lib --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs

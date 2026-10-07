@@ -98,6 +98,24 @@ test("recorded lanes are reused with their retained artifact", () => {
   assert.equal(reused.web.artifact, "");
 });
 
+test("full qualification rebuilds source-bound packages after a README-only change", () => {
+  const before = laneKeys(lanes, tree, "full");
+  const after = laneKeys(lanes, changed("README.md"), "full");
+  assert.deepEqual(before, after);
+
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: false,
+    mainPush: false,
+    fullQualification: true,
+    trusted: null,
+    marker: everywhere,
+    retained: retainedAll,
+  });
+  assert.deepEqual(matrix.map(lane => lane.lane), ["linux"]);
+  assert.equal(reused.linux, undefined);
+  assert.equal(reused.gate.run_id, source.run_id);
+});
+
 test("a lane whose artifact expired executes again", () => {
   const { matrix } = chooseLanes(lanes, {
     force: false, mainPush: false, trusted: null, marker: everywhere,
@@ -164,5 +182,4 @@ test("the fast gate covers the Rust workspace and standalone docs crate", () => 
   assert.match(script, /cargo test --workspace --locked --lib/);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
   assert.match(script, /cargo clippy --workspace --lib --locked -- -D warnings/);
-  assert.doesNotMatch(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
 });
