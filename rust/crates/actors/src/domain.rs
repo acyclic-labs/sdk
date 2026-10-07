@@ -11,6 +11,9 @@ use std::path::Path;
 use crate::wire;
 use ts_rs::{Config, ExportError, TS};
 
+#[cfg(kani)]
+mod kani_proofs;
+
 /// A non-empty Actor identity.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/ActorId.ts")]

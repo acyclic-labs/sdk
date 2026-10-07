@@ -8,6 +8,7 @@ pub const PATHS: &[&str] = &[
     "rust/crates/actors/src/contract.rs",
     "rust/crates/actors/src/contract_definitions.rs",
     "rust/crates/actors/src/domain.rs",
+    "rust/crates/actors/src/domain/kani_proofs.rs",
     "rust/crates/actors/src/grpc.rs",
     "rust/crates/actors/src/http.rs",
     "rust/crates/actors/src/wire.rs",

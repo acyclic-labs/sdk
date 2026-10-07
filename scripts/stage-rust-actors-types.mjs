@@ -65,7 +65,7 @@ if (!modules.length) throw new Error("generated Actors TypeScript declarations a
 const sourceBarrelText = readFileSync(sourceBarrel, "utf8");
 const expectedSourceBarrel = [
   "// Generated from Rust-owned Actors semantic declarations.",
-  ...modules.map(module => `export * from \"./${module}.js\";`),
+  ...modules.map(module => `export * from "./${module}.js";`),
   "",
 ].join("\n");
 if (sourceBarrelText !== expectedSourceBarrel) {
@@ -93,7 +93,7 @@ if (!recordedBarrel || recordedBarrel.sha256 !== barrelDigest.sha256 || recorded
 
 const packageBarrel = [
   "// Generated from the Rust-owned Actors semantic declarations.",
-  ...modules.map(module => `export * from \"./actors/${module}.js\";`),
+  ...modules.map(module => `export * from "./actors/${module}.js";`),
   "",
 ].join("\n");
 const existing = existsSync(destinationRoot) ? readdirSync(destinationRoot, { withFileTypes: true }) : [];

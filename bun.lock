@@ -27,6 +27,16 @@
         "@types/node": "26.4.1",
         "typescript": "7.0.2",
       },
+      "optionalDependencies": {
+        "@acyclic-labs/actors-darwin-arm64": "0.2.0",
+        "@acyclic-labs/actors-darwin-x64": "0.2.0",
+        "@acyclic-labs/actors-linux-arm64-gnu": "0.2.0",
+        "@acyclic-labs/actors-linux-arm64-musl": "0.2.0",
+        "@acyclic-labs/actors-linux-x64-gnu": "0.2.0",
+        "@acyclic-labs/actors-linux-x64-musl": "0.2.0",
+        "@acyclic-labs/actors-win32-arm64-msvc": "0.2.0",
+        "@acyclic-labs/actors-win32-x64-msvc": "0.2.0",
+      },
     },
     "typescript/packages/filesystem": {
       "name": "@acyclic-labs/fs",

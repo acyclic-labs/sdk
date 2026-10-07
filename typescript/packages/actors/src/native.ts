@@ -1,7 +1,8 @@
 import { Buffer } from "node:buffer";
-import { arch, platform } from "node:process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import type * as GeneratedNative from "../generated/native/binding.js";
-import { normalizeActorsError } from "./client.js";
+import { normalizeActorsError, type ActorsOperation } from "./client.js";
 
 type NativeModule = typeof GeneratedNative;
 type NativeClient = InstanceType<NativeModule["NativeActorsClient"]>;
@@ -10,11 +11,12 @@ type NativeResult = Awaited<ReturnType<NativeClient["createActorResult"]>>;
 type NativeConnectResult = Awaited<ReturnType<NativeModule["NativeActorsClient"]["connectResult"]>>;
 
 let modulePromise: Promise<NativeModule> | undefined;
+const requireNative = createRequire(import.meta.url);
+const nativeBindingPath = fileURLToPath(new URL("../generated/native/binding.cjs", import.meta.url));
 
 async function loadNativeModule(): Promise<NativeModule> {
-  const target = `${platform}-${arch}`;
-  modulePromise ??= import(`@acyclic-labs/actors-${target}`).then((module) => {
-    const namespace = module as NativeModule & { readonly default?: NativeModule };
+  modulePromise ??= Promise.resolve().then(() => {
+    const namespace = requireNative(nativeBindingPath) as NativeModule & { readonly default?: NativeModule };
     const binding = namespace.NativeActorsClient === undefined ? namespace.default : namespace;
     if (binding?.NativeActorsClient === undefined || binding.NativeActorsCancellation === undefined) {
       throw new Error("Actors native companion did not export the generated Rust N-API binding");
@@ -58,16 +60,13 @@ export class NativeActorsClient {
     return this.binding.transport();
   }
 
-  async call(operation: string, request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
+  async call(operation: ActorsOperation, request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
     const cancellation: NativeCancellation = new this.module.NativeActorsCancellation();
     const abort = () => cancellation.cancel();
     if (signal?.aborted) abort();
     else signal?.addEventListener("abort", abort, { once: true });
     try {
-      const method = this.binding[`${operation}Result` as keyof NativeClient] as (
-        request: Buffer,
-        cancellation: NativeCancellation,
-      ) => Promise<NativeResult>;
+      const method = this.binding[`${operation}Result`];
       const result = await method.call(this.binding, Buffer.from(request), cancellation);
       if (result.error !== undefined) throw normalizeActorsError(result.error);
       if (result.value === undefined) {

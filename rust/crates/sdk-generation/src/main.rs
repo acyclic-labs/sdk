@@ -94,6 +94,7 @@ struct RustdocInput {
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
 const ACTORS_TYPESCRIPT_BARREL: &str = "types.ts";
+
 fn compiled_generator_digest(root: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
     for relative in compiled_generator_inputs::PATHS {
@@ -750,7 +751,7 @@ fn sanitize_compiler_environment(command: &mut Command, tools: &PinnedToolchain)
                 | "CARGO_TARGET_DIR"
                 | "RUSTUP_TOOLCHAIN"
         ) || uppercase.starts_with("CARGO_CFG_")
-            || uppercase.starts_with("CARGO_BUILD_")
+            || (uppercase.starts_with("CARGO_BUILD_") && uppercase != "CARGO_BUILD_JOBS")
             || uppercase.starts_with("CARGO_TARGET_")
             || uppercase.starts_with("RUSTC_")
             || uppercase.starts_with("RUSTDOC_");

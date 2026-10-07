@@ -93,13 +93,14 @@ proved.
    same invariants as `ActorId`, `CodeSha256`, and other Rust domain constructors,
    including rejection of invalid lengths and values.
 
-The first two obligations have a small pure-Rust proof surface. The remaining
-parts are deliberately classified separately: descriptor and generated-source
-hashes are deterministic artifact checks; facade correspondence is a source or
-ABI inspection; and package installation, native loading, remote transport,
-streaming, cancellation, recovery, and OS behavior require executable consumer
-tests. None of those platform or service claims can be established by a Kani
-harness alone.
+Only bounded predicates, enum conversions, and selected constructor invariants
+have a small pure-Rust proof surface. Wire identity and presence/value
+round-trips depend on generated descriptors and codecs, so they require
+artifact comparisons and runtime property tests. Validation agreement and
+facade correspondence require source inspection plus executable boundary and
+consumer tests. Package installation, native loading, remote transport,
+streaming, cancellation, recovery, and OS behavior are runtime integration
+claims; none can be established by a Kani harness alone.
 
 The first bounded harness should stay independent of package generation and
 network code:
@@ -124,6 +125,13 @@ domains, and one symbolic `i32`; it does not claim an unbounded theorem.
 for bounded model checking of small, pure Rust conversion and validation
 functions. It can provide proof within explicit finite bounds; it cannot prove
 native package loading, a remote service, or an unbounded stream. 
+
+An attempted Actors run did not produce a proof receipt: the Kani execution
+used a Rust 1.93 nightly compiler path while the product checkout is pinned to
+Rust 1.98.1, so the run failed at toolchain compatibility before proving a
+harness. The bounded obligations below remain unproved until Kani is run in an
+isolated environment matching the product toolchain and its output records the
+exact compiler, solver, harness, and unwind settings.
 
 [Proptest](https://github.com/proptest-rs/proptest) is the maintained OSS
 candidate for executable property tests over larger generated value spaces. It

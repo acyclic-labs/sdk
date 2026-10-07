@@ -15,6 +15,8 @@ use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Structured Rust-owned error metadata shared by connection and operation
+/// result envelopes.
 #[napi(object)]
 #[derive(Clone, Default, Serialize)]
 pub struct NativeActorsErrorMetadata {
@@ -833,7 +835,12 @@ mod tests {
         assert!(result.client.is_none());
         let error = result
             .error
-            .ok_or_else(|| napi_error(native_metadata("connect result test", "missing error metadata")))?;
+            .ok_or_else(|| {
+                napi_error(native_metadata(
+                    "connect result test",
+                    "missing error metadata",
+                ))
+            })?;
         assert_eq!(error.code, "invalid_argument");
         assert_eq!(error.message, "endpoint is missing");
         Ok(())
@@ -854,7 +861,12 @@ mod tests {
         assert!(result.client.is_none());
         let error = result
             .error
-            .ok_or_else(|| napi_error(native_metadata("connect cancellation test", "missing error metadata")))?;
+            .ok_or_else(|| {
+                napi_error(native_metadata(
+                    "connect cancellation test",
+                    "missing error metadata",
+                ))
+            })?;
         assert_eq!(error.code, "cancelled");
         assert_eq!(error.grpc_code, Some(1));
         assert_eq!(error.grpc_name.as_deref(), Some("cancelled"));

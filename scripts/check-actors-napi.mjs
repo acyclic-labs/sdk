@@ -86,8 +86,10 @@ async function qualify(bindingPath) {
   for (const exportName of [
     "NativeActorsClient",
     "NativeActorsCancellation",
+    "NativeActorsConnectResult",
     "ActorId",
     "CodeSha256",
+    "connectResult",
     "createActorResult",
     "updateActorResult",
     "inspectActorResult",
@@ -107,6 +109,9 @@ async function qualify(bindingPath) {
   }
   if (typeof binding.NativeActorsCancellation !== "function") {
     throw new Error("Rust N-API bridge did not export NativeActorsCancellation");
+  }
+  if (typeof binding.NativeActorsClient.connectResult !== "function") {
+    throw new Error("Rust N-API bridge did not export connectResult");
   }
   for (const method of [
     "createActorResult",
@@ -164,6 +169,40 @@ async function qualify(bindingPath) {
   cancellation.cancel();
   if (!cancellation.cancelled) {
     throw new Error("Actors N-API cancellation handle was not monotonic");
+  }
+
+  const invalidConnection = await binding.NativeActorsClient.connectResult(
+    "https://example.com",
+    "",
+  );
+  if (invalidConnection.client != null) {
+    throw new Error("Actors connectResult returned a client for invalid credentials");
+  }
+  if (invalidConnection.error == null) {
+    throw new Error("Actors connectResult omitted configuration error metadata");
+  }
+  if (invalidConnection.error.code !== "invalid_argument") {
+    throw new Error(`Actors connectResult returned ${invalidConnection.error.code} for invalid credentials`);
+  }
+  if (!String(invalidConnection.error.message).includes("invalid Actors bearer credential")) {
+    throw new Error("Actors connectResult lost the Rust configuration error message");
+  }
+
+  const cancelledConnection = new binding.NativeActorsCancellation();
+  cancelledConnection.cancel();
+  const cancelledResult = await binding.NativeActorsClient.connectResult(
+    "https://example.com",
+    "token",
+    cancelledConnection,
+  );
+  if (cancelledResult.client != null) {
+    throw new Error("Actors connectResult returned a client for a cancelled connection");
+  }
+  if (cancelledResult.error == null || cancelledResult.error.code !== "cancelled") {
+    throw new Error("Actors connectResult did not preserve pre-dispatch cancellation metadata");
+  }
+  if (cancelledResult.error.grpcCode !== 1 || cancelledResult.error.grpcName !== "cancelled") {
+    throw new Error("Actors connectResult lost cancellation status metadata");
   }
   console.log(`acyclic-actors N-API ABI passed on ${process.platform}-${process.arch}`);
 }

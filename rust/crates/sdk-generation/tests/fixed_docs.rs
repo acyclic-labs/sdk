@@ -9,26 +9,30 @@ use std::{
 #[path = "../src/compiled_generator_inputs.rs"]
 mod compiled_generator_inputs;
 
-fn temp(name: &str) -> PathBuf {
+fn temp(_name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target")
-        .join(format!("{name}-{nonce}"))
+    let base = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join(format!("sg-{nonce:x}"))
 }
 
 fn copy_compiled_generator_sources(root: &Path) {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     for relative in compiled_generator_inputs::PATHS {
         let destination = root.join(relative);
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
         fs::copy(source_root.join(relative), destination).unwrap();
     }
 }
 
 fn fixture_workspace_manifest(source_root: &Path) -> String {
-    let source = fs::read_to_string(source_root.join("Cargo.toml")).unwrap();
+    let source = fs::read_to_string(source_root.join("Cargo.toml"))
+        .unwrap()
+        .replace("\r\n", "\n");
     let members_start = source.find("members = [").unwrap();
     let members_close = source[members_start..]
         .find("]\nresolver")
@@ -169,6 +173,8 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     )
     .unwrap();
     copy_compiled_generator_sources(&root);
+    let actors_lib_path = root.join("rust/crates/actors/src/lib.rs");
+    let actors_lib = fs::read(&actors_lib_path).unwrap();
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
@@ -194,22 +200,14 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     git(&root, &["config", "user.name", "fixture"]);
     git(&root, &["add", "."]);
     git(&root, &["commit", "--quiet", "-m", "fixture"]);
-    fs::write(
-        root.join("rust/crates/actors/src/lib.rs"),
-        "dirty release source\n",
-    )
-    .unwrap();
+    fs::write(&actors_lib_path, "dirty release source\n").unwrap();
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
     assert!(
         !run(binary, "generate", &root, Some(&rustdoc), &first, "release")
             .status
             .success()
     );
-    fs::write(
-        root.join("rust/crates/actors/src/lib.rs"),
-        "rust-owned source\n",
-    )
-    .unwrap();
+    fs::write(&actors_lib_path, actors_lib).unwrap();
     let source_binding_path = root.join("rust/crates/actors/src/domain.rs");
     let source_binding = fs::read(&source_binding_path).unwrap();
     fs::write(&source_binding_path, b"foreign semantic source\n").unwrap();

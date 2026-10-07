@@ -1,5 +1,5 @@
 import type * as GeneratedBrowser from "../generated/wasm/acyclic_actors_wasm.js";
-import { normalizeActorsError } from "./client.js";
+import { normalizeActorsError, type ActorsOperation } from "./client.js";
 
 type BrowserModule = typeof GeneratedBrowser;
 type BrowserClient = InstanceType<BrowserModule["ActorsClient"]>;
@@ -36,7 +36,7 @@ export class BrowserActorsClient {
     return "grpc-web";
   }
 
-  async call(operation: string, request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
+  async call(operation: ActorsOperation, request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
     let abort: (() => void) | undefined;
     try {
       const module = await loadBrowserModule();
@@ -45,10 +45,7 @@ export class BrowserActorsClient {
       abort = onAbort;
       if (signal?.aborted) onAbort();
       else signal?.addEventListener("abort", onAbort, { once: true });
-      const method = this.binding[operation as keyof BrowserClient] as (
-        request: Uint8Array,
-        cancellation: BrowserCancellation,
-      ) => Promise<Uint8Array>;
+      const method = this.binding[operation];
       return await method.call(this.binding, request, cancellation);
     } catch (error) {
       throw normalizeActorsError(error);
