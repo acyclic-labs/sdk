@@ -56,7 +56,7 @@ uniffi::custom_type!(PositiveU64, u64, {
 });
 
 /// Failure while constructing a semantic value from customer or wire input.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, thiserror::Error)]
 pub enum DomainError {
     /// Actor validators require an actor identity to be present.
     #[error("actor_id must not be empty")]
@@ -77,6 +77,7 @@ pub enum DomainError {
     #[error("unknown ErrorCode value {0}")]
     UnknownErrorCode(i32),
     /// A response or request omitted a message required by the contract.
+    #[default]
     #[error("required Actors message is absent")]
     MissingMessage,
     /// A semantic subscription could not be represented without changing wire data.
@@ -85,10 +86,6 @@ pub enum DomainError {
     /// A semantic binding could not be represented without changing wire data.
     #[error("binding is malformed")]
     InvalidBinding,
-}
-
-impl Default for DomainError {
-    fn default() -> Self { Self::MissingMessage }
 }
 
 fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {

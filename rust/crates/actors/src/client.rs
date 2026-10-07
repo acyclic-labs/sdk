@@ -53,6 +53,7 @@ pub type ConnectError = Error;
 
 type GeneratedClient<T> = wire::actors_service_client::ActorsServiceClient<T>;
 
+#[allow(clippy::needless_pass_by_value, reason = "tonic map_err supplies owned status values")]
 fn service_error(status: tonic::Status) -> Error {
     Error::Service {
         grpc_code: status.code() as i32,
@@ -181,6 +182,7 @@ pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError
 }
 
 /// Connect with an optional caller-pinned private CA on native targets.
+#[allow(clippy::needless_return, reason = "target-specific branches return distinct native and browser backends")]
 pub async fn connect_with_ca_certificate(
     endpoint: &str,
     token: &str,
