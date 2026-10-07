@@ -457,10 +457,12 @@ export declare const GetObjectHeaderSchema: GenMessage<GetObjectHeader>;
 
 /**
  * One body frame. data decodes under codec to exactly decoded_length bytes, which
- * follow the previous frame's bytes in the selected representation. A client
- * rejects decoded_length above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES before it
- * allocates or decompresses, rejects any other decoded length, and rejects an
- * unknown codec. A server chooses the codec independently for every frame.
+ * follow the previous frame's bytes in the selected representation. Before it
+ * allocates or decompresses, a client rejects decoded_length above the bytes
+ * still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
+ * above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
+ * other decoded length and an unknown codec. A server chooses the codec
+ * independently for every frame.
  *
  * @generated from message acyclic.objects.v2.Body
  */
@@ -1068,6 +1070,13 @@ export enum ObjectsLimit {
    * @generated from enum value: OBJECTS_LIMIT_MAX_MULTIPART_PARTS = 10000;
    */
   MAX_MULTIPART_PARTS = 10000,
+
+  /**
+   * Bound on one compressed Body's decoded_length: one whole stored block.
+   *
+   * @generated from enum value: OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES = 8388608;
+   */
+  MAX_BODY_DECODED_BYTES = 8388608,
 }
 
 /**

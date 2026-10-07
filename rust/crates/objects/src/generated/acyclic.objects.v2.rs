@@ -172,10 +172,12 @@ pub struct GetObjectHeader {
     pub content_range: ::core::option::Option<ContentRange>,
 }
 /// One body frame. data decodes under codec to exactly decoded_length bytes, which
-/// follow the previous frame's bytes in the selected representation. A client
-/// rejects decoded_length above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES before it
-/// allocates or decompresses, rejects any other decoded length, and rejects an
-/// unknown codec. A server chooses the codec independently for every frame.
+/// follow the previous frame's bytes in the selected representation. Before it
+/// allocates or decompresses, a client rejects decoded_length above the bytes
+/// still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
+/// above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
+/// other decoded length and an unknown codec. A server chooses the codec
+/// independently for every frame.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Body {
     #[prost(enumeration = "Codec", tag = "1")]
@@ -399,6 +401,8 @@ pub enum ObjectsLimit {
     MaxPageEntries = 1000,
     MaxBodyFrameBytes = 65536,
     MaxMultipartParts = 10000,
+    /// Bound on one compressed Body's decoded_length: one whole stored block.
+    MaxBodyDecodedBytes = 8388608,
 }
 impl ObjectsLimit {
     /// String value of the enum field names used in the ProtoBuf definition.
@@ -414,6 +418,7 @@ impl ObjectsLimit {
             Self::MaxPageEntries => "OBJECTS_LIMIT_MAX_PAGE_ENTRIES",
             Self::MaxBodyFrameBytes => "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES",
             Self::MaxMultipartParts => "OBJECTS_LIMIT_MAX_MULTIPART_PARTS",
+            Self::MaxBodyDecodedBytes => "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES",
         }
     }
     /// Creates an enum from field names used in the ProtoBuf definition.
@@ -426,6 +431,7 @@ impl ObjectsLimit {
             "OBJECTS_LIMIT_MAX_PAGE_ENTRIES" => Some(Self::MaxPageEntries),
             "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES" => Some(Self::MaxBodyFrameBytes),
             "OBJECTS_LIMIT_MAX_MULTIPART_PARTS" => Some(Self::MaxMultipartParts),
+            "OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES" => Some(Self::MaxBodyDecodedBytes),
             _ => None,
         }
     }

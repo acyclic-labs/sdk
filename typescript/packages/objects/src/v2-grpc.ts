@@ -13,7 +13,7 @@ export interface ObjectsV2GrpcOptions {
   readonly observer?: AcyclicObserver;
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
+import { ObjectsV2Error, ObjectsV2Provider, bodyDecodedLimit, objectsV2Error } from "./v2.js";
 import { validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
@@ -174,7 +174,7 @@ export class GrpcObjectsV2 extends ObjectsV2Provider {
                   if (frame.frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.frame.value), maximum);
                 } else {
-                  if (frame.frame.case !== "body" || frame.frame.value.decodedLength > 65536n || frame.frame.value.decodedLength > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+                  if (frame.frame.case !== "body" || frame.frame.value.decodedLength > bodyDecodedLimit(frame.frame.value) || frame.frame.value.decodedLength > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining -= frame.frame.value.decodedLength;
                 }
               } catch (error) { rejected = objectsV2Error(error); }

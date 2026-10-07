@@ -211,23 +211,33 @@ pub fn listing(
 
 /// Decodes one download body frame of at most `remaining` selected bytes.
 ///
-/// The declared length is checked against the per-frame and remaining bounds
+/// The declared length is checked against the codec's frame bound (64 KiB
+/// plain, 8 MiB compressed) and the remaining bytes
 /// before any allocation or decompression, and the decoded length must match it.
 pub fn body(frame: wire::Body, remaining: u64) -> Result<Vec<u8>, Error> {
-    let maximum = wire::ObjectsLimit::MaxBodyFrameBytes as u64;
+    let codec = wire::Codec::try_from(frame.codec).map_err(|_| invalid())?;
+    let maximum = match codec {
+        wire::Codec::None => wire::ObjectsLimit::MaxBodyFrameBytes,
+        wire::Codec::Zstd => wire::ObjectsLimit::MaxBodyDecodedBytes,
+    } as u64;
     if frame.decoded_length > maximum.min(remaining) {
         return Err(invalid());
     }
     let length = usize::try_from(frame.decoded_length).map_err(|_| invalid())?;
-    match wire::Codec::try_from(frame.codec) {
-        Ok(wire::Codec::None) if frame.data.len() == length => Ok(frame.data),
-        Ok(wire::Codec::Zstd) => zstd(&frame.data, length).ok_or_else(invalid),
-        _ => Err(invalid()),
+    match codec {
+        wire::Codec::None if frame.data.len() == length => Ok(frame.data),
+        wire::Codec::None => Err(invalid()),
+        wire::Codec::Zstd => zstd(&frame.data, length).ok_or_else(invalid),
     }
 }
-/// Decompresses concatenated Zstandard frames to exactly `length` bytes.
+/// Decompresses one or more complete Zstandard frames to exactly `length` bytes.
+///
+/// Empty data is not a Zstandard stream; an empty frame is sent as `CODEC_NONE`.
 fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
     use std::io::Read;
+    if input.is_empty() {
+        return None;
+    }
     let mut output = Vec::with_capacity(length);
     while !input.is_empty() {
         let allowed = (length - output.len()) as u64 + 1;
@@ -263,6 +273,7 @@ mod body_tests {
     use super::{body, plain_body, wire, zstd_body};
 
     const MAXIMUM: u64 = wire::ObjectsLimit::MaxBodyFrameBytes as u64;
+    const BLOCK: u64 = wire::ObjectsLimit::MaxBodyDecodedBytes as u64;
 
     fn pattern(length: usize) -> Vec<u8> {
         (0..=250u8).cycle().take(length).collect()
@@ -277,6 +288,26 @@ mod body_tests {
             assert_eq!(body(frame, MAXIMUM).ok(), Some(data.clone()));
             assert_eq!(body(plain_body(data.clone()), MAXIMUM).ok(), Some(data));
         }
+    }
+
+    #[test]
+    fn a_whole_stored_block_decodes_as_one_compressed_frame() {
+        let data = pattern(usize::try_from(BLOCK).unwrap_or(0));
+        assert_eq!(body(zstd_body(&data), BLOCK).ok(), Some(data.clone()));
+        let mut larger = data;
+        larger.push(0);
+        assert!(body(zstd_body(&larger), u64::MAX).is_err());
+    }
+
+    #[test]
+    fn empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted() {
+        let empty = wire::Body {
+            codec: wire::Codec::Zstd as i32,
+            data: Vec::new(),
+            decoded_length: 0,
+        };
+        assert!(body(empty, MAXIMUM).is_err());
+        assert_eq!(body(plain_body(Vec::new()), MAXIMUM).ok(), Some(Vec::new()));
     }
 
     #[test]
@@ -316,16 +347,23 @@ mod body_tests {
     #[test]
     fn oversized_declared_length_is_refused_before_decompressing() {
         // Garbage data proves the length bound fails before any decompression.
-        for (length, remaining) in [(MAXIMUM + 1, u64::MAX), (u64::MAX, u64::MAX), (10, 9)] {
-            for codec in [wire::Codec::None, wire::Codec::Zstd] {
-                let frame = wire::Body {
-                    codec: codec as i32,
-                    data: vec![0xff; 16],
-                    decoded_length: length,
-                };
-                assert!(body(frame, remaining).is_err());
-            }
+        for (codec, length, remaining) in [
+            (wire::Codec::None, MAXIMUM + 1, u64::MAX),
+            (wire::Codec::Zstd, BLOCK + 1, u64::MAX),
+            (wire::Codec::None, u64::MAX, u64::MAX),
+            (wire::Codec::Zstd, u64::MAX, u64::MAX),
+            (wire::Codec::None, 10, 9),
+            (wire::Codec::Zstd, 10, 9),
+        ] {
+            let frame = wire::Body {
+                codec: codec as i32,
+                data: vec![0xff; 16],
+                decoded_length: length,
+            };
+            assert!(body(frame, remaining).is_err());
         }
+        // A plain frame above 64 KiB is refused even when its data matches.
+        assert!(body(plain_body(pattern(65_537)), u64::MAX).is_err());
         // A frame that would expand beyond its declaration is cut off and refused.
         let mut frame = zstd_body(&vec![0; 65_536]);
         frame.decoded_length = 1024;

@@ -11,7 +11,8 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
-const JSON_FRAME_BYTES: usize = 128 * 1024;
+/// One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
+const JSON_FRAME_BYTES: usize = 12 * 1024 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// Authenticated native HTTP client for the logical Objects v2 gateway.

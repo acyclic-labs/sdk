@@ -115,7 +115,7 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
   const header = make("GetObjectResponse", { frame: { case: "header", value: { object: info } } });
   const body = make("GetObjectResponse", { frame: { case: "body", value: plainBody(new Uint8Array([1])) } });
   const bodyFrame = value => make("GetObjectResponse", { frame: { case: "body", value } });
-  const encode = frame => Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024));
+  const encode = frame => Buffer.from(encode_objects_v2_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 16 * 1024 * 1024));
   const lines = frames => Buffer.concat(frames.flatMap(frame => [encode(frame), Buffer.from("\n")]));
   const query = make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" });
   for (const [payload, media, code] of [
@@ -128,7 +128,8 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
     [lines([make("GetObjectResponse", { frame: { case: "header", value: { object: info, contentRange: { start: 0n, end: 0n, total: 1n } } } }), body]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     [Buffer.from('{"unknown":true}\n'), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     // Declared lengths above the frame limit are refused before decompressing the garbage data.
-    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 65537n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 8388609n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
+    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.NONE, data: new Uint8Array(65537), decodedLength: 65537n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     [lines([header, bodyFrame(zstdBody(new Uint8Array([1, 2]), 1n))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
     [lines([header, bodyFrame(make("Body", { codec: 2, data: zstdCompressSync(new Uint8Array([1])), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
@@ -141,6 +142,15 @@ test("Objects v2 validates remote metadata, ranges, framing and terminal errors"
     const client = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([header, frame]), { headers: { "content-type": "application/x-ndjson" } }) });
     assert.deepEqual([...(await client.get(query, 16n)).body], [1]);
   }
+  // One whole stored block arrives as a single compressed frame; one byte more is refused.
+  const block = new Uint8Array(8388608);
+  for (let offset = 0; offset < block.length; offset += 65536) crypto.getRandomValues(block.subarray(offset, offset + 65536));
+  const blockHeader = make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 8388608n } } } });
+  const whole = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([blockHeader, bodyFrame(zstdBody(block))]), { headers: { "content-type": "application/x-ndjson" } }) });
+  assert.ok(Buffer.from((await whole.get(query, 8388608n)).body).equals(Buffer.from(block)));
+  const largerHeader = make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 8388609n } } } });
+  const larger = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([largerHeader, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255]), decodedLength: 8388609n }))]), { headers: { "content-type": "application/x-ndjson" } }) });
+  await assert.rejects(larger.get(query, 8388609n), fail(wire.ErrorCode.UNAVAILABLE));
   const corrupt = new HttpObjectsV2({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response('{"bucket":{"name":"different.bucket"},"createdAt":"1970-01-01T00:00:00Z"}', { headers: { "content-type": "application/json" } }) });
   await assert.rejects(corrupt.headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.UNAVAILABLE));
 });

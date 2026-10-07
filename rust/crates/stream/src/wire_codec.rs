@@ -757,9 +757,14 @@ pub fn read_response_records(value: wire::ReadResponse) -> Result<Vec<wire::Reco
         .map_err(|_| StreamError::Unavailable)
 }
 
-/// Decompresses concatenated Zstandard frames to exactly `length` bytes.
+/// Decompresses one or more complete Zstandard frames to exactly `length` bytes.
+///
+/// Empty data is not a Zstandard stream; an empty frame is sent as `CODEC_NONE`.
 fn zstd(mut input: &[u8], length: usize) -> Option<Vec<u8>> {
     use std::io::Read;
+    if input.is_empty() {
+        return None;
+    }
     let mut output = Vec::with_capacity(length);
     while !input.is_empty() {
         let allowed = (length - output.len()) as u64 + 1;
@@ -815,6 +820,20 @@ mod read_response_tests {
                 Some(expected)
             );
         }
+    }
+
+    #[test]
+    fn empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted() {
+        let empty = wire::ReadResponse {
+            codec: wire::Codec::Zstd as i32,
+            data: Default::default(),
+            decoded_length: 0,
+        };
+        assert!(read_response_records(empty).is_err());
+        assert_eq!(
+            read_response_records(read_response_wire(Vec::new())).ok(),
+            Some(Vec::new())
+        );
     }
 
     #[test]

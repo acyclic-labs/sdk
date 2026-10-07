@@ -1126,6 +1126,8 @@ describe("read frames", () => {
     const short = plain(records(0n, 3));
     invalid({ ...short, decodedLength: short.decodedLength - 1n });
     invalid({ ...zstd(records(0n, 3)), codec: 2 as Codec });
+    invalid(create(ReadResponseSchema, { codec: Codec.ZSTD, data: new Uint8Array(0), decodedLength: 0n }));
+    expect(readResponseRecords(plain([]))).toEqual([]);
     const corrupt = zstd(records(0n, 30));
     invalid({ ...corrupt, data: corrupt.data.slice(0, corrupt.data.length / 2) });
   });

@@ -17,6 +17,11 @@ export function objectsV2Error(value: unknown): ObjectsV2Error {
 }
 
 /** Generated messages cross this interface without an independently maintained JSON contract. */
+/** Largest decoded_length one body frame may declare: 64 KiB plain, one 8 MiB stored block compressed. */
+export function bodyDecodedLimit(body: wire.Body): bigint {
+  return BigInt(body.codec === wire.Codec.NONE ? wire.ObjectsLimit.MAX_BODY_FRAME_BYTES : wire.ObjectsLimit.MAX_BODY_DECODED_BYTES);
+}
+
 export abstract class ObjectsV2Provider {
   protected abstract invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]>;
   protected async call<I extends DescMessage, O extends DescMessage>(route: string, input: I, output: O, value: MessageShape<I>, body: Uint8Array = new Uint8Array(0)): Promise<MessageShape<O>> {
