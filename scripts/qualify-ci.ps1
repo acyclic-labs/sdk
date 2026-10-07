@@ -9,7 +9,8 @@ $PSNativeCommandUseErrorActionPreference = $true
 Set-StrictMode -Version Latest
 
 New-Item -ItemType Directory -Force -Path `
-    $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR | Out-Null
+    $env:SDK_TEMP_DIR, $env:SDK_ARTIFACT_DIR, $env:TOOLS_DIR, `
+    "$env:SDK_TEMP_DIR/observability" | Out-Null
 . .\scripts\ensure-bun.ps1
 bun install --frozen-lockfile
 
@@ -143,7 +144,8 @@ try {
 # mounts. The shared test support module carries ignored tests of its own.
 cargo test -p acyclic-plugin --all-features --locked --test fork_join -- `
     --ignored --test-threads=1 --skip support::
-bun test --parallel=4 typescript/packages
+bun test --parallel=4 --reporter=junit `
+    --reporter-outfile="$env:SDK_TEMP_DIR/observability/bun-test.xml" typescript/packages
 bun run --filter '@acyclic-labs/fs' test:composition
 
 Complete-Background $clippy

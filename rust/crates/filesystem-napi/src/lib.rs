@@ -51,7 +51,10 @@ use std::sync::Arc;
 
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
-#[allow(clippy::struct_excessive_bools)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is one independent capability reported to JavaScript"
+)]
 pub struct NativeCapabilities {
     /// Canonical package version.
     pub version: String,
@@ -1302,7 +1305,10 @@ pub struct NativeOperationWindowCoordinator {
 
 /// One durable workspace-lineage record.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceLineageRecord {
     pub version: u32,
     pub revision: BigInt,
@@ -1316,7 +1322,10 @@ pub struct NativeWorkspaceLineageRecord {
 
 /// One overlapping filesystem-tool lease.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowLease {
     pub workspace_id: Buffer,
     pub lease_id: Buffer,
@@ -1326,7 +1335,10 @@ pub struct NativeOperationWindowLease {
 
 /// Stable, compact operation-window phase projection.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowPhase {
     pub kind: String,
     pub ticket: Option<Buffer>,
@@ -1337,7 +1349,10 @@ pub struct NativeOperationWindowPhase {
 
 /// Result of closing one operation-window lease.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeOperationWindowClose {
     pub kind: String,
     pub remaining: Option<u32>,
@@ -1468,6 +1483,15 @@ pub struct NativeJoinPlan {
     inner: NativeLocalJoinPlan,
 }
 
+/// Explicit immutable inheritance and stable retry identity.
+#[napi(object)]
+pub struct NativeForkOptions {
+    /// Absent inherits all; empty inherits no paths while preserving lineage.
+    pub paths: Option<Vec<String>>,
+    /// Exact caller-owned stable creation key.
+    pub idempotency_key: Option<Buffer>,
+}
+
 /// Exact bounded join planning options.
 #[napi(object)]
 pub struct NativeJoinOptions {
@@ -1479,6 +1503,10 @@ pub struct NativeJoinOptions {
     pub maximum_changes: u32,
     /// Maximum exact conflicts returned by application.
     pub maximum_conflicts: u32,
+    /// Optional caller-pinned source generation.
+    pub source_generation: Option<Buffer>,
+    /// Optional exact target CAS precondition.
+    pub target_generation: Option<Buffer>,
 }
 
 /// Terminal result of applying one immutable join plan.
@@ -1593,7 +1621,10 @@ pub struct NativeTransactionRebaseResult {
 
 /// One exact transaction dependency conflict.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeTransactionConflict {
     pub region: String,
     pub file_id: Option<Buffer>,
@@ -1610,7 +1641,10 @@ pub struct NativeTransactionConflict {
 
 /// One exact customer-visible path stat without storage topology.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceStat {
     pub file_id: Buffer,
     pub kind: String,
@@ -1621,7 +1655,10 @@ pub struct NativeWorkspaceStat {
 
 /// Scalar cross-profile metadata and opaque-payload presence.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceMetadata {
     pub posix_mode: Option<u32>,
     pub posix_uid: Option<u32>,
@@ -1639,7 +1676,10 @@ pub struct NativeWorkspaceMetadata {
 
 /// One exact encoded directory name.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceName {
     pub encoding: String,
     pub bytes: Buffer,
@@ -1647,7 +1687,10 @@ pub struct NativeWorkspaceName {
 
 /// One child in a bounded directory page.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceDirectoryEntry {
     pub name: NativeWorkspaceName,
     pub file_id: Buffer,
@@ -1656,7 +1699,10 @@ pub struct NativeWorkspaceDirectoryEntry {
 
 /// One bounded authenticated directory page.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceDirectoryPage {
     pub entries: Vec<NativeWorkspaceDirectoryEntry>,
     pub has_more: bool,
@@ -1664,7 +1710,10 @@ pub struct NativeWorkspaceDirectoryPage {
 
 /// One topology-free sparse extent span.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceExtentSpan {
     pub offset: BigInt,
     pub length: BigInt,
@@ -1674,14 +1723,23 @@ pub struct NativeWorkspaceExtentSpan {
 
 /// One bounded topology-free sparse extent plan.
 #[napi(object)]
-#[allow(missing_docs)]
+#[allow(
+    missing_docs,
+    reason = "plain N-API object whose fields the struct doc describes as a whole"
+)]
 pub struct NativeWorkspaceExtentPlan {
     pub spans: Vec<NativeWorkspaceExtentSpan>,
 }
 
 #[napi]
-#[allow(missing_docs)]
-#[allow(clippy::missing_errors_doc)]
+#[allow(
+    missing_docs,
+    reason = "the read_range, stat, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
+)]
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
+)]
 impl NativeWorkspace {
     /// Canonical customer workspace name.
     #[must_use]
@@ -1966,12 +2024,16 @@ impl NativeWorkspace {
         &self,
         destination: String,
         generation: &NativeGeneration,
+        options: NativeForkOptions,
     ) -> Result<NativeWorkspace> {
+        let key = native_idempotency_key(options.idempotency_key)?;
+        let fork = ForkOptions::from_generation(generation.inner.clone(), key);
+        let fork = match options.paths {
+            Some(paths) => fork.inherit_paths(paths),
+            None => fork,
+        };
         self.inner
-            .fork(
-                destination,
-                ForkOptions::from_generation(generation.inner.clone(), IdempotencyKey::new()),
-            )
+            .fork(destination, fork)
             .await
             .map(|inner| NativeWorkspace { inner })
             .map_err(napi_error)
@@ -2057,7 +2119,30 @@ impl NativeWorkspace {
                 options.maximum_changes,
                 options.maximum_conflicts,
             )
-            .plan()
+            .plan_pinned(
+                match options.source_generation {
+                    Some(id) => {
+                        self.inner
+                            .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
+                                fixed_32(&id, "source generation")?,
+                            )))
+                            .await
+                            .map_err(napi_error)?
+                    }
+                    None => self.inner.head().await.map_err(napi_error)?,
+                },
+                match options.target_generation {
+                    Some(id) => target
+                        .inner
+                        .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                            &id,
+                            "target generation",
+                        )?)))
+                        .await
+                        .map_err(napi_error)?,
+                    None => target.inner.head().await.map_err(napi_error)?,
+                },
+            )
             .await
             .map(|inner| NativeJoinPlan { inner })
             .map_err(napi_error)
@@ -2241,8 +2326,14 @@ impl NativeJoinPlan {
 }
 
 #[napi]
-#[allow(missing_docs)]
-#[allow(clippy::missing_errors_doc)]
+#[allow(
+    missing_docs,
+    reason = "the read_range, stat, list_directory, read_symbolic_link, and plan_extents bindings forward to the documented acyclic-fs methods of the same name"
+)]
+#[allow(
+    clippy::missing_errors_doc,
+    reason = "every method returns napi::Result, which reaches JavaScript as a thrown exception"
+)]
 impl NativeGeneration {
     /// Content-addressed generation identity.
     #[must_use]
@@ -3026,7 +3117,10 @@ fn workspace_commit(
 #[napi]
 impl NativeGitCompatRepository {
     /// Opens compatibility state in a private companion namespace.
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API owns JavaScript strings and buffers at the ABI boundary"
+    )]
     #[napi(factory)]
     pub fn open(state_root: String, workspace_id: Buffer) -> Result<Self> {
         let workspace_id = WorkspaceId::from_bytes(fixed_16(&workspace_id)?);
@@ -3197,7 +3291,6 @@ impl NativeGitCompatRepository {
     }
 
     /// Records a compatibility commit after ignore-aware generation capture.
-    #[allow(clippy::too_many_arguments)]
     #[napi]
     pub async fn record_commit_json(
         &self,
@@ -3648,7 +3741,10 @@ impl NativeFs {
     /// # Errors
     ///
     /// Returns an error for malformed identities or invalid speculation bounds.
-    #[allow(clippy::needless_pass_by_value)] // N-API owns JavaScript buffers at the ABI boundary.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "N-API owns JavaScript buffers at the ABI boundary"
+    )]
     #[napi]
     pub fn create_speculation(
         &self,
@@ -7024,7 +7120,10 @@ fn native_name(name: &str, config: VolumeConfig) -> Result<LogicalName> {
     }
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match lowers every native transaction operation"
+)]
 fn native_authored_transaction(
     operation: NativeTransactionOperation,
     config: VolumeConfig,
@@ -7511,7 +7610,10 @@ fn native_workspace_metadata(value: WorkspaceMetadata) -> NativeWorkspaceMetadat
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "consumes the stat it projects into the N-API shape"
+)]
 fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     NativeWorkspaceStat {
         file_id: Buffer::from(value.file_id.into_bytes().to_vec()),
@@ -7522,7 +7624,10 @@ fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "consumes the JavaScript name it validates"
+)]
 fn native_workspace_name(value: NativeWorkspaceName) -> Result<LogicalName> {
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
@@ -7627,7 +7732,6 @@ fn boundary_budget() -> WorkBudget {
 }
 
 #[cfg(test)]
-#[allow(clippy::large_futures)]
 mod tests {
     use super::*;
 
@@ -8101,7 +8205,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        let exact_fork = workspace.fork_at("exact-agent".to_owned(), &exact).await?;
+        let exact_fork = workspace
+            .fork_at(
+                "exact-agent".to_owned(),
+                &exact,
+                NativeForkOptions {
+                    paths: None,
+                    idempotency_key: None,
+                },
+            )
+            .await?;
         assert!(
             exact_fork
                 .read("/output/status".to_owned(), bigint(5))
@@ -8235,6 +8348,8 @@ mod tests {
             .join_into(
                 &main,
                 NativeJoinOptions {
+                    source_generation: None,
+                    target_generation: None,
                     history: "merge".to_owned(),
                     maximum_generations: 64,
                     maximum_changes: 64,

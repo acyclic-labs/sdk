@@ -72,7 +72,6 @@ fn kind_payload_mismatches_fail_before_identity() {
     assert!(encode_file_table_page(&FileTablePage::Leaf(vec![record]), 8).is_err());
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn every_file_record_payload_and_typed_reference_is_validated() {
     let metadata = ObjectId {

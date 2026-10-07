@@ -13,7 +13,13 @@
 // Codex runs inside Linux sandboxes; process control relies on unix process
 // groups, so the crate is empty elsewhere and the workspace still builds.
 #![cfg(unix)]
-#![cfg_attr(test, allow(clippy::panic, clippy::indexing_slicing))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        reason = "tests index collections whose shape they just built or asserted"
+    )
+)]
 
 pub mod config;
 pub mod events;

@@ -6,6 +6,392 @@ use std::error::Error;
 use std::path::Path;
 use std::sync::Arc;
 
+#[tokio::test]
+async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let workspace = fs.create_workspace("discovered-agent").await?;
+    workspace.write_text("/visible.txt", "visible").await?;
+    let pinned = workspace.head().await?;
+    let cancellation = CancellationToken::new();
+    let before = list_generation_directory_measured(
+        &workspace,
+        GenerationSelector::Exact(pinned.id()),
+        "/",
+        None,
+        1,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    let mut retained = Vec::with_capacity(10_000);
+    for index in 0..10_000 {
+        let other = fs
+            .create_workspace(&format!("retained-agent-{index}"))
+            .await?;
+        retained.push(other.head().await?);
+    }
+    workspace
+        .write_text("/late.txt", "not in pinned view")
+        .await?;
+    let after = list_generation_directory_measured(
+        &workspace,
+        GenerationSelector::Exact(pinned.id()),
+        "/",
+        None,
+        1,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(retained.len(), 10_000);
+    assert_eq!(before.value, after.value);
+    assert_eq!(after.value.entries.len(), 1);
+    assert!(after.work.backend_read_operations <= before.work.backend_read_operations);
+    assert!(after.work.page_reads <= before.work.page_reads);
+    assert_eq!(after.work.source_entries_visited, 0);
+    assert_eq!(after.work.materializations, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = fs.create_workspace("scratch-parent").await?;
+    parent.write_text("/memory.txt", "parent").await?;
+    let pinned = parent.head().await?;
+    let key = IdempotencyKey::new();
+    let child = parent
+        .fork(
+            "scratch-child",
+            ForkOptions::from_generation(pinned.clone(), key).empty(),
+        )
+        .await?;
+    let initial = child.head().await?;
+    assert_eq!(initial.parents().await?, vec![pinned.id()]);
+    assert!(child.list_directory("/", None, 1).await?.entries.is_empty());
+    let retried = parent
+        .fork(
+            "scratch-child",
+            ForkOptions::from_generation(pinned.clone(), key).empty(),
+        )
+        .await?;
+    assert_eq!(retried.head().await?.id(), initial.id());
+    assert!(
+        parent
+            .fork("scratch-child", ForkOptions::from_generation(pinned, key))
+            .await
+            .is_err()
+    );
+    child.write_text("/new.txt", "child").await?;
+    parent.write_text("/concurrent.txt", "user").await?;
+    let source = child.head().await?;
+    let target = parent.head().await?;
+    let plan = child.join_into(&parent).plan_at(&source, &target).await?;
+    let options = ApplyOptions {
+        if_target: target.id(),
+        idempotency_key: IdempotencyKey::new(),
+    };
+    assert!(matches!(
+        plan.apply(options).await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(parent.read("/memory.txt", 16).await?.as_ref(), b"parent");
+    assert_eq!(parent.read("/concurrent.txt", 16).await?.as_ref(), b"user");
+    assert_eq!(parent.read("/new.txt", 16).await?.as_ref(), b"child");
+    assert_eq!(child.head().await?.id(), source.id());
+    Ok(())
+}
+
+#[tokio::test]
+async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts()
+-> Result<(), Box<dyn Error>> {
+    for paths in [vec!["/notes/keep.txt"], vec!["/notes"]] {
+        let fs = Fs::memory();
+        let parent = fs.create_workspace("parent").await?;
+        let mut transaction = parent.begin_transaction(IdempotencyKey::new()).await?;
+        transaction.create_directory("/notes").await?;
+        transaction.commit().await?;
+        parent.write_text("/notes/keep.txt", "base").await?;
+        parent.write_text("/notes/other.txt", "other").await?;
+        parent.write_text("/excluded.txt", "excluded").await?;
+        let pinned = parent.head().await?;
+        let child = parent
+            .fork(
+                "child",
+                ForkOptions::from_generation(pinned.clone(), IdempotencyKey::new())
+                    .inherit_paths(paths.iter().map(|path| (*path).to_owned()).collect()),
+            )
+            .await?;
+        assert_eq!(child.head().await?.parents().await?, vec![pinned.id()]);
+        assert_eq!(child.read("/notes/keep.txt", 16).await?.as_ref(), b"base");
+        assert!(child.read("/excluded.txt", 16).await.is_err());
+        child.write_text("/notes/keep.txt", "child").await?;
+        parent.write_text("/excluded.txt", "updated").await?;
+        let source = child.head().await?;
+        let target = parent.head().await?;
+        let plan = child.join_into(&parent).plan_at(&source, &target).await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: target.id(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Applied(_)
+        ));
+        assert_eq!(parent.read("/excluded.txt", 16).await?.as_ref(), b"updated");
+        assert_eq!(
+            parent.read("/notes/other.txt", 16).await?.as_ref(),
+            b"other"
+        );
+        assert_eq!(parent.read("/notes/keep.txt", 16).await?.as_ref(), b"child");
+        assert_eq!(child.head().await?.id(), source.id());
+        child.write_text("/notes/keep.txt", "child again").await?;
+        parent.write_text("/notes/keep.txt", "parent again").await?;
+        let plan = child.join_into(&parent).plan().await?;
+        assert!(matches!(
+            plan.apply(ApplyOptions {
+                if_target: parent.head().await?.id(),
+                idempotency_key: IdempotencyKey::new()
+            })
+            .await?,
+            JoinOutcome::Conflicted { .. }
+        ));
+    }
+    Ok(())
+}
+
+/// Exhausts eight selections and two descendant shapes through the production
+/// fork/planner/publisher. The bound is three files and two fork edges; it is
+/// evidence for filtered delta semantics, not an unrestricted lineage proof.
+#[tokio::test]
+async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), Box<dyn Error>> {
+    for mask in 0_u8..8 {
+        for descendant in [false, true] {
+            let fs = Fs::memory();
+            let parent = fs.create_workspace("subset-parent").await?;
+            for index in 0..3 {
+                parent.write_text(&format!("/file-{index}"), "base").await?;
+            }
+            let pinned = parent.head().await?;
+            let paths = (0..3)
+                .filter(|index| mask & (1 << index) != 0)
+                .map(|index| format!("/file-{index}"))
+                .collect();
+            let child = parent
+                .fork(
+                    "subset-child",
+                    ForkOptions::from_generation(pinned, IdempotencyKey::new())
+                        .inherit_paths(paths),
+                )
+                .await?;
+            let source = if descendant {
+                child
+                    .fork(
+                        "subset-grandchild",
+                        ForkOptions::from_generation(child.head().await?, IdempotencyKey::new()),
+                    )
+                    .await?
+            } else {
+                child
+            };
+            for index in 0..3 {
+                let path = format!("/file-{index}");
+                if mask & (1 << index) != 0 {
+                    source.write_text(&path, "selected").await?;
+                } else {
+                    assert!(source.read(&path, 16).await.is_err());
+                    parent.write_text(&path, "concurrent").await?;
+                }
+            }
+            source.write_text("/added", "new").await?;
+            let selected_head = source.head().await?;
+            source.write_text("/after-pin", "excluded by pin").await?;
+            let source_head = source.head().await?;
+            let target = parent.head().await?;
+            let plan = source
+                .join_into(&parent)
+                .plan_at(&selected_head, &target)
+                .await?;
+            assert!(matches!(
+                plan.apply(ApplyOptions {
+                    if_target: target.id(),
+                    idempotency_key: IdempotencyKey::new()
+                })
+                .await?,
+                JoinOutcome::Applied(_)
+            ));
+            for index in 0..3 {
+                let expected = if mask & (1 << index) != 0 {
+                    "selected"
+                } else {
+                    "concurrent"
+                };
+                assert_eq!(
+                    parent.read(&format!("/file-{index}"), 16).await?.as_ref(),
+                    expected.as_bytes()
+                );
+            }
+            assert!(parent.read("/after-pin", 32).await.is_err());
+            assert_eq!(source.head().await?.id(), source_head.id());
+            let repeated = source
+                .join_into(&parent)
+                .plan_at(&selected_head, &parent.head().await?)
+                .await?;
+            assert!(matches!(
+                repeated
+                    .apply(ApplyOptions {
+                        if_target: repeated.target_head(),
+                        idempotency_key: IdempotencyKey::new()
+                    })
+                    .await?,
+                JoinOutcome::NoChanges(_)
+            ));
+        }
+    }
+    // Negative control: deletion on an ordinary full fork IS an authored
+    // deletion and must reach the parent. Filtering must not mean fork+clear.
+    let fs = Fs::memory();
+    let parent = fs.create_workspace("negative-parent").await?;
+    parent.write_text("/omitted", "base").await?;
+    let child = parent
+        .fork(
+            "negative-child",
+            ForkOptions::from_generation(parent.head().await?, IdempotencyKey::new()),
+        )
+        .await?;
+    child.remove("/omitted").await?;
+    let plan = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        plan.apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new()
+        })
+        .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert!(parent.read("/omitted", 16).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let parent = fs.create_workspace("filtered-rebase-parent").await?;
+    parent.write_text("/omitted", "base").await?;
+    let child = parent
+        .fork(
+            "filtered-rebase-child",
+            ForkOptions::from_generation(parent.head().await?, IdempotencyKey::new()).empty(),
+        )
+        .await?;
+    child.write_text("/local", "child").await?;
+    parent.write_text("/omitted", "user edit").await?;
+    assert!(matches!(
+        child.live_rebase(IdempotencyKey::new(), 64, 64, 16).await?,
+        WorkspaceRebase::Rebased(_)
+    ));
+    assert_eq!(child.read("/omitted", 16).await?.as_ref(), b"user edit");
+    assert_eq!(child.read("/local", 16).await?.as_ref(), b"child");
+    child.write_text("/local", "after rebase").await?;
+    let source = child.head().await?;
+    let plan = child.join_into(&parent).plan().await?;
+    assert!(matches!(
+        plan.apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new()
+        })
+        .await?,
+        JoinOutcome::Applied(_)
+    ));
+    assert_eq!(parent.read("/omitted", 16).await?.as_ref(), b"user edit");
+    assert_eq!(parent.read("/local", 16).await?.as_ref(), b"after rebase");
+    assert_eq!(child.head().await?.id(), source.id());
+    Ok(())
+}
+
+#[tokio::test]
+async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
+-> Result<(), Box<dyn Error>> {
+    let fs = Fs::memory();
+    let root = fs.create_workspace("nested-root").await?;
+    root.write_text("/keep", "root").await?;
+    root.write_text("/omit", "root").await?;
+    let parent = root
+        .fork(
+            "nested-parent",
+            ForkOptions::from_generation(root.head().await?, IdempotencyKey::new()),
+        )
+        .await?;
+    parent.write_text("/keep", "inherited").await?;
+    let child = parent
+        .fork(
+            "nested-child",
+            ForkOptions::from_generation(parent.head().await?, IdempotencyKey::new())
+                .inherit_paths(vec!["/keep".into()]),
+        )
+        .await?;
+    // Inherited content is the child baseline; only authored child changes
+    // enter a destination. An unchanged selected file is not a child edit.
+    child.write_text("/new", "child").await?;
+    let plan = child.join_into(&root).plan().await?;
+    plan.apply(ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    })
+    .await?;
+    assert_eq!(root.read("/keep", 32).await?.as_ref(), b"root");
+    assert_eq!(root.read("/omit", 32).await?.as_ref(), b"root");
+    assert_eq!(root.read("/new", 32).await?.as_ref(), b"child");
+    child.write_text("/keep", "edited").await?;
+    let plan = child.join_into(&root).plan().await?;
+    assert!(matches!(
+        plan.apply(ApplyOptions {
+            if_target: plan.target_head(),
+            idempotency_key: IdempotencyKey::new(),
+        })
+        .await?,
+        JoinOutcome::Conflicted { .. }
+    ));
+    root.write_text("/keep", "inherited").await?;
+    let plan = child.join_into(&root).plan().await?;
+    plan.apply(ApplyOptions {
+        if_target: plan.target_head(),
+        idempotency_key: IdempotencyKey::new(),
+    })
+    .await?;
+    assert_eq!(root.read("/keep", 32).await?.as_ref(), b"edited");
+    assert_eq!(parent.read("/keep", 32).await?.as_ref(), b"inherited");
+    Ok(())
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(48))]
+    #[test]
+    fn selected_fork_hardlink_aliases_keep_exact_content(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64), carry_alias in proptest::prelude::any::<bool>()) {
+        let result: Result<(), Box<dyn Error>> = futures::executor::block_on(async {
+            let fs = Fs::memory();
+            let parent = fs.create_workspace("hardlink-parent").await?;
+            parent.write("/file", Bytes::copy_from_slice(&bytes)).await?;
+            let mut transaction = parent.begin_transaction(IdempotencyKey::new()).await?;
+            transaction.hard_link("/file", "/alias").await?;
+            transaction.commit().await?;
+            let mut paths = vec!["/file".to_owned()];
+            if carry_alias { paths.push("/alias".to_owned()); }
+            let child = parent.fork("hardlink-child", ForkOptions::from_generation(parent.head().await?, IdempotencyKey::new()).inherit_paths(paths)).await?;
+            assert_eq!(child.read("/file", 64).await?.as_ref(), bytes.as_slice());
+            if carry_alias { assert_eq!(child.read("/alias", 64).await?.as_ref(), bytes.as_slice()); }
+            else { assert!(child.read("/alias", 64).await.is_err()); }
+            child.write("/file", Bytes::from_static(b"changed")).await?;
+            if carry_alias { assert_eq!(child.read("/alias", 64).await?.as_ref(), b"changed"); }
+            assert_eq!(parent.read("/alias", 64).await?.as_ref(), bytes.as_slice());
+            Ok(())
+        });
+        proptest::prop_assert!(result.is_ok(), "{result:?}");
+    }
+}
+
 #[test]
 fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Error>> {
     let composed = WorkspaceName::new("caf\u{e9}")?;
@@ -2161,6 +2547,7 @@ async fn assert_fork_lineage_exact(
         crate::LogicalObjectStore<acyclic_objects::v2::MemoryObjects>,
     >,
     independent: bool,
+    inherits_base: bool,
 ) -> Result<(), Box<dyn Error>> {
     let store = crate::distributed::StreamAuthorityStore::new(Arc::clone(stream));
     let authority =
@@ -2200,10 +2587,14 @@ async fn assert_fork_lineage_exact(
             ),
         )
         .await?;
-    assert_eq!(
-        grandchild.read("/base.txt", 16).await?,
-        Bytes::from_static(b"base")
-    );
+    if inherits_base {
+        assert_eq!(
+            grandchild.read("/base.txt", 16).await?,
+            Bytes::from_static(b"base")
+        );
+    } else {
+        assert!(grandchild.read("/base.txt", 16).await.is_err());
+    }
     let grandchild_lineage = store.generation_lineage(authority(grandchild.id())).await?;
     assert_eq!(
         grandchild_lineage.get(..expected.len()),
@@ -2216,7 +2607,13 @@ async fn assert_fork_lineage_exact(
 /// commits, checking the durable state after each interruption and that a
 /// retry with the same key completes the same workspace. Returns the commits
 /// an uninterrupted fork made.
-async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn Error>> {
+async fn fork_through_every_cut(
+    advance_source: bool,
+    paths: Option<Vec<String>>,
+) -> Result<usize, Box<dyn Error>> {
+    let inherits_base = paths
+        .as_ref()
+        .is_none_or(|paths| paths.iter().any(|path| path == "/base.txt"));
     let mut uninterrupted_commits = None;
     for cut in [ForkCut::Before, ForkCut::AfterCommit] {
         for fail_at in 1.. {
@@ -2230,15 +2627,21 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
             );
             let main = fs.create_workspace("repo").await?;
             main.write_text("/base.txt", "base").await?;
+            main.write_text("/excluded.txt", "excluded").await?;
             let source = main.head().await?;
             if advance_source {
                 main.write_text("/later.txt", "later").await?;
             }
             let key = IdempotencyKey::from_bytes([0x51; 16]);
+            let options = || {
+                let options = ForkOptions::from_generation(source.clone(), key);
+                match &paths {
+                    Some(paths) => options.inherit_paths(paths.clone()),
+                    None => options,
+                }
+            };
             cutting.arm(fail_at, cut);
-            let attempt = main
-                .fork("agent", ForkOptions::from_generation(source.clone(), key))
-                .await;
+            let attempt = main.fork("agent", options()).await;
             let fired = cutting.disarm();
             let committed = cutting.commits();
             let destination = fs.workspace_id("agent")?;
@@ -2248,7 +2651,15 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
             if !fired {
                 let fork = attempt?;
                 assert!(complete);
-                assert_fork_lineage_exact(&stream, &main, &source, &fork, advance_source).await?;
+                assert_fork_lineage_exact(
+                    &stream,
+                    &main,
+                    &source,
+                    &fork,
+                    advance_source,
+                    inherits_base,
+                )
+                .await?;
                 assert!(creation_operation(&stream, destination, key).await?);
                 uninterrupted_commits.get_or_insert(committed);
                 break;
@@ -2257,23 +2668,41 @@ async fn fork_through_every_cut(advance_source: bool) -> Result<usize, Box<dyn E
                 attempt.is_err(),
                 "a fault at call {fail_at} was not reported"
             );
-            let retried = main
-                .fork("agent", ForkOptions::from_generation(source.clone(), key))
-                .await?;
+            let retried = main.fork("agent", options()).await?;
             assert_eq!(retried.id(), destination);
-            assert_eq!(
-                retried.read("/base.txt", 16).await?,
-                Bytes::from_static(b"base")
+            if inherits_base {
+                assert_eq!(
+                    retried.read("/base.txt", 16).await?,
+                    Bytes::from_static(b"base")
+                );
+            } else {
+                assert!(retried.read("/base.txt", 16).await.is_err());
+            }
+            assert!(
+                retried
+                    .head()
+                    .await?
+                    .matches_fork_selection(&source, paths.clone())
+                    .await?
             );
+            if paths.is_some() {
+                assert!(retried.read("/excluded.txt", 16).await.is_err());
+            }
             assert!(
                 assert_fork_state_exact(&stream, &source, main.id().volume_id(), destination)
                     .await?
             );
-            let again = main
-                .fork("agent", ForkOptions::from_generation(source.clone(), key))
-                .await?;
+            let again = main.fork("agent", options()).await?;
             assert_eq!(again.head().await?.id(), retried.head().await?.id());
-            assert_fork_lineage_exact(&stream, &main, &source, &retried, advance_source).await?;
+            assert_fork_lineage_exact(
+                &stream,
+                &main,
+                &source,
+                &retried,
+                advance_source,
+                inherits_base,
+            )
+            .await?;
             assert!(
                 creation_operation(&stream, destination, key).await?,
                 "the fork's creation is not found by its operation"
@@ -2288,14 +2717,24 @@ async fn a_fork_of_the_head_is_one_commit_and_exact_at_every_provider_cut()
 -> Result<(), Box<dyn Error>> {
     // The fork of a published head shares its lineage, which the same
     // commit extends with the new workspace's first generation.
-    assert_eq!(fork_through_every_cut(false).await?, 1);
+    assert_eq!(fork_through_every_cut(false, None).await?, 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn an_independent_fork_is_one_commit_and_exact_at_every_provider_cut()
 -> Result<(), Box<dyn Error>> {
-    assert_eq!(fork_through_every_cut(true).await?, 1);
+    assert_eq!(fork_through_every_cut(true, None).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_forks_reconcile_at_every_provider_cut() -> Result<(), Box<dyn Error>> {
+    for advanced in [false, true] {
+        for paths in [Vec::new(), vec!["/base.txt".to_owned()]] {
+            assert_eq!(fork_through_every_cut(advanced, Some(paths)).await?, 1);
+        }
+    }
     Ok(())
 }
 
@@ -2681,7 +3120,6 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 /// Siblings forked from one head, each adding its own file, join back one
 /// after the other. The second join is a real three-way merge (its base is
 /// the pre-first-join head) and must apply: nothing in it conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -2734,7 +3172,6 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
 /// and add a file to it. Directories merge by path, as in Git: the second join
 /// folds its directory into the first's instead of conflicting on the name,
 /// including a nested directory both created.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -2792,7 +3229,6 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
 /// Two siblings each create the same file (under different identities, as two
 /// captures of one host file do). Files merge by path like directories: the
 /// same content folds into one file, and only different content conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -2879,7 +3315,6 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
 /// The mount bumps a directory's modification time whenever a child is
 /// added, so two siblings adding files to one directory always diverge on its
 /// metadata. That must reconcile; only authored metadata (the mode) conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 -> Result<(), Box<dyn Error>> {

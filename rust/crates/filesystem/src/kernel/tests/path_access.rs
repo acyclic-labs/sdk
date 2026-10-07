@@ -1460,7 +1460,6 @@ fn cancelled_and_unadmitted_batches_perform_no_backend_work()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn scalar_and_batch_peak_accounting_fail_closed_at_every_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let prior = WorkCounters {

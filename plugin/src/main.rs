@@ -1,6 +1,10 @@
 //! Unified Acyclic CLI, service, hook bridge, MCP bridge, and installer.
 
-#![allow(clippy::cognitive_complexity, clippy::too_many_lines)]
+#![allow(
+    clippy::cognitive_complexity,
+    clippy::too_many_lines,
+    reason = "the CLI entry points dispatch every subcommand in one place"
+)]
 
 mod adapter_state;
 mod cli_output;

@@ -873,7 +873,10 @@ pub fn make_writable(root: &Path) {
         }
         // Windows has only the read-only attribute; clearing it is exact.
         #[cfg(windows)]
-        #[allow(clippy::permissions_set_readonly_false)]
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has only the read-only attribute, so clearing it is exact"
+        )]
         permissions.set_readonly(false);
         fs::set_permissions(path, permissions).expect("restore package permissions");
         if metadata.is_dir() {

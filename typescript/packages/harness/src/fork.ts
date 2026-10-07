@@ -35,6 +35,7 @@ export async function resourceRef<Kind extends ResourceKind>(value: ResourceRef<
 export type ResourceRevision =
   | Readonly<{ kind: "history"; reference: ResourceRef<"stream"> }>
   | Readonly<{ kind: "project"; reference: Readonly<{ volume: VolumeRef<"project", "filesystem">; generation: ResourceRef<"generation"> }> }>
+  | Readonly<{ kind: "private_volume"; reference: Readonly<{ volume: VolumeRef<"agent_private", "filesystem">; generation: ResourceRef<"generation">; paths: readonly string[] }> }>
   | Readonly<{ kind: "context"; reference: ResourceRef<"context"> }>
   | Readonly<{ kind: "process"; reference: ResourceRef<"checkpoint"> }>
   | Readonly<{ kind: "artifact"; reference: ResourceRef<"artifact"> }>

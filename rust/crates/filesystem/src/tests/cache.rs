@@ -193,8 +193,10 @@ fn put_contains_and_decoded_pages_share_one_deterministic_lru()
 fn flight_waiter_bound_and_completion_are_deterministic() {
     struct WakeIdentity;
 
-    // Two distinct wakers, which `Waker::noop` (one shared waker) is not.
-    #[allow(clippy::manual_noop_waker)]
+    #[allow(
+        clippy::manual_noop_waker,
+        reason = "two distinct wakers, which Waker::noop (one shared waker) is not"
+    )]
     impl std::task::Wake for WakeIdentity {
         fn wake(self: Arc<Self>) {}
     }

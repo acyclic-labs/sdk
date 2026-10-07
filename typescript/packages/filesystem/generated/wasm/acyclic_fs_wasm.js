@@ -2341,16 +2341,14 @@ export class BrowserWorkspace {
      * Creates an independent workspace at one caller-selected exact generation.
      * @param {string} destination
      * @param {BrowserGeneration} generation
-     * @param {Uint8Array | null} [idempotency_key]
+     * @param {BrowserForkOptions} options
      * @returns {Promise<BrowserWorkspace>}
      */
-    forkAt(destination, generation, idempotency_key) {
+    forkAt(destination, generation, options) {
         const ptr0 = passStringToWasm0(destination, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         _assertClass(generation, BrowserGeneration);
-        var ptr1 = isLikeNone(idempotency_key) ? 0 : passArray8ToWasm0(idempotency_key, wasm.__wbindgen_malloc);
-        var len1 = WASM_VECTOR_LEN;
-        const ret = wasm.browserworkspace_forkAt(this.__wbg_ptr, ptr0, len0, generation.__wbg_ptr, ptr1, len1);
+        const ret = wasm.browserworkspace_forkAt(this.__wbg_ptr, ptr0, len0, generation.__wbg_ptr, options);
         return ret;
     }
     /**
@@ -3597,22 +3595,22 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 971, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 978, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 810, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 815, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 19, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 23, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 809, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 814, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_);
             return ret;
         },

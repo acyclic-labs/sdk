@@ -15,12 +15,14 @@ import type {
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
 import { HTTP_ROUTES } from "./routes.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export interface HttpWorkersOptions {
   readonly endpoint: string;
   readonly token: string;
   readonly fetcher?: typeof fetch;
   readonly maximumResponseBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 
 export class WorkersTransportError extends Error {
@@ -33,6 +35,7 @@ export class HttpWorkersClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
@@ -44,40 +47,46 @@ export class HttpWorkersClient {
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
+    this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
 
   async publishVersion(request: PublishVersionRequest): Promise<PublishVersionResponse> {
-    return fromJsonString(PublishVersionResponseSchema, await this.#post(HTTP_ROUTES.publishVersion, toJsonString(PublishVersionRequestSchema, request)));
+    return fromJsonString(PublishVersionResponseSchema, await this.#post("publishVersion", toJsonString(PublishVersionRequestSchema, request)));
   }
   async selectDeployment(request: SelectDeploymentRequest): Promise<SelectDeploymentResponse> {
-    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(HTTP_ROUTES.selectDeployment, toJsonString(SelectDeploymentRequestSchema, request)));
+    return fromJsonString(SelectDeploymentResponseSchema, await this.#post("selectDeployment", toJsonString(SelectDeploymentRequestSchema, request)));
   }
   async submitJob(request: SubmitJobRequest): Promise<SubmitJobResponse> {
-    return fromJsonString(SubmitJobResponseSchema, await this.#post(HTTP_ROUTES.submitJob, toJsonString(SubmitJobRequestSchema, request)));
+    return fromJsonString(SubmitJobResponseSchema, await this.#post("submitJob", toJsonString(SubmitJobRequestSchema, request)));
   }
   async inspectJob(request: InspectJobRequest): Promise<InspectJobResponse> {
-    return fromJsonString(InspectJobResponseSchema, await this.#post(HTTP_ROUTES.inspectJob, toJsonString(InspectJobRequestSchema, request)));
+    return fromJsonString(InspectJobResponseSchema, await this.#post("inspectJob", toJsonString(InspectJobRequestSchema, request)));
   }
   async cancelJob(request: CancelJobRequest): Promise<CancelJobResponse> {
-    return fromJsonString(CancelJobResponseSchema, await this.#post(HTTP_ROUTES.cancelJob, toJsonString(CancelJobRequestSchema, request)));
+    return fromJsonString(CancelJobResponseSchema, await this.#post("cancelJob", toJsonString(CancelJobRequestSchema, request)));
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
   async invokeVersion(request: InvokeVersionRequest): Promise<InvokeResponse> {
     if (request.versionSha256.byteLength !== 32) throw new RangeError("version digest must contain exactly 32 bytes");
     const digest = Array.from(request.versionSha256, byte => byte.toString(16).padStart(2, "0")).join("");
     const path = HTTP_ROUTES.invokeVersion.replace("{sha256hex}", digest);
-    return fromJsonString(InvokeResponseSchema, await this.#post(path, toJsonString(InvokeVersionRequestSchema, request)));
+    return fromJsonString(InvokeResponseSchema, await this.#post("invokeVersion", toJsonString(InvokeVersionRequestSchema, request), path));
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
   async invokeDeployment(request: InvokeDeploymentRequest): Promise<InvokeResponse> {
     if (!/^[A-Za-z0-9._-]{1,256}$/.test(request.alias) || request.alias === "." || request.alias === "..") throw new TypeError("invalid deployment alias");
     const path = HTTP_ROUTES.invokeDeployment.replace("{alias}", encodeURIComponent(request.alias));
-    return fromJsonString(InvokeResponseSchema, await this.#post(path, toJsonString(InvokeDeploymentRequestSchema, request)));
+    return fromJsonString(InvokeResponseSchema, await this.#post("invokeDeployment", toJsonString(InvokeDeploymentRequestSchema, request), path));
   }
 
-  async #post(path: string, body: string): Promise<string> {
+  #post(route: keyof typeof HTTP_ROUTES, body: string, path: string = HTTP_ROUTES[route]): Promise<string> {
+    return observed(this.#observer, "workers", route, sizes => this.#send(path, body, sizes));
+  }
+
+  async #send(path: string, body: string, sizes?: OperationSizes): Promise<string> {
+    if (sizes) sizes.requestBytes = new TextEncoder().encode(body).byteLength;
     const response = await this.#fetcher(new URL(path, `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
       redirect: "error",
@@ -85,6 +94,7 @@ export class HttpWorkersClient {
       body,
     });
     const bytes = await boundedBytes(response, this.#maximum);
+    if (sizes) sizes.responseBytes = bytes.byteLength;
     let json: string;
     try { json = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new WorkersTransportError("malformed UTF-8 response", response.status); }

@@ -326,7 +326,6 @@ fn pre_cancelled_async_clone_performs_zero_work() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn request_validation_rejects_every_shape_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let extent = ObjectId {
         kind: ObjectKind::ExtentPage,

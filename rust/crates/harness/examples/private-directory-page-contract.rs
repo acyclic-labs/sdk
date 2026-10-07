@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::{
     conversation::MAX_PRIVATE_DIRECTORY_PAGE, runtime::DEFAULT_PRIVATE_DIRECTORY_PAGE,

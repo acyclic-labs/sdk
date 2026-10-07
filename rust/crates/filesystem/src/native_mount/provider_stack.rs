@@ -15,7 +15,10 @@
 //! stays on its thread, so thread-local state, parking, and blocking behave as
 //! they would in place, and no other thread is woken to serve it.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "switches the callback thread onto a provider-reserved fiber stack"
+)]
 
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -150,7 +153,6 @@ pub(super) fn run<T>(callback: impl FnOnce() -> T) -> windows::core::Result<T> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{PROVIDER_STACK_BYTES, run};
     use windows::Win32::System::Threading::{GetCurrentThreadStackLimits, IsThreadAFiber};

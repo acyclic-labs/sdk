@@ -1272,7 +1272,10 @@ impl ControlPlane {
         }))
     }
 
-    #[allow(clippy::needless_pass_by_value)]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "every hook handler takes its decoded hook input by value"
+    )]
     pub(crate) fn user_prompt(&mut self, input: Value) -> Result<Value, String> {
         let session_id = string(&input, "session_id")?;
         if session_id != self.state.root_session_id {
@@ -1389,7 +1392,7 @@ impl ControlPlane {
             let original =
                 normalize_tool_input(input.get("tool_input").cloned().unwrap_or(Value::Null))?;
             if is_acyclic_cli_invocation(&tool_name, &original)? {
-                return Ok(pre_tool_update(original));
+                return Ok(pre_tool_update(&original));
             }
             return Ok(json!({}));
         }
@@ -1432,7 +1435,7 @@ impl ControlPlane {
         if acyclic_cli {
             // The CLI opens its own core operation lease. Wrapping it in the host-tool
             // lease would deadlock the compatibility command behind itself.
-            return Ok(pre_tool_update(updated));
+            return Ok(pre_tool_update(&updated));
         }
         if tool_name.starts_with("mcp__acyclic__") {
             let object = updated
@@ -1450,7 +1453,7 @@ impl ControlPlane {
                 return Err("tool hook retry belongs to another agent".to_owned());
             }
             if existing.expires_at_millis > now {
-                return Ok(pre_tool_update(updated));
+                return Ok(pre_tool_update(&updated));
             }
             self.state.leases.remove(&tool_use_id);
         }
@@ -1535,7 +1538,7 @@ impl ControlPlane {
             self.rollback_started_leases(&route, &leases, now).await?;
             return Err(error);
         }
-        Ok(pre_tool_update(updated))
+        Ok(pre_tool_update(&updated))
     }
 
     pub(crate) async fn rollback_started_leases(

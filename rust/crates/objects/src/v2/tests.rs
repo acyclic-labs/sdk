@@ -2,7 +2,10 @@ use super::{Error, MemoryObjects, MemoryOptions, NativeBatchObjects, ObjectsProv
 use bytes::Bytes;
 
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 pub(super) async fn exercise_uploads<'a>(
     provider: &dyn ObjectsProvider,
     put_stream: impl Fn(
@@ -264,7 +267,10 @@ async fn provider(options: MemoryOptions) -> Result<MemoryObjects, Error> {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Result<(), Error> {
     let provider = provider(MemoryOptions {
         maximum_bytes: 6,
@@ -641,7 +647,11 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
 }
 
 #[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)] // One ordered provider lifecycle qualifies every public RPC through each transport.
+#[allow(
+    clippy::too_many_lines,
+    clippy::cognitive_complexity,
+    reason = "one ordered provider lifecycle qualifies every public RPC through each transport"
+)]
 pub(super) async fn exercise_provider(
     client: &dyn ObjectsProvider,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

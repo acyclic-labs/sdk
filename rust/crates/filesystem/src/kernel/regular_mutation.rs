@@ -221,7 +221,11 @@ pub(crate) async fn apply_regular_mutation_async<S: AsyncObjectStore>(
     .await
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "mirrors the copy_file_range shape: two payloads, two offsets, and a length, plus config, budget, and cancellation"
+)]
 pub(crate) async fn apply_regular_clone_async<S: AsyncObjectStore>(
     store: &S,
     source: FilePayload,
@@ -434,7 +438,10 @@ fn validate_mutation(mutation: RegularMutation) -> Result<(), RegularMutationFai
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match applies every mutation kind to inline data"
+)]
 async fn try_inline<S: AsyncObjectStore>(
     store: &S,
     data: InlineFileData,
@@ -691,7 +698,10 @@ async fn promote_inline<S: AsyncObjectStore>(
     .await
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match applies every mutation kind to a sparse extent tree"
+)]
 async fn apply_sparse<S: AsyncObjectStore>(
     store: &S,
     payload: FilePayload,
@@ -874,7 +884,10 @@ struct SparsePreallocationPlan {
     work: WorkCounters,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "mirrors fallocate: extents, size, offset, length, and keep-size, plus config, budget, prior work, and cancellation"
+)]
 async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     store: &S,
     logical_bytes: u64,
@@ -956,8 +969,14 @@ async fn apply_sparse_preallocation<S: AsyncObjectStore>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "plans one fallocate range from the extents, size, and range under config, budget, prior work, and cancellation"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "plans one fallocate range in a single ordered walk of the extent tree"
+)]
 async fn plan_sparse_preallocation<S: AsyncObjectStore>(
     store: &S,
     extents: ObjectId,
@@ -1094,7 +1113,6 @@ async fn plan_sparse_preallocation<S: AsyncObjectStore>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn try_demote_sparse_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,

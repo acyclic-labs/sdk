@@ -970,6 +970,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 destination,
                 &options.generation,
                 options.idempotency_key,
+                options.paths,
                 budget,
                 cancellation,
             )
@@ -1735,7 +1736,6 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .map(|receipt| receipt.value)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
@@ -3371,7 +3371,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
 
     /// Resolves changed paths with one cumulative work budget and explicit
     /// cancellation token. Partial traversal is never reported as exact.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded resolution of changed paths shares a single cumulative work budget"
+    )]
     pub async fn changed_paths_bounded(
         &self,
         maximum_entries: u32,
@@ -4680,6 +4683,20 @@ impl<A, O> Generation<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
+    /// Verifies an initial fork against the same immutable selection builder used
+    /// for creation. May stage content-addressed objects; publishes no authority.
+    pub async fn matches_fork_selection(
+        &self,
+        source: &Self,
+        paths: Option<Vec<String>>,
+    ) -> Result<bool, WorkspaceError> {
+        self.workspace
+            .volume
+            .fs
+            .verify_fork_selection(source, self, paths)
+            .await
+    }
+
     /// Computes the exact normalized second-parent identity that a merge of
     /// this source generation into `target` must retain. This is read-only.
     pub async fn normalized_join_parent_for(
@@ -5216,7 +5233,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .map(|receipt| receipt.value)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded reverse lookup resolves every requested identity under a single work budget"
+    )]
     async fn namespace_records_for_file_ids_bounded(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,
@@ -5496,6 +5516,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
 pub struct ForkOptions<A, O> {
     pub(crate) generation: Generation<A, O>,
     pub(crate) idempotency_key: IdempotencyKey,
+    pub(crate) paths: Option<Vec<String>>,
 }
 
 impl<A, O> ForkOptions<A, O> {
@@ -5505,7 +5526,24 @@ impl<A, O> ForkOptions<A, O> {
         Self {
             generation,
             idempotency_key,
+            paths: None,
         }
+    }
+
+    /// Keeps the pinned parent lineage but starts with an empty namespace.
+    /// The initial view is the child's merge baseline: excluded parent paths
+    /// are never interpreted as child-authored deletions.
+    #[must_use]
+    pub fn empty(self) -> Self {
+        self.inherit_paths(Vec::new())
+    }
+
+    /// Carries only explicitly selected files or directory subtrees. Selection
+    /// is part of the initial fork, never an authored deletion after creation.
+    #[must_use]
+    pub fn inherit_paths(mut self, paths: Vec<String>) -> Self {
+        self.paths = Some(paths);
+        self
     }
 }
 

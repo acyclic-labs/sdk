@@ -2648,7 +2648,6 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::{Digest, Fs, MemoryWorkspaceContextStore, TransactionCommit, WorkspaceContextRoot};

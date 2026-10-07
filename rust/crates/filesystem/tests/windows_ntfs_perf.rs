@@ -1,7 +1,6 @@
-#![cfg_attr(not(all(windows, feature = "native-mount")), allow(missing_docs))]
-#![cfg(all(windows, feature = "native-mount"))]
-
 //! Local NTFS qualification for pinned, no-driver SDK working sets.
+
+#![cfg(all(windows, feature = "native-mount"))]
 
 use std::sync::Arc;
 use std::time::Instant;

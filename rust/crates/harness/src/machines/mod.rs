@@ -1,4 +1,11 @@
-#![cfg_attr(test, allow(clippy::indexing_slicing, clippy::too_many_lines))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::indexing_slicing,
+        clippy::too_many_lines,
+        reason = "adapter tests run ordered scenarios over fixtures they built"
+    )
+)]
 #![doc = include_str!("../../docs/machines.md")]
 
 mod execution;
@@ -483,6 +490,28 @@ mod tests {
                 CapturedResource {
                     source: process.clone(),
                     revision: process,
+                },
+                CapturedResource {
+                    source: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "parent-scratch",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem.clone(), [98; 32], None)?,
+                        paths: Vec::new(),
+                    },
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "child-private",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                        paths: Vec::new(),
+                    },
                 },
             ],
             omissions: Vec::new(),

@@ -8,22 +8,36 @@ lane="${1:?qualification lane is required}"
 mkdir -p "$SDK_TEMP_DIR" "$SDK_ARTIFACT_DIR" "$TOOLS_DIR"
 export PATH="$TOOLS_DIR/cargo/bin:$PATH"
 target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
+# Test timings and each top-level command's start time feed the job summary
+# (scripts/ci-summary.mjs, run by the qualification-lane action).
+observability="$SDK_TEMP_DIR/observability"
+mkdir -p "$observability"
+timing_start=$(($(date +%s) - SECONDS))
+trap 'printf "%s\t%s\0" "${EPOCHREALTIME:-$((timing_start + SECONDS))}" "$BASH_COMMAND" \
+  >>"$observability/steps.tsv"' DEBUG
 
 full_qualification="${FORCE:-false}"
 case "${GITHUB_EVENT_NAME:-}" in
   release|workflow_dispatch|schedule) full_qualification=true ;;
 esac
+# macOS ships shasum rather than sha256sum.
+sha256_matches() {
+  if command -v sha256sum >/dev/null; then
+    echo "$1  $2" | sha256sum --check --status
+  else
+    echo "$1  $2" | shasum -a 256 --check --status
+  fi
+}
 # Fetches a pinned release archive into $TOOLS_DIR once, verifies its SHA-256
 # on every use, and extracts MEMBER into DESTINATION.
 install_tool() {
   local archive="$TOOLS_DIR/$1" url="$2" checksum="$3" destination="$4" member="$5"
   local strip="${6:-0}" temporary
-  if [[ ! -f "$archive" ]] ||
-    ! echo "$checksum  $archive" | sha256sum --check --status; then
+  if [[ ! -f "$archive" ]] || ! sha256_matches "$checksum" "$archive"; then
     temporary="$(mktemp "${archive}.XXXXXXXX")"
     if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
       --max-time 30 "$url" --output "$temporary" ||
-      ! echo "$checksum  $temporary" | sha256sum --check --status; then
+      ! sha256_matches "$checksum" "$temporary"; then
       rm -f -- "$temporary"
       echo "could not fetch a verified $url" >&2
       return 1
@@ -33,6 +47,33 @@ install_tool() {
   mkdir -p "$destination"
   tar --extract --gzip --file "$archive" --directory "$destination" \
     --strip-components="$strip" "$member"
+}
+
+# Runs Rust tests with the pinned cargo-nextest: one process per test, test
+# binaries in parallel, slow tests flagged, and per-test timings kept as JUnit
+# (.config/nextest.toml). Doctests and the serial live-mount suites stay on
+# cargo test.
+nextest() {
+  local target checksum status=0
+  if [[ "$(cargo-nextest nextest --version 2>/dev/null)" != "cargo-nextest 0.9.146 "* ]]; then
+    case "$(uname -s):$(uname -m)" in
+      Linux:x86_64)
+        target=x86_64-unknown-linux-gnu
+        checksum=682c21b777c333e96fd532e114d3a5a894e0729ab88d94c0a9f20f8419695428 ;;
+      Linux:aarch64)
+        target=aarch64-unknown-linux-gnu
+        checksum=b2e33d7c72de7ade0ff7b3a948ac37516b24f8a836b7a8870c1f634a94be9de9 ;;
+      Darwin:*)
+        target=universal-apple-darwin
+        checksum=39785160b3c2f6ed9a765049cf4fa79f3b39aa02eb7598a5a0e2a1a0b9ffb9a8 ;;
+    esac
+    install_tool "cargo-nextest-0.9.146-$target.tar.gz" \
+      "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-$target.tar.gz" \
+      "$checksum" "$TOOLS_DIR/cargo/bin" cargo-nextest
+  fi
+  cargo nextest run --profile ci "$@" || status=$?
+  mv -f -- "$target_dir/nextest/ci/junit.xml" "$observability/rust.xml" 2>/dev/null || true
+  return "$status"
 }
 
 # Independent builds run beside the main test build in their own target
@@ -92,7 +133,7 @@ case "$lane" in
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
     if [[ "$full_qualification" != true ]]; then
-      cargo test --workspace --locked --lib
+      nextest --workspace --locked --lib
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"
       printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
       exit 0
@@ -252,9 +293,11 @@ case "$lane" in
     finish napi release
     bun run test
     bun scripts/check-typescript-tarballs.mjs
-    # Native Rust hosts can assign different private wasm-bindgen closure names
-    # and indices to equivalent builds. Verify the fresh WASM against the
-    # committed package API and runtime before staging the exact release bytes.
+    # WASM builds are path-independent but not host-independent: panic
+    # locations keep the host's path separators and private wasm-bindgen
+    # closure names carry host-derived crate hashes. Verify the fresh WASM
+    # against the committed package API and runtime, then stage the committed
+    # release bytes.
     git restore --worktree -- \
       typescript/packages/filesystem/generated/wasm \
       typescript/packages/stream/generated/wasm
@@ -376,7 +419,8 @@ case "$lane" in
     source scripts/ensure-bun.sh
     cargo fetch --locked
     background napi native_binding
-    cargo test --workspace --all-features --locked
+    nextest --workspace --all-features --locked
+    cargo test --workspace --all-features --locked --doc
     finish napi
     native_mount_tests
     ;;
@@ -389,7 +433,8 @@ case "$lane" in
     background napi native_binding
     background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
-    cargo test --workspace --all-features --locked
+    nextest --workspace --all-features --locked
+    cargo test --workspace --all-features --locked --doc
     finish napi release x86_64
     native_mount_tests
     fork_join_conformance

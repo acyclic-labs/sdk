@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::runtime::{DEFAULT_CHILD_PAGE, MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES};
 use serde_json::json;

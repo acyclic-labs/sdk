@@ -610,7 +610,6 @@ pub fn decode_publication_payload(json: &str) -> Result<String, CompatibilityWir
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
     use crate::Digest;

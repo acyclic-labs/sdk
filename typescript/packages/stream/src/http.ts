@@ -5,9 +5,10 @@ import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPa
 import { StreamError, type StreamFailureCode } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 
-export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
+export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
@@ -15,6 +16,7 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  readonly #observer: AcyclicObserver | undefined;
   constructor(options: HttpStreamProviderOptions) {
     const endpoint = new URL(options.endpoint);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
@@ -22,6 +24,7 @@ export class HttpStreamProvider implements StreamProvider {
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
+    this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
@@ -108,10 +111,15 @@ export class HttpStreamProvider implements StreamProvider {
     const input = wireRequest({ kind: "tail", path });
     return this.#request("tail", await encodeHttpRequest("tail", input), signal);
   }
-  async #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
+  #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {
+    return observed(this.#observer, "stream", route, sizes => this.#send(route, body, signal, sizes));
+  }
+  async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
+    const payload = typeof body === "string" ? body : JSON.stringify(body);
+    if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload, ...(signal === undefined ? {} : { signal }) });
     let text: string;
-    try { text = await boundedText(response, this.#maximum); }
+    try { text = await boundedText(response, this.#maximum, sizes); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
     if (!response.ok) throw await hostedError(route, text, response.status);
     try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
@@ -163,7 +171,7 @@ function parseHostedError(text: string): { readonly code?: string; readonly mess
 }
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
-async function boundedText(response: Response, maximum: number): Promise<string> {
+async function boundedText(response: Response, maximum: number, sizes?: OperationSizes): Promise<string> {
   const reader = response.body?.getReader();
   if (reader === undefined) return "";
   const chunks: Uint8Array[] = []; let total = 0;
@@ -176,6 +184,7 @@ async function boundedText(response: Response, maximum: number): Promise<string>
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
+  if (sizes) sizes.responseBytes = total;
   const bytes = new Uint8Array(total); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return decoder.decode(bytes);

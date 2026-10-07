@@ -29,7 +29,10 @@
 //! undelivered ([`HostChange::Unconfirmed`]): every remembered fact is
 //! verified against the source at its next use.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "watches through the Win32 ReadDirectoryChangesW API"
+)]
 
 use super::{Delivery, HostChange};
 use std::ffi::OsString;

@@ -1473,7 +1473,10 @@ async fn capture_observed_paths_from_root<A: AsyncAuthorityStore, O: AsyncObject
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the checkout, ranked states, link map, span bound, source root, budget, cancellation, and baseline are all inputs of one capture"
+)]
 async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     states: Vec<CapturePathState>,
@@ -1690,7 +1693,10 @@ pub async fn capture_baseline_with_policy<A: AsyncAuthorityStore, O: AsyncObject
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the host walk needs the root, profile, limits, bound, and policy plus work, budget, and cancellation"
+)]
 fn collect_host_observations(
     root: &HostRoot,
     profile: FilesystemProfile,
@@ -1784,7 +1790,10 @@ fn insert_host_observation(
         .map_err(|error| OperationFailure::new(CaptureError::Work(error), *work))
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the host walk needs the root, profile, limits, bound, roots, and policy plus the shared map, work, budget, and cancellation"
+)]
 fn collect_host_subtree_roots(
     source_root: &HostRoot,
     profile: FilesystemProfile,
@@ -1826,7 +1835,10 @@ fn collect_host_subtree_roots(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the host walk needs the root, profile, limits, bound, subtree, and policy plus the shared map, work, budget, and cancellation"
+)]
 fn collect_host_subtree_observations(
     root: &HostRoot,
     profile: FilesystemProfile,
@@ -1876,7 +1888,10 @@ fn collect_host_subtree_observations(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the host walk needs the root, profile, limits, subtree, policy, and bound plus the path sink, work, budget, and cancellation"
+)]
 fn collect_host_subtree_paths<P: ScannedPaths>(
     root: &HostRoot,
     profile: FilesystemProfile,
@@ -1921,7 +1936,10 @@ fn collect_host_subtree_paths<P: ScannedPaths>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the checkout walk needs limits, policy, and bound plus the path sink, work, budget, and cancellation"
+)]
 async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore, P: ScannedPaths>(
     checkout: &mut Checkout<A, O>,
     limits: crate::model::VolumeLimits,
@@ -1952,7 +1970,10 @@ async fn collect_checkout_paths<A: AsyncAuthorityStore, O: AsyncObjectStore, P: 
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the checkout walk needs limits, subtree, policy, and bound plus the path sink, work, budget, and cancellation"
+)]
 async fn collect_checkout_subtree_paths<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
@@ -2166,7 +2187,10 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 }
 
 /// Captures one watcher batch while omitting excluded paths symmetrically.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one watcher batch is classified, staged, and applied as a single atomic capture"
+)]
 pub async fn capture_watch_batch_with_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     batch: WatchBatch,
@@ -2747,7 +2771,10 @@ enum HostLinkSource {
     Ready(NamespacePath),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "expands hints into the shared ordinary map and receipt under the capture's bound, policy, budget, and cancellation"
+)]
 async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     ordinary: &mut BTreeMap<NamespacePath, (CurrentRecord, CaptureIntent)>,
@@ -2844,8 +2871,14 @@ async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one path's record, intent, observation, link map, epoch, and baseline all decide its final state"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "classifies one path against every host and record kind in a single decision"
+)]
 async fn prepare_final_path<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut Checkout<A, O>,
     path: NamespacePath,
@@ -3212,7 +3245,10 @@ fn append_hard_link(
     });
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "appends the final state from the observed host facts of one path"
+)]
 fn append_final_state(
     path: NamespacePath,
     source_root: &HostRoot,
@@ -3275,7 +3311,10 @@ fn append_final_state(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stager, root, prepared file, span bound, mutation list, receipt, budget, and cancellation are all used per file"
+)]
 async fn finish_prepared_regular<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &ContentStager<A, O>,
     source_root: &HostRoot,
@@ -3399,7 +3438,10 @@ async fn finish_prepared_regular_batch<A: AsyncAuthorityStore, O: AsyncObjectSto
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the stager, root, prepared paths, span bound, mutation list, receipt, budget, and cancellation are all used per batch"
+)]
 async fn finish_prepared_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &ContentStager<A, O>,
     source_root: &HostRoot,
@@ -3482,7 +3524,10 @@ struct PreparedRegularBatch {
     aliases: PendingHardLinks,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "stages one body from its host path and snapshot under the span bound, prior work, budget, and cancellation"
+)]
 async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     stager: &ContentStager<A, O>,
     source_root: &HostRoot,
@@ -3621,7 +3666,10 @@ impl HostObservation {
 /// The link count of the observed node, read by the same query as its
 /// identity, so it describes exactly the observed node.
 #[cfg(unix)]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "keeps the signature of the fallible Windows handle query"
+)]
 fn host_link_count(metadata: &cap_std::fs::Metadata) -> Result<u64, CaptureError> {
     use cap_std::fs::MetadataExt;
     Ok(metadata.nlink())
@@ -3702,7 +3750,6 @@ fn ensure_current_host_node(
 }
 
 #[cfg(test)]
-#[allow(clippy::items_after_test_module)]
 mod host_file_race_tests {
     use super::*;
 
@@ -3991,7 +4038,10 @@ async fn settled_sparse_ranges(
 /// The native file a handle from [`HostRoot::open_file_positional`] reads
 /// through.
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "adopts the overlapped handle into the native runtime"
+)]
 fn native_positional_file(
     file: std::fs::File,
 ) -> std::io::Result<acyclic_native_runtime::NativeFile> {
@@ -4247,7 +4297,10 @@ mod windows_sparse_tests {
     }
 
     #[tokio::test]
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "queries the file's allocated ranges through the Win32 API"
+    )]
     async fn written_zeros_in_a_sparse_file_capture_as_holes() -> std::io::Result<()> {
         use std::io::{Seek as _, SeekFrom, Write as _};
         use std::os::windows::io::AsRawHandle as _;
@@ -4391,7 +4444,10 @@ fn host_kind(metadata: &cap_std::fs::Metadata) -> Result<FileKind, OperationFail
 }
 
 #[cfg(unix)]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "keeps the signature of the platforms whose device split can fail"
+)]
 fn host_device_identity(metadata: &cap_std::fs::Metadata) -> Result<(u32, u32), CaptureError> {
     use cap_std::fs::MetadataExt;
     Ok(split_device(metadata.rdev()))
@@ -4503,7 +4559,10 @@ fn preserve_field<T: Copy>(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "consumes the io::Result that the metadata accessor returns"
+)]
 fn system_time(value: std::io::Result<cap_std::time::SystemTime>) -> MetadataField<i64> {
     let Ok(value) = value else {
         return MetadataField::Unavailable;
@@ -4537,7 +4596,10 @@ fn populate_platform_metadata(metadata: &cap_std::fs::Metadata, result: &mut Fil
     result.windows_attributes = MetadataField::Value(metadata.file_attributes());
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the failure by value"
+)]
 fn map_engine_failure<E: std::fmt::Display>(
     failure: OperationFailure<E>,
     prior: WorkCounters,

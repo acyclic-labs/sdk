@@ -1,32 +1,24 @@
 /** Public shape-free Machines contracts. The deterministic provider is process-local only. */
 
-import type { PublicEnum } from "./enums.js";
 import { managedOci as managedOciRust } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
-  Capability as WireCapability,
-  ExpirationKind as WireExpirationKind,
-  MachineStatus as WireMachineStatus,
-  OperationStatus as WireOperationStatus,
-  PressureKind as WirePressureKind,
-} from "../generated/proto/machines/v1/machines_pb.js";
-import type {
-  BudgetsIn as WireBudgetsIn,
-  CheckpointOut as WireCheckpointOut,
-  CompatibilityOut as WireCompatibilityOut,
-  ContractOut as WireContractOut,
-  CreateIn as WireCreateIn,
-  EndpointOut as WireEndpointOut,
-  EventOut as WireEventOut,
-  EventsOut as WireEventsOut,
-  FactOut as WireFactOut,
-  ImageOut as WireImageOut,
-  MutationOut as WireMutationOut,
-  ObservationOut as WireObservationOut,
-  OperationOut as WireOperationOut,
-  PageOut as WirePageOut,
-  QualificationOut as WireQualificationOut,
-  TimedOut as WireTimedOut,
-  UsageOut as WireUsageOut,
+  BudgetsIn as RustBudgetsIn,
+  CapabilityIn as RustCapability,
+  CheckpointOut as RustCheckpointOut,
+  CompatibilityOut as RustCompatibilityOut,
+  ContractOut as RustContractOut,
+  CreateIn as RustCreateIn,
+  EndpointOut as RustEndpointOut,
+  EventOut as RustEventOut,
+  EventsOut as RustEventsOut,
+  FactOut as RustFactOut,
+  ImageOut as RustImageOut,
+  MutationOut as RustMutationOut,
+  ObservationOut as RustObservationOut,
+  OperationOut as RustOperationOut,
+  PageOut as RustPageOut,
+  QualificationOut as RustQualificationOut,
+  UsageOut as RustUsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 // Importing the runtime initializes WASM, so synchronous identity constructors
 // are ready after an ordinary package import in browsers as well as Node/Bun.
@@ -46,29 +38,26 @@ export function idempotencyKey(value: string): IdempotencyKey { return normalize
 export function machineId(value: string): MachineId { return normalizeIdentity("machine", value) as MachineId; }
 export function checkpointId(value: string): CheckpointId { return normalizeIdentity("checkpoint", value) as CheckpointId; }
 export function operationId(value: string): OperationId { return normalizeIdentity("operation", value) as OperationId; }
-export type OperationPhase = PublicEnum<typeof WireOperationStatus>;
-export type OperationObservation = Omit<ReadonlyGenerated<WireOperationOut>, "id" | "phase"> & {
+export type OperationPhase = RustOperationOut["phase"];
+export type OperationObservation = Omit<ReadonlyGenerated<RustOperationOut>, "id" | "phase"> & {
   readonly id: OperationId;
   readonly phase: OperationPhase;
 };
 type PublicImage<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "checkpointId" ? CheckpointId : Value[Key] }
   : never;
-export type Image = PublicImage<ReadonlyGenerated<WireImageOut>>;
+export type Image = PublicImage<ReadonlyGenerated<RustImageOut>>;
 
-export type Capability = PublicEnum<typeof WireCapability>;
+export type Capability = RustCapability;
 type PublicCompatibility<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "capabilities" ? readonly Capability[] : Value[Key] }
   : never;
-export type CompatibilityPolicy = PublicCompatibility<ReadonlyGenerated<WireCompatibilityOut>>;
-type PublicTimed = ReadonlyGenerated<WireTimedOut>;
-export type SuspensionPolicy = Extract<PublicTimed, { readonly kind: "manual" | "after-idle" }>;
-type ExpirationKind = PublicEnum<typeof WireExpirationKind>;
-export type ExpirationPolicy = Extract<PublicTimed, { readonly kind: Exclude<ExpirationKind, "never"> }>
-  | Extract<PublicTimed, { readonly kind: "never" }>;
-export type Budgets = ReadonlyGenerated<WireBudgetsIn>;
+export type CompatibilityPolicy = PublicCompatibility<ReadonlyGenerated<RustCompatibilityOut>>;
+export type SuspensionPolicy = ReadonlyGenerated<RustCreateIn["suspension"]>;
+export type ExpirationPolicy = ReadonlyGenerated<RustCreateIn["expiration"]>;
+export type Budgets = ReadonlyGenerated<RustBudgetsIn>;
 
-type PublicCreate = ReadonlyGenerated<WireCreateIn>;
+type PublicCreate = ReadonlyGenerated<RustCreateIn>;
 export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "compatibility" | "suspension" | "expiration" | "budgets"> & {
   readonly idempotencyKey: IdempotencyKey;
   readonly image: Image;
@@ -78,7 +67,7 @@ export type CreateMachine = Omit<PublicCreate, "idempotencyKey" | "image" | "com
   readonly budgets: Budgets;
 };
 
-type PublicContract = ReadonlyGenerated<WireContractOut>;
+type PublicContract = ReadonlyGenerated<RustContractOut>;
 export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "compatibility" | "suspension" | "expiration" | "budgets"> & {
   readonly image: Image;
   readonly capabilities: readonly Capability[];
@@ -91,36 +80,36 @@ export type MachineContract = Omit<PublicContract, "image" | "capabilities" | "c
 export type ForkFidelity = Extract<MutationOutcome, { readonly kind: "machine-forked" }> extends infer Fork
   ? Fork extends { readonly fidelity: infer Fidelity } ? Fidelity : never
   : never;
-export type ImageQualification = Omit<ReadonlyGenerated<WireQualificationOut>, "image" | "capabilities"> & {
+export type ImageQualification = Omit<ReadonlyGenerated<RustQualificationOut>, "image" | "capabilities"> & {
   readonly image: Image;
   readonly capabilities: readonly Capability[];
 };
-export type MachineState = PublicEnum<typeof WireMachineStatus>;
-export type Endpoint = ReadonlyGenerated<WireEndpointOut>;
+export type MachineState = RustObservationOut["state"];
+export type Endpoint = ReadonlyGenerated<RustEndpointOut>;
 /** Timestamps and event cursors are deliberately limited to exact JavaScript safe integers. */
-export type MachineObservation = Omit<ReadonlyGenerated<WireObservationOut>, "id" | "state" | "contract" | "endpoints" | "lastCheckpoint"> & {
+export type MachineObservation = Omit<ReadonlyGenerated<RustObservationOut>, "id" | "state" | "contract" | "endpoints" | "lastCheckpoint"> & {
   readonly id: MachineId;
   readonly state: MachineState;
   readonly contract: MachineContract;
   readonly endpoints: readonly Endpoint[];
   readonly lastCheckpoint: CheckpointId | null;
 };
-export type CheckpointObservation = Omit<ReadonlyGenerated<WireCheckpointOut>, "id" | "source" | "contract"> & {
+export type CheckpointObservation = Omit<ReadonlyGenerated<RustCheckpointOut>, "id" | "source" | "contract"> & {
   readonly id: CheckpointId;
   readonly source: MachineId;
   readonly contract: MachineContract;
 };
-export type Pressure = PublicEnum<typeof WirePressureKind>;
+export type Pressure = Extract<RustFactOut, { readonly kind: "pressure" }>["pressure"];
 type PublicFact<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "state" ? MachineState : Key extends "pressure" ? Pressure : Value[Key] }
   : never;
-export type EventFact = PublicFact<ReadonlyGenerated<WireFactOut>>;
+export type EventFact = PublicFact<ReadonlyGenerated<RustFactOut>>;
 /** Sequence and timestamp remain exact and are rejected above Number.MAX_SAFE_INTEGER. */
-export type MachineEvent = Omit<ReadonlyGenerated<WireEventOut>, "machine" | "fact"> & {
+export type MachineEvent = Omit<ReadonlyGenerated<RustEventOut>, "machine" | "fact"> & {
   readonly machine: MachineId;
   readonly fact: EventFact;
 };
-export type UsageReceipt = Omit<ReadonlyGenerated<WireUsageOut>, "machine"> & { readonly machine: MachineId };
+export type UsageReceipt = Omit<ReadonlyGenerated<RustUsageOut>, "machine"> & { readonly machine: MachineId };
 type PublicMutation<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "machine" ? MachineObservation
       : Key extends "checkpoint" ? CheckpointObservation
@@ -132,13 +121,13 @@ type PublicMutation<Value> = Value extends unknown
       : Key extends "policy" ? SuspensionPolicy
       : Value[Key] }
   : never;
-export type MutationOutcome = PublicMutation<ReadonlyGenerated<WireMutationOut>>;
+export type MutationOutcome = PublicMutation<ReadonlyGenerated<RustMutationOut>>;
 
-export type MachinePage = Omit<ReadonlyGenerated<WirePageOut>, "machines" | "next"> & {
+export type MachinePage = Omit<ReadonlyGenerated<RustPageOut>, "machines" | "next"> & {
   readonly machines: readonly MachineObservation[];
   readonly next: MachineId | null;
 };
-export type MachineEventPage = Omit<ReadonlyGenerated<WireEventsOut>, "events"> & {
+export type MachineEventPage = Omit<ReadonlyGenerated<RustEventsOut>, "events"> & {
   readonly events: readonly MachineEvent[];
 };
 
@@ -176,3 +165,4 @@ export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
 export * from "./http.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";

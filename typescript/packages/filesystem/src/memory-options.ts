@@ -24,5 +24,5 @@ export async function openMemoryFsWith(
   options: MemoryFsOptions | undefined,
   load: (options: MemoryFsOptions) => Promise<WasmRawFs>,
 ): Promise<FsVolumeEngine> {
-  return adaptWasmFs(await load(resolveMemoryFsOptions(options)));
+  return adaptWasmFs(await load(resolveMemoryFsOptions(options)), options?.observer);
 }

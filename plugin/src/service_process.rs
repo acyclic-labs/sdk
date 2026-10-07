@@ -378,7 +378,10 @@ pub(crate) fn codex_json(arguments: &[&str]) -> Result<Value, String> {
     serde_json::from_slice(&output.stdout).map_err(display)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each argument is one independently gathered service fact"
+)]
 pub(crate) fn doctor_report(
     data: &Path,
     identity: &str,
@@ -1416,7 +1419,10 @@ pub(crate) async fn send_control_envelope_with_attempts(
 /// exists. A pipe whose every instance is connected is busy only until the
 /// service creates the next, so that wait counts no attempt.
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "waiting for a busy pipe needs the WaitNamedPipeW Win32 call"
+)]
 pub(crate) async fn connect_windows_control_pipe(
     data: &Path,
     attempts: usize,

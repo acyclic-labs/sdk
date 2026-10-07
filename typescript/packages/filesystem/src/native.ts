@@ -959,11 +959,12 @@ function adaptWorkspace(
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
       return adaptWorkspace(await raw.fork(destination, idempotencyKey), scope);
     },
-    async forkAt(destination: string, generation: FsGeneration): Promise<NativeFsWorkspace> {
+    async forkAt(destination: string, generation: FsGeneration, options: import("./contracts.js").WorkspaceForkOptions = {}): Promise<NativeFsWorkspace> {
       requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(
         destination,
         nativeBoundary<Parameters<typeof raw.forkAt>[1]>(scope.rawGeneration(generation)),
+        nativeBoundary<Parameters<typeof raw.forkAt>[2]>(options),
       ), scope);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {

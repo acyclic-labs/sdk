@@ -2,7 +2,6 @@
 use super::{Error, request, wire};
 
 /// Validates a generated response against its original request, shared with WASM clients.
-#[allow(clippy::too_many_lines)]
 pub fn validate_binary(
     route: &str,
     query: &[u8],
