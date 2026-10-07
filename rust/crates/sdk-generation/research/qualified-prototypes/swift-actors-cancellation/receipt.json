@@ -67,6 +67,20 @@
     "cancellationArgument": "nil",
     "manualCancellationHandle": false
   },
+  "portableFixtureRuntime": {
+    "fixtureOptions": "Q:\\sdk\\work\\root-portable-pending-options.json",
+    "fixtureOptionsSha256": "CDE520995D6EE4CD1BD88A7D1ADB9C754037C6D7E3F0901EE57C31A29D052896",
+    "caCertificate": "Q:\\sdk\\work\\root-portable-pending-ca.pem",
+    "caCertificateSha256": "B736F215A7208E5C2B5E06CFF0EBB96D39A1444936B499027F35D6242F21FCBD",
+    "endpoint": "https://localhost:51150",
+    "control": "http://127.0.0.1:51152",
+    "pendingBaseline": { "started": 2, "active": 0, "aborted": 2 },
+    "pendingActiveBeforeCancel": { "started": 3, "active": 1, "aborted": 2 },
+    "pendingFinal": { "started": 3, "active": 0, "aborted": 3 },
+    "pendingTaskOutcome": "CancellationError()",
+    "pendingResult": "PASS generated Swift Task.cancel -> Rust future cancel; cancellation argument=nil; no manual handle",
+    "allEightResult": "BLOCKED_BY_FIXTURE_RESPONSE: fresh all-eight executable using DLL A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241 received BindingError.Service(grpcCode: 13, serviceCode: nil, detailMessage: service rejected operation) on initial actor-a inspect; no all-eight operation claim made"
+  },
   "typedAll8": {
     "generatedConsumerBuild": "PASS",
     "ordinaryAndEightOperationRuntime": "NOT_RUN: standard fixture https://localhost:55755 was unavailable during this receipt update; run the ready external consumer against Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json when the shared fixture is live",
