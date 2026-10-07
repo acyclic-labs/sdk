@@ -9,7 +9,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
     if std::env::var_os("CARGO_FEATURE_HOST").is_some() {
         let mut config = tonic_prost_build::Config::new();
-        config.extern_path(".inference.customer.v1", "::acyclic_inference_contract::wire");
+        config.extern_path(
+            ".inference.customer.v1",
+            "::acyclic_inference_contract::wire",
+        );
         tonic_prost_build::configure()
             .build_client(true)
             .build_server(true)

@@ -57,9 +57,7 @@ fn validate_profiles(profiles: &[wire::RetentionProfile]) -> bool {
         })
 }
 
-pub fn validate_model_capabilities(
-    response: &wire::ListModelsResponse,
-) -> Result<(), Error> {
+pub fn validate_model_capabilities(response: &wire::ListModelsResponse) -> Result<(), Error> {
     if response.models.is_empty() || response.models.len() > 4_096 {
         return Err(Error::Invalid("model capability count is invalid"));
     }
@@ -73,7 +71,10 @@ pub fn validate_model_capabilities(
             || model.maximum_output == 0
             || model.features.is_empty()
             || model.features.len() > 64
-            || model.features.iter().any(|feature| feature.is_empty() || feature.len() > 64)
+            || model
+                .features
+                .iter()
+                .any(|feature| feature.is_empty() || feature.len() > 64)
             || !validate_profiles(&model.retention_profiles)
             || !validate_profiles(&model.idle_kv_profiles)
         {
@@ -174,10 +175,7 @@ fn validate_exact_rational(value: Option<&wire::ExactRational>) -> Result<(), Er
     Ok(())
 }
 
-pub fn evaluation_observation_binding(
-    native: &[u8; 32],
-    observation: &[u8; 32],
-) -> [u8; 32] {
+pub fn evaluation_observation_binding(native: &[u8; 32], observation: &[u8; 32]) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"acyclic.inference.grader-observation.v1\0");
     digest.update(native);
@@ -411,10 +409,7 @@ impl WatchRunState {
     }
 }
 
-pub fn watch_run_start(
-    view: &wire::RunView,
-    from_sequence: u64,
-) -> Result<WatchRunState, Error> {
+pub fn watch_run_start(view: &wire::RunView, from_sequence: u64) -> Result<WatchRunState, Error> {
     let terminal = if view.result.is_none() {
         false
     } else {
@@ -433,10 +428,7 @@ pub fn watch_run_start(
     })
 }
 
-pub fn watch_run_event(
-    state: &mut WatchRunState,
-    event: &wire::RunEvent,
-) -> Result<(), Error> {
+pub fn watch_run_event(state: &mut WatchRunState, event: &wire::RunEvent) -> Result<(), Error> {
     if state.terminal || event.sequence != state.expected {
         return Err(Error::Invalid("run event order or shape differs"));
     }
@@ -527,10 +519,7 @@ pub fn validate_generated_run_view(
     Ok(())
 }
 
-pub fn validate_context_view(
-    view: &wire::ContextView,
-    expected: [u8; 32],
-) -> Result<(), Error> {
+pub fn validate_context_view(view: &wire::ContextView, expected: [u8; 32]) -> Result<(), Error> {
     if fixed::<32>(&view.revision)? != expected {
         return Err(Error::Invalid("revision differs"));
     }
@@ -680,8 +669,9 @@ pub fn validate_receipt(receipt: &wire::MutationReceipt) -> Result<(), Error> {
 }
 
 /// Validate a generated protobuf message at a language binding boundary.
-/// `expected` is the requested identity; `related` is the requested context
-/// revision for a run, or the admitted spec bytes for an evaluation.
+/// `expected` is the caller-bound identity; `related` is the generated-run
+/// context, admitted evaluation spec, or serialized idle retain/renew request,
+/// depending on the message kind.
 ///
 /// # Errors
 /// Rejects unknown message kinds, malformed protobuf, and contract violations.
@@ -848,7 +838,7 @@ mod tests {
             )
             .is_err()
         );
-        // Inspect remains mode-neutral for recovered handles.
+        // Generic commitment inspection remains mode-neutral for recovered handles.
         assert!(
             validate_customer_wire("warm_context", &view.encode_to_vec(), &[2; 32], &[]).is_err()
         );
