@@ -1,9 +1,11 @@
 // Generated from the Rust semantic metadata entrypoint. Do not edit.
 
 /**
- * A byte view with no mutating methods or mutable aliases. Runtime bridges
- * still receive ordinary Uint8Array values at the wire boundary; this is the
- * public semantic projection exposed to callers.
+ * The Rust-owned semantic projection of byte fields. Its TypeScript surface
+ * omits mutating methods and mutable aliases, but an ordinary Uint8Array is
+ * still mutable at runtime; this type does not freeze or proxy that value.
+ * The Rust bridge snapshots inputs before encoding and returns detached byte
+ * values, so later caller mutation cannot alter an admitted Rust request.
  */
 export interface ReadonlyByteSurface {
   readonly [index: number]: number;
