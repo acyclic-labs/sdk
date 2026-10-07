@@ -5,15 +5,15 @@ use sha2::{Digest, Sha256};
 pub mod grpc;
 pub mod http;
 
-/// Generated Workers v1 wire types. The documented schema is `proto/workers/v1/workers.proto`.
-pub mod wire {
-    #![allow(missing_docs, reason = "generated from the public Workers schema")]
-    #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
-    include!("generated/acyclic.workers.v1.rs");
-}
+/// Rust-owned Workers v1 contract declarations and schema renderer.
+pub mod contract;
+
+/// Generated Workers v1 wire types.
+pub mod wire;
 
 /// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-workers-v1.bin");
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-workers-v1.bin"));
 /// Largest inline JavaScript module admitted by the first public contract.
 pub const MAX_MODULE_BYTES: usize = 1024 * 1024;
 /// Largest inline job input or result.

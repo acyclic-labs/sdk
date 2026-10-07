@@ -48,11 +48,27 @@ pub fn extract(json_path: &Path) -> Result<Vec<PublicItemSignature>, Error> {
         .map_err(|error| Error::Invalid(format!("public-api: {error}")))?;
     api.items()
         .map(|item| {
+            let item_id = Id(item.id().0);
+            let is_impl = krate
+                .index
+                .get(&item_id)
+                .is_some_and(|rustdoc_item| matches!(rustdoc_item.inner, ItemEnum::Impl(_)));
+            let path = match exported_path_for_item(item.tokens(), is_impl) {
+                Ok(path) => path,
+                Err(reason) => {
+                    return Err(Error::Invalid(format!(
+                        "{} public-api item {} ({}) has no supported exported path: {reason}",
+                        json_path.display(),
+                        item.id().0,
+                        item
+                    )))
+                }
+            };
             Ok(PublicItemSignature {
-                id: Id(item.id().0),
+                id: item_id,
                 parent_id: item.parent_id().map(|id| Id(id.0)),
                 display: item.to_string(),
-                path: exported_path(item.tokens())?,
+                path,
             })
         })
         .collect()
@@ -81,7 +97,7 @@ fn adapt(mut value: Value, krate: &Crate) -> Result<Value, Error> {
     Ok(value)
 }
 
-fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<String>, Error> {
+fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<String>, String> {
     let tokens = tokens.collect::<Vec<_>>();
     let Some(start) = tokens.iter().enumerate().find_map(|(index, token)| {
         if matches!(token, Token::Kind(_)) {
@@ -94,25 +110,27 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
                 .find_map(|(index, token)| {
                     matches!(token, Token::Keyword(kind) if kind == "for").then_some(index + 1)
                 })
-                .or(Some(index + 1))
+                .or(Some(skip_impl_generics(&tokens, index + 1)))
         } else if matches!(
             token,
-            Token::Identifier(_) | Token::Function(_) | Token::Type(_)
+            Token::Identifier(_)
+            | Token::Function(_)
+            | Token::Type(_)
+            | Token::Primitive(_)
+            | Token::Self_(_)
         ) {
             Some(index)
         } else {
             None
         }
     }) else {
-        return Err(Error::Invalid(
-            "public-api item has no supported exported path token".into(),
-        ));
+        return Err(format!("no path-start token in {tokens:?}"));
     };
 
     let mut path = Vec::new();
     let mut need_component = true;
     let mut generic_depth = 0usize;
-    for token in tokens.into_iter().skip(start) {
+    for token in tokens.iter().copied().skip(start) {
         if generic_depth > 0 {
             match token {
                 Token::Symbol(open) if open == "<" => generic_depth += 1,
@@ -123,7 +141,11 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
         }
         match token {
             Token::Whitespace if need_component => {}
-            Token::Identifier(name) | Token::Function(name) | Token::Type(name)
+            Token::Identifier(name)
+            | Token::Function(name)
+            | Token::Type(name)
+            | Token::Primitive(name)
+            | Token::Self_(name)
                 if need_component =>
             {
                 path.push(name.clone());
@@ -137,11 +159,44 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
         }
     }
     if path.is_empty() || need_component || generic_depth != 0 {
-        return Err(Error::Invalid(
-            "public-api item has an unsupported exported path token sequence".into(),
-        ));
+        return Err(format!("unsupported token sequence: {tokens:?}"));
     }
     Ok(path)
+}
+
+fn exported_path_for_item<'a>(
+    tokens: impl Iterator<Item = &'a Token>,
+    is_impl: bool,
+) -> Result<Vec<String>, String> {
+    match exported_path(tokens) {
+        Ok(path) => Ok(path),
+        Err(_) if is_impl => Ok(Vec::new()),
+        Err(reason) => Err(reason),
+    }
+}
+
+fn skip_impl_generics(tokens: &[&Token], start: usize) -> usize {
+    let mut index = start;
+    while matches!(tokens.get(index), Some(Token::Whitespace)) {
+        index += 1;
+    }
+    if !matches!(tokens.get(index), Some(Token::Symbol(open)) if open == "<") {
+        return index;
+    }
+    let mut depth = 0usize;
+    for (offset, token) in tokens.iter().enumerate().skip(index) {
+        match token {
+            Token::Symbol(open) if open == "<" => depth += 1,
+            Token::Symbol(close) if close == ">" => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return offset + 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    start
 }
 fn remove_known_fields(
     value: &mut Value,
@@ -174,7 +229,7 @@ fn remove_known_fields(
 
 #[cfg(test)]
 mod tests {
-    use super::{exported_path, remove_known_fields};
+    use super::{exported_path, exported_path_for_item, remove_known_fields};
     use public_api::tokens::Token;
     use serde_json::json;
 
@@ -322,6 +377,78 @@ mod tests {
             exported_path(trait_implementation.iter()).expect("trait impl path"),
             ["crate_name", "Parent"]
         );
+
+        let generic_implementation = [
+            Token::Keyword("impl".into()),
+            Token::Symbol("<".into()),
+            Token::Generic("T".into()),
+            Token::Symbol(">".into()),
+            Token::Whitespace,
+            Token::Identifier("crate_name".into()),
+            Token::Symbol("::".into()),
+            Token::Type("Parent".into()),
+        ];
+        assert_eq!(
+            exported_path(generic_implementation.iter()).expect("generic impl path"),
+            ["crate_name", "Parent"]
+        );
+
+        let lifetime_implementation = [
+            Token::Keyword("impl".into()),
+            Token::Symbol("<".into()),
+            Token::Lifetime("'a".into()),
+            Token::Symbol(">".into()),
+            Token::Whitespace,
+            Token::Identifier("crate_name".into()),
+            Token::Symbol("::".into()),
+            Token::Type("Parent".into()),
+            Token::Symbol("<".into()),
+            Token::Lifetime("'a".into()),
+            Token::Symbol(">".into()),
+        ];
+        assert_eq!(
+            exported_path(lifetime_implementation.iter()).expect("lifetime impl path"),
+            ["crate_name", "Parent"]
+        );
+
+        for target in [
+            vec![Token::Symbol("(".into()), Token::Symbol(")".into())],
+            vec![
+                Token::Symbol("&".into()),
+                Token::Lifetime("'a".into()),
+                Token::Identifier("crate_name".into()),
+                Token::Symbol("::".into()),
+                Token::Type("Parent".into()),
+            ],
+            vec![
+                Token::Keyword("dyn".into()),
+                Token::Identifier("crate_name".into()),
+                Token::Symbol("::".into()),
+                Token::Type("Trait".into()),
+            ],
+        ] {
+            let mut tokens = vec![
+                Token::Keyword("impl".into()),
+                Token::Whitespace,
+            ];
+            tokens.extend(target);
+            assert!(
+                exported_path_for_item(tokens.iter(), true)
+                    .expect("compound impl should be retained without an exported path")
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn token_path_error_identifies_the_typed_offending_tokens() {
+        let broken = [
+            Token::Kind("fn".into()),
+            Token::Whitespace,
+            Token::Symbol("<".into()),
+        ];
+        let error = exported_path(broken.iter()).expect_err("unsupported path must fail");
+        assert!(error.contains("Symbol(\"<\")"), "diagnostic: {error}");
     }
     #[test]
     fn adapter_rejects_populated_typed_metadata() {

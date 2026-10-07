@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use super::{Error, request, wire};
+use super::{Error, request, response, wire};
 
 /// A validated logical bucket name.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -430,6 +430,252 @@ impl From<DeleteObjectRequest> for wire::DeleteObjectRequest {
     }
 }
 
+/// A typed logical bucket creation request.
+///
+/// The generated request remains the transport form; this façade keeps the
+/// bucket name and optional retry identity validated by construction.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateBucketRequest {
+    name: BucketName,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl CreateBucketRequest {
+    /// Creates a bucket request for one validated logical bucket name.
+    pub fn new(name: BucketName) -> Self {
+        Self {
+            name,
+            mutation: None,
+        }
+    }
+
+    /// Adds a caller retry identity.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated logical bucket name.
+    pub fn name(&self) -> &BucketName {
+        &self.name
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::CreateBucketRequest> for CreateBucketRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::CreateBucketRequest) -> Result<Self, Self::Error> {
+        request::create_bucket_digest(&value)?;
+        let name = BucketName::try_from(value.name)?;
+        let mutation = value
+            .mutation
+            .map(IdempotencyKey::try_from)
+            .transpose()?;
+        Ok(Self { name, mutation })
+    }
+}
+
+impl From<CreateBucketRequest> for wire::CreateBucketRequest {
+    fn from(value: CreateBucketRequest) -> Self {
+        Self {
+            name: value.name.into_string(),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A typed logical bucket inspection request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HeadBucketRequest {
+    bucket: BucketName,
+}
+
+impl HeadBucketRequest {
+    /// Creates a bucket inspection request for one validated name.
+    pub fn new(bucket: BucketName) -> Self {
+        Self { bucket }
+    }
+
+    /// Returns the validated logical bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+}
+
+impl TryFrom<wire::HeadBucketRequest> for HeadBucketRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::HeadBucketRequest) -> Result<Self, Self::Error> {
+        request::bucket(&value.bucket)?;
+        let bucket = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
+        Ok(Self { bucket })
+    }
+}
+
+impl From<HeadBucketRequest> for wire::HeadBucketRequest {
+    fn from(value: HeadBucketRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+        }
+    }
+}
+
+/// A typed logical bucket deletion request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteBucketRequest {
+    bucket: BucketName,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl DeleteBucketRequest {
+    /// Creates a bucket deletion request for one validated logical bucket.
+    pub fn new(bucket: BucketName) -> Self {
+        Self {
+            bucket,
+            mutation: None,
+        }
+    }
+
+    /// Adds a caller retry identity.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated logical bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::DeleteBucketRequest> for DeleteBucketRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::DeleteBucketRequest) -> Result<Self, Self::Error> {
+        request::delete_bucket_digest(&value)?;
+        let bucket = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
+        let mutation = value
+            .mutation
+            .map(IdempotencyKey::try_from)
+            .transpose()?;
+        Ok(Self { bucket, mutation })
+    }
+}
+
+impl From<DeleteBucketRequest> for wire::DeleteBucketRequest {
+    fn from(value: DeleteBucketRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A timestamp accepted by the Objects response contract.
+///
+/// The underlying protobuf value stays private so callers cannot construct an
+/// invalid timestamp through the semantic API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedTimestamp(prost_types::Timestamp);
+
+impl ValidatedTimestamp {
+    /// Returns the validated Unix timestamp seconds.
+    pub const fn seconds(&self) -> i64 {
+        self.0.seconds
+    }
+
+    /// Returns the validated nanosecond fraction.
+    pub const fn nanos(&self) -> i32 {
+        self.0.nanos
+    }
+
+    /// Borrows the validated protobuf timestamp for transport integration.
+    pub fn as_ref(&self) -> &prost_types::Timestamp {
+        &self.0
+    }
+
+    /// Consumes the wrapper and returns its validated protobuf timestamp.
+    pub fn into_inner(self) -> prost_types::Timestamp {
+        self.0
+    }
+}
+
+impl AsRef<prost_types::Timestamp> for ValidatedTimestamp {
+    fn as_ref(&self) -> &prost_types::Timestamp {
+        &self.0
+    }
+}
+
+impl TryFrom<prost_types::Timestamp> for ValidatedTimestamp {
+    type Error = Error;
+
+    fn try_from(value: prost_types::Timestamp) -> Result<Self, Self::Error> {
+        response::timestamp(&value)?;
+        Ok(Self(value))
+    }
+}
+
+/// A validated bucket response bound to the request's logical bucket name.
+///
+/// Responses are constructed with [`Self::try_from_wire`] so the returned
+/// value proves both the response timestamp and the request/response identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Bucket {
+    name: BucketName,
+    created_at: ValidatedTimestamp,
+}
+
+impl Bucket {
+    /// Validates a wire response against the bucket named by its request.
+    pub fn try_from_wire(
+        value: wire::Bucket,
+        expected: &BucketName,
+    ) -> Result<Self, Error> {
+        let expected_ref = wire::BucketRef {
+            name: expected.as_str().to_owned(),
+        };
+        response::bucket(&value, &expected_ref)?;
+        let name = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
+        let created_at = ValidatedTimestamp::try_from(
+            value
+                .created_at
+                .ok_or(wire::ErrorCode::InvalidArgument)?,
+        )?;
+        Ok(Self { name, created_at })
+    }
+
+    /// Returns the validated logical bucket name.
+    pub fn name(&self) -> &BucketName {
+        &self.name
+    }
+
+    /// Returns the validated creation timestamp.
+    pub fn created_at(&self) -> &ValidatedTimestamp {
+        &self.created_at
+    }
+}
+
+impl From<Bucket> for wire::Bucket {
+    fn from(value: Bucket) -> Self {
+        Self {
+            bucket: Some(wire::BucketRef {
+                name: value.name.into_string(),
+            }),
+            created_at: Some(value.created_at.into_inner()),
+        }
+    }
+}
+
 /// A validated nonzero caller page size.
 ///
 /// The wire contract accepts zero as shorthand for its default. The semantic
@@ -562,5 +808,87 @@ mod tests {
             mutation: None,
         };
         assert!(DeleteObjectRequest::try_from(invalid).is_err());
+    }
+
+    #[test]
+    fn typed_bucket_requests_round_trip_validated_values() {
+        let name = BucketName::try_from("customer.inputs").unwrap();
+        let retry = IdempotencyKey::try_from("bucket-1").unwrap();
+
+        let create = CreateBucketRequest::new(name.clone()).with_idempotency_key(retry.clone());
+        let create_wire = wire::CreateBucketRequest::from(create.clone());
+        assert_eq!(CreateBucketRequest::try_from(create_wire), Ok(create));
+
+        let head = HeadBucketRequest::new(name.clone());
+        let head_wire = wire::HeadBucketRequest::from(head.clone());
+        assert_eq!(HeadBucketRequest::try_from(head_wire), Ok(head));
+
+        let delete = DeleteBucketRequest::new(name).with_idempotency_key(retry);
+        let delete_wire = wire::DeleteBucketRequest::from(delete.clone());
+        assert_eq!(DeleteBucketRequest::try_from(delete_wire), Ok(delete));
+    }
+
+    #[test]
+    fn typed_bucket_requests_reject_invalid_wire_values() {
+        assert!(CreateBucketRequest::try_from(wire::CreateBucketRequest {
+            name: "UPPERCASE".into(),
+            mutation: None,
+        })
+        .is_err());
+        assert!(HeadBucketRequest::try_from(wire::HeadBucketRequest { bucket: None }).is_err());
+        assert!(DeleteBucketRequest::try_from(wire::DeleteBucketRequest {
+            bucket: Some(wire::BucketRef { name: "bad..name".into() }),
+            mutation: None,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_bucket_response_requires_request_identity_and_valid_timestamp() {
+        let expected = BucketName::try_from("customer.inputs").unwrap();
+        let timestamp = prost_types::Timestamp {
+            seconds: 1_700_000_000,
+            nanos: 123,
+        };
+        let wire = wire::Bucket {
+            bucket: Some(wire::BucketRef {
+                name: expected.as_str().into(),
+            }),
+            created_at: Some(timestamp.clone()),
+        };
+
+        let bucket = Bucket::try_from_wire(wire.clone(), &expected).unwrap();
+        assert_eq!(bucket.name(), &expected);
+        assert_eq!(bucket.created_at().seconds(), timestamp.seconds);
+        assert_eq!(bucket.created_at().nanos(), timestamp.nanos);
+        assert_eq!(wire::Bucket::from(bucket), wire);
+
+        let other = BucketName::try_from("customer.outputs").unwrap();
+        assert!(Bucket::try_from_wire(wire.clone(), &other).is_err());
+
+        let missing_timestamp = wire::Bucket {
+            bucket: wire.bucket,
+            created_at: None,
+        };
+        assert!(Bucket::try_from_wire(missing_timestamp, &expected).is_err());
+    }
+
+    #[test]
+    fn validated_timestamp_rejects_noncanonical_values() {
+        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
+            seconds: -62_135_596_801,
+            nanos: 0,
+        })
+        .is_err());
+        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
+            seconds: 0,
+            nanos: -1,
+        })
+        .is_err());
+        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
+            seconds: 0,
+            nanos: 1_000_000_000,
+        })
+        .is_err());
     }
 }

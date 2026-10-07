@@ -5,11 +5,11 @@ use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use zeroize::Zeroizing;
 
-use crate::contract;
-use crate::wire;
-use crate::MAXIMUM_MESSAGE_BYTES;
 #[cfg(test)]
 use crate::DESCRIPTOR;
+use crate::MAXIMUM_MESSAGE_BYTES;
+use crate::contract;
+use crate::wire;
 
 /// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
 pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
@@ -167,8 +167,7 @@ impl Inference {
             .list(self.request(wire::ListModelsRequest {})?)
             .await?
             .into_inner();
-        contract::validate_model_capabilities(&response)
-            .map_err(|error| contract_error(&error))?;
+        contract::validate_model_capabilities(&response).map_err(|error| contract_error(&error))?;
         Ok(response.models)
     }
 

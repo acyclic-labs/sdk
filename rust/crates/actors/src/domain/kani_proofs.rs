@@ -5,8 +5,8 @@
 //! visibility or creating a second validation rule.
 
 use super::{
-    valid_code_sha256, wire, ActorState, DomainError, ErrorCode, PositiveU64,
-    SubscriptionStart, SubscriptionState,
+    valid_code_sha256, wire, ActorLimits, ActorState, DomainError, ErrorCode,
+    PositiveU64, SubscriptionStart, SubscriptionState,
 };
 
 #[kani::proof]
@@ -125,6 +125,36 @@ fn positive_u64_constructor_accepts_exactly_nonzero_values() {
             assert_eq!(
                 error,
                 DomainError::Contract(crate::ContractError::InvalidArgument)
+            );
+        }
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn actor_limits_constructor_accepts_exactly_positive_values() {
+    let handler_timeout_millis: u64 = kani::any();
+    let memory_bytes: u64 = kani::any();
+    let checkpoint_bytes: u64 = kani::any();
+
+    match ActorLimits::new(handler_timeout_millis, memory_bytes, checkpoint_bytes) {
+        Ok(limits) => {
+            assert_ne!(handler_timeout_millis, 0);
+            assert_ne!(memory_bytes, 0);
+            assert_ne!(checkpoint_bytes, 0);
+            assert_eq!(limits.handler_timeout_millis(), handler_timeout_millis);
+            assert_eq!(limits.memory_bytes(), memory_bytes);
+            assert_eq!(limits.checkpoint_bytes(), checkpoint_bytes);
+        }
+        Err(error) => {
+            assert_eq!(
+                error,
+                DomainError::Contract(crate::ContractError::InvalidArgument)
+            );
+            assert!(
+                handler_timeout_millis == 0
+                    || memory_bytes == 0
+                    || checkpoint_bytes == 0
             );
         }
     }

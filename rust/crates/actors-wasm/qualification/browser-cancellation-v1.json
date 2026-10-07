@@ -1,0 +1,21 @@
+{
+  "schema": "actors-wasm-qualification/v1",
+  "scope": "borrowed-cancellation-handle-browser-abi",
+  "package": "@acyclic-labs/actors",
+  "packageVersion": "0.2.0",
+  "wasmTarget": "wasm32-unknown-unknown",
+  "profile": "wasm-release",
+  "sourceRevision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "sourceFiles": "rust/crates/actors/src/codegen.rs=2D1EAA668AEC337FE159C1791C958655ACB0B807FEF9206ED1E2CB17B925BBC3;rust/crates/actors/src/client.rs=97A4B0318D4CE10BD45D0EA29C616EE13DFB7D0C83B6FFFE54303EC7C11E2342;rust/crates/actors-wasm/Cargo.toml=36C123F91D335AFFA68356F9D602EAD083686AC09E888E4F5FD47958DC38F838;rust/crates/actors-wasm/src/wasm.rs=2639ECFA255E4D092AC2F56901379616C3A36F726066C52D8F325A24F3E62221;typescript/packages/actors/src/browser.ts=0F326707372328F6A9536197F267ECE7F65897A84A16B9FDAC6589A1BFD0F3F7",
+  "toolVersions": "rustc=1.98.1;wasm-bindgen=0.2.117;bun=1.3.14",
+  "build": "cargo build --manifest-path Cargo.toml -p acyclic-actors-wasm --target wasm32-unknown-unknown --profile wasm-release --locked; wasm-bindgen target/wasm32-unknown-unknown/wasm-release/acyclic_actors_wasm.wasm --target web --out-dir <output> --out-name acyclic_actors_wasm",
+  "artifactHashes": "acyclic_actors_wasm_bg.wasm=5BD1291185AE702561B5CE77E44CD329E532408F78A66A76F9D39D132EABB4F6;acyclic_actors_wasm.js=F3014DC78FFFC4A16A2A2B5E6EE30B4803A3D5AE82A463F99601A29BA3C25FD2;acyclic_actors_wasm.d.ts=0C9423FA9E748207BBEA50D1ACBB3AD937B0F5801239190A7185D87E341572;acyclic_actors_wasm_bg.wasm.d.ts=96B8E9528D03EAC71A4026FF5760FA3911BFD95C32DD2DE3E856C0EF71B89551",
+  "abiChecks": [
+    "all eight ActorsClient operation wrappers pass cancellation.__wbg_ptr and do not call __destroy_into_raw",
+    "delayed fetch interrupted in flight with Actors operation cancelled by the caller",
+    "same borrowed handle survived two completed operations and remained cancellable",
+    "cancel() remained idempotent",
+    "PositiveU64 accepted 1n and max u64; rejected 0n, -1n, and max+1n"
+  ],
+  "typescriptPackageConformance": "pending Rust semantic type bundle staging and facade type fixes; the current audit is recorded separately from WASM ABI qualification"
+}

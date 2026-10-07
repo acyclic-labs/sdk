@@ -57,12 +57,11 @@ mod validation;
 pub type ValidationError = validation::Error;
 
 pub use validation::{
-    evaluation_observation_binding, fixed, nonzero, validate_context_view,
-    validate_customer_wire, validate_evaluation_admission, validate_evaluation_spec,
-    validate_evaluation_view, validate_generated_run_view, validate_model_capabilities,
-    validate_receipt, validate_retain_request, validate_run_view,
-    validate_warm_view, validate_renew_request, watch_run_event, watch_run_start,
-    watch_run_start_state_wire, watch_run_start_wire, Error, WatchRunState,
-    MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
-    MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES,
+    Error, MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
+    MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, WatchRunState,
+    evaluation_observation_binding, fixed, nonzero, validate_context_view, validate_customer_wire,
+    validate_evaluation_admission, validate_evaluation_spec, validate_evaluation_view,
+    validate_generated_run_view, validate_model_capabilities, validate_receipt,
+    validate_renew_request, validate_retain_request, validate_run_view, validate_warm_view,
+    watch_run_event, watch_run_start, watch_run_start_state_wire, watch_run_start_wire,
 };

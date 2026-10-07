@@ -14,7 +14,7 @@ use wasm_bindgen::{JsValue, prelude::*};
 /// JavaScript names and byte-level aliases are emitted from this Rust boundary.
 #[wasm_bindgen(typescript_custom_section)]
 const ACTORS_TYPES: &'static str = r#"
-import type { ActorId, CodeSha256 } from "@acyclic-labs/actors/types";
+import type { ActorId, CodeSha256, PositiveU64 } from "@acyclic-labs/actors/types";
 
 export type ActorsWireBytes = Uint8Array;
 
@@ -36,7 +36,6 @@ export function validateCreateActor(request: ActorsWireBytes): void;
 export function validateUpdateActor(request: ActorsWireBytes): void;
 export function validateAddSubscription(request: ActorsWireBytes): void;
 export function PositiveU64(value: bigint): PositiveU64;
-export type PositiveU64 = bigint & { readonly __brand: unique symbol };
 "#;
 
 fn js_error(code: &str, message: impl AsRef<str>) -> JsValue {

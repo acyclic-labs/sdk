@@ -24,13 +24,14 @@ use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
     commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
     fork_receipt_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
-    optional_key, path, record, record_wire,
+    optional_key, path, record, record_wire, checked_children_page, response_path,
+    validate_children_page_request,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
     ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record, RecordStream,
-    StreamBounds, StreamError, StreamPath, StreamProvider, wire,
+    StreamBounds, StreamError, StreamPath, StreamProvider, checked_committed_envelope, wire,
 };
 
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -357,7 +358,10 @@ impl Client {
                     match active.records.next().await {
                         Some(Ok(response)) => match read_response(response) {
                             Ok(record) if record.sequence == cursor.next => {
-                                cursor.next = cursor.next.saturating_add(1);
+                                let Some(next) = cursor.next.checked_add(1) else {
+                                    return Some((Err(StreamError::Unavailable), cursor));
+                                };
+                                cursor.next = next;
                                 if let Some(remaining) = &mut cursor.remaining {
                                     *remaining = remaining.saturating_sub(1);
                                 }
@@ -626,7 +630,7 @@ impl StreamProvider for Client {
                         .child
                         .ok_or(StreamError::Unavailable)?;
                     Ok(Child {
-                        path: path(child.path)?,
+                        path: response_path(child.path)?,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -650,13 +654,15 @@ impl StreamProvider for Client {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
+        validate_children_page_request(&request)?;
         let response = self
             .unary(
                 wire::ChildrenPageRequest {
-                    parent: request.parent.map(|path| path.to_string()),
-                    after: request.after.map(|path| path.to_string()),
+                    parent: request.parent.as_ref().map(ToString::to_string),
+                    after: request.after.as_ref().map(ToString::to_string),
                     hierarchy_version: request
                         .hierarchy_version
+                        .as_ref()
                         .map(|version| Bytes::copy_from_slice(version.as_bytes())),
                     limit: request.limit,
                 },
@@ -665,18 +671,18 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        Ok(ChildrenPage {
+        checked_children_page(&request, ChildrenPage {
             hierarchy_version: commit_id(&response.hierarchy_version)?,
             children: response
                 .children
                 .into_iter()
                 .map(|child| {
                     Ok(Child {
-                        path: path(child.path)?,
+                        path: response_path(child.path)?,
                     })
                 })
                 .collect::<Result<_, StreamError>>()?,
-            next_after: response.next_after.map(path).transpose()?,
+            next_after: response.next_after.map(response_path).transpose()?,
         })
     }
 
@@ -723,7 +729,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.read_commit(request).await }),
             )
             .await?;
-        envelope_from_wire(envelope)
+        checked_committed_envelope(commit_id, envelope_from_wire(envelope)?)
     }
 }
 
@@ -900,28 +906,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         &self,
         request: Request<wire::ChildrenPageRequest>,
     ) -> Result<Response<wire::ChildrenPageResponse>, Status> {
-        let request = request.into_inner();
+        let request = wire_codec::children_page_from_wire(request.into_inner())
+            .map_err(|error| error_status(&error))?;
         let page = self
             .provider
-            .children_page(ChildrenPageRequest {
-                parent: request
-                    .parent
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                after: request
-                    .after
-                    .map(path)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                hierarchy_version: request
-                    .hierarchy_version
-                    .as_deref()
-                    .map(commit_id)
-                    .transpose()
-                    .map_err(|error| error_status(&error))?,
-                limit: request.limit,
-            })
+            .children_page(request)
             .await
             .map_err(|error| error_status(&error))?;
         Ok(Response::new(wire::ChildrenPageResponse {
@@ -980,6 +969,8 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             .provider
             .read_commit(commit_id)
             .await
+            .map_err(|error| error_status(&error))?;
+        let envelope = checked_committed_envelope(commit_id, envelope)
             .map_err(|error| error_status(&error))?;
         Ok(Response::new(envelope_wire(envelope)))
     }
@@ -1115,6 +1106,65 @@ mod tests {
         }
     }
 
+    struct MismatchedReadCommit {
+        children_page: Option<ChildrenPage>,
+    }
+
+    #[async_trait]
+    impl StreamProvider for MismatchedReadCommit {
+        async fn inspect_idempotency(
+            &self,
+            _idempotency_key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn tail(&self, _path: StreamPath) -> Result<u64, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn bounds(&self, _path: StreamPath) -> Result<StreamBounds, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn append(&self, _request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn fork(&self, _request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<RecordStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn follow(
+            &self,
+            _path: StreamPath,
+            _from: u64,
+        ) -> Result<RecordStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn children_page(
+            &self,
+            _request: ChildrenPageRequest,
+        ) -> Result<ChildrenPage, StreamError> {
+            self.children_page
+                .clone()
+                .ok_or(StreamError::Unsupported)
+        }
+        async fn commit(&self, _request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn read_commit(
+            &self,
+            _requested: CommitId,
+        ) -> Result<CommittedEnvelope, StreamError> {
+            Ok(CommittedEnvelope {
+                commit_id: CommitId::from_bytes([2; 32]),
+                mutations: Vec::new(),
+            })
+        }
+    }
+
     fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
         provider_channel(Service::new(provider))
     }
@@ -1146,6 +1196,55 @@ mod tests {
             "fixture",
         )?;
         crate::conformance::verify(&transport).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_rejects_a_provider_envelope_for_another_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let requested = CommitId::from_bytes([1; 32]);
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(
+                MismatchedReadCommit {
+                    children_page: None,
+                },
+            )))]),
+            "fixture",
+        )?;
+        assert_eq!(
+            transport.read_commit(requested).await,
+            Err(StreamError::Unavailable)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_rejects_a_children_page_with_a_non_direct_child()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider = MismatchedReadCommit {
+            children_page: Some(ChildrenPage {
+                hierarchy_version: CommitId::from_bytes([7; 32]),
+                children: vec![Child {
+                    path: StreamPath::new("runs/branch/child")?,
+                }],
+                next_after: None,
+            }),
+        };
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(provider)))]),
+            "fixture",
+        )?;
+        assert_eq!(
+            transport
+                .children_page(ChildrenPageRequest {
+                    parent: Some(StreamPath::new("runs")?),
+                    after: None,
+                    hierarchy_version: None,
+                    limit: 1,
+                })
+                .await,
+            Err(StreamError::Unavailable)
+        );
         Ok(())
     }
 
@@ -1658,3 +1757,4 @@ mod tests {
         Ok(())
     }
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    

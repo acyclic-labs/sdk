@@ -6,7 +6,7 @@ that an external prototype is already an SDK release.
 
 Snapshot: 2026-10-07  
 Authority checkout: `C:\Users\varun\.codex\worktrees\rust-source-foundation\sdk`  
-Reviewed source revision: `b9cb80bc735815166ac23ea43ab6e45cb4753e05`  
+Reviewed source revision: `371bb4170e16aca973176b6756a261ee5add7297`  
 Binding project: [Mozilla UniFFI](https://github.com/mozilla/uniffi-rs), MPL-2.0.
 
 ## Status rules
@@ -115,6 +115,7 @@ The bounded harness stays independent of package generation and network code:
 
 * SubscriptionStart is checked directly through the existing wire conversion: every symbolic u64 cursor is preserved exactly, the CurrentHead(true) payload and oneof presence are preserved, while CurrentHead(false) and a missing start are rejected.
 * PositiveU64 is checked directly through its Rust-owned NonZeroU64 constructor: every symbolic u64 succeeds exactly when nonzero, preserves the exact value through get(), and maps zero to Contract(InvalidArgument).
+* ActorLimits is checked through its Rust-owned three-value constructor: every symbolic timeout, memory, and checkpoint value is preserved exactly when all are nonzero, and any zero component maps to Contract(InvalidArgument).
 
 These harnesses target exact functions already present in
 `rust/crates/actors/src/domain.rs`; they do not introduce a second contract or
@@ -128,22 +129,24 @@ native package loading, a remote service, or an unbounded stream.
 
 ### Current bounded proof status
 
-The receipt `rust/crates/actors/proofs/kani-domain-invariants.json` records Kani
-0.68.0 with CBMC 6.11.0, Rust nightly 1.100.0, unwind 65, and one verifier
-worker. All six listed harnesses passed with exit code 0: the symbolic digest
-equivalence, four wrong-length rejection cases, and the numeric enum mapping
-invariant. The receipt identifies the exact Rust source hashes and points to
-the external log `foundation-kani-068/domain-invariant-proof.log`.
+The current receipt `rust/crates/actors/proofs/kani-domain-invariants-current.json`
+records Kani 0.68.0 with CBMC 6.11.0, Rust nightly 1.100.0, unwind 65, and one
+verifier worker. All nine listed harnesses passed with exit code 0: the symbolic
+digest, wrong-length, enum, subscription-presence, PositiveU64, and ActorLimits
+constructor invariants. The receipt identifies the exact source revision and
+hashes the complete Actors Rust source tree, build inputs, manifests, lockfile,
+toolchain/config files, and portable proof runner. Its external evidence log is
+`foundation-kani-068/runner-validation-9.log`.
 
-A follow-up Kani 0.68 receipt also proves subscription_start_preserves_cursor_and_current_head_presence for the symbolic cursor and current-head presence/rejection cases; it is recorded in rust/crates/actors/proofs/kani-subscription-start.json with its own source hashes and external log.
-
-A separate Kani 0.68 receipt proves positive_u64_constructor_accepts_exactly_nonzero_values over symbolic u64 values; it is recorded in rust/crates/actors/proofs/kani-positive-u64.json with its own source hashes and external log.
+The older individual Kani receipts remain historical evidence. The current
+combined receipt is the source of truth for the bounded proof snapshot.
 
 The earlier Kani 0.67 attempt is retained as historical failed evidence: it
 used a Rust 1.93 nightly compiler path and stopped before proving a harness.
 The current isolated Kani 0.68 run uses its pinned nightly compiler and records
-the exact compiler, solver, harness, source hashes, and unwind setting in
-`rust/crates/actors/proofs/kani-domain-invariants.json`.
+the exact compiler, solver, nine-harness command, source inventory, output
+validation policy, source hashes, and unwind setting in
+`rust/crates/actors/proofs/kani-domain-invariants-current.json`.
 
 [Proptest](https://github.com/proptest-rs/proptest) is the maintained OSS
 candidate for executable property tests over larger generated value spaces. It

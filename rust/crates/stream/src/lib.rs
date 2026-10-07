@@ -27,8 +27,9 @@ mod local;
 mod memory;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
-#[allow(dead_code)]
-mod wire_codec;
+/// Canonical protobuf/domain conversions shared by Stream transports and
+/// native bindings.
+pub mod wire_codec;
 
 /// Generated canonical Stream v2 protocol.
 #[allow(missing_docs, clippy::pedantic, clippy::too_many_lines)]
@@ -660,7 +661,8 @@ impl<P: StreamProvider> StreamClient<P> {
 
     /// Reads a committed envelope.
     pub async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.provider.read_commit(commit_id).await
+        let envelope = self.provider.read_commit(commit_id).await?;
+        checked_committed_envelope(commit_id, envelope)
     }
 }
 
@@ -890,6 +892,82 @@ pub enum StreamError {
     /// The provider cannot supply a required semantic capability.
     #[error("stream capability unsupported")]
     Unsupported,
+}
+
+/// Rejects a committed envelope whose content identity does not match the request.
+pub(crate) fn checked_committed_envelope(
+    requested: CommitId,
+    envelope: CommittedEnvelope,
+) -> Result<CommittedEnvelope, StreamError> {
+    if envelope.commit_id != requested {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(envelope)
+}
+
+#[cfg(test)]
+mod committed_envelope_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    struct MismatchedProvider;
+
+    #[async_trait]
+    impl StreamProvider for MismatchedProvider {
+        async fn inspect_idempotency(
+            &self,
+            _idempotency_key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn tail(&self, _path: StreamPath) -> Result<u64, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn bounds(&self, _path: StreamPath) -> Result<StreamBounds, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn append(&self, _request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn fork(&self, _request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn read(&self, _request: ReadRequest) -> Result<RecordStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn follow(
+            &self,
+            _path: StreamPath,
+            _from: u64,
+        ) -> Result<RecordStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn commit(&self, _request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            Err(StreamError::Unsupported)
+        }
+        async fn read_commit(
+            &self,
+            _requested: CommitId,
+        ) -> Result<CommittedEnvelope, StreamError> {
+            Ok(CommittedEnvelope {
+                commit_id: CommitId::from_bytes([2; 32]),
+                mutations: Vec::new(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_provider_rejects_a_commit_envelope_for_another_identity() {
+        let requested = CommitId::from_bytes([1; 32]);
+        let client = StreamClient::new(Arc::new(MismatchedProvider));
+        assert_eq!(
+            client.read_commit(requested).await,
+            Err(StreamError::Unavailable)
+        );
+    }
 }
 
 #[cfg(test)]

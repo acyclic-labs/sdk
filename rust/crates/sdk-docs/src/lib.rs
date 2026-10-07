@@ -368,6 +368,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
         data_sha256: digest,
     };
     let updated_index = merge_version_index(index, &entry, output_dir, mark_latest)?;
+    validate_latest_release(&updated_index)?;
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
     atomic_write(&data_path, &data_bytes, true)?;
@@ -472,7 +473,30 @@ fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(),
             )));
         }
     }
+    validate_latest_release(index)?;
     Ok(())
+}
+
+fn validate_latest_release(index: &VersionIndex) -> Result<(), Error> {
+    let Some(maximum) = index.releases.iter().max_by(|left, right| {
+        match (release_version(&left.version), release_version(&right.version)) {
+            (Ok(left), Ok(right)) => left.cmp(&right),
+            _ => left.version.cmp(&right.version),
+        }
+    }) else {
+        return Ok(());
+    };
+    match index.latest.as_ref() {
+        Some(latest) if latest == maximum => Ok(()),
+        Some(latest) => Err(Error::Invalid(format!(
+            "version index latest release {} is not the maximum release {}",
+            latest.version, maximum.version
+        ))),
+        None => Err(Error::Invalid(format!(
+            "version index latest release is missing; maximum release is {}",
+            maximum.version
+        ))),
+    }
 }
 
 fn validate_version_entry(
@@ -670,6 +694,17 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
     for public_item in &public_items {
         let id = public_item.id;
         let path = public_item.path.clone();
+        // `public-api` reports impl occurrences as public signatures too. Their
+        // target may be a tuple, reference, or dyn type without a crate path;
+        // retain the typed occurrence for identity/link analysis, but do not
+        // subject it to the ordinary exported-item path assertion.
+        if krate
+            .index
+            .get(&id)
+            .is_some_and(|item| matches!(item.inner, ItemEnum::Impl(_)))
+        {
+            continue;
+        }
         if path.first() != Some(&crate_name) {
             return Err(Error::Invalid(format!(
                 "public-api item {} does not resolve to the crate root",
@@ -737,7 +772,13 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         });
     }
     items.sort_by(|a, b| a.path.cmp(&b.path).then(a.id.cmp(&b.id)));
-    let guides = guides_from_rustdoc(krate, &crate_name, &public_items, &public_occurrence_paths)?;
+    let guides = guides_from_rustdoc(
+        krate,
+        &crate_name,
+        root_item,
+        &public_items,
+        &public_occurrence_paths,
+    )?;
     Ok(Family {
         slug,
         title,
@@ -935,10 +976,23 @@ fn kind_name(kind: ItemKind) -> &'static str {
 fn guides_from_rustdoc(
     krate: &Crate,
     crate_name: &str,
+    root_item: &Item,
     public_items: &[public_api::PublicItemSignature],
     public_occurrence_paths: &HashMap<Id, Vec<String>>,
 ) -> Result<Vec<Guide>, Error> {
     let mut guides = Vec::new();
+    if let Some(markdown) = root_item
+        .docs
+        .clone()
+        .filter(|docs| !docs.trim().is_empty())
+    {
+        guides.push(Guide {
+            path: crate_name.to_owned(),
+            title: guide_title(&markdown, crate_name),
+            markdown,
+            links: rustdoc_links(root_item, public_occurrence_paths),
+        });
+    }
     for public_item in public_items {
         if public_item.path.first().map(String::as_str) != Some(crate_name) {
             continue;
@@ -953,22 +1007,14 @@ fn guides_from_rustdoc(
             continue;
         };
         let path = public_item.path.join("::");
-        let title = markdown
-            .lines()
-            .find_map(|line| line.strip_prefix("# "))
-            .map(str::trim)
-            .filter(|title| !title.is_empty())
-            .unwrap_or_else(|| {
-                public_item
-                    .path
-                    .last()
-                    .map(String::as_str)
-                    .unwrap_or(crate_name)
-            })
-            .to_owned();
+        let fallback = public_item
+            .path
+            .last()
+            .map(String::as_str)
+            .unwrap_or(crate_name);
         guides.push(Guide {
             path,
-            title,
+            title: guide_title(&markdown, fallback),
             markdown,
             links: rustdoc_links(item, public_occurrence_paths),
         });
@@ -976,6 +1022,16 @@ fn guides_from_rustdoc(
     guides.sort_by(|a, b| a.path.cmp(&b.path));
     guides.dedup_by(|a, b| a.path == b.path);
     Ok(guides)
+}
+
+fn guide_title(markdown: &str, fallback: &str) -> String {
+    markdown
+        .lines()
+        .find_map(|line| line.strip_prefix("# "))
+        .map(str::trim)
+        .filter(|title| !title.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
 }
 fn sha256_hex(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
@@ -1550,6 +1606,36 @@ mod tests {
     }
 
     #[test]
+    fn version_index_latest_must_be_the_maximum_release() {
+        let entry = |version: &str| VersionEntry {
+            version: version.into(),
+            channel: Channel::Release,
+            revision: "a".repeat(40),
+            data_file: format!("releases/{version}/sdk-docs-data.v1.json"),
+            data_sha256: "b".repeat(64),
+        };
+        let stale = VersionIndex {
+            schema: VERSION_INDEX_SCHEMA_VERSION.into(),
+            latest: Some(entry("1.0.0")),
+            releases: vec![entry("1.0.0"), entry("2.0.0")],
+            preview: None,
+        };
+        let error = validate_latest_release(&stale)
+            .expect_err("a stale latest release must be rejected");
+        assert!(error.to_string().contains("maximum release 2.0.0"));
+
+        let missing = VersionIndex {
+            schema: VERSION_INDEX_SCHEMA_VERSION.into(),
+            latest: None,
+            releases: vec![entry("1.0.0")],
+            preview: None,
+        };
+        let error = validate_latest_release(&missing)
+            .expect_err("a non-empty release archive must have a latest release");
+        assert!(error.to_string().contains("latest release is missing"));
+    }
+
+    #[test]
     fn concurrent_publications_preserve_both_entries_and_index_hashes() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-concurrent-{}", std::process::id()));
@@ -1630,7 +1716,7 @@ mod tests {
             "crate_version": "1.0.0",
             "includes_private": false,
             "index": {
-                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
+                "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": "# Demo\n\nRoot guide", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
                 "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {"alias-only": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
                 "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {"target link": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
@@ -1736,6 +1822,13 @@ mod tests {
             linked.links.keys().map(String::as_str).collect::<Vec<_>>(),
             vec!["alias target", "associated target"]
         );
+        let root_guide = family
+            .guides
+            .iter()
+            .find(|guide| guide.path == "demo")
+            .expect("the crate-root guide should be projected");
+        assert_eq!(root_guide.title, "Demo");
+        assert_eq!(root_guide.markdown, "# Demo\n\nRoot guide");
         let guide = family
             .guides
             .iter()

@@ -21,24 +21,25 @@ import {
   ActorsService,
 } from "../generated/proto/actors/v1/actors_pb.js";
 import type {
-  AddSubscriptionResponse,
-  CheckpointActorResponse,
-  CreateActorResponse,
-  InspectActorResponse,
   InvokeActorResponse,
-  RemoveSubscriptionResponse,
-  ResumeSubscriptionResponse,
-  UpdateActorResponse,
 } from "../generated/proto/actors/v1/actors_pb.js";
 import type {
   AddSubscriptionRequest as RustAddSubscriptionRequest,
+  AddSubscriptionResponse as RustAddSubscriptionResponse,
   CheckpointActorRequest as RustCheckpointActorRequest,
+  CheckpointActorResponse as RustCheckpointActorResponse,
   CreateActorRequest as RustCreateActorRequest,
+  CreateActorResponse as RustCreateActorResponse,
   InspectActorRequest as RustInspectActorRequest,
+  InspectActorResponse as RustInspectActorResponse,
   InvokeActorRequest as RustInvokeActorRequest,
+  InvokeActorResponse as RustInvokeActorResponse,
   RemoveSubscriptionRequest as RustRemoveSubscriptionRequest,
+  RemoveSubscriptionResponse as RustRemoveSubscriptionResponse,
   ResumeSubscriptionRequest as RustResumeSubscriptionRequest,
+  ResumeSubscriptionResponse as RustResumeSubscriptionResponse,
   UpdateActorRequest as RustUpdateActorRequest,
+  UpdateActorResponse as RustUpdateActorResponse,
 } from "@acyclic-labs/actors/types";
 
 export interface ActorsClientOptions {
@@ -55,6 +56,9 @@ export type ActorsOperation = Extract<keyof ActorsServiceMethods, string>;
 export type ActorsError = Error & Readonly<Record<string, unknown>>;
 
 type ActorsRequest<S extends GenMessage<Message>> = MessageInitShape<S>;
+// MessageInitShape recursively removes Buf runtime metadata from nested
+// messages while preserving their generated field types.
+type ActorsDecodedResponse<S extends GenMessage<Message>> = MessageInitShape<S>;
 type Assert<T extends true> = T;
 
 /** The Rust-generated request projections must remain directly encodable by Buf. */
@@ -68,6 +72,41 @@ type _ActorsRustRequestShapeChecks = [
   Assert<RustCheckpointActorRequest extends ActorsRequest<typeof CheckpointActorRequestSchema> ? true : false>,
   Assert<RustInvokeActorRequest extends ActorsRequest<typeof InvokeActorRequestSchema> ? true : false>,
 ];
+
+/**
+ * Rust response projections must remain representable by the decoded Buf
+ * messages. The actor field is optional on the wire, so its nullability is
+ * adapted only at the semantic boundary below.
+ */
+type RustActorResponseWireShape<R extends { readonly actor: unknown }> =
+  Omit<R, "actor"> & { readonly actor?: Exclude<R["actor"], null> | undefined };
+
+type _ActorsRustResponseShapeChecks = [
+  Assert<RustActorResponseWireShape<RustCreateActorResponse> extends ActorsDecodedResponse<typeof CreateActorResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustUpdateActorResponse> extends ActorsDecodedResponse<typeof UpdateActorResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustInspectActorResponse> extends ActorsDecodedResponse<typeof InspectActorResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustAddSubscriptionResponse> extends ActorsDecodedResponse<typeof AddSubscriptionResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustRemoveSubscriptionResponse> extends ActorsDecodedResponse<typeof RemoveSubscriptionResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustResumeSubscriptionResponse> extends ActorsDecodedResponse<typeof ResumeSubscriptionResponseSchema> ? true : false>,
+  Assert<RustActorResponseWireShape<RustCheckpointActorResponse> extends ActorsDecodedResponse<typeof CheckpointActorResponseSchema> ? true : false>,
+  Assert<RustInvokeActorResponse extends ActorsDecodedResponse<typeof InvokeActorResponseSchema> ? true : false>,
+];
+
+/**
+ * The native/WASM binding has already run the canonical Rust TryFrom path.
+ * This only maps protobuf's absent message to the semantic Option/null shape;
+ * validation remains exclusively in Rust.
+ */
+function decodeRustActorResponse<R extends { readonly actor: unknown }>(
+  response: Message & { readonly actor?: unknown },
+): R {
+  return { ...response, actor: response.actor ?? null } as unknown as R;
+}
+
+/** Invoke's Rust and Buf projections have the same runtime field shape. */
+function decodeRustInvokeResponse(response: InvokeActorResponse): RustInvokeActorResponse {
+  return response as unknown as RustInvokeActorResponse;
+}
 
 /** Converts native, WASM, and ordinary JS failures to the shared Rust error surface. */
 export function normalizeActorsError(value: unknown): ActorsError {
@@ -114,38 +153,47 @@ export class ActorsClient {
     return this.binding.transport;
   }
 
-  async createActor(request: RustCreateActorRequest, signal?: AbortSignal): Promise<CreateActorResponse> {
-    return this.call("createActor", CreateActorRequestSchema, CreateActorResponseSchema, request, signal);
+  async createActor(request: RustCreateActorRequest, signal?: AbortSignal): Promise<RustCreateActorResponse> {
+    return this.call("createActor", CreateActorRequestSchema, CreateActorResponseSchema, request,
+      response => decodeRustActorResponse<RustCreateActorResponse>(response), signal);
   }
-  async updateActor(request: RustUpdateActorRequest, signal?: AbortSignal): Promise<UpdateActorResponse> {
-    return this.call("updateActor", UpdateActorRequestSchema, UpdateActorResponseSchema, request, signal);
+  async updateActor(request: RustUpdateActorRequest, signal?: AbortSignal): Promise<RustUpdateActorResponse> {
+    return this.call("updateActor", UpdateActorRequestSchema, UpdateActorResponseSchema, request,
+      response => decodeRustActorResponse<RustUpdateActorResponse>(response), signal);
   }
-  async inspectActor(request: RustInspectActorRequest, signal?: AbortSignal): Promise<InspectActorResponse> {
-    return this.call("inspectActor", InspectActorRequestSchema, InspectActorResponseSchema, request, signal);
+  async inspectActor(request: RustInspectActorRequest, signal?: AbortSignal): Promise<RustInspectActorResponse> {
+    return this.call("inspectActor", InspectActorRequestSchema, InspectActorResponseSchema, request,
+      response => decodeRustActorResponse<RustInspectActorResponse>(response), signal);
   }
-  async addSubscription(request: RustAddSubscriptionRequest, signal?: AbortSignal): Promise<AddSubscriptionResponse> {
-    return this.call("addSubscription", AddSubscriptionRequestSchema, AddSubscriptionResponseSchema, request, signal);
+  async addSubscription(request: RustAddSubscriptionRequest, signal?: AbortSignal): Promise<RustAddSubscriptionResponse> {
+    return this.call("addSubscription", AddSubscriptionRequestSchema, AddSubscriptionResponseSchema, request,
+      response => decodeRustActorResponse<RustAddSubscriptionResponse>(response), signal);
   }
-  async removeSubscription(request: RustRemoveSubscriptionRequest, signal?: AbortSignal): Promise<RemoveSubscriptionResponse> {
-    return this.call("removeSubscription", RemoveSubscriptionRequestSchema, RemoveSubscriptionResponseSchema, request, signal);
+  async removeSubscription(request: RustRemoveSubscriptionRequest, signal?: AbortSignal): Promise<RustRemoveSubscriptionResponse> {
+    return this.call("removeSubscription", RemoveSubscriptionRequestSchema, RemoveSubscriptionResponseSchema, request,
+      response => decodeRustActorResponse<RustRemoveSubscriptionResponse>(response), signal);
   }
-  async resumeSubscription(request: RustResumeSubscriptionRequest, signal?: AbortSignal): Promise<ResumeSubscriptionResponse> {
-    return this.call("resumeSubscription", ResumeSubscriptionRequestSchema, ResumeSubscriptionResponseSchema, request, signal);
+  async resumeSubscription(request: RustResumeSubscriptionRequest, signal?: AbortSignal): Promise<RustResumeSubscriptionResponse> {
+    return this.call("resumeSubscription", ResumeSubscriptionRequestSchema, ResumeSubscriptionResponseSchema, request,
+      response => decodeRustActorResponse<RustResumeSubscriptionResponse>(response), signal);
   }
-  async checkpointActor(request: RustCheckpointActorRequest, signal?: AbortSignal): Promise<CheckpointActorResponse> {
-    return this.call("checkpointActor", CheckpointActorRequestSchema, CheckpointActorResponseSchema, request, signal);
+  async checkpointActor(request: RustCheckpointActorRequest, signal?: AbortSignal): Promise<RustCheckpointActorResponse> {
+    return this.call("checkpointActor", CheckpointActorRequestSchema, CheckpointActorResponseSchema, request,
+      response => decodeRustActorResponse<RustCheckpointActorResponse>(response), signal);
   }
-  async invokeActor(request: RustInvokeActorRequest, signal?: AbortSignal): Promise<InvokeActorResponse> {
-    return this.call("invokeActor", InvokeActorRequestSchema, InvokeActorResponseSchema, request, signal);
+  async invokeActor(request: RustInvokeActorRequest, signal?: AbortSignal): Promise<RustInvokeActorResponse> {
+    return this.call("invokeActor", InvokeActorRequestSchema, InvokeActorResponseSchema, request,
+      decodeRustInvokeResponse, signal);
   }
 
-  private async call<I extends Message, O extends Message>(
+  private async call<I extends Message, O extends Message, R>(
     operation: ActorsOperation,
     requestSchema: GenMessage<I>,
     responseSchema: GenMessage<O>,
     request: MessageInitShape<GenMessage<I>>,
+    decodeResponse: (response: O) => R,
     signal?: AbortSignal,
-  ): Promise<O> {
+  ): Promise<R> {
     let bytes: Uint8Array;
     try {
       bytes = toBinary(requestSchema, create(requestSchema, request));
@@ -154,7 +202,7 @@ export class ActorsClient {
     }
     try {
       const response = await this.binding.call(operation, bytes, signal);
-      return fromBinary(responseSchema, response);
+      return decodeResponse(fromBinary(responseSchema, response));
     } catch (error) {
       if (error instanceof Error) throw error;
       throw normalizeActorsError(error);

@@ -29,7 +29,9 @@ use std::{
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
 const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
-const READ_PAGE_SIZE: u32 = 1_024;
+/// Maximum number of coordinator records inspected by one task-event page.
+pub const MAX_TASK_EVENT_PAGE: u32 = 1_024;
+const READ_PAGE_SIZE: u32 = MAX_TASK_EVENT_PAGE;
 fn validate_child_page_request(
     parent: OperationId,
     after_slot: Option<&str>,
@@ -225,6 +227,105 @@ pub struct CommittedSchedulerEvent {
     pub committed_at_ms: u64,
     /// Decoded scheduler transition.
     pub event: SchedulerEvent,
+}
+
+/// One owner-filtered page of the canonical coordinator history.
+///
+/// `next_revision` is the coordinator cursor, including records for other
+/// operations that were skipped by the filter. Callers must resume with this
+/// value rather than the last returned operation event revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskEventPage {
+    /// Coordinator revision supplied for this read.
+    pub after_revision: u64,
+    /// Coordinator revision to use for the next read.
+    pub next_revision: u64,
+    /// Verified events belonging to the requested operation, in commit order.
+    pub events: Vec<CommittedSchedulerEvent>,
+}
+
+impl TaskEventPage {
+    /// Validates a provider page against the requested task and cursor.
+    ///
+    /// Revisions may skip values because the underlying coordinator page also
+    /// contains sibling operations. Matching task records themselves must be
+    /// strictly ordered and remain within the returned cursor interval.
+    pub(crate) fn validate_for(
+        &self,
+        task_id: OperationId,
+        requested_after_revision: u64,
+        requested_limit: u32,
+    ) -> Result<()> {
+        if task_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("task event identity is empty".into()));
+        }
+        if requested_limit == 0 || requested_limit > MAX_TASK_EVENT_PAGE {
+            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+        }
+        if self.after_revision != requested_after_revision
+            || self.next_revision < self.after_revision
+            || self
+                .next_revision
+                .saturating_sub(self.after_revision)
+                > u64::from(requested_limit)
+            || self.events.len() > requested_limit as usize
+        {
+            return Err(Error::Conflict(
+                "task event page cursor or bound differs from its request".into(),
+            ));
+        }
+        let mut previous = self.after_revision;
+        for event in &self.events {
+            if event.operation_id != task_id
+                || scheduler_event_operation(&event.event) != event.operation_id
+                || event.revision <= previous
+                || event.revision > self.next_revision
+            {
+                return Err(Error::Storage(
+                    "task event page contains an invalid filtered record".into(),
+                ));
+            }
+            previous = event.revision;
+        }
+        Ok(())
+    }
+}
+
+fn filter_task_event_page(
+    after_revision: u64,
+    task_id: OperationId,
+    page: Vec<CommittedSchedulerEvent>,
+) -> TaskEventPage {
+    let next_revision = page
+        .last()
+        .map_or(after_revision, |event| event.revision);
+    let events = page
+        .into_iter()
+        .filter(|event| event.operation_id == task_id)
+        .collect();
+    TaskEventPage {
+        after_revision,
+        next_revision,
+        events,
+    }
+}
+
+/// Reads one bounded owner-independent coordinator page and filters it to one
+/// operation. Authentication belongs to the owner-bound provider before this
+/// helper is called; the global stream is never a public task history API.
+pub(crate) async fn read_task_event_page<P: StreamProvider>(
+    client: &StreamClient<P>,
+    task_id: OperationId,
+    after_revision: u64,
+    limit: u32,
+) -> Result<TaskEventPage> {
+    if task_id.into_bytes() == [0; 16] {
+        return Err(Error::Invalid("task event identity is empty".into()));
+    }
+    let page = read_coordinator_event_page(client, after_revision, limit).await?;
+    let page = filter_task_event_page(after_revision, task_id, page);
+    page.validate_for(task_id, after_revision, limit)?;
+    Ok(page)
 }
 
 /// Reads one bounded page of verified coordinator events without replaying the
@@ -1503,6 +1604,58 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn task_event_page_validation_preserves_filtered_cursor_gaps() -> Result<()> {
+        let task_id = OperationId::from_bytes([7; 16]);
+        let page = TaskEventPage {
+            after_revision: 3,
+            next_revision: 8,
+            events: vec![
+                CommittedSchedulerEvent {
+                    revision: 4,
+                    operation_id: task_id,
+                    event_digest: [1; 32],
+                    committed_at_ms: 1,
+                    event: SchedulerEvent::WaitingForCapacity {
+                        operation_id: task_id,
+                    },
+                },
+                CommittedSchedulerEvent {
+                    revision: 8,
+                    operation_id: task_id,
+                    event_digest: [2; 32],
+                    committed_at_ms: 2,
+                    event: SchedulerEvent::WaitingForCapacity {
+                        operation_id: task_id,
+                    },
+                },
+            ],
+        };
+        page.validate_for(task_id, 3, 5)?;
+
+        let mut invalid = page.clone();
+        invalid.events[1].revision = 4;
+        assert!(invalid.validate_for(task_id, 3, 5).is_err());
+        invalid = page.clone();
+        invalid.events[0].operation_id = OperationId::from_bytes([8; 16]);
+        assert!(invalid.validate_for(task_id, 3, 5).is_err());
+        invalid = page.clone();
+        invalid.events[0].event = SchedulerEvent::WaitingForCapacity {
+            operation_id: OperationId::from_bytes([8; 16]),
+        };
+        assert!(invalid.validate_for(task_id, 3, 5).is_err());
+        invalid = page;
+        invalid.next_revision = 2;
+        assert!(invalid.validate_for(task_id, 3, 5).is_err());
+        invalid = TaskEventPage {
+            after_revision: 3,
+            next_revision: 9,
+            events: Vec::new(),
+        };
+        assert!(invalid.validate_for(task_id, 3, 5).is_err());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn pull_enforces_operation_placement_labels() -> Result<()> {
         let client = StreamClient::new(Arc::new(MemoryStream::default()));
@@ -1552,6 +1705,17 @@ mod tests {
         assert!(matches!(page[0].event, SchedulerEvent::Declared { .. }));
         let second = OperationId::from_bytes([42; 16]);
         declare(&mut coordinator, spec(second, 1)?, "projector-second").await?;
+        let filtered = read_task_event_page(&client, operation_id, 0, 2).await?;
+        assert_eq!(filtered.after_revision, 0);
+        assert_eq!(filtered.next_revision, 2);
+        assert_eq!(filtered.events.len(), 1);
+        assert_eq!(filtered.events[0].operation_id, operation_id);
+        assert!(read_task_event_page(&client, operation_id, 2, 0)
+            .await
+            .is_err());
+        assert!(read_task_event_page(&client, OperationId::from_bytes([0; 16]), 0, 1)
+            .await
+            .is_err());
         let next = read_coordinator_event_page(&client, 1, 1).await?;
         assert_eq!(next.len(), 1);
         assert!(next[0].committed_at_ms > page[0].committed_at_ms);

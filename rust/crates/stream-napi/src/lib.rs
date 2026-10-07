@@ -7,13 +7,7 @@
 
 use std::{future::Future, sync::Arc};
 
-use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildrenPageRequest, ChildrenRequest, CommitCondition,
-    CommitConflict, CommitId, CommitMutation, CommitOutcome, CommittedEnvelope, CommittedMutation,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome,
-    ReadRequest, Record, StreamClient, StreamError, StreamPath, grpc, wire,
-};
-use bytes::Bytes;
+use acyclic_stream::{StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
 use futures::StreamExt;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
@@ -216,14 +210,17 @@ fn napi_error(error: NativeStreamErrorMetadata) -> Error {
 fn decode<T: Message + Default>(
     request: &Buffer,
     operation: &str,
-) -> Result<T, NativeStreamErrorMetadata> {
+) -> std::result::Result<T, NativeStreamErrorMetadata> {
     T::decode(request.as_ref()).map_err(|error| NativeStreamErrorMetadata {
         code: "invalid_argument".to_owned(),
         message: format!("{operation} request is not valid Stream protobuf: {error}"),
     })
 }
 
-fn encode<T: Message>(value: &T, operation: &str) -> Result<Buffer, NativeStreamErrorMetadata> {
+fn encode<T: Message>(
+    value: &T,
+    operation: &str,
+) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let mut bytes = Vec::with_capacity(value.encoded_len());
     value
         .encode(&mut bytes)
@@ -337,7 +334,7 @@ impl NativeStreamFollow {
         match next {
             Ok(Some(record)) => {
                 let response = wire::ReadResponse {
-                    record: Some(record_wire(record)),
+                    record: Some(wire_codec::record_wire(record)),
                 };
                 self.state.records.lock().await.replace(records);
                 Ok(NativeStreamNextResult::value(
@@ -606,271 +603,6 @@ impl NativeStreamClient {
     }
 }
 
-fn path(value: String) -> std::result::Result<StreamPath, NativeStreamErrorMetadata> {
-    StreamPath::new(value).map_err(stream_error)
-}
-
-fn key(value: Bytes) -> std::result::Result<IdempotencyKey, NativeStreamErrorMetadata> {
-    IdempotencyKey::new(value).map_err(stream_error)
-}
-
-fn commit_id(value: &[u8]) -> std::result::Result<CommitId, NativeStreamErrorMetadata> {
-    let value = <[u8; 32]>::try_from(value).map_err(|_| NativeStreamErrorMetadata {
-        code: "invalid_argument".to_owned(),
-        message: "commit identity must contain exactly 32 bytes".to_owned(),
-    })?;
-    Ok(CommitId::from_bytes(value))
-}
-
-fn append_request(
-    value: wire::AppendRequest,
-) -> std::result::Result<AppendRequest, NativeStreamErrorMetadata> {
-    Ok(AppendRequest {
-        path: path(value.path)?,
-        records: value.records,
-        if_tail: value.if_tail,
-        idempotency_key: value.idempotency_key.map(key).transpose()?,
-    })
-}
-
-fn fork_request(
-    value: wire::ForkRequest,
-) -> std::result::Result<ForkRequest, NativeStreamErrorMetadata> {
-    Ok(ForkRequest {
-        source: path(value.source)?,
-        destination: path(value.destination)?,
-        at_tail: value.at_tail,
-        idempotency_key: value.idempotency_key.map(key).transpose()?,
-    })
-}
-
-fn read_request(
-    value: wire::ReadRequest,
-) -> std::result::Result<ReadRequest, NativeStreamErrorMetadata> {
-    Ok(ReadRequest {
-        path: path(value.path)?,
-        from: value.from,
-        limit: value.limit,
-    })
-}
-
-fn children_request(
-    value: wire::ChildrenRequest,
-) -> std::result::Result<ChildrenRequest, NativeStreamErrorMetadata> {
-    Ok(ChildrenRequest {
-        parent: value.parent.map(path).transpose()?,
-        limit: value.limit,
-    })
-}
-
-fn children_page_request(
-    value: wire::ChildrenPageRequest,
-) -> std::result::Result<ChildrenPageRequest, NativeStreamErrorMetadata> {
-    Ok(ChildrenPageRequest {
-        parent: value.parent.map(path).transpose()?,
-        after: value.after.map(path).transpose()?,
-        hierarchy_version: value
-            .hierarchy_version
-            .as_deref()
-            .map(commit_id)
-            .transpose()?,
-        limit: value.limit,
-    })
-}
-
-fn condition(
-    value: wire::CommitCondition,
-) -> std::result::Result<CommitCondition, NativeStreamErrorMetadata> {
-    match value.condition.ok_or_else(|| NativeStreamErrorMetadata {
-        code: "invalid_argument".to_owned(),
-        message: "commit condition is missing".to_owned(),
-    })? {
-        wire::commit_condition::Condition::Tail(value) => Ok(CommitCondition::Tail {
-            path: path(value.path)?,
-            expected: value.expected,
-        }),
-        wire::commit_condition::Condition::Absent(value) => Ok(CommitCondition::Absent {
-            path: path(value.path)?,
-        }),
-    }
-}
-
-fn mutation(
-    value: wire::CommitMutation,
-) -> std::result::Result<CommitMutation, NativeStreamErrorMetadata> {
-    match value.mutation.ok_or_else(|| NativeStreamErrorMetadata {
-        code: "invalid_argument".to_owned(),
-        message: "commit mutation is missing".to_owned(),
-    })? {
-        wire::commit_mutation::Mutation::Append(value) => Ok(CommitMutation::Append {
-            path: path(value.path)?,
-            records: value.records,
-        }),
-        wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
-            source: path(value.source)?,
-            destination: path(value.destination)?,
-            at_tail: value.at_tail,
-            records: value.records,
-        }),
-    }
-}
-
-fn commit_request(
-    value: wire::CommitRequest,
-) -> std::result::Result<(acyclic_stream::CommitRequest, Option<u64>), NativeStreamErrorMetadata> {
-    Ok((
-        acyclic_stream::CommitRequest {
-            conditions: value
-                .conditions
-                .into_iter()
-                .map(condition)
-                .collect::<std::result::Result<_, _>>()?,
-            mutations: value
-                .mutations
-                .into_iter()
-                .map(mutation)
-                .collect::<std::result::Result<_, _>>()?,
-            idempotency_key: key(value.idempotency_key)?,
-        },
-        value.deadline_unix_millis,
-    ))
-}
-
-fn record_wire(value: Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        committed_at_micros: value.committed_at_micros,
-    }
-}
-
-fn append_response(value: AppendOutcome) -> wire::AppendResponse {
-    let outcome = match value {
-        AppendOutcome::Committed(value) => {
-            wire::append_response::Outcome::Committed(wire::AppendReceipt {
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-            })
-        }
-        AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-        }
-    };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
-}
-
-fn fork_receipt(value: ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
-        forked_at: value.forked_at,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
-
-fn committed_mutation(value: CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
-        CommittedMutation::Append(value) => {
-            wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-        CommittedMutation::Fork(value) => {
-            wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
-                forked_at: value.forked_at,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_wire).collect(),
-            })
-        }
-    };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
-    }
-}
-
-fn envelope(value: CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation)
-            .collect(),
-    }
-}
-
-fn commit_response(value: CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        CommitOutcome::Committed(value) => {
-            wire::commit_response::Outcome::Committed(envelope(value))
-        }
-        CommitOutcome::Conflict(values) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: values
-                    .into_iter()
-                    .map(|value| {
-                        let conflict = match value {
-                            CommitConflict::Tail {
-                                path,
-                                expected,
-                                actual,
-                            } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-                                path: path.to_string(),
-                                expected,
-                                actual,
-                            }),
-                            CommitConflict::Exists { path } => {
-                                wire::commit_conflict::Conflict::Exists(
-                                    wire::ExistsCommitConflict {
-                                        path: path.to_string(),
-                                    },
-                                )
-                            }
-                        };
-                        wire::CommitConflict {
-                            conflict: Some(conflict),
-                        }
-                    })
-                    .collect(),
-            })
-        }
-    };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
-}
-
-fn observation(value: IdempotencyObservation) -> wire::IdempotencyObservation {
-    let outcome = match value.outcome {
-        IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_response(value))
-        }
-        IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt(value))
-        }
-        IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_response(value))
-        }
-    };
-    wire::IdempotencyObservation {
-        idempotency_key: Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        request_digest: Bytes::copy_from_slice(&value.request_digest),
-        outcome: Some(outcome),
-    }
-}
-
 type Client = Arc<StreamClient<grpc::Client>>;
 
 async fn inspect_idempotency(
@@ -879,7 +611,7 @@ async fn inspect_idempotency(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::InspectIdempotencyRequest>(&request, "inspect_idempotency")?;
-    let key = key(request.idempotency_key)?;
+    let key = wire_codec::required_key(Some(request.idempotency_key)).map_err(stream_error)?;
     let value = run_with_cancellation(
         async { client.inspect_idempotency(key).await.map_err(stream_error) },
         cancellation_state(cancellation),
@@ -887,7 +619,7 @@ async fn inspect_idempotency(
     .await?;
     encode(
         &wire::InspectIdempotencyResponse {
-            observation: value.map(observation),
+            observation: value.map(wire_codec::observation_wire),
         },
         "inspect_idempotency",
     )
@@ -927,7 +659,10 @@ async fn append(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = append_request(decode::<wire::AppendRequest>(&request, "append")?)?;
+    let request = wire_codec::append_from_wire(
+        decode::<wire::AppendRequest>(&request, "append")?,
+    )
+    .map_err(stream_error)?;
     let stream = client
         .stream(request.path.to_string())
         .map_err(stream_error)?;
@@ -941,7 +676,7 @@ async fn append(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&append_response(value), "append")
+    encode(&wire_codec::append_outcome_to_wire(value), "append")
 }
 
 async fn fork(
@@ -949,7 +684,10 @@ async fn fork(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = fork_request(decode::<wire::ForkRequest>(&request, "fork")?)?;
+    let request = wire_codec::fork_from_wire(
+        decode::<wire::ForkRequest>(&request, "fork")?,
+    )
+    .map_err(stream_error)?;
     let stream = client
         .stream(request.source.to_string())
         .map_err(stream_error)?;
@@ -957,7 +695,7 @@ async fn fork(
         async move {
             stream
                 .fork(
-                    request.destination,
+                    request.destination.to_string(),
                     request.at_tail,
                     request.idempotency_key,
                 )
@@ -967,7 +705,7 @@ async fn fork(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&fork_receipt(value), "fork")
+    encode(&wire_codec::fork_receipt_to_wire(&value), "fork")
 }
 
 async fn read(
@@ -975,7 +713,10 @@ async fn read(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
-    let request = read_request(decode::<wire::ReadRequest>(&request, "read")?)?;
+    let request = wire_codec::read_from_wire(
+        decode::<wire::ReadRequest>(&request, "read")?,
+    )
+    .map_err(stream_error)?;
     let stream = client
         .stream(request.path.to_string())
         .map_err(stream_error)?;
@@ -992,7 +733,7 @@ async fn read(
     {
         output.push(encode(
             &wire::ReadResponse {
-                record: Some(record_wire(value)),
+                record: Some(wire_codec::record_wire(value)),
             },
             "read",
         )?);
@@ -1025,7 +766,10 @@ async fn children(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
-    let request = children_request(decode::<wire::ChildrenRequest>(&request, "children")?)?;
+    let request = wire_codec::children_from_wire(
+        decode::<wire::ChildrenRequest>(&request, "children")?,
+    )
+    .map_err(stream_error)?;
     let parent = request.parent.as_ref().map(ToString::to_string);
     let token = cancellation_state(cancellation);
     let mut values = run_with_cancellation(
@@ -1062,27 +806,24 @@ async fn children_page(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = children_page_request(decode::<wire::ChildrenPageRequest>(
-        &request,
-        "children_page",
-    )?)?;
+    let request = wire_codec::children_page_from_wire(
+        decode::<wire::ChildrenPageRequest>(&request, "children_page")?,
+    )
+    .map_err(stream_error)?;
+    let parent = request.parent.as_ref().map(StreamPath::as_str);
+    let after = request.after.as_ref().map(StreamPath::as_str);
     let value = run_with_cancellation(
-        async { client.children_page(request).await.map_err(stream_error) },
+        async {
+            client
+                .children_page(parent, after, request.hierarchy_version, request.limit)
+                .await
+                .map_err(stream_error)
+        },
         cancellation_state(cancellation),
     )
     .await?;
     encode(
-        &wire::ChildrenPageResponse {
-            hierarchy_version: Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
-            children: value
-                .children
-                .into_iter()
-                .map(|value| wire::Child {
-                    path: value.path.to_string(),
-                })
-                .collect(),
-            next_after: value.next_after.map(|value| value.to_string()),
-        },
+        &wire_codec::children_page_to_wire(value),
         "children_page",
     )
 }
@@ -1092,7 +833,9 @@ async fn commit(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let (request, deadline) = commit_request(decode::<wire::CommitRequest>(&request, "commit")?)?;
+    let request = decode::<wire::CommitRequest>(&request, "commit")?;
+    let deadline = request.deadline_unix_millis;
+    let request = wire_codec::commit_from_wire(request).map_err(stream_error)?;
     let value = run_with_cancellation(
         async {
             match deadline {
@@ -1104,7 +847,7 @@ async fn commit(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&commit_response(value), "commit")
+    encode(&wire_codec::commit_outcome_to_wire(value), "commit")
 }
 
 async fn read_commit(
@@ -1113,11 +856,11 @@ async fn read_commit(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::ReadCommitRequest>(&request, "read_commit")?;
-    let commit_id = commit_id(&request.commit_id)?;
+    let commit_id = wire_codec::commit_id(&request.commit_id).map_err(stream_error)?;
     let value = run_with_cancellation(
         async { client.read_commit(commit_id).await.map_err(stream_error) },
         cancellation_state(cancellation),
     )
     .await?;
-    encode(&envelope(value), "read_commit")
+    encode(&wire_codec::envelope_to_wire(value), "read_commit")
 }

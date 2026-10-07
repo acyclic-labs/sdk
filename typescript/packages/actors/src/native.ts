@@ -29,6 +29,28 @@ async function loadNativeModule(): Promise<NativeModule> {
   return modulePromise;
 }
 
+/**
+ * Rust-owned semantic constructors from the generated N-API companion.
+ *
+ * The native companion is optional, so loading it is asynchronous. These
+ * pass-throughs deliberately contain no local validation or coercion; their
+ * return types come from the generated N-API declaration.
+ */
+export async function ActorId(value: string): Promise<ReturnType<NativeModule["ActorId"]>> {
+  const module = await loadNativeModule();
+  return module.ActorId(value);
+}
+
+export async function CodeSha256(value: Uint8Array): Promise<ReturnType<NativeModule["CodeSha256"]>> {
+  const module = await loadNativeModule();
+  return module.CodeSha256(value);
+}
+
+export async function PositiveU64(value: bigint): Promise<ReturnType<NativeModule["PositiveU64"]>> {
+  const module = await loadNativeModule();
+  return module.PositiveU64(value);
+}
+
 export class NativeActorsClient {
   private constructor(
     private readonly binding: NativeClient,

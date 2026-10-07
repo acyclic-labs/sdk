@@ -127,3 +127,11 @@ export interface NativeActorsOperationResult {
   /** Structured Rust-owned error when the operation failed. */
   error?: NativeActorsErrorMetadata
 }
+
+/**
+ * Constructs the Rust-owned positive `u64` value used by the TypeScript
+ * facade. N-API exposes the input as a BigInt so values above JavaScript's
+ * safe-integer range stay exact; the lossless and sign bits are checked
+ * before the canonical Rust domain constructor is called.
+ */
+export declare function PositiveU64(value: bigint): import('@acyclic-labs/actors/types').PositiveU64

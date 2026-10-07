@@ -5,8 +5,9 @@
 //! been consumed by its first observation. Scheduling, admission, cancellation,
 //! and outcome semantics remain in `runtime.rs`.
 
-use crate::{Error, OperationId, Outcome, Result};
-use crate::runtime::{RuntimeTask, TaskCancellation};
+use crate::{Error, OperationId, Outcome, Result, TaskId};
+use crate::distributed::{MAX_TASK_EVENT_PAGE, TaskEventPage};
+use crate::runtime::{RuntimeTask, TaskCancellation, TaskStateProvider};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -30,6 +31,7 @@ struct PersistentState<O> {
 pub struct PersistentRuntimeTask<O> {
     identity: String,
     cancellation: TaskCancellation,
+    event_source: Option<(TaskId, Arc<dyn TaskStateProvider>)>,
     state: Mutex<PersistentState<O>>,
 }
 
@@ -39,9 +41,11 @@ impl<O> PersistentRuntimeTask<O> {
     pub fn new(task: RuntimeTask<O>) -> Self {
         let identity = task.identity();
         let cancellation = task.cancellation();
+        let event_source = task.scheduler_event_source();
         Self {
             identity,
             cancellation,
+            event_source,
             state: Mutex::new(PersistentState {
                 task: Some(task),
                 pending: None,
@@ -116,6 +120,34 @@ where
     /// remains valid after the underlying `RuntimeTask` has been consumed.
     pub async fn cancel(&self) -> Result<()> {
         self.cancellation.cancel().await
+    }
+
+    /// Replays one authenticated page of durable scheduler history.
+    ///
+    /// The page cursor is the coordinator revision. Live tasks have no
+    /// durable event source and return `Unsupported`.
+    pub async fn scheduler_events(
+        &self,
+        after_revision: u64,
+        limit: u32,
+    ) -> Result<TaskEventPage> {
+        if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
+            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+        }
+        let Some((task_id, host)) = &self.event_source else {
+            return Err(Error::Unsupported(
+                "live task event replay is not durable".into(),
+            ));
+        };
+        let page = host
+            .scheduler_events(*task_id, after_revision, limit)
+            .await?;
+        page.validate_for(
+            OperationId::from_bytes(task_id.into_bytes()),
+            after_revision,
+            limit,
+        )?;
+        Ok(page)
     }
 }
 

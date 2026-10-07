@@ -5,7 +5,10 @@ use crate::{
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
+    distributed::{
+        ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore,
+        TaskEventPage, read_task_event_page,
+    },
     durable_tool::DurableToolRunner,
     executor::ExecutionJournal,
     interaction::{Interaction, InteractionOutcome},
@@ -912,6 +915,26 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 }
                 None => Ok(None),
             }
+        })
+    }
+
+    fn scheduler_events<'a>(
+        &'a self,
+        task_id: TaskId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        Box::pin(async move {
+            let operation_id = OperationId::from_bytes(task_id.into_bytes());
+            let mut coordinator = self.coordinator.lock().await;
+            coordinator.refresh().await?;
+            coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation_id,
+            )?;
+            read_task_event_page(&self.stream, operation_id, after_revision, limit).await
         })
     }
 

@@ -9,6 +9,7 @@ use crate::{
         PrivateDirectoryPage, VolumeClass, VolumeOperation, VolumeRef, verified_content_bytes,
     },
     core::{ExtensionAdmission, Reducer, Scope},
+    distributed::{MAX_TASK_EVENT_PAGE, TaskEventPage},
     durable_tool::{ResumableToolRegistry, ResumableToolSession},
     executor::ModelEventAdmission,
     extension::{ExtensionLeases, ExtensionRuntime},
@@ -749,6 +750,22 @@ pub trait DurableTaskHost: Send + Sync {
     /// Observes a previously admitted task without re-executing it. `None`
     /// means ordinary pending work, never an unknown external outcome.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    /// Replays one bounded, owner-filtered page of canonical scheduler events.
+    /// `after_revision` and the returned page's `next_revision` are global
+    /// coordinator cursors, so callers can advance past events for siblings
+    /// without losing their requested task's history.
+    fn scheduler_events<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _after_revision: u64,
+        _limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable task event replay is not bound".into(),
+            ))
+        })
+    }
     /// Waits for a terminal observation. Hosts with completion notification
     /// can override this bounded-poll fallback without changing task handles.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
@@ -879,6 +896,20 @@ pub trait TaskStateProvider: Send + Sync {
     ) -> BoxFuture<'a, Result<RuntimeScope>>;
     /// Observes a terminal result or ordinary pending state without dispatch.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    /// Replays one bounded, owner-filtered page of canonical scheduler events.
+    /// The cursor is the coordinator revision, not a synthetic per-task index.
+    fn scheduler_events<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _after_revision: u64,
+        _limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable task event replay is not bound".into(),
+            ))
+        })
+    }
     /// Waits for a terminal result; providers may override polling.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         Box::pin(async move {
@@ -1000,6 +1031,14 @@ impl TaskStateProvider for HostTaskState {
     }
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
         self.0.outcome(task_id)
+    }
+    fn scheduler_events<'a>(
+        &'a self,
+        task_id: TaskId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        self.0.scheduler_events(task_id, after_revision, limit)
     }
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         self.0.wait_outcome(task_id)
@@ -1546,6 +1585,15 @@ impl TaskCancellation {
 }
 
 impl<O> RuntimeTask<O> {
+    pub(crate) fn scheduler_event_source(
+        &self,
+    ) -> Option<(TaskId, Arc<dyn TaskStateProvider>)> {
+        match self {
+            Self::Live(_) => None,
+            Self::Durable { task_id, host, .. } => Some((*task_id, Arc::clone(host))),
+        }
+    }
+
     /// Stable identity of the admitted local operation or durable task.
     #[must_use]
     pub fn identity(&self) -> String {
@@ -1569,6 +1617,35 @@ impl<O> RuntimeTask<O> {
                 },
             },
         }
+    }
+
+    /// Replays one authenticated page of durable scheduler history.
+    ///
+    /// Live tasks have no durable scheduler history. Durable providers retain
+    /// owner authentication; this wrapper validates their filtered cursor
+    /// before exposing records to a binding.
+    pub async fn scheduler_events(
+        &self,
+        after_revision: u64,
+        limit: u32,
+    ) -> Result<TaskEventPage> {
+        if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
+            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+        }
+        let Self::Durable { task_id, host, .. } = self else {
+            return Err(Error::Unsupported(
+                "live task event replay is not durable".into(),
+            ));
+        };
+        let page = host
+            .scheduler_events(*task_id, after_revision, limit)
+            .await?;
+        page.validate_for(
+            OperationId::from_bytes(task_id.into_bytes()),
+            after_revision,
+            limit,
+        )?;
+        Ok(page)
     }
 }
 

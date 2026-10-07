@@ -458,6 +458,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-stream-napi"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "futures",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "prost",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "acyclic-stream-wasm"
 version = "0.2.0"
 dependencies = [
@@ -477,12 +491,15 @@ version = "0.2.0"
 dependencies = [
  "prost",
  "prost-reflect",
+ "protify",
+ "protoc-bin-vendored",
  "reqwest",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "tonic",
  "tonic-prost",
+ "tonic-prost-build",
 ]
 
 [[package]]

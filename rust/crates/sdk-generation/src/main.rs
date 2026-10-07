@@ -1,5 +1,5 @@
 use depinfo::RustcDepInfo;
-use sdk_docs::{BuildInput, Channel, DocsData, build_data, write_bundle};
+use sdk_docs::{BuildInput, Channel, DocsData, GENERATOR_VERSION, build_data, write_bundle};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -45,12 +45,28 @@ struct ToolRecord {
     version: String,
     channel: String,
     tool_sha256: String,
+    #[serde(default)]
+    pinned_toolchain: Option<PinnedToolchainRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PinnedToolIdentity {
+    version: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PinnedToolchainRecord {
+    cargo: PinnedToolIdentity,
+    rustc: PinnedToolIdentity,
+    rustdoc: PinnedToolIdentity,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Manifest {
     schema: String,
     generator_version: String,
+    version: String,
     /// Kept as the Actors staging marker for the existing TypeScript stage.
     family: String,
     /// The complete ordered set of published Rust documentation families.
@@ -84,6 +100,12 @@ struct PinnedToolchain {
 struct RustdocInput {
     paths: Vec<PathBuf>,
     markdown_dependencies: Vec<PathBuf>,
+    _cache_lock: Option<RustdocCacheLock>,
+    toolchain: Option<PinnedToolchainRecord>,
+}
+
+struct RustdocCacheLock {
+    _file: File,
 }
 
 #[derive(Debug, Deserialize)]
@@ -792,11 +814,7 @@ fn rustdoc_markdown_dependencies(
     let mut paths = Vec::new();
     let dep_info = read_dep_info(dep_info)?;
     for dependency in dep_info.files {
-        let path = if dependency.is_absolute() {
-            dependency
-        } else {
-            dependency_root.join(dependency)
-        };
+        let path = resolve_dep_info_path(dependency, &dependency_root);
         if path.extension().is_none_or(|extension| extension != "md") {
             continue;
         }
@@ -825,6 +843,14 @@ fn rustdoc_markdown_dependencies(
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+fn resolve_dep_info_path(dependency: PathBuf, dependency_root: &Path) -> PathBuf {
+    if dependency.is_absolute() {
+        dependency
+    } else {
+        dependency_root.join(dependency)
+    }
 }
 
 fn reject_unsupported_make_escapes(path: &Path) -> io::Result<()> {
@@ -986,6 +1012,37 @@ fn pinned_toolchain() -> io::Result<PinnedToolchain> {
     })
 }
 
+fn pinned_toolchain_record(tools: &PinnedToolchain) -> io::Result<PinnedToolchainRecord> {
+    fn identity(path: &Path, tool: &str) -> io::Result<PinnedToolIdentity> {
+        let output = Command::new(path)
+            .arg("--version")
+            .output()
+            .map_err(|error| io::Error::other(format!("failed to inspect {tool}: {error}")))?;
+        let version = String::from_utf8(output.stdout)
+            .map_err(io::Error::other)?
+            .lines()
+            .next()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| io::Error::other(format!("{tool} returned no version")))?;
+        if !output.status.success() {
+            return Err(io::Error::other(format!(
+                "{tool} --version failed: {version}"
+            )));
+        }
+        Ok(PinnedToolIdentity {
+            version,
+            sha256: hash_file(path, format!("tool:{tool}"))?.sha256,
+        })
+    }
+
+    Ok(PinnedToolchainRecord {
+        cargo: identity(&tools.cargo, "cargo")?,
+        rustc: identity(&tools.rustc, "rustc")?,
+        rustdoc: identity(&tools.rustdoc, "rustdoc")?,
+    })
+}
+
 fn sanitize_compiler_environment(command: &mut Command, tools: &PinnedToolchain) {
     for (key, _) in env::vars_os() {
         let uppercase = key.to_string_lossy().to_ascii_uppercase();
@@ -1017,7 +1074,7 @@ fn sanitize_compiler_environment(command: &mut Command, tools: &PinnedToolchain)
         .env("RUSTC_BOOTSTRAP", "1");
 }
 
-fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
+fn rustdoc_cache_base(config: &Config) -> io::Result<PathBuf> {
     let parent = if let Some(configured) = env::var_os("CARGO_TARGET_DIR") {
         let configured = PathBuf::from(configured);
         if configured.is_absolute() {
@@ -1032,6 +1089,35 @@ fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
             .ok_or_else(|| io::Error::other("output has no parent directory"))?
             .to_owned()
     };
+    reject_reparse_ancestors(&parent, false)?;
+    fs::create_dir_all(&parent)?;
+    reject_reparse_ancestors(&parent, true)?;
+    let parent = canonical(&parent)?;
+    disjoint(&config.root, &parent)?;
+    if parent == config.output || parent.starts_with(&config.output) {
+        return Err(io::Error::other(
+            "Rustdoc cache must be disjoint from generation output",
+        ));
+    }
+    Ok(parent)
+}
+
+impl RustdocCacheLock {
+    fn acquire(config: &Config) -> io::Result<Self> {
+        let path = rustdoc_cache_base(config)?.join("sdk-generation-rustdoc.lock");
+        reject_reparse_ancestors(&path, false)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)?;
+        file.lock()?;
+        Ok(Self { _file: file })
+    }
+}
+
+fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
+    let parent = rustdoc_cache_base(config)?;
     let target = parent.join(name);
     reject_reparse_ancestors(&target, false)?;
     fs::create_dir_all(&target)?;
@@ -1097,6 +1183,7 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
 }
 
 fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
+    let cache_lock = RustdocCacheLock::acquire(config)?;
     let json_target = rustdoc_target_named(config, "sdk-generation-rustdoc-target")?;
     let dep_info_target =
         rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
@@ -1161,9 +1248,12 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
     }
     markdown_dependencies.sort();
     markdown_dependencies.dedup();
+    let toolchain = Some(pinned_toolchain_record(&tools)?);
     Ok(RustdocInput {
         paths,
         markdown_dependencies,
+        _cache_lock: Some(cache_lock),
+        toolchain,
     })
 }
 
@@ -1178,6 +1268,8 @@ fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rustd
             Ok(RustdocInput {
                 paths,
                 markdown_dependencies: Vec::new(),
+                _cache_lock: None,
+                toolchain: None,
             })
         }
         (_, None) => Err(io::Error::other(
@@ -1303,6 +1395,7 @@ fn generate(config: &Config) -> io::Result<()> {
     let manifest = Manifest {
         schema: "acyclic.sdk.generation.v1".into(),
         generator_version: VERSION.into(),
+        version: config.version.clone(),
         family: ACTORS_CRATE.into(),
         families: owners.iter().map(|owner| owner.crate_name.clone()).collect(),
         revision,
@@ -1312,9 +1405,10 @@ fn generate(config: &Config) -> io::Result<()> {
         rustdoc,
         tool: ToolRecord {
             id: "sdk-docs-library".into(),
-            version: config.version.clone(),
+            version: GENERATOR_VERSION.into(),
             channel: config.channel.clone(),
             tool_sha256,
+            pinned_toolchain: rustdoc_input.toolchain.clone(),
         },
         artifacts_sha256: tree_digest(&artifacts),
         artifacts,
@@ -1332,6 +1426,7 @@ fn drift(config: &Config) -> io::Result<()> {
     let revision = git_revision(&config.root)?;
     if manifest.schema != "acyclic.sdk.generation.v1"
         || manifest.generator_version != VERSION
+        || manifest.version != config.version
         || manifest.family != ACTORS_CRATE
         || manifest.families
             != owners
@@ -1356,8 +1451,9 @@ fn drift(config: &Config) -> io::Result<()> {
         return Err(io::Error::other("rustdoc input drift detected"));
     }
     if manifest.tool.id != "sdk-docs-library"
-        || manifest.tool.version != config.version
+        || manifest.tool.version != GENERATOR_VERSION
         || manifest.tool.channel != config.channel
+        || manifest.tool.pinned_toolchain != rustdoc_input.toolchain
         || current_tool_hash()? != manifest.tool.tool_sha256
     {
         return Err(io::Error::other("fixed documentation stage drift detected"));
@@ -1499,5 +1595,17 @@ mod tests {
         );
         assert!(error.to_string().contains("#name.md"));
         assert!(error.to_string().contains("rename the path"));
+    }
+
+    #[test]
+    fn relative_dep_info_paths_resolve_from_the_workspace_root() {
+        let root = Path::new("workspace");
+        assert_eq!(
+            resolve_dep_info_path(
+                PathBuf::from("rust/crates/actors/README.md"),
+                root,
+            ),
+            root.join("rust/crates/actors/README.md")
+        );
     }
 }

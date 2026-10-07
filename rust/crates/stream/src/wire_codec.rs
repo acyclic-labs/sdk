@@ -3,22 +3,25 @@
 use bytes::Bytes;
 
 use crate::{
-    AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId, CommitMutation,
-    CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork, CommittedMutation,
-    ForkReceipt, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, Record, StreamError,
-    StreamPath, wire,
+    AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId,
+    CommitMutation, CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork,
+    CommittedMutation, ChildrenPage, ChildrenPageRequest, ForkReceipt, IdempotencyKey,
+    IdempotencyObservation,
+    IdempotencyOutcome, Record, StreamError, StreamPath, MAX_ITEMS, MAX_RECORD_BYTES, wire,
 };
 
 pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
 }
 
-pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
+/// Converts an optional protobuf idempotency key with canonical validation.
+pub fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
     value.map(IdempotencyKey::new).transpose()
 }
 
 #[cfg(any(feature = "grpc", feature = "local"))]
-pub(crate) fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
+/// Converts a required protobuf idempotency key with canonical validation.
+pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
     optional_key(value)?.ok_or(StreamError::InvalidArgument)
 }
 
@@ -126,7 +129,8 @@ pub(crate) fn observation_from_wire(
     })
 }
 
-pub(crate) fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
+/// Converts a validated idempotency observation into its protobuf response.
+pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
     let outcome = match value.outcome {
         IdempotencyOutcome::Append(value) => {
             wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
@@ -158,7 +162,8 @@ pub(crate) fn append_outcome_from_wire(
     }
 }
 
-pub(crate) fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
+/// Converts a validated append outcome into its protobuf response.
+pub fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         AppendOutcome::Committed(receipt) => {
             wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
@@ -189,7 +194,8 @@ pub(crate) fn commit_outcome_from_wire(
     }
 }
 
-pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
+/// Converts a validated commit outcome into its protobuf response.
+pub fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
         CommitOutcome::Committed(envelope) => {
             wire::commit_response::Outcome::Committed(envelope_wire(envelope))
@@ -205,18 +211,87 @@ pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse 
     }
 }
 
-pub(crate) fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
+/// Parses a canonical 32-byte commit identity.
+pub fn commit_id(value: &[u8]) -> Result<CommitId, StreamError> {
     let bytes = <[u8; 32]>::try_from(value).map_err(|_| StreamError::Unavailable)?;
     Ok(CommitId::from_bytes(bytes))
 }
 
 pub(crate) fn record(value: wire::Record) -> Result<Record, StreamError> {
-    Ok(Record {
+    checked_record(Record {
         sequence: value.sequence,
         value: value.value,
         commit_id: commit_id(&value.commit_id)?,
         committed_at_micros: value.committed_at_micros,
     })
+}
+
+/// Rejects a record body that exceeds the canonical wire bound.
+pub(crate) fn checked_record(value: Record) -> Result<Record, StreamError> {
+    if value.value.len() > MAX_RECORD_BYTES {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(value)
+}
+
+/// Validates a children-page request before transport dispatch.
+pub(crate) fn validate_children_page_request(
+    request: &ChildrenPageRequest,
+) -> Result<(), StreamError> {
+    if request.limit == 0 || usize::try_from(request.limit).map_or(true, |limit| limit > MAX_ITEMS) {
+        return Err(StreamError::LimitExceeded);
+    }
+    if request.after.as_ref().is_some_and(|after| {
+        request.hierarchy_version.is_none()
+            || !is_direct_child(request.parent.as_ref(), after)
+    }) {
+        return Err(StreamError::InvalidArgument);
+    }
+    Ok(())
+}
+
+/// Parses a remote path, normalizing malformed response data to `Unavailable`.
+pub(crate) fn response_path(value: String) -> Result<StreamPath, StreamError> {
+    path(value).map_err(|_| StreamError::Unavailable)
+}
+
+/// Validates one remote hierarchy page against its request cursor.
+pub(crate) fn checked_children_page(
+    request: &ChildrenPageRequest,
+    page: ChildrenPage,
+) -> Result<ChildrenPage, StreamError> {
+    validate_children_page_request(request)?;
+    if request
+        .hierarchy_version
+        .is_some_and(|version| version != page.hierarchy_version)
+    {
+        return Err(StreamError::HierarchyChanged);
+    }
+    if page.children.len() > request.limit as usize {
+        return Err(StreamError::Unavailable);
+    }
+    let mut previous = request.after.as_ref();
+    for child in &page.children {
+        if !is_direct_child(request.parent.as_ref(), &child.path)
+            || previous.is_some_and(|previous| previous >= &child.path)
+        {
+            return Err(StreamError::Unavailable);
+        }
+        previous = Some(&child.path);
+    }
+    if let Some(next_after) = &page.next_after {
+        if page.children.last().is_none_or(|child| child.path != *next_after) {
+            return Err(StreamError::Unavailable);
+        }
+    }
+    Ok(page)
+}
+
+fn is_direct_child(parent: Option<&StreamPath>, child: &StreamPath) -> bool {
+    match parent {
+        Some(parent) => child.parent().as_ref() == Some(parent),
+        None => child.parent().is_none(),
+    }
 }
 
 pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceipt, StreamError> {
@@ -228,7 +303,8 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
     })
 }
 
-pub(crate) fn record_wire(value: Record) -> wire::Record {
+/// Converts a validated record into its protobuf representation.
+pub fn record_wire(value: Record) -> wire::Record {
     wire::Record {
         sequence: value.sequence,
         value: value.value,
@@ -246,7 +322,8 @@ pub(crate) fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt 
     }
 }
 
-pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
+/// Converts a validated fork receipt into its protobuf representation.
+pub fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -256,7 +333,8 @@ pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     }
 }
 
-pub(crate) fn append_from_wire(
+/// Converts an append request using the canonical Stream validation rules.
+pub fn append_from_wire(
     value: wire::AppendRequest,
 ) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
@@ -267,7 +345,8 @@ pub(crate) fn append_from_wire(
     })
 }
 
-pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
+/// Converts a fork request using the canonical Stream validation rules.
+pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, StreamError> {
     Ok(crate::ForkRequest {
         source: path(value.source)?,
         destination: path(value.destination)?,
@@ -276,7 +355,8 @@ pub(crate) fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequ
     })
 }
 
-pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
+/// Converts a read request using the canonical Stream validation rules.
+pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
         path: path(value.path)?,
         from: value.from,
@@ -284,13 +364,15 @@ pub(crate) fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequ
     })
 }
 
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn follow_from_wire(
     value: wire::FollowRequest,
 ) -> Result<(StreamPath, u64), StreamError> {
     Ok((path(value.path)?, value.from))
 }
 
-pub(crate) fn children_from_wire(
+/// Converts a children request using the canonical Stream validation rules.
+pub fn children_from_wire(
     value: wire::ChildrenRequest,
 ) -> Result<crate::ChildrenRequest, StreamError> {
     Ok(crate::ChildrenRequest {
@@ -299,7 +381,8 @@ pub(crate) fn children_from_wire(
     })
 }
 
-pub(crate) fn children_page_from_wire(
+/// Converts a children-page request using the canonical Stream validation rules.
+pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,
 ) -> Result<crate::ChildrenPageRequest, StreamError> {
     Ok(crate::ChildrenPageRequest {
@@ -319,7 +402,8 @@ pub(crate) fn children_page_from_wire(
     })
 }
 
-pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
+/// Converts a validated children page into its protobuf response.
+pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageResponse {
     wire::ChildrenPageResponse {
         hierarchy_version: Bytes::copy_from_slice(value.hierarchy_version.as_bytes()),
         children: value
@@ -333,7 +417,8 @@ pub(crate) fn children_page_to_wire(value: crate::ChildrenPage) -> wire::Childre
     }
 }
 
-pub(crate) fn commit_from_wire(
+/// Converts a commit request using the canonical Stream validation rules.
+pub fn commit_from_wire(
     value: wire::CommitRequest,
 ) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
@@ -365,34 +450,11 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
-pub(crate) fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
-    let outcome = match value {
-        crate::AppendOutcome::Committed(receipt) => {
-            wire::append_response::Outcome::Committed(wire::AppendReceipt {
-                start: receipt.start,
-                end: receipt.end,
-                tail: receipt.tail,
-                commit_id: Bytes::copy_from_slice(receipt.commit_id.as_bytes()),
-            })
-        }
-        crate::AppendOutcome::TailConflict { actual_tail } => {
-            wire::append_response::Outcome::Conflict(wire::TailConflict { actual_tail })
-        }
-    };
-    wire::AppendResponse {
-        outcome: Some(outcome),
-    }
-}
+/// Binding-facing alias for append_outcome_wire.
+pub use append_outcome_wire as append_outcome_to_wire;
 
-pub(crate) fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
-    wire::ForkReceipt {
-        source: value.source.to_string(),
-        destination: value.destination.to_string(),
-        forked_at: value.forked_at,
-        tail: value.tail,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-    }
-}
+/// Binding-facing alias for fork_receipt_wire.
+pub use fork_receipt_wire as fork_receipt_to_wire;
 
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
@@ -407,7 +469,8 @@ pub(crate) fn envelope_from_wire(
     })
 }
 
-pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
+/// Converts a validated committed envelope into its protobuf representation.
+pub fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
         mutations: value
@@ -418,32 +481,11 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
     }
 }
 
-pub(crate) fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
-    let outcome = match value {
-        crate::CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
-        }
-        crate::CommitOutcome::Conflict(conflicts) => {
-            wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
-                conflicts: conflicts.into_iter().map(conflict_to_wire).collect(),
-            })
-        }
-    };
-    wire::CommitResponse {
-        outcome: Some(outcome),
-    }
-}
+/// Binding-facing alias for commit_outcome_wire.
+pub use commit_outcome_wire as commit_outcome_to_wire;
 
-pub(crate) fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
-    wire::CommittedEnvelope {
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        mutations: value
-            .mutations
-            .into_iter()
-            .map(committed_mutation_to_wire)
-            .collect(),
-    }
-}
+/// Binding-facing alias for envelope_wire.
+pub use envelope_wire as envelope_to_wire;
 
 pub(crate) fn committed_mutation(
     value: wire::CommittedMutation,
@@ -504,41 +546,6 @@ pub(crate) fn committed_mutation_wire(value: CommittedMutation) -> wire::Committ
     }
 }
 
-fn record_to_wire(value: crate::Record) -> wire::Record {
-    wire::Record {
-        sequence: value.sequence,
-        value: value.value,
-        commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
-        committed_at_micros: value.committed_at_micros,
-    }
-}
-
-fn committed_mutation_to_wire(value: crate::CommittedMutation) -> wire::CommittedMutation {
-    let mutation = match value {
-        crate::CommittedMutation::Append(value) => {
-            wire::committed_mutation::Mutation::Append(wire::CommittedAppend {
-                path: value.path.to_string(),
-                start: value.start,
-                end: value.end,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_to_wire).collect(),
-            })
-        }
-        crate::CommittedMutation::Fork(value) => {
-            wire::committed_mutation::Mutation::Fork(wire::CommittedFork {
-                source: value.source.to_string(),
-                destination: value.destination.to_string(),
-                forked_at: value.forked_at,
-                tail: value.tail,
-                records: value.records.into_iter().map(record_to_wire).collect(),
-            })
-        }
-    };
-    wire::CommittedMutation {
-        mutation: Some(mutation),
-    }
-}
-
 pub(crate) fn conflict_from_wire(
     value: wire::CommitConflict,
 ) -> Result<CommitConflict, StreamError> {
@@ -576,28 +583,7 @@ pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
     }
 }
 
-fn conflict_to_wire(value: crate::CommitConflict) -> wire::CommitConflict {
-    let conflict = match value {
-        crate::CommitConflict::Tail {
-            path,
-            expected,
-            actual,
-        } => wire::commit_conflict::Conflict::Tail(wire::TailCommitConflict {
-            path: path.to_string(),
-            expected,
-            actual,
-        }),
-        crate::CommitConflict::Exists { path } => {
-            wire::commit_conflict::Conflict::Exists(wire::ExistsCommitConflict {
-                path: path.to_string(),
-            })
-        }
-    };
-    wire::CommitConflict {
-        conflict: Some(conflict),
-    }
-}
-
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn observation_to_wire(
     value: crate::IdempotencyObservation,
 ) -> wire::InspectIdempotencyResponse {
@@ -618,5 +604,106 @@ pub(crate) fn observation_to_wire(
             request_digest: Bytes::copy_from_slice(&value.request_digest),
             outcome: Some(outcome),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Child;
+    use super::*;
+
+    #[test]
+    fn checked_record_rejects_an_oversized_body() {
+        let record = Record {
+            sequence: 0,
+            value: Bytes::from(vec![0; MAX_RECORD_BYTES + 1]),
+            commit_id: CommitId::from_bytes([1; 32]),
+            committed_at_micros: 0,
+        };
+        assert_eq!(checked_record(record), Err(StreamError::Unavailable));
+    }
+
+    #[test]
+    fn checked_children_page_rejects_limits_and_non_direct_children() -> Result<(), StreamError> {
+        let request = ChildrenPageRequest {
+            parent: Some(StreamPath::new("runs")?),
+            after: None,
+            hierarchy_version: None,
+            limit: 1,
+        };
+        let too_many = ChildrenPage {
+            hierarchy_version: CommitId::from_bytes([1; 32]),
+            children: vec![
+                Child {
+                    path: StreamPath::new("runs/a")?,
+                },
+                Child {
+                    path: StreamPath::new("runs/b")?,
+                },
+            ],
+            next_after: None,
+        };
+        assert_eq!(
+            checked_children_page(&request, too_many),
+            Err(StreamError::Unavailable)
+        );
+
+        let non_direct = ChildrenPage {
+            hierarchy_version: CommitId::from_bytes([1; 32]),
+            children: vec![Child {
+                path: StreamPath::new("runs/a/leaf")?,
+            }],
+            next_after: None,
+        };
+        assert_eq!(
+            checked_children_page(&request, non_direct),
+            Err(StreamError::Unavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checked_children_page_rejects_drift_order_and_bad_continuation() -> Result<(), StreamError> {
+        let version = CommitId::from_bytes([1; 32]);
+        let request = ChildrenPageRequest {
+            parent: Some(StreamPath::new("runs")?),
+            after: Some(StreamPath::new("runs/a")?),
+            hierarchy_version: Some(version),
+            limit: 1,
+        };
+        let drifted = ChildrenPage {
+            hierarchy_version: CommitId::from_bytes([2; 32]),
+            children: vec![Child {
+                path: StreamPath::new("runs/b")?,
+            }],
+            next_after: Some(StreamPath::new("runs/b")?),
+        };
+        assert_eq!(
+            checked_children_page(&request, drifted),
+            Err(StreamError::HierarchyChanged)
+        );
+
+        let out_of_order = ChildrenPage {
+            hierarchy_version: version,
+            children: vec![Child {
+                path: StreamPath::new("runs/a")?,
+            }],
+            next_after: Some(StreamPath::new("runs/a")?),
+        };
+        assert_eq!(
+            checked_children_page(&request, out_of_order),
+            Err(StreamError::Unavailable)
+        );
+
+        let missing_children = ChildrenPage {
+            hierarchy_version: version,
+            children: Vec::new(),
+            next_after: Some(StreamPath::new("runs/b")?),
+        };
+        assert_eq!(
+            checked_children_page(&request, missing_children),
+            Err(StreamError::Unavailable)
+        );
+        Ok(())
     }
 }

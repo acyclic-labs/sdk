@@ -1,15 +1,22 @@
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
+import { createSecureServer } from "node:http2";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { create } from "@bufbuild/protobuf";
+import { Code, ConnectError } from "@connectrpc/connect";
+import { connectNodeAdapter } from "@connectrpc/connect-node";
+import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 
-// This qualification script never builds or selects a transport. It loads the
-// Rust-owned N-API bridge produced by acyclic-actors-napi and checks its stable
-// generated surface before an artifact is staged for a platform package.
+// This qualification script does not build or select a customer transport. It
+// loads the Rust-owned N-API bridge produced by acyclic-actors-napi and checks
+// its stable generated surface before an artifact is staged for a platform
+// package. Installed-package qualification additionally uses the maintained
+// loopback TLS fixture below to exercise the package facade end to end.
 const libraryNames = {
   win32: "acyclic_actors_napi.dll",
   linux: "libacyclic_actors_napi.so",
@@ -281,11 +288,176 @@ async function qualifyInstalledPackage(packageRoot, bindingPath) {
       () => rootModule.ActorsClient.connect({ endpoint: "https://example.com", token: "" }),
       "installed Actors package root",
     );
+    await qualifyInstalledTransport(packageRoot, rootModule, nativeModule, packageManifest);
   } finally {
     if (previousLibraryPath === undefined) delete process.env.NAPI_RS_NATIVE_LIBRARY_PATH;
     else process.env.NAPI_RS_NATIVE_LIBRARY_PATH = previousLibraryPath;
   }
   console.log(`acyclic-actors installed package entrypoint passed at ${packageRoot}`);
+}
+
+async function qualifyInstalledTransport(packageRoot, rootModule, nativeModule, packageManifest) {
+  const protoTarget = packageManifest.exports?.["./proto"]?.default;
+  if (typeof protoTarget !== "string") {
+    throw new Error("installed Actors package does not expose a default ./proto entrypoint");
+  }
+  const proto = await import(pathToFileURL(resolve(packageRoot, protoTarget)).href);
+  if (typeof proto.CreateActorRequestSchema !== "object") {
+    throw new Error("installed Actors package ./proto entrypoint omitted CreateActorRequestSchema");
+  }
+
+  const generated = spawnSync(
+    "cargo",
+    ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"],
+    { cwd: resolve(dirname(fileURLToPath(import.meta.url)), ".."), encoding: "utf8" },
+  );
+  if (generated.error || generated.status !== 0) {
+    throw new Error(generated.stderr || generated.error?.message || "Actors TLS fixture certificate failed");
+  }
+  const identity = JSON.parse(generated.stdout);
+  let requestSeenResolve;
+  let releasePendingResolve;
+  const requestSeen = new Promise(resolveSeen => { requestSeenResolve = resolveSeen; });
+  const releasePending = new Promise(resolvePending => { releasePendingResolve = resolvePending; });
+  const actorObservation = actorId => ({
+    actorId,
+    codeSha256: new Uint8Array(32).fill(1),
+    homeRegion: "local",
+    state: 1,
+    subscriptions: [],
+    checkpointEpoch: 9n,
+    configurationRevision: 0n,
+  });
+  const responseFor = (method, request) => {
+    if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
+    if (method.name === "CheckpointActor") return { actor: actorObservation("napi-checkpoint") };
+    if (method.name === "CreateActor") return { actor: actorObservation(request.idempotencyKey === "napi-success" ? "napi-success" : "napi-createActor") };
+    return { actor: actorObservation(`napi-${method.localName}`) };
+  };
+  const implementation = Object.fromEntries(ActorsService.methods.map(method => [
+    method.localName,
+    async (request, context) => {
+      if (context.requestHeader.get("authorization") !== "Bearer napi-fixture") {
+        throw new ConnectError("missing bearer", Code.Unauthenticated);
+      }
+      if (method.name === "CreateActor" && request.idempotencyKey === "napi-error") {
+        throw new ConnectError("fixture operation failure", Code.InvalidArgument);
+      }
+      if (method.name === "CreateActor" && request.idempotencyKey === "napi-abort") {
+        requestSeenResolve();
+        await releasePending;
+      }
+      return create(method.output, responseFor(method, request));
+    },
+  ]));
+  const adapter = connectNodeAdapter({
+    routes(router) {
+      router.service(ActorsService, implementation);
+    },
+  });
+  const server = createSecureServer({ key: identity.key, cert: identity.certificate }, adapter);
+  const sessions = new Set();
+  server.on("session", session => {
+    sessions.add(session);
+    session.once("close", () => sessions.delete(session));
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  try {
+    const port = server.address().port;
+    const client = await rootModule.ActorsClient.connect({
+      endpoint: `https://localhost:${port}`,
+      token: "napi-fixture",
+      caCertificate: new TextEncoder().encode(identity.certificate),
+    });
+    if (client.transport !== "grpc") {
+      throw new Error(`installed Actors root selected ${client.transport}, expected grpc`);
+    }
+    const actorRequest = values => create(proto.CreateActorRequestSchema, {
+      codeSha256: new Uint8Array(32).fill(1),
+      homeRegion: "local",
+      idempotencyKey: values.idempotencyKey,
+      limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n },
+    });
+    const success = await client.createActor(actorRequest({ idempotencyKey: "napi-success" }));
+    if (success.actor?.actorId !== "napi-success") {
+      throw new Error("installed Actors root did not return the local fixture response");
+    }
+
+    const requests = {
+      updateActor: create(proto.UpdateActorRequestSchema, {
+        actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1), expectedConfigurationRevision: 0n,
+        idempotencyKey: "napi-update",
+      }),
+      inspectActor: create(proto.InspectActorRequestSchema, { actorId: "actor-a" }),
+      addSubscription: create(proto.AddSubscriptionRequestSchema, {
+        actorId: "actor-a", subscription: { subscriptionId: "input", streamPath: "events/input" }, idempotencyKey: "napi-add",
+      }),
+      removeSubscription: create(proto.RemoveSubscriptionRequestSchema, {
+        actorId: "actor-a", subscriptionId: "input", idempotencyKey: "napi-remove",
+      }),
+      resumeSubscription: create(proto.ResumeSubscriptionRequestSchema, {
+        actorId: "actor-a", subscriptionId: "input", idempotencyKey: "napi-resume",
+      }),
+      checkpointActor: create(proto.CheckpointActorRequestSchema, {
+        actorId: "actor-a", idempotencyKey: "napi-checkpoint",
+      }),
+      invokeActor: create(proto.InvokeActorRequestSchema, {
+        actorId: "actor-a", method: "GET", url: "/", body: new Uint8Array(), headers: [],
+      }),
+    };
+    for (const [method, input] of Object.entries(requests)) {
+      const response = await client[method](input);
+      if (method === "invokeActor") {
+        if (response.status !== 201) throw new Error("installed Actors root lost InvokeActor status");
+      } else if (response.actor?.actorId !== `napi-${method}`) {
+        throw new Error(`installed Actors root did not return the ${method} fixture response`);
+      }
+    }
+
+    let structured;
+    try {
+      await client.createActor(actorRequest({ idempotencyKey: "napi-error" }));
+    } catch (error) {
+      structured = error;
+    }
+    if (structured?.code !== "invalid_argument" || structured.grpcCode !== 3 || structured.grpcName !== "invalid_argument") {
+      throw new Error("installed Actors root did not preserve structured operation error metadata");
+    }
+
+    if (await nativeModule.ActorId("actor-interop") !== "actor-interop") {
+      throw new Error("installed Actors native ActorId wrapper changed its projection");
+    }
+    const interopDigest = await nativeModule.CodeSha256(new Uint8Array(32).fill(2));
+    if (!(interopDigest instanceof Uint8Array) || interopDigest.length !== 32 || interopDigest[0] !== 2) {
+      throw new Error("installed Actors native CodeSha256 wrapper changed its projection");
+    }
+    if (await nativeModule.PositiveU64(2n ** 63n) !== 2n ** 63n) {
+      throw new Error("installed Actors native PositiveU64 wrapper lost bigint precision");
+    }
+
+    const controller = new AbortController();
+    const pending = client.createActor(actorRequest({ idempotencyKey: "napi-abort" }), controller.signal);
+    await requestSeen;
+    controller.abort();
+    let cancellation;
+    try {
+      await pending;
+    } catch (error) {
+      cancellation = error;
+    } finally {
+      releasePendingResolve();
+    }
+    if (cancellation === undefined || cancellation.code !== "cancelled") {
+      throw new Error("installed Actors root did not preserve in-flight cancellation");
+    }
+  } finally {
+    releasePendingResolve();
+    for (const session of sessions) session.destroy();
+    await new Promise(resolveClose => server.close(resolveClose));
+  }
 }
 
 async function expectInvalidCredentialFailure(connect, label) {

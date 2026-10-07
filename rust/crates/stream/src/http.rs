@@ -168,11 +168,7 @@ impl HttpStream {
         if value["ok"] == true {
             let id = parse_id(field(value, "commitId")?)?;
             let envelope = if let Some(envelope) = value.get("envelope") {
-                let envelope = parse_envelope(envelope)?;
-                if envelope.commit_id != id {
-                    return Err(StreamError::Unavailable);
-                }
-                envelope
+                checked_committed_envelope(id, parse_envelope(envelope)?)?
             } else {
                 // Published compact-only HTTP servers need commit-read access.
                 // Canonical servers include the admitted envelope atomically.
@@ -391,15 +387,17 @@ impl StreamProvider for HttpStream {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
+        wire_codec::validate_children_page_request(&request)?;
         let limit = request.limit;
         let value = self
             .request(
                 "children/page",
                 wire::ChildrenPageRequest {
-                    parent: request.parent.map(|path| path.to_string()),
-                    after: request.after.map(|path| path.to_string()),
+                    parent: request.parent.as_ref().map(ToString::to_string),
+                    after: request.after.as_ref().map(ToString::to_string),
                     hierarchy_version: request
                         .hierarchy_version
+                        .as_ref()
                         .map(|id| Bytes::copy_from_slice(id.as_bytes())),
                     limit,
                 }
@@ -407,10 +405,7 @@ impl StreamProvider for HttpStream {
             )
             .await?;
         let children = parse_children(field(&value, "children")?)?;
-        if children.len() > limit as usize {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(ChildrenPage {
+        wire_codec::checked_children_page(&request, ChildrenPage {
             hierarchy_version: parse_id(field(&value, "hierarchyVersion")?)?,
             children,
             next_after: value
@@ -441,10 +436,7 @@ impl StreamProvider for HttpStream {
             )
             .await?;
         let envelope = parse_envelope(&value)?;
-        if envelope.commit_id != id {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(envelope)
+        checked_committed_envelope(id, envelope)
     }
 }
 fn parse_string(value: &Value) -> Result<&str, StreamError> {
@@ -478,10 +470,7 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
         .iter()
         .map(|value| {
             let bytes = parse_bytes(field(value, "value")?)?;
-            if bytes.len() > MAX_RECORD_BYTES {
-                return Err(StreamError::Unavailable);
-            }
-            Ok(Record {
+            wire_codec::checked_record(Record {
                 sequence: parse_u64(field(value, "sequence")?)?,
                 value: bytes,
                 commit_id: parse_id(field(value, "commitId")?)?,
