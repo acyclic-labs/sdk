@@ -16,6 +16,7 @@ pub const PATHS: &[&str] = &[
     "rust/crates/actors/Cargo.toml",
     "rust/crates/actors/build.rs",
     "rust/crates/actors/src/lib.rs",
+    "rust/crates/actors-napi/Cargo.toml",
     "rust/crates/workers/src/codegen.rs",
     "rust/crates/workers/src/contract.rs",
     "rust/crates/workers/src/contract_definitions.rs",
@@ -34,4 +35,5 @@ pub const PATHS: &[&str] = &[
     "rust/crates/sdk-generation/build.rs",
     "rust/crates/sdk-generation/src/compiled_generator_inputs.rs",
     "rust/crates/sdk-generation/src/main.rs",
+    "rust/crates/sdk-generation/src/native_targets.rs",
 ];

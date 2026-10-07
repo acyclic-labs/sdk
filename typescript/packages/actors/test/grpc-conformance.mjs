@@ -26,7 +26,19 @@ const root = fileURLToPath(new URL("../../../../", import.meta.url));
 
 function responseInitializer(method) {
   if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
-  if (method.name === "CheckpointActor") return { actor: { actorId: "actor-a", checkpointEpoch: 9n } };
+  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) {
+    return {
+      actor: {
+        actorId: "actor-a",
+        codeSha256: new Uint8Array(32).fill(1),
+        homeRegion: "eu",
+        state: 1,
+        subscriptions: [],
+        checkpointEpoch: 9n,
+        configurationRevision: 0n,
+      },
+    };
+  }
   if (method.name === "InvokeVersion") return { resolvedSha256: new Uint8Array(32).fill(1) };
   if (method.name === "InvokeDeployment") return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n };
   if (method.name === "SubmitJob") return { job: { jobId: "job-a", state: 1, resolvedSha256: new Uint8Array(32).fill(7) } };

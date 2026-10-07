@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -25,7 +26,7 @@ function artifact(path, bytes) {
   };
 }
 
-function fixture(artifacts = []) {
+function fixture(artifacts = [], families = ["acyclic_actors", "acyclic_workers"]) {
   const root = mkdtempSync(join(tmpdir(), "acyclic-stage-workers-"));
   const script = join(root, "scripts", "stage-rust-actors-types.mjs");
   mkdirSync(dirname(script), { recursive: true });
@@ -46,7 +47,7 @@ function fixture(artifacts = []) {
     JSON.stringify({
       schema: "acyclic.sdk.generation.v1",
       family: "acyclic_actors",
-      families: ["acyclic_actors", "acyclic_workers"],
+      families,
       artifacts: artifacts.length ? artifacts : [artifact(protoRelative, proto), artifact(descriptorRelative, descriptor)],
     }),
   );
@@ -67,7 +68,7 @@ test("Workers contract write and check share the attested bundle", () => {
   try {
     const written = run(fixtureValue, "contract-write");
     assert.equal(written.status, 0, written.stderr);
-    assert.deepEqual(require("node:fs").readFileSync(destination), fixtureValue.proto);
+    assert.deepEqual(readFileSync(destination), fixtureValue.proto);
     const checked = run(fixtureValue, "contract-check");
     assert.equal(checked.status, 0, checked.stderr);
   } finally {
@@ -116,7 +117,7 @@ test("Workers contract staging rejects missing and tampered artifacts", async t 
 });
 
 test("Workers contract staging requires the Workers family", () => {
-  const fixtureValue = fixture([], "0.2.0");
+  const fixtureValue = fixture([], ["acyclic_actors"]);
   try {
     const manifestPath = join(fixtureValue.bundle, "generation-manifest.json");
     writeFileSync(manifestPath, JSON.stringify({

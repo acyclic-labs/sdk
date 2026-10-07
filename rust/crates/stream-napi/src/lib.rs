@@ -930,23 +930,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_wins_before_a_ready_operation_is_observed() {
+    async fn ready_operation_finishes_if_cancellation_arrives_during_its_poll() {
         let cancellation = CancellationToken::new();
         let first_poll = Arc::new(AtomicBool::new(false));
         let operation_first_poll = Arc::clone(&first_poll);
         let operation_cancellation = cancellation.clone();
         let operation = std::future::poll_fn(move |_| {
             if !operation_first_poll.swap(true, Ordering::SeqCst) {
-                // The operation and cancellation become ready in the same
-                // select cycle. The biased cancellation branch must win on
-                // the following poll before the operation can complete.
+                // The cancellation branch was already observed as pending
+                // for this select poll. Cancellation cannot preempt an
+                // operation that returns Ready from its current poll.
                 operation_cancellation.cancel();
             }
-            Poll::Pending::<std::result::Result<(), NativeStreamErrorMetadata>>
+            Poll::Ready(Ok::<(), NativeStreamErrorMetadata>(()))
         });
 
-        let error = cancellation_error(run_with_cancellation(operation, Some(cancellation)).await);
-        assert_eq!(error.code, "cancelled");
+        let result = run_with_cancellation(operation, Some(cancellation)).await;
+        assert!(result.is_ok());
         assert!(first_poll.load(Ordering::SeqCst));
     }
 }

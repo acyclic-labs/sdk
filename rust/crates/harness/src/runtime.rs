@@ -750,6 +750,22 @@ pub trait DurableTaskHost: Send + Sync {
     /// Observes a previously admitted task without re-executing it. `None`
     /// means ordinary pending work, never an unknown external outcome.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    /// Observes outcome state with the admitted operation identity retained by
+    /// the typed runtime. Legacy providers remain valid for equal identities.
+    fn outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware outcome observation".into(),
+                ))
+            });
+        }
+        self.outcome(task_id)
+    }
     /// Replays one bounded, owner-filtered page of canonical scheduler events.
     /// `after_revision` and the returned page's `next_revision` are global
     /// coordinator cursors, so callers can advance past events for siblings
@@ -792,6 +808,24 @@ pub trait DurableTaskHost: Send + Sync {
             let mut delay_ms = 50_u64;
             loop {
                 if let Some(outcome) = self.outcome(task_id).await? {
+                    return Ok(outcome);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms = delay_ms.saturating_mul(2).min(1_000);
+            }
+        })
+    }
+    /// Waits for a terminal outcome while preserving the admitted operation
+    /// identity across polling and process recovery.
+    fn wait_outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
+        Box::pin(async move {
+            let mut delay_ms = 50_u64;
+            loop {
+                if let Some(outcome) = self.outcome_for(task_id, operation_id).await? {
                     return Ok(outcome);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -933,6 +967,22 @@ pub trait TaskStateProvider: Send + Sync {
     ) -> BoxFuture<'a, Result<RuntimeScope>>;
     /// Observes a terminal result or ordinary pending state without dispatch.
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>>;
+    /// Observes outcome state with the admitted operation identity retained by
+    /// the typed runtime. Legacy providers remain valid for equal identities.
+    fn outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+        if task_id.into_bytes() != operation_id.into_bytes() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "task and operation identities differ; provider must implement identity-aware outcome observation".into(),
+                ))
+            });
+        }
+        self.outcome(task_id)
+    }
     /// Replays one bounded, owner-filtered page of canonical scheduler events.
     /// The cursor is the coordinator revision, not a synthetic per-task index.
     fn scheduler_events<'a>(
@@ -971,6 +1021,24 @@ pub trait TaskStateProvider: Send + Sync {
             let mut delay_ms = 50_u64;
             loop {
                 if let Some(outcome) = self.outcome(task_id).await? {
+                    return Ok(outcome);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                delay_ms = delay_ms.saturating_mul(2).min(1_000);
+            }
+        })
+    }
+    /// Waits for a terminal outcome while preserving the admitted operation
+    /// identity across polling and process recovery.
+    fn wait_outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
+        Box::pin(async move {
+            let mut delay_ms = 50_u64;
+            loop {
+                if let Some(outcome) = self.outcome_for(task_id, operation_id).await? {
                     return Ok(outcome);
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
@@ -1103,6 +1171,13 @@ impl TaskStateProvider for HostTaskState {
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
         self.0.outcome(task_id)
     }
+    fn outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+        self.0.outcome_for(task_id, operation_id)
+    }
     fn scheduler_events<'a>(
         &'a self,
         task_id: TaskId,
@@ -1123,6 +1198,13 @@ impl TaskStateProvider for HostTaskState {
     }
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         self.0.wait_outcome(task_id)
+    }
+    fn wait_outcome_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Outcome<Value>>> {
+        self.0.wait_outcome_for(task_id, operation_id)
     }
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
         self.0.cancel(task_id)
@@ -1881,11 +1963,11 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
             }),
             Self::Durable {
                 task_id,
-                operation_id: _,
+                operation_id,
                 host,
                 output_schema,
                 extensions: _,
-            } => match host.wait_outcome(task_id).await? {
+            } => match host.wait_outcome_for(task_id, operation_id).await? {
                 Outcome::Succeeded(value) => {
                     validate_value(&output_schema, &value, "task output")?;
                     let value = serde_json::from_value(value)

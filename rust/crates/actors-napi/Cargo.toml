@@ -9,6 +9,18 @@ description = "N-API native remote Actors transport over the canonical Rust clie
 publish = false
 build = "build.rs"
 
+[package.metadata.napi]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+]
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -708,12 +708,13 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
         // `impl From<&ActorId> for String`. Keep that local implementation
         // occurrence instead of treating the receiver path as an external
         // definition.
-        if path.first() != Some(&crate_name)
-            && !is_local_impl_member(&krate, public_item)
-        {
+        if path.first() != Some(&crate_name) && !is_local_impl_member(&krate, public_item) {
             return Err(Error::Invalid(format!(
-                "public-api item {} does not resolve to the crate root",
-                id.0
+                "{} public-api item {} ({}) does not resolve to the crate root: {}",
+                json_path.display(),
+                id.0,
+                public_item.display,
+                path.join("::")
             )));
         }
         let (item_id, item, target) =
@@ -842,14 +843,52 @@ fn public_occurrence_paths(
     paths
 }
 
-fn is_local_impl_member(
-    krate: &Crate,
-    public_item: &public_api::PublicItemSignature,
-) -> bool {
-    public_item
+fn is_local_impl_member(krate: &Crate, public_item: &public_api::PublicItemSignature) -> bool {
+    // public-api queues both explicit impl items and inherited default trait
+    // methods with the impl as their logical parent. Keep either only when
+    // Rustdoc proves the child belongs to this local impl and, for inherited
+    // methods, to the local trait that supplied the default.
+    let Some(item) = krate.index.get(&public_item.id) else {
+        return false;
+    };
+    if item.crate_id != 0 {
+        return false;
+    }
+    let Some(parent) = public_item
         .parent_id
         .and_then(|parent_id| krate.index.get(&parent_id))
-        .is_some_and(|parent| parent.crate_id == 0 && matches!(parent.inner, ItemEnum::Impl(_)))
+    else {
+        return false;
+    };
+    let ItemEnum::Impl(implementation) = &parent.inner else {
+        return false;
+    };
+    if parent.crate_id != 0 {
+        return false;
+    }
+    if implementation.items.contains(&public_item.id) {
+        return true;
+    }
+
+    let Some(trait_path) = &implementation.trait_ else {
+        return false;
+    };
+    let Some(trait_item) = krate.index.get(&trait_path.id) else {
+        return false;
+    };
+    let Some(name) = item.name.as_deref() else {
+        return false;
+    };
+    trait_item.crate_id == 0
+        && implementation
+            .provided_trait_methods
+            .iter()
+            .any(|provided| provided == name)
+        && matches!(
+            &trait_item.inner,
+            ItemEnum::Trait(trait_definition)
+                if trait_definition.items.contains(&public_item.id)
+        )
 }
 
 fn rustdoc_links(
@@ -1420,8 +1459,19 @@ mod tests {
                         "provided_trait_methods": [],
                         "trait": {"path": "From", "id": 8, "args": null},
                         "for": {"resolved_path": {"path": "String", "id": 8, "args": null}},
-                        "items": [], "is_negative": false, "is_synthetic": false,
+                        "items": [129], "is_negative": false, "is_synthetic": false,
                         "blanket_impl": null
+                    }}
+                },
+                "129": {
+                    "id": 129, "crate_id": 0, "name": "from", "span": null,
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [], "output": null, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
                     }}
                 }
             },
@@ -1435,9 +1485,132 @@ mod tests {
             id: Id(129),
             parent_id: Some(Id(7)),
             display: "fn from(&ActorId) -> String".into(),
-            path: vec!["alloc", "string", "String", "from"],
+            path: ["alloc", "string", "String", "from"].map(String::from).to_vec(),
         };
         assert!(is_local_impl_member(&krate, &occurrence));
+        let mut unparented = occurrence;
+        unparented.parent_id = None;
+        assert!(!is_local_impl_member(&krate, &unparented));
+    }
+
+    #[test]
+    fn build_family_keeps_inherited_local_trait_member_and_source_span() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-inherited-impl-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
+        fs::write(root.join("src/lib.rs"), "pub trait LocalTrait { fn default(&self) {} }\n")
+            .expect("fixture source should be writable");
+        let rustdoc_path = root.join("demo.json");
+        let fixture = serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [20], "is_stripped": false}}
+                },
+                "20": {
+                    "id": 20, "crate_id": 0, "name": "LocalTrait",
+                    "span": {"filename": "src/lib.rs", "begin": [1, 1], "end": [1, 44]},
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"trait": {
+                        "is_auto": false, "is_unsafe": false, "is_dyn_compatible": true,
+                        "items": [21],
+                        "generics": {"params": [], "where_predicates": []},
+                        "bounds": [], "implementations": [22]
+                    }}
+                },
+                "21": {
+                    "id": 21, "crate_id": 0, "name": "default",
+                    "span": {"filename": "src/lib.rs", "begin": [1, 24], "end": [1, 43]},
+                    "visibility": "default", "docs": "Default behavior.", "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [], "output": null, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
+                    }}
+                },
+                "22": {
+                    "id": 22, "crate_id": 0, "name": null,
+                    "span": {"filename": "src/lib.rs", "begin": [2, 1], "end": [2, 25]},
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": ["default"],
+                        "trait": {"path": "LocalTrait", "id": 20, "args": null},
+                        "for": {"resolved_path": {"path": "String", "id": 99, "args": null}},
+                        "items": [], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                }
+            },
+            "paths": {
+                "99": {"crate_id": 1, "path": ["alloc", "string", "String"], "kind": "struct"}
+            },
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        });
+        fs::write(
+            &rustdoc_path,
+            serde_json::to_vec(&fixture).expect("fixture should serialize"),
+        )
+        .expect("fixture should be writable");
+        let input = BuildInput {
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            revision: "a".repeat(40),
+            source_state: "captured-snapshot".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+            repository_root: root.clone(),
+            rustdoc_files: vec![rustdoc_path.clone()],
+            mark_latest: false,
+        };
+        let data = build_data(&input).expect("inherited local trait fixture should build");
+        let family = &data.families[0];
+        let inherited = family
+            .items
+            .iter()
+            .find(|item| item.id == "21" && item.path == "String::default")
+            .expect("inherited default method should retain its foreign receiver path");
+        assert_eq!(
+            inherited.source,
+            Some(SourceSpan {
+                path: "src/lib.rs".into(),
+                begin_line: 1,
+                begin_column: 24,
+                end_line: 1,
+                end_column: 43,
+            })
+        );
+        assert!(family
+            .items
+            .iter()
+            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
+
+        let mut external_trait = fixture;
+        external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
+        fs::write(
+            &rustdoc_path,
+            serde_json::to_vec(&external_trait).expect("negative fixture should serialize"),
+        )
+        .expect("negative fixture should be writable");
+        let error = build_data(&input).expect_err("foreign inherited member must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("does not resolve to the crate root"));
+        assert!(message.contains("String::default"));
+        fs::remove_dir_all(root).expect("fixture directory should be removable");
     }
 
     #[test]

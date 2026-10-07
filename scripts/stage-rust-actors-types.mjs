@@ -1,11 +1,14 @@
 import {
   existsSync,
+  closeSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
@@ -22,6 +25,7 @@ if (!["write", "check", "contract-write", "contract-check"].includes(operation) 
 }
 
 const bundle = resolve(bundleArgument);
+const manifestPath = join(bundle, "generation-manifest.json");
 const sourceRoot = join(bundle, "generated/typescript/actors");
 const sourceBarrel = join(sourceRoot, "types.ts");
 const destinationRoot = join(packageRoot, "src/actors");
@@ -33,14 +37,19 @@ const rejectLink = path => {
   return stat;
 };
 
-const isOutsideRoot = path => {
-  const relativePath = relative(root, path);
+if (!existsSync(bundle) || !rejectLink(bundle).isDirectory()) {
+  throw new Error(`generation bundle directory is missing or invalid: ${bundle}`);
+}
+const bundleRoot = realpathSync(bundle);
+
+const isOutsideRoot = (base, path) => {
+  const relativePath = relative(base, path);
   return relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath);
 };
 
 const assertDestination = path => {
   const absolute = resolve(path);
-  if (isOutsideRoot(absolute)) throw new Error(`staging destination escapes checkout: ${absolute}`);
+  if (isOutsideRoot(root, absolute)) throw new Error(`staging destination escapes checkout: ${absolute}`);
   let current = absolute;
   while (true) {
     let stat;
@@ -53,13 +62,41 @@ const assertDestination = path => {
       if (stat.isSymbolicLink()) {
         throw new Error(`staging destination contains a symlink or reparse point: ${current}`);
       }
-      if (isOutsideRoot(realpathSync(current))) {
+      if (isOutsideRoot(root, realpathSync(current))) {
         throw new Error(`staging destination resolves outside checkout: ${current}`);
       }
     }
     if (current === root) return;
     const parent = dirname(current);
     if (parent === current) throw new Error(`staging destination has no checkout ancestor: ${absolute}`);
+    current = parent;
+  }
+};
+
+const assertSource = path => {
+  const absolute = resolve(path);
+  if (isOutsideRoot(bundleRoot, absolute)) {
+    throw new Error(`generation source escapes bundle: ${absolute}`);
+  }
+  let current = absolute;
+  while (true) {
+    let stat;
+    try {
+      stat = lstatSync(current);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (stat) {
+      if (stat.isSymbolicLink()) {
+        throw new Error(`generation source contains a symlink or reparse point: ${current}`);
+      }
+      if (isOutsideRoot(bundleRoot, realpathSync(current))) {
+        throw new Error(`generation source resolves outside bundle: ${current}`);
+      }
+    }
+    if (relative(bundleRoot, current) === "") return;
+    const parent = dirname(current);
+    if (parent === current) throw new Error(`generation source has no bundle ancestor: ${absolute}`);
     current = parent;
   }
 };
@@ -72,18 +109,18 @@ const preflightDestination = path => {
   if (existsSync(temporary)) throw new Error(`staging temporary already exists: ${temporary}`);
 };
 
-const digest = path => {
-  const bytes = readFileSync(path);
+const digestBytes = bytes => {
   return {
     sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
     bytes: bytes.length,
   };
 };
 
-if (!existsSync(join(bundle, "generation-manifest.json"))) {
+if (!existsSync(manifestPath)) {
   throw new Error(`generation manifest is missing: ${bundle}`);
 }
-const manifest = JSON.parse(readFileSync(join(bundle, "generation-manifest.json"), "utf8"));
+assertSource(manifestPath);
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
 if (manifest.schema !== "acyclic.sdk.generation.v1" || manifest.family !== "acyclic_actors") {
   throw new Error("generation bundle is not an Actors SDK bundle");
 }
@@ -103,21 +140,34 @@ const writeAtomic = (path, bytes) => {
   preflightDestination(path);
   mkdirSync(dirname(path), { recursive: true });
   const temporary = temporaryPath(path);
-  writeFileSync(temporary, bytes, { flag: "wx" });
-  renameSync(temporary, path);
+  let descriptor;
+  let temporaryCreated = false;
+  try {
+    descriptor = openSync(temporary, "wx");
+    temporaryCreated = true;
+    writeFileSync(descriptor, bytes);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporary, path);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    if (temporaryCreated && existsSync(temporary)) unlinkSync(temporary);
+  }
 };
 
 const requireAttestedArtifact = relative => {
   const source = join(bundle, relative);
+  assertSource(source);
   if (!existsSync(source) || !rejectLink(source).isFile()) {
     throw new Error(`generated bundle artifact is missing: ${source}`);
   }
-  const actual = digest(source);
+  const bytes = readFileSync(source);
+  const actual = digestBytes(bytes);
   const recorded = artifactByPath.get(relative);
   if (!recorded || recorded.sha256 !== actual.sha256 || recorded.bytes !== actual.bytes) {
     throw new Error(`generation manifest does not attest ${relative}`);
   }
-  return source;
+  return bytes;
 };
 
 function stageWorkersContract(stageOperation) {
@@ -126,12 +176,11 @@ function stageWorkersContract(stageOperation) {
   }
   const protoRelative = "generated/workers/proto/workers/v1/workers.proto";
   const descriptorRelative = "generated/workers/acyclic-workers-v1.bin";
-  const source = requireAttestedArtifact(protoRelative);
+  const bytes = requireAttestedArtifact(protoRelative);
   requireAttestedArtifact(descriptorRelative);
-  const bytes = readFileSync(source);
   const header = "// Generated from Rust-owned Workers contract. Do not edit.\n";
-  if (!readFileSync(source, "utf8").startsWith(header)) {
-    throw new Error(`Workers proto is missing its Rust-generated header: ${source}`);
+  if (!bytes.toString("utf8").startsWith(header)) {
+    throw new Error(`Workers proto is missing its Rust-generated header: ${join(bundle, protoRelative)}`);
   }
   const destination = join(root, "proto/workers/v1/workers.proto");
   preflightDestination(destination);
@@ -161,7 +210,9 @@ const modules = readdirSync(sourceRoot, { withFileTypes: true })
   .sort();
 if (!modules.length) throw new Error("generated Actors TypeScript declarations are empty");
 
-const sourceBarrelText = readFileSync(sourceBarrel, "utf8");
+assertSource(sourceBarrel);
+const sourceBarrelBytes = readFileSync(sourceBarrel);
+const sourceBarrelText = sourceBarrelBytes.toString("utf8");
 const expectedSourceBarrel = [
   "// Generated from Rust-owned Actors semantic declarations.",
   ...modules.map(module => `export * from "./${module}.js";`),
@@ -175,16 +226,17 @@ const expected = new Map();
 for (const module of modules) {
   const relative = `generated/typescript/actors/${module}.ts`;
   const source = join(sourceRoot, `${module}.ts`);
-  rejectLink(source);
-  const actual = digest(source);
+  assertSource(source);
+  const bytes = readFileSync(source);
+  const actual = digestBytes(bytes);
   const recorded = artifactByPath.get(relative);
   if (!recorded || recorded.sha256 !== actual.sha256 || recorded.bytes !== actual.bytes) {
     throw new Error(`generation manifest does not attest ${relative}`);
   }
-  expected.set(`${module}.ts`, readFileSync(source));
+  expected.set(`${module}.ts`, bytes);
 }
 const barrelRelative = "generated/typescript/actors/types.ts";
-const barrelDigest = digest(sourceBarrel);
+const barrelDigest = digestBytes(sourceBarrelBytes);
 const recordedBarrel = artifactByPath.get(barrelRelative);
 if (!recordedBarrel || recordedBarrel.sha256 !== barrelDigest.sha256 || recordedBarrel.bytes !== barrelDigest.bytes) {
   throw new Error(`generation manifest does not attest ${barrelRelative}`);

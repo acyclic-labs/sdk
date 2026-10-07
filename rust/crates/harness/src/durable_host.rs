@@ -892,8 +892,15 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     }
 
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+        self.outcome_for(task_id, OperationId::from_bytes(task_id.into_bytes()))
+    }
+
+    fn outcome_for<'a>(
+        &'a self,
+        _task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
         Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
             let observed = {
                 let mut coordinator = self.coordinator.lock().await;
                 coordinator.refresh().await?;
@@ -1676,13 +1683,4 @@ mod tests {
         ));
         assert_eq!(
             manifest
-                .read(0, 2)
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?
-                .len(),
-            2
-        );
-        Ok(())
-    }
-}
+                .re

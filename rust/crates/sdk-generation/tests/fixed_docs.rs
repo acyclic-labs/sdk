@@ -25,7 +25,19 @@ const FIXTURE_OWNERS: &[(&str, &str)] = &[
     ("acyclic-harness", "rust/crates/harness"),
     ("acyclic-plugin", "plugin"),
 ];
+const FIXTURE_PRIVATE_PACKAGES: &[(&str, &str)] =
+    &[("acyclic-actors-napi", "rust/crates/actors-napi")];
 const WORKERS_PROTO_HEADER: &str = "// Generated from Rust-owned Workers contract. Do not edit.\n";
+const NATIVE_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+];
 
 fn temp(_name: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -62,6 +74,9 @@ fn fixture_workspace_manifest(source_root: &Path) -> String {
     for (_, relative) in FIXTURE_OWNERS {
         manifest.push_str(&format!("    \"{relative}\",\n"));
     }
+    for (_, relative) in FIXTURE_PRIVATE_PACKAGES {
+        manifest.push_str(&format!("    \"{relative}\",\n"));
+    }
     manifest.push_str("]\n");
     manifest.push_str(&source[members_close + 1..]);
     manifest
@@ -87,6 +102,32 @@ fn write_fixture_owner_packages(root: &Path) {
         )
         .unwrap();
     }
+}
+
+fn write_fixture_private_packages(root: &Path) {
+    let package_root = root.join("rust/crates/actors-napi");
+    fs::create_dir_all(package_root.join("src")).unwrap();
+    fs::create_dir_all(package_root.join("qualification")).unwrap();
+    fs::write(
+        package_root.join("Cargo.toml"),
+        format!(
+            "[package]\nname = \"acyclic-actors-napi\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\nbuild = \"build.rs\"\n\n[package.metadata.napi]\ntargets = [{}]\n",
+            NATIVE_TARGETS
+                .iter()
+                .map(|target| format!("\"{target}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    )
+    .unwrap();
+    fs::write(package_root.join("build.rs"), "fn main() {}\n").unwrap();
+    fs::write(package_root.join("src/lib.rs"), "pub fn bridge() {}\n").unwrap();
+    fs::write(package_root.join("README.md"), "Actors N-API fixture\n").unwrap();
+    fs::write(
+        package_root.join("qualification/fixture.json"),
+        "{\"target\":\"fixture\"}\n",
+    )
+    .unwrap();
 }
 
 fn git(root: &Path, args: &[&str]) {
@@ -221,6 +262,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     )
     .unwrap();
     write_fixture_owner_packages(&root);
+    write_fixture_private_packages(&root);
     copy_compiled_generator_sources(&root);
     fs::copy(source_root.join("Cargo.lock"), root.join("Cargo.lock")).unwrap();
     let actors_lib_path = root.join("rust/crates/actors/src/lib.rs");
@@ -422,6 +464,15 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .join("generated/workers/acyclic-workers-v1.bin")
             .is_file()
     );
+    let native_targets: serde_json::Value =
+        serde_json::from_slice(&fs::read(first.join("generated/native-targets.json")).unwrap())
+            .unwrap();
+    assert_eq!(native_targets["schema"], "acyclic.actors.native-targets.v1");
+    assert_eq!(native_targets["package"], "acyclic-actors-napi");
+    assert_eq!(native_targets["version"], "0.2.0");
+    assert_eq!(native_targets["source_revision"], manifest["revision"]);
+    assert_eq!(native_targets["source_sha256"], manifest["source_sha256"]);
+    assert_eq!(native_targets["targets"], serde_json::json!(NATIVE_TARGETS));
     let guide_path = root.join("docs/objects-v2-http.md");
     let guide = fs::read(&guide_path).unwrap();
     fs::write(&guide_path, b"tampered guide\n").unwrap();
@@ -601,6 +652,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         fs::write(root.join(path), contents).unwrap();
     }
     write_fixture_owner_packages(&root);
+    write_fixture_private_packages(&root);
     copy_compiled_generator_sources(&root);
     let lock = Command::new("cargo")
         .args([

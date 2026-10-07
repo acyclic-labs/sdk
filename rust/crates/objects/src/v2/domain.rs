@@ -268,6 +268,10 @@ impl Etag {
         Ok(Self(value))
     }
 
+    fn from_validated(value: String) -> Self {
+        Self(value)
+    }
+
     /// Returns the validated ETag.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -608,6 +612,10 @@ impl ValidatedTimestamp {
     pub fn into_inner(self) -> prost_types::Timestamp {
         self.0
     }
+
+    fn from_validated(value: prost_types::Timestamp) -> Self {
+        Self(value)
+    }
 }
 
 impl AsRef<prost_types::Timestamp> for ValidatedTimestamp {
@@ -622,6 +630,162 @@ impl TryFrom<prost_types::Timestamp> for ValidatedTimestamp {
     fn try_from(value: prost_types::Timestamp) -> Result<Self, Self::Error> {
         response::timestamp(&value)?;
         Ok(Self(value))
+    }
+}
+
+/// Validated representation metadata for a current object.
+///
+/// The generated metadata message remains private inside this wrapper so
+/// callers can only obtain one after the canonical header validation passes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectMetadata(wire::ObjectMetadata);
+
+impl ObjectMetadata {
+    /// Validates and owns representation metadata for a request or response.
+    pub fn new(value: wire::ObjectMetadata) -> Result<Self, Error> {
+        request::metadata(&Some(value.clone()))?;
+        Ok(Self(value))
+    }
+
+    fn from_validated(value: wire::ObjectMetadata) -> Self {
+        Self(value)
+    }
+
+    /// Returns the validated content type.
+    pub fn content_type(&self) -> &str {
+        &self.0.content_type
+    }
+
+    /// Returns the validated user metadata map.
+    pub fn user(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.0.user
+    }
+
+    /// Returns the validated content encoding.
+    pub fn content_encoding(&self) -> &str {
+        &self.0.content_encoding
+    }
+
+    /// Returns the validated cache-control value.
+    pub fn cache_control(&self) -> &str {
+        &self.0.cache_control
+    }
+
+    /// Returns the validated content-disposition value.
+    pub fn content_disposition(&self) -> &str {
+        &self.0.content_disposition
+    }
+
+    /// Returns the validated content-language value.
+    pub fn content_language(&self) -> &str {
+        &self.0.content_language
+    }
+
+    /// Returns the optional validated expiry Unix timestamp in seconds.
+    pub fn expires_unix_seconds(&self) -> Option<i64> {
+        self.0.expires_unix_seconds
+    }
+
+    /// Borrows the validated protobuf metadata for transport integration.
+    pub fn as_ref(&self) -> &wire::ObjectMetadata {
+        &self.0
+    }
+
+    /// Consumes the wrapper and returns its validated protobuf metadata.
+    pub fn into_inner(self) -> wire::ObjectMetadata {
+        self.0
+    }
+}
+
+impl AsRef<wire::ObjectMetadata> for ObjectMetadata {
+    fn as_ref(&self) -> &wire::ObjectMetadata {
+        &self.0
+    }
+}
+
+impl TryFrom<wire::ObjectMetadata> for ObjectMetadata {
+    type Error = Error;
+
+    fn try_from(value: wire::ObjectMetadata) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl From<ObjectMetadata> for wire::ObjectMetadata {
+    fn from(value: ObjectMetadata) -> Self {
+        value.into_inner()
+    }
+}
+
+/// A validated current object representation.
+///
+/// Construction delegates to [`response::object_info`], which is the
+/// canonical response validator for ETag, metadata, and timestamp semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectInfo {
+    etag: Etag,
+    size: u64,
+    metadata: Option<ObjectMetadata>,
+    last_modified: ValidatedTimestamp,
+}
+
+impl ObjectInfo {
+    /// Validates and owns one wire representation metadata response.
+    pub fn try_from_wire(value: wire::ObjectInfo) -> Result<Self, Error> {
+        response::object_info(&value)?;
+        let metadata = value
+            .metadata
+            .map(ObjectMetadata::from_validated);
+        let last_modified = ValidatedTimestamp::from_validated(
+            value
+                .last_modified
+                .ok_or(wire::ErrorCode::InvalidArgument)?,
+        );
+        Ok(Self {
+            etag: Etag::from_validated(value.etag),
+            size: value.size,
+            metadata,
+            last_modified,
+        })
+    }
+
+    /// Returns the validated opaque ETag.
+    pub fn etag(&self) -> &Etag {
+        &self.etag
+    }
+
+    /// Returns the complete representation size in bytes.
+    pub const fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Returns optional validated representation metadata.
+    pub fn metadata(&self) -> Option<&ObjectMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Returns the validated last-modified timestamp.
+    pub fn last_modified(&self) -> &ValidatedTimestamp {
+        &self.last_modified
+    }
+}
+
+impl TryFrom<wire::ObjectInfo> for ObjectInfo {
+    type Error = Error;
+
+    fn try_from(value: wire::ObjectInfo) -> Result<Self, Self::Error> {
+        Self::try_from_wire(value)
+    }
+}
+
+impl From<ObjectInfo> for wire::ObjectInfo {
+    fn from(value: ObjectInfo) -> Self {
+        Self {
+            etag: value.etag.into_string(),
+            size: value.size,
+            metadata: value.metadata.map(ObjectMetadata::into_inner),
+            last_modified: Some(value.last_modified.into_inner()),
+        }
     }
 }
 
@@ -869,6 +1033,71 @@ mod tests {
             created_at: None,
         };
         assert!(Bucket::try_from_wire(missing_timestamp, &expected).is_err());
+    }
+
+    #[test]
+    fn typed_object_info_round_trips_validated_metadata() {
+        let metadata = wire::ObjectMetadata {
+            content_type: "application/octet-stream".into(),
+            user: [("x-owner".into(), "customer".into())].into(),
+            expires_unix_seconds: Some(1_700_000_000),
+            ..Default::default()
+        };
+        let wire = wire::ObjectInfo {
+            etag: "etag-1".into(),
+            size: 42,
+            metadata: Some(metadata),
+            last_modified: Some(prost_types::Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 7,
+            }),
+        };
+
+        let info = ObjectInfo::try_from(wire.clone()).unwrap();
+        assert_eq!(info.etag().as_str(), "etag-1");
+        assert_eq!(info.size(), 42);
+        assert_eq!(info.metadata().map(ObjectMetadata::content_type), Some("application/octet-stream"));
+        assert_eq!(info.metadata().map(ObjectMetadata::expires_unix_seconds), Some(Some(1_700_000_000)));
+        assert_eq!(info.last_modified().seconds(), 1_700_000_000);
+        assert_eq!(wire::ObjectInfo::from(info), wire);
+
+        let invalid_metadata = wire::ObjectMetadata {
+            content_type: "text\nplain".into(),
+            ..Default::default()
+        };
+        assert!(ObjectMetadata::try_from(invalid_metadata).is_err());
+    }
+
+    #[test]
+    fn typed_object_info_rejects_invalid_response_fields() {
+        let invalid_etag = wire::ObjectInfo {
+            etag: String::new(),
+            last_modified: Some(prost_types::Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+        assert!(ObjectInfo::try_from(invalid_etag).is_err());
+
+        let duplicate_metadata = wire::ObjectMetadata {
+            user: [
+                ("X-Owner".into(), "one".into()),
+                ("x-owner".into(), "two".into()),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let invalid_metadata = wire::ObjectInfo {
+            etag: "etag-1".into(),
+            metadata: Some(duplicate_metadata),
+            last_modified: Some(prost_types::Timestamp {
+                seconds: 1_700_000_000,
+                nanos: 0,
+            }),
+            ..Default::default()
+        };
+        assert!(ObjectInfo::try_from(invalid_metadata).is_err());
     }
 
     #[test]

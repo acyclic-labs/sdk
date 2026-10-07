@@ -3,6 +3,21 @@ use acyclic_actors as actors;
 use acyclic_workers as workers;
 use std::io::{self, Read};
 
+fn assert_actor(actor: Option<actors::wire::ActorObservation>) -> Result<(), &'static str> {
+    let actor = actor.ok_or("actor response omitted actor")?;
+    if actor.actor_id != "actor-a"
+        || actor.code_sha256.as_ref() != [1_u8; 32].as_slice()
+        || actor.home_region != "eu"
+        || actor.state != 1
+        || !actor.subscriptions.is_empty()
+        || actor.checkpoint_epoch != 9
+        || actor.configuration_revision != 0
+    {
+        return Err("actor response did not preserve the canonical observation");
+    }
+    Ok(())
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "enumerates every canonical RPC in the conformance runner"
@@ -34,79 +49,146 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         workers::grpc::connect_with_ca_certificate(endpoint, token, Some(ca.as_bytes())).await?;
     let actors_http = actors::http::Client::new(http_endpoint, token, 1024 * 1024)?;
     let workers_http = workers::http::Client::new(http_endpoint, token, 1024 * 1024)?;
-    let request = actors::wire::CreateActorRequest {
-        ..Default::default()
-    };
-    actors_grpc.create_actor(request.clone()).await?;
-    actors_http.create_actor(&request).await?;
-    let request = actors::wire::UpdateActorRequest {
-        ..Default::default()
-    };
-    actors_grpc.update_actor(request.clone()).await?;
-    actors_http.update_actor(&request).await?;
-    let request = actors::wire::InspectActorRequest {
-        ..Default::default()
-    };
-    actors_grpc.inspect_actor(request.clone()).await?;
-    actors_http.inspect_actor(&request).await?;
-    let request = actors::wire::AddSubscriptionRequest {
-        actor_id: "actor-a".into(),
-        subscription: Some(actors::wire::SubscriptionSpec {
-            subscription_id: "input".into(),
-            stream_path: "events/input".into(),
-            start: Some(actors::wire::SubscriptionStart {
-                start: Some(actors::wire::subscription_start::Start::Cursor(
-                    9_007_199_254_740_993,
-                )),
-            }),
-            placement_anchor: false,
-        }),
-        idempotency_key: "subscribe-a".into(),
-    };
-    actors_grpc.add_subscription(request.clone()).await?;
-    actors_http.add_subscription(&request).await?;
-    let request = actors::wire::RemoveSubscriptionRequest {
-        ..Default::default()
-    };
-    actors_grpc.remove_subscription(request.clone()).await?;
-    actors_http.remove_subscription(&request).await?;
-    let request = actors::wire::ResumeSubscriptionRequest {
-        ..Default::default()
-    };
-    actors_grpc.resume_subscription(request.clone()).await?;
-    actors_http.resume_subscription(&request).await?;
+    let actor_id = actors::domain::ActorId::new("actor-a".into())?;
+    let code_sha256 = actors::domain::CodeSha256::new(vec![1; 32])?;
+    let limits = actors::domain::ActorLimits::new(1_000, 1024, 1024)?;
+    let subscription = actors::domain::SubscriptionSpec::new(
+        "input".into(),
+        "events/input".into(),
+        actors::domain::SubscriptionStart::Cursor {
+            cursor: 9_007_199_254_740_993,
+        },
+        false,
+    )?;
+
+    let request: actors::wire::CreateActorRequest = actors::domain::CreateActorRequest::new(
+        code_sha256.clone(),
+        "eu".into(),
+        vec![],
+        limits,
+        vec![],
+        "create-a".into(),
+    )?
+    .into();
+    assert_actor(
+        actors_grpc
+            .create_actor(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.create_actor(&request).await?.actor)?;
+
+    let request: actors::wire::UpdateActorRequest = actors::domain::UpdateActorRequest::new(
+        actor_id.clone(),
+        code_sha256.clone(),
+        vec![],
+        limits,
+        0,
+        "update-a".into(),
+    )?
+    .into();
+    assert_actor(
+        actors_grpc
+            .update_actor(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.update_actor(&request).await?.actor)?;
+
+    let request: actors::wire::InspectActorRequest =
+        actors::domain::InspectActorRequest::new(actor_id.clone()).into();
+    assert_actor(
+        actors_grpc
+            .inspect_actor(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.inspect_actor(&request).await?.actor)?;
+
+    let request: actors::wire::AddSubscriptionRequest =
+        actors::domain::AddSubscriptionRequest::new(
+            actor_id.clone(),
+            subscription.clone(),
+            "subscribe-a".into(),
+        )?
+        .into();
+    assert_actor(
+        actors_grpc
+            .add_subscription(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.add_subscription(&request).await?.actor)?;
+
+    let request: actors::wire::RemoveSubscriptionRequest =
+        actors::domain::RemoveSubscriptionRequest::new(
+            actor_id.clone(),
+            "input".into(),
+            "remove-a".into(),
+        )
+        .into();
+    assert_actor(
+        actors_grpc
+            .remove_subscription(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.remove_subscription(&request).await?.actor)?;
+
+    let request: actors::wire::ResumeSubscriptionRequest =
+        actors::domain::ResumeSubscriptionRequest::new(
+            actor_id.clone(),
+            "input".into(),
+            "resume-a".into(),
+        )
+        .into();
+    assert_actor(
+        actors_grpc
+            .resume_subscription(request.clone())
+            .await?
+            .into_inner()
+            .actor,
+    )?;
+    assert_actor(actors_http.resume_subscription(&request).await?.actor)?;
+
     let request = actors::wire::CheckpointActorRequest {
         actor_id: "actor-a".into(),
         idempotency_key: "checkpoint-a".into(),
     };
-    assert_eq!(
+    assert_actor(
         actors_grpc
             .checkpoint_actor(request.clone())
             .await?
             .into_inner()
-            .actor
-            .ok_or("checkpoint omitted actor")?
-            .checkpoint_epoch,
-        9
-    );
-    assert_eq!(
-        actors_http
-            .checkpoint_actor(&request)
-            .await?
-            .actor
-            .ok_or("checkpoint omitted actor")?
-            .checkpoint_epoch,
-        9
-    );
-    let request = actors::wire::InvokeActorRequest {
-        headers: vec![actors::wire::Header {
+            .actor,
+    )?;
+    assert_actor(actors_http.checkpoint_actor(&request).await?.actor)?;
+
+    let request: actors::wire::InvokeActorRequest = actors::domain::InvokeActorRequest::new(
+        actor_id,
+        "POST".into(),
+        "/".into(),
+        br#"{}"#.to_vec(),
+        vec![actors::domain::Header {
             name: "content-type".into(),
             value: "application/json".into(),
         }],
-        ..Default::default()
-    };
-    actors_grpc.invoke_actor(request.clone()).await?;
-    actors_http.invoke_actor(&request).await?;
+    )
+    .into();
+    let grpc = actors_grpc
+        .invoke_actor(request.clone())
+        .await?
+        .into_inner();
+    assert_eq!(grpc.status, 201);
+    assert_eq!(grpc.headers[0].name, "location");
+    let http = actors_http.invoke_actor(&request).await?;
+    assert_eq!(http.status, 201);
+    assert_eq!(http.headers[0].name, "location");
     let request = workers::wire::PublishVersionRequest {
         ..Default::default()
     };

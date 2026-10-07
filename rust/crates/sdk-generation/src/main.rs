@@ -12,6 +12,7 @@ use std::{
 };
 
 mod compiled_generator_inputs;
+mod native_targets;
 
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -23,6 +24,11 @@ const SOURCE_PATHS: &[&str] = &[
     "rust/crates/sdk-docs/Cargo.toml",
     "rust/crates/sdk-docs/Cargo.lock",
     "rust/crates/sdk-docs/src",
+    "rust/crates/actors-napi/Cargo.toml",
+    "rust/crates/actors-napi/build.rs",
+    "rust/crates/actors-napi/src",
+    "rust/crates/actors-napi/README.md",
+    "rust/crates/actors-napi/qualification",
     "rust/crates/sdk-generation/Cargo.toml",
     "rust/crates/sdk-generation/Cargo.lock",
     "rust/crates/sdk-generation/build.rs",
@@ -120,6 +126,8 @@ struct CargoPackage {
     manifest_path: PathBuf,
     publish: Option<Vec<String>>,
     targets: Vec<CargoTarget>,
+    #[serde(default)]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -219,7 +227,7 @@ fn is_library_target(target: &CargoTarget) -> bool {
     })
 }
 
-fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
+fn load_rustdoc_owners(root: &Path, metadata: &CargoMetadata) -> io::Result<Vec<RustdocOwner>> {
     let declared: Vec<String> =
         serde_json::from_slice(&fs::read(root.join("release/cargo-crates.json"))?)
             .map_err(io::Error::other)?;
@@ -238,9 +246,8 @@ fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
     }
 
     let root = canonical(root)?;
-    let metadata = cargo_metadata(&root)?;
     let mut packages = BTreeMap::new();
-    for package in metadata.packages {
+    for package in &metadata.packages {
         if packages.insert(package.name.clone(), package).is_some() {
             return Err(io::Error::other(
                 "cargo metadata contains duplicate packages",
@@ -330,6 +337,74 @@ fn load_rustdoc_owners(root: &Path) -> io::Result<Vec<RustdocOwner>> {
         ));
     }
     Ok(owners)
+}
+
+fn actors_napi_package<'a>(metadata: &'a CargoMetadata) -> io::Result<&'a CargoPackage> {
+    metadata
+        .packages
+        .iter()
+        .find(|package| package.name == native_targets::ACTORS_NAPI_PACKAGE)
+        .ok_or_else(|| {
+            io::Error::other(format!(
+                "cargo metadata is missing {}",
+                native_targets::ACTORS_NAPI_PACKAGE
+            ))
+        })
+}
+
+fn expected_native_targets(
+    config: &Config,
+    metadata: &CargoMetadata,
+    revision: &str,
+    source_sha256: &str,
+) -> io::Result<native_targets::NativeTargetsArtifact> {
+    let package = actors_napi_package(metadata)?;
+    if package.version != config.version {
+        return Err(io::Error::other(format!(
+            "{} has version {}, expected {}",
+            native_targets::ACTORS_NAPI_PACKAGE,
+            package.version,
+            config.version
+        )));
+    }
+    let targets = native_targets::parse_targets(package.metadata.as_ref())?;
+    Ok(native_targets::artifact(
+        config.version.clone(),
+        revision.to_owned(),
+        source_sha256.to_owned(),
+        targets,
+    ))
+}
+
+fn write_native_targets(
+    config: &Config,
+    metadata: &CargoMetadata,
+    revision: &str,
+    source_sha256: &str,
+) -> io::Result<()> {
+    let artifact = expected_native_targets(config, metadata, revision, source_sha256)?;
+    let path = config.output.join("generated/native-targets.json");
+    let mut encoded = serde_json::to_vec_pretty(&artifact).map_err(io::Error::other)?;
+    encoded.push(b'\n');
+    fs::write(path, encoded)
+}
+
+fn validate_native_targets(
+    config: &Config,
+    metadata: &CargoMetadata,
+    revision: &str,
+    source_sha256: &str,
+) -> io::Result<()> {
+    let expected = expected_native_targets(config, metadata, revision, source_sha256)?;
+    let path = config.output.join("generated/native-targets.json");
+    let actual: native_targets::NativeTargetsArtifact =
+        serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+    if actual != expected {
+        return Err(io::Error::other(
+            "generated native target metadata does not match Rust source attestation",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_owner_versions(config: &Config, owners: &[RustdocOwner]) -> io::Result<()> {
@@ -1356,7 +1431,8 @@ fn generate(config: &Config) -> io::Result<()> {
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
     verify_compiled_generator_source(&config.root)?;
-    let owners = load_rustdoc_owners(&config.root)?;
+    let metadata = cargo_metadata(&config.root)?;
+    let owners = load_rustdoc_owners(&config.root, &metadata)?;
     validate_owner_versions(config, &owners)?;
     let owner_roots = owner_package_roots(&owners);
     let source_extras_before = baseline_source_extras(&config.root)?;
@@ -1420,6 +1496,7 @@ fn generate(config: &Config) -> io::Result<()> {
         ));
     }
     write_bundle(&data, &config.output, config.channel == "release").map_err(io::Error::other)?;
+    write_native_targets(config, &metadata, &revision, &source_sha256)?;
     let artifacts = collect_outputs(&config.output)?;
     let manifest = Manifest {
         schema: "acyclic.sdk.generation.v1".into(),
@@ -1450,7 +1527,8 @@ fn generate(config: &Config) -> io::Result<()> {
 
 fn drift(config: &Config) -> io::Result<()> {
     verify_compiled_generator_source(&config.root)?;
-    let owners = load_rustdoc_owners(&config.root)?;
+    let metadata = cargo_metadata(&config.root)?;
+    let owners = load_rustdoc_owners(&config.root, &metadata)?;
     validate_owner_versions(config, &owners)?;
     let owner_roots = owner_package_roots(&owners);
     let manifest: Manifest = serde_json::from_slice(&fs::read(config.output.join(MANIFEST))?)
@@ -1478,6 +1556,7 @@ fn drift(config: &Config) -> io::Result<()> {
     if manifest.source != source || manifest.source_sha256 != tree_digest(&source) {
         return Err(io::Error::other("source drift detected"));
     }
+    validate_native_targets(config, &metadata, &revision, &manifest.source_sha256)?;
     let rustdoc = collect_rustdoc_files(&rustdoc_input.paths)?;
     if manifest.rustdoc != rustdoc || manifest.rustdoc_sha256 != tree_digest(&rustdoc) {
         return Err(io::Error::other("rustdoc input drift detected"));
