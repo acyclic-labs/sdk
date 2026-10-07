@@ -1,0 +1,94 @@
+diff --git a/src/bindings/kotlin/gen_kotlin/mod.rs b/src/bindings/kotlin/gen_kotlin/mod.rs
+index cf4d9d15e5..4f1b7a34db 100644
+--- a/src/bindings/kotlin/gen_kotlin/mod.rs
++++ b/src/bindings/kotlin/gen_kotlin/mod.rs
+@@ -157,6 +157,14 @@ impl KotlinVersion {
+ pub struct CustomTypeConfig {
+     imports: Option<Vec<String>>,
+     type_name: Option<String>,
++    /// Generate a nominal wrapper instead of a typealias for this custom type.
++    /// The wrapper is private-constructor and can only be created through the
++    /// generated validating factory below.
++    #[serde(default)]
++    nominal: bool,
++    /// Kotlin predicate evaluated by the generated nominal factory.
++    #[serde(default)]
++    constructor_validation: Option<String>,
+     into_custom: String, // b/w compat alias for lift
+     lift: String,
+     from_custom: String, // b/w compat alias for lower
+diff --git a/src/bindings/kotlin/templates/CustomTypeTemplate.kt b/src/bindings/kotlin/templates/CustomTypeTemplate.kt
+index ac02f5593a..d02e66ccfa 100644
+--- a/src/bindings/kotlin/templates/CustomTypeTemplate.kt
++++ b/src/bindings/kotlin/templates/CustomTypeTemplate.kt
+@@ -13,6 +13,27 @@ public typealias {{ ffi_converter_name }} = {{ builtin|ffi_converter_name }}
+ 
+ {%- let ffi_type_name=builtin|ffi_type|ref|ffi_type_name_by_value(ci) %}
+ 
++{%- if config.nominal %}
++/**
++ * A nominal semantic value backed by the custom type's Rust builtin.
++ * The constructor is private so callers must use the validating factory.
++ */
++@JvmInline
++public value class {{ type_name }} private constructor(public val value: {{ builtin|type_name(ci) }}) {
++    public companion object {
++        public fun from(value: {{ builtin|type_name(ci) }}): {{ type_name }} {
++            {%- match config.constructor_validation %}
++            {%- when Some(predicate) %}
++            require({{ predicate }}) { "Invalid {{ type_name }}" }
++            {%- when None %}
++            {%- endmatch %}
++            return {{ type_name }}(value)
++        }
++    }
++}
++
++{%- endif %}
++
+ {# When the config specifies a different type name, create a typealias for it #}
+ {%- match config.type_name %}
+ {%- when Some(concrete_type_name) %}
+@@ -39,26 +60,38 @@ public typealias {{ type_name }} = {{ concrete_type_name }}
+ public object {{ ffi_converter_name }}: FfiConverter<{{ type_name }}, {{ ffi_type_name }}> {
+     override fun lift(value: {{ ffi_type_name }}): {{ type_name }} {
+         val builtinValue = {{ builtin|lift_fn }}(value)
+-        return {{ config.lift("builtinValue") }}
++        return {% if config.nominal %}{{ type_name }}.from({% endif %}{{ config.lift("builtinValue") }}{% if config.nominal %}){% endif %}
+     }
+ 
+     override fun lower(value: {{ type_name }}): {{ ffi_type_name }} {
++        {%- if config.nominal %}
++        val builtinValue = {{ config.lower("value.value") }}
++        {%- else %}
+         val builtinValue = {{ config.lower("value") }}
++        {%- endif %}
+         return {{ builtin|lower_fn }}(builtinValue)
+     }
+ 
+     override fun read(buf: ByteBuffer): {{ type_name }} {
+         val builtinValue = {{ builtin|read_fn }}(buf)
+-        return {{ config.lift("builtinValue") }}
++        return {% if config.nominal %}{{ type_name }}.from({% endif %}{{ config.lift("builtinValue") }}{% if config.nominal %}){% endif %}
+     }
+ 
+     override fun allocationSize(value: {{ type_name }}): ULong {
++        {%- if config.nominal %}
++        val builtinValue = {{ config.lower("value.value") }}
++        {%- else %}
+         val builtinValue = {{ config.lower("value") }}
++        {%- endif %}
+         return {{ builtin|allocation_size_fn }}(builtinValue)
+     }
+ 
+     override fun write(value: {{ type_name }}, buf: ByteBuffer) {
++        {%- if config.nominal %}
++        val builtinValue = {{ config.lower("value.value") }}
++        {%- else %}
+         val builtinValue = {{ config.lower("value") }}
++        {%- endif %}
+         {{ builtin|write_fn }}(builtinValue, buf)
+     }
+ }
+
+

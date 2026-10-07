@@ -1,0 +1,14 @@
+[bindings.kotlin]
+generate_immutable_records = true
+
+[bindings.kotlin.custom_types.ActorId]
+nominal = true
+constructor_validation = "value.isNotEmpty()"
+
+[bindings.kotlin.custom_types.CodeSha256]
+nominal = true
+constructor_validation = "value.size == 32 && value.any { it != 0.toByte() }"
+
+[bindings.kotlin.custom_types.PositiveU64]
+nominal = true
+constructor_validation = "value > 0uL"
