@@ -1770,17 +1770,27 @@ export class HarnessBuilder {
     components.forkPublisher = this.#forkPublisher;
   } if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
     throw new TypeError("resumable tools require owner-host durable tool execution");
-  } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants);
-    const policy = await validatePolicyIdentity((components.policy)?.identity() ?? null);
-    if (components.host && !samePolicyIdentity(policy, await validatePolicyIdentity(components.host.policyIdentity()))) throw new Error("runtime policy identity differs from durable host policy");
-    if (components.state && !samePolicyIdentity(policy, await validatePolicyIdentity(components.state.policyIdentity()))) throw new Error("runtime policy identity differs from durable state policy");
+  }
+    // Capture caller-owned identity values before the first async Rust
+    // validation can yield. Providers may reuse and mutate their objects.
+    const policyInput = structuredClone((components.policy)?.identity() ?? null);
+    const hostPolicyInput = structuredClone(components.host?.policyIdentity() ?? null);
+    const statePolicyInput = structuredClone(components.state?.policyIdentity() ?? null);
+    const spawnerPolicyInput = structuredClone(components.spawner?.policyIdentity() ?? null);
+    const executionInput = components.execution === undefined ? null : structuredClone(components.execution.identity());
+    const stateExecutionInput = structuredClone(components.state?.executionIdentity?.() ?? null);
+    const spawnerExecutionInput = structuredClone(components.spawner?.executionIdentity?.() ?? null);
+    validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants);
+    const policy = await validatePolicyIdentity(policyInput);
+    if (components.host && !samePolicyIdentity(policy, await validatePolicyIdentity(hostPolicyInput))) throw new Error("runtime policy identity differs from durable host policy");
+    if (components.state && !samePolicyIdentity(policy, await validatePolicyIdentity(statePolicyInput))) throw new Error("runtime policy identity differs from durable state policy");
     if (components.spawner && !components.state && !components.host) throw new Error("durable spawner requires a state binding");
-    if (components.spawner && !samePolicyIdentity(policy, await validatePolicyIdentity(components.spawner.policyIdentity()))) throw new Error("runtime policy identity differs from durable spawner policy");
+    if (components.spawner && !samePolicyIdentity(policy, await validatePolicyIdentity(spawnerPolicyInput))) throw new Error("runtime policy identity differs from durable spawner policy");
     if (components.execution) {
-      const selected = await validatePolicyIdentity(components.execution.identity());
+      const selected = await validatePolicyIdentity(executionInput);
       if (selected === null || "composition" in selected
-        || !samePolicyIdentity(selected, await validatePolicyIdentity(components.state?.executionIdentity?.() ?? null))
-        || !samePolicyIdentity(selected, await validatePolicyIdentity(components.spawner?.executionIdentity?.() ?? null))) {
+        || !samePolicyIdentity(selected, await validatePolicyIdentity(stateExecutionInput))
+        || !samePolicyIdentity(selected, await validatePolicyIdentity(spawnerExecutionInput))) {
         throw new Error("execution provider, state, and spawner routes differ");
       }
     }

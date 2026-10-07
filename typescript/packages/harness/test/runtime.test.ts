@@ -31,6 +31,7 @@ import {
   type TaskAdmissionWire,
   type NativeLimitsWire,
   type WorkflowAdmissionWire,
+  type ComponentIdentity,
   type MessageId,
   type Outcome,
   type OperationId,
@@ -436,10 +437,10 @@ test("artifact binding is independent of conversation content and retains owner 
     .rejects.toThrow("task scope cannot read this file");
   const needsArtifact = await TaskDefinition.live("artifact-task", "1", () => 1,
     { requirements: ["artifacts:write"] });
-  expect(() => Harness.builder(contracts).artifacts(artifacts).task(needsArtifact).build())
-    .toThrow("unsatisfied task requirement");
-  expect(() => Harness.builder(contracts).artifacts(artifacts).grant("artifact:write")
-    .task(needsArtifact).build()).not.toThrow();
+  await expect(Harness.builder(contracts).artifacts(artifacts).task(needsArtifact).build())
+    .rejects.toThrow("unsatisfied task requirement");
+  await expect(Harness.builder(contracts).artifacts(artifacts).grant("artifact:write")
+    .task(needsArtifact).build()).resolves.toBeDefined();
 });
 
 async function mailboxFile(byteLength: number): Promise<FileRef> {
@@ -456,22 +457,22 @@ describe("typed agent runtime", () => {
   test("pins task dependencies and rejects missing versions and cycles at build time", async () => {
     const leaf = await TaskDefinition.live("leaf", "2", () => 1);
     const parent = await TaskDefinition.live("parent", "1", () => 2, { requirements: ["task:leaf@2"] });
-    expect(() => Harness.builder(contracts).task(parent).task(leaf).build()).not.toThrow();
+    await expect(Harness.builder(contracts).task(parent).task(leaf).build()).resolves.toBeDefined();
     const stale = await TaskDefinition.live("stale", "1", () => 0, { requirements: ["task:leaf@1"] });
-    expect(() => Harness.builder(contracts).task(stale).task(leaf).build()).toThrow("unsatisfied task requirement");
+    await expect(Harness.builder(contracts).task(stale).task(leaf).build()).rejects.toThrow("unsatisfied task requirement");
     const left = await TaskDefinition.live("left", "1", () => 1, { requirements: ["task:right@1"] });
     const right = await TaskDefinition.live("right", "1", () => 1, { requirements: ["task:left@1"] });
-    expect(() => Harness.builder(contracts).task(left).task(right).build()).toThrow("task dependency cycle");
+    await expect(Harness.builder(contracts).task(left).task(right).build()).rejects.toThrow("task dependency cycle");
   });
 
   test("admits exact grants but rejects unauthenticated extension requirements", async () => {
     const granted = await TaskDefinition.live("granted-task", "1", () => 1,
       { requirements: ["grant:task:run"] });
-    expect(() => Harness.builder(contracts).grant("task:run").task(granted).build()).not.toThrow();
-    expect(() => Harness.builder(contracts).task(granted).build()).toThrow("unsatisfied task requirement");
+    await expect(Harness.builder(contracts).grant("task:run").task(granted).build()).resolves.toBeDefined();
+    await expect(Harness.builder(contracts).task(granted).build()).rejects.toThrow("unsatisfied task requirement");
     const extension = await TaskDefinition.live("extension-task", "1", () => 1,
       { requirements: ["extension:example.state@3"] });
-    expect(() => Harness.builder(contracts).task(extension).build()).toThrow("unsatisfied task requirement");
+    await expect(Harness.builder(contracts).task(extension).build()).rejects.toThrow("unsatisfied task requirement");
   });
 
   test("requires capability grants and a complete durable binding for task dependencies", async () => {
@@ -480,21 +481,21 @@ describe("typed agent runtime", () => {
       async *generate() { yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     };
-    expect(() => Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
-      .toThrow("unsatisfied task requirement");
-    expect(() => Harness.builder(contracts).model(testModel, provider)
-      .grant("model:generate").task(modelTask).build()).not.toThrow();
-    expect(() => Harness.builder(contracts).grant("model:generate").task(modelTask).build())
-      .not.toThrow();
+    await expect(Harness.builder(contracts).model(testModel, provider).task(modelTask).build())
+      .rejects.toThrow("unsatisfied task requirement");
+    await expect(Harness.builder(contracts).model(testModel, provider)
+      .grant("model:generate").task(modelTask).build()).resolves.toBeDefined();
+    await expect(Harness.builder(contracts).grant("model:generate").task(modelTask).build())
+      .resolves.toBeDefined();
 
     const stateTask = await TaskDefinition.live("state-task", "1", () => 1, { requirements: ["state"] });
     const spawnerTask = await TaskDefinition.live("spawner-task", "1", () => 1, { requirements: ["spawner"] });
     const state = { policyIdentity: () => null } as unknown as HarnessRuntimeState;
     const spawner = { policyIdentity: () => null } as unknown as HarnessRuntimeSpawner;
     expect((await Harness.builder(contracts).state(state).task(stateTask).build()).state).toBe(state);
-    expect(() => Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).toThrow();
-    expect(() => Harness.builder(contracts).state(state).spawner(spawner)
-      .task(stateTask).task(spawnerTask).build()).not.toThrow();
+    await expect(Harness.builder(contracts).spawner(spawner).task(spawnerTask).build()).rejects.toThrow();
+    await expect(Harness.builder(contracts).state(state).spawner(spawner)
+      .task(stateTask).task(spawnerTask).build()).resolves.toBeDefined();
   });
 
   test("retains simultaneous pinned task revisions without an implicit latest", async () => {
@@ -1548,6 +1549,26 @@ describe("typed agent runtime", () => {
     const scoped = await runtime.scoped(ExecutionScope.create().policy({ identity: () => scopedPolicyIdentity,
       evaluate: async () => ({ kind: "deny", reason: "child" }) }));
     await expect(scoped.call(scoped.tool(tool), null)).rejects.toThrow("durable host policy implementation changed after admission");
+  });
+
+  test("snapshots caller-owned policy identity before async Rust admission", async () => {
+    const identity = {
+      name: "mutable-policy",
+      version: "1",
+      digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
+    };
+    const policy = {
+      identity: () => identity,
+      evaluate: async () => ({ kind: "allow" as const }),
+    };
+    const building = Harness.builder(contracts).policy(policy).build();
+    identity.name = "mutated-before-rust-admission";
+    const runtime = await building;
+    expect(runtime.durablePolicyIdentity()).toEqual({
+      name: "mutable-policy",
+      version: "1",
+      digest: Array.from({ length: 32 }, () => 9) as unknown as ComponentIdentity["digest"],
+    });
   });
 
   test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
