@@ -429,7 +429,7 @@ case "$lane" in
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run test
-    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm
+    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
     bun run check:generated
     ;;
   linux-arm64)

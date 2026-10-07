@@ -71,7 +71,7 @@ pub(crate) fn layers(
         layers.extend(layer.map(|layer| layer.with_filter(EnvFilter::new(directives)).boxed()));
     }
     let guard = var("ACYCLIC_TRACE_FILE").and_then(|path| {
-        let file = File::create(with_pid(&path))
+        let file = File::create(trace_path(&path, service))
             .map_err(|error| eprintln!("acyclic: cannot create ACYCLIC_TRACE_FILE: {error}"))
             .ok()?;
         let filter = var("ACYCLIC_TRACE_FILTER").unwrap_or_else(|| DEFAULT_TRACE_FILTER.to_owned());
@@ -127,6 +127,28 @@ pub(crate) fn rpc_method(method: &str) -> &'static str {
         "tools/call" => "tools/call",
         _ => "other",
     }
+}
+
+/// The trace file for this process. The background service inherits the
+/// CLI's environment, so without `{pid}` it writes beside, not over, the
+/// CLI's trace: each process truncates the file it creates.
+fn trace_path(path: &str, service: bool) -> PathBuf {
+    let path = with_pid(path);
+    if !service
+        || path
+            .as_os_str()
+            .to_string_lossy()
+            .contains(&std::process::id().to_string())
+    {
+        return path;
+    }
+    let mut name = path.file_stem().unwrap_or_default().to_os_string();
+    name.push(format!(".service-{}", std::process::id()));
+    if let Some(extension) = path.extension() {
+        name.push(".");
+        name.push(extension);
+    }
+    path.with_file_name(name)
 }
 
 fn with_pid(path: &str) -> PathBuf {
