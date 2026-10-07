@@ -1,10 +1,12 @@
 # Installed native connection cancellation
 
-Run `node run.mjs ABSOLUTE_BINDING_CJS_PATH` against an extracted package's
+Run `node run.mjs ABSOLUTE_BINDING_CJS_PATH EXPECTED_NATIVE_SHA256` against an extracted package's
 generated native binding. The probe records the actual loaded `.node` path and
 SHA-256 from Node's module cache, reaches a stalled TLS endpoint, cancels through
 the generated Rust handle, and requires a typed cancellation result, no remaining
 accepted sockets, no unhandled errors, and exit zero.
+The expected digest comes from the archive's native bytes. The probe verifies
+that digest against the loaded addon and verifies the bytes again after execution.
 
 The fixture drains ClientHello bytes with `socket.resume()` without sending any
 TLS response. A paused Node socket retains unread data and delays EOF/close

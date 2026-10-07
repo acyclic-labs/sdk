@@ -15,13 +15,14 @@ from acyclic_actors_uniffi import (
     InvokeActorResponse,
     SubscriptionSpec,
     SubscriptionStart,
+    SubscriptionStartValue,
 )
 
 actor_id: ActorId = ActorId("actor-a")
 digest: CodeSha256 = CodeSha256(bytes(range(32)))
 binding: Binding = Binding("handler", "http", "https://example.test")
 limits: ActorLimits = ActorLimits(1, 2, 3)
-start: SubscriptionStart = SubscriptionStart.CURSOR(1)
+start: SubscriptionStartValue = SubscriptionStart.CURSOR(1)
 subscription: SubscriptionSpec = SubscriptionSpec(
     "events",
     "events/input",
