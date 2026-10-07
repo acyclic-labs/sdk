@@ -18,7 +18,6 @@ import type {
   OperationOut as RustOperationOut,
   PageOut as RustPageOut,
   QualificationOut as RustQualificationOut,
-  TimedOut as RustTimedOut,
   UsageOut as RustUsageOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 // Importing the runtime initializes WASM, so synchronous identity constructors
@@ -54,9 +53,8 @@ type PublicCompatibility<Value> = Value extends unknown
   ? { readonly [Key in keyof Value]: Key extends "capabilities" ? readonly Capability[] : Value[Key] }
   : never;
 export type CompatibilityPolicy = PublicCompatibility<ReadonlyGenerated<RustCompatibilityOut>>;
-type PublicTimed = ReadonlyGenerated<RustTimedOut>;
-export type SuspensionPolicy = Extract<PublicTimed, { readonly kind: "manual" | "after-idle" }>;
-export type ExpirationPolicy = Extract<PublicTimed, { readonly kind: "never" | "max-age" | "at" | "idle" }>;
+export type SuspensionPolicy = ReadonlyGenerated<RustCreateIn["suspension"]>;
+export type ExpirationPolicy = ReadonlyGenerated<RustCreateIn["expiration"]>;
 export type Budgets = ReadonlyGenerated<RustBudgetsIn>;
 
 type PublicCreate = ReadonlyGenerated<RustCreateIn>;
