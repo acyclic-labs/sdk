@@ -17,6 +17,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "captureDiscoveredContext", "contextForRequest", "readPinnedContextPath",
   "prepareConversationTurn",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
+  "validateAuthorityPathSegment", "validateComponentLabel",
   "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
   "validateTaskRequirements",
   "validateTaskChildrenPage",
