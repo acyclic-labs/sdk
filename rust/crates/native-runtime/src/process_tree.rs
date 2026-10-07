@@ -260,6 +260,8 @@ mod platform {
             // child's ID. WNOWAIT retains the leader until group termination,
             // preventing its PID/PGID from being reused for an unrelated group.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: `info` is writable storage owned by this frame and `id`
+            // names the exclusively owned child.
             if unsafe { libc::waitid(libc::P_PID, id, &raw mut info, flags) } != 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::Interrupted {
@@ -271,6 +273,7 @@ mod platform {
             if unsafe { info.si_pid() } == 0 {
                 return Ok(None);
             }
+            // SAFETY: the same WEXITED observation initialized the status field.
             let status = unsafe { info.si_status() };
             let raw = match info.si_code {
                 libc::CLD_EXITED => status << 8,
@@ -289,10 +292,12 @@ mod platform {
         // SAFETY: this owned pipe is used exclusively by the collector. Setting
         // O_NONBLOCK prevents an escaped descendant from holding up cleanup.
         let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
-        if flags == -1
-            || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                == -1
-        {
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the same owned pipe; only O_NONBLOCK is added to the flags
+        // just read from it.
+        if unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
             return Err(io::Error::last_os_error());
         }
         match pipe.read(buffer) {
