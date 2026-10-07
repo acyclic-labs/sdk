@@ -237,7 +237,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
-        || maximum_projected_attachments > MAX_PROJECTION_PROJECTED_ATTACHMENTS
+        || maximum_projected_attachments as u64 > MAX_PROJECTION_PROJECTED_ATTACHMENTS as u64
         || selection.message_ids.len() > maximum_messages
     {
         return Err(Error::Invalid(

@@ -116,19 +116,19 @@ impl Limits {
         if self.file_bytes == 0
             || self.file_bytes > MAX_LIMIT_FILE_BYTES
             || self.path_bytes == 0
-            || self.path_bytes > MAX_PATH_BYTES
+            || self.path_bytes as u64 > MAX_PATH_BYTES as u64
             || self.attachments == 0
-            || self.attachments > MAX_LIMIT_ATTACHMENTS
+            || self.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
             || self.render_bytes == 0
             || self.render_bytes > MAX_LIMIT_RENDER_BYTES
             || self.model_steps == 0
-            || self.model_steps > MAX_LIMIT_MODEL_STEPS
+            || self.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
             || self.model_events_per_step == 0
-            || self.model_events_per_step > MAX_LIMIT_MODEL_EVENTS_PER_STEP
+            || self.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
             || self.tool_calls_per_step == 0
-            || self.tool_calls_per_step > MAX_LIMIT_TOOL_CALLS_PER_STEP
+            || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
             || self.context_messages == 0
-            || self.context_messages > MAX_LIMIT_CONTEXT_MESSAGES
+            || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
         {
             return Err(Error::Invalid("harness limits are invalid".into()));
         }
@@ -858,7 +858,7 @@ impl PrivateDirectoryPage {
     /// the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
         self.generation.validate()?;
-        if self.entries.len() > MAX_PRIVATE_DIRECTORY_PAGE {
+        if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
             ));
@@ -1178,7 +1178,7 @@ impl Attachment {
 /// Unlike generic canonical JSON, this preserves the typed serde field order
 /// required by manifest admission across Rust and WASM producers.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
-    if items.len() > MAX_LIMIT_ATTACHMENTS {
+    if items.len() as u64 > MAX_LIMIT_ATTACHMENTS as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
@@ -1536,7 +1536,7 @@ fn validate_label(value: &str, limit: usize) -> Result<()> {
 /// Backslashes, traversal segments, control characters, and oversized paths are rejected.
 pub fn validate_content_path(path: &str) -> Result<()> {
     if path.is_empty()
-        || path.len() > MAX_PATH_BYTES
+        || path.len() as u64 > MAX_PATH_BYTES as u64
         || path.starts_with('/')
         || path.contains('\\')
         || path.chars().any(char::is_control)

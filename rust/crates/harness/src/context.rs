@@ -334,7 +334,7 @@ async fn validate_context_refs(
     }
     for (name, file) in &context.metadata {
         if !name.contains('.')
-            || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
+            || name.len() as u64 > crate::COMPONENT_LABEL_MAX_BYTES as u64
             || name.chars().any(char::is_control)
         {
             return Err(crate::Error::Invalid(

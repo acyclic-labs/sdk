@@ -179,7 +179,7 @@ fn write_canonical_json(value: &serde_json::Value, bytes: &mut Vec<u8>) -> Resul
 /// Returns whether a component label satisfies the shared Rust spelling rule.
 pub fn is_valid_component_label(value: &str) -> bool {
     !(value.is_empty()
-        || value.len() > COMPONENT_LABEL_MAX_BYTES
+        || value.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
         || value
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())

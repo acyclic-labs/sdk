@@ -451,8 +451,8 @@ impl Scheduler {
         spec.state.validate()?;
         if spec.placement.iter().any(|(key, value)| {
             key.is_empty()
-                || key.len() > COMPONENT_LABEL_MAX_BYTES
-                || value.len() > COMPONENT_LABEL_MAX_BYTES
+                || key.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
+                || value.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
                 || key.chars().any(char::is_control)
                 || value.chars().any(char::is_control)
         }) {
@@ -472,7 +472,7 @@ impl Scheduler {
         }
         if let Some(parent) = &spec.parent {
             if parent.slot.trim().is_empty()
-                || parent.slot.len() > COMPONENT_LABEL_MAX_BYTES
+                || parent.slot.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
                 || parent.slot.chars().any(char::is_control)
             {
                 return Err(Error::Invalid("structured child slot is invalid".into()));

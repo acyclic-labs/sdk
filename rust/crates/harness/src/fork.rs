@@ -76,7 +76,7 @@ impl InheritedConversationPrefix {
                 "inherited prefix exceeds parent history".into(),
             ));
         }
-        if attached_agents.len() > MAX_FORK_AGENTS {
+        if attached_agents.len() as u64 > MAX_FORK_AGENTS as u64 {
             return Err(Error::Invalid(
                 "too many attached agents for inherited context".into(),
             ));
@@ -340,7 +340,7 @@ impl CompositeForkVerifier {
             manifest_members = manifest_members
                 .checked_add(items.len())
                 .ok_or_else(|| Error::Invalid("fork manifest membership count overflow".into()))?;
-            if manifest_members > MAX_FORK_REFERENCES {
+            if manifest_members as u64 > MAX_FORK_REFERENCES as u64 {
                 return Err(Error::Invalid(
                     "fork manifests exceed aggregate member limit".into(),
                 ));
@@ -864,8 +864,8 @@ pub trait ForkCaptureProvider: Send + Sync {
 impl ForkRequest {
     /// Checks identities, resource selections and optional attestation metadata.
     pub fn validate(&self) -> Result<()> {
-        if self.attached_agents.len() > MAX_FORK_AGENTS
-            || self.selections.len() > MAX_FORK_RESOURCES
+        if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
+            || self.selections.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid(
                 "fork request exceeds protocol limits".into(),
@@ -897,7 +897,7 @@ impl ForkRequest {
                 > self.preparation.maximum_inherited_messages
             || self.preparation.maximum_inherited_bytes == 0
             || self.preparation.maximum_inherited_references == 0
-            || self.preparation.maximum_inherited_references as usize > MAX_FORK_REFERENCES
+            || u64::from(self.preparation.maximum_inherited_references) > MAX_FORK_REFERENCES as u64
         {
             return Err(Error::Invalid("fork preparation is invalid".into()));
         }
@@ -1155,10 +1155,10 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
-        if self.inherited_context.len() > MAX_FORK_RESOURCES
-            || self.shared_grants.len() > MAX_FORK_REFERENCES
-            || self.reference_grants.len() > MAX_FORK_REFERENCES
-            || self.attachment_manifests.len() > MAX_FORK_RESOURCES
+        if self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
+            || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid("fork report exceeds protocol limits".into()));
         }
@@ -1339,12 +1339,13 @@ impl ForkSeed {
         reason = "validates the complete fork seed contract"
     )]
     pub fn validate(&self) -> Result<()> {
-        if self.attached_agents.len() > MAX_FORK_AGENTS
-            || self.resources.len().saturating_add(self.omissions.len()) > MAX_FORK_RESOURCES
-            || self.reference_grants.len() > MAX_FORK_REFERENCES
-            || self.shared_grants.len() > MAX_FORK_REFERENCES
-            || self.inherited_context.len() > MAX_FORK_RESOURCES
-            || self.attachment_manifests.len() > MAX_FORK_RESOURCES
+        if self.attached_agents.len() as u64 > MAX_FORK_AGENTS as u64
+            || self.resources.len().saturating_add(self.omissions.len()) as u64
+                > MAX_FORK_RESOURCES as u64
+            || self.reference_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.shared_grants.len() as u64 > MAX_FORK_REFERENCES as u64
+            || self.inherited_context.len() as u64 > MAX_FORK_RESOURCES as u64
+            || self.attachment_manifests.len() as u64 > MAX_FORK_RESOURCES as u64
         {
             return Err(Error::Invalid("fork seed exceeds protocol limits".into()));
         }

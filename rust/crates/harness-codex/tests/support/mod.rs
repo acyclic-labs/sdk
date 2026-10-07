@@ -511,10 +511,7 @@ impl ExecutionJournal for Journal {
         maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
         async move {
-            if maximum == 0
-                || maximum > acyclic_harness::executor::MAX_EXECUTION_PAGE_RECORDS
-                || after > acyclic_harness::executor::MAX_EXECUTION_RECORDS
-            {
+            if maximum == 0 {
                 return Err(Error::Invalid(
                     "execution replay page bound is invalid".into(),
                 ));
