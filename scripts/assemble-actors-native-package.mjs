@@ -57,6 +57,9 @@ async function main() {
   const output = resolve(options.output);
   const metadata = JSON.parse(await readFile(join(bundle, "native-targets.json"), "utf8"));
   if (metadata.source_revision !== sourceSha) fail("native bundle source revision differs from signed source");
+  for (const name of ["acyclic_actors_wasm.js", "acyclic_actors_wasm_bg.wasm"]) {
+    await readFile(join(packagePath, "generated", "wasm", name));
+  }
   const manifest = JSON.parse(await readFile(join(packagePath, "package.json"), "utf8"));
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-actors-package-"));
   try {
