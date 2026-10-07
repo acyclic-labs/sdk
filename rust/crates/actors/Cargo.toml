@@ -8,20 +8,29 @@ repository.workspace = true
 publish.workspace = true
 description = "Public Actors v1 contract and validation"
 readme = "README.md"
+build = "build.rs"
 
 [dependencies]
 prost.workspace = true
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
 prost-reflect = { workspace = true, features = ["serde"] }
 reqwest.workspace = true
 serde_json.workspace = true
+ts-rs = "=12.0.1"
 thiserror.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 
 [dev-dependencies]
-acyclic-workers = { path = "../workers" }
 tokio.workspace = true
 rcgen = "0.14.10"
+
+[build-dependencies]
+prost.workspace = true
+protoc-bin-vendored.workspace = true
+protify = { version = "=0.1.4", default-features = false, features = ["std"] }
+tonic-prost-build.workspace = true
+ts-rs = "=12.0.1"
 
 [lints]
 workspace = true

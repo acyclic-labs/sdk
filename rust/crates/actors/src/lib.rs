@@ -2,18 +2,23 @@
 
 use std::collections::HashSet;
 
+/// Rust-owned Actors contract declarations and schema renderer.
+pub mod contract;
+
+/// Rust-owned semantic projections for generated SDK metadata.
+pub mod domain;
+
+/// Authenticated native gRPC client for the canonical Actors service.
 pub mod grpc;
+/// Authenticated native HTTP client for the canonical Actors service.
 pub mod http;
 
-/// Generated Actors v1 wire types. The documented schema is `proto/actors/v1/actors.proto`.
-pub mod wire {
-    #![allow(missing_docs, reason = "generated from the public Actors schema")]
-    #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
-    include!("generated/acyclic.actors.v1.rs");
-}
+/// Generated Actors v1 wire types and tonic service facade.
+pub mod wire;
 
-/// Canonical version-one descriptor set.
-pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("generated/acyclic-actors-v1.bin");
+/// Canonical version-one descriptor set emitted from the Rust contract.
+pub const FILE_DESCRIPTOR_SET: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
 /// Maximum subscriptions on one Actor contract.
 pub const MAX_SUBSCRIPTIONS: usize = 64;
 /// Maximum named bindings on one Actor contract.
@@ -174,7 +179,7 @@ mod tests {
         assert!(!subscription(&invalid));
 
         let mut create = wire::CreateActorRequest {
-            code_sha256: vec![1; 32],
+            code_sha256: vec![1; 32].into(),
             home_region: "eu".into(),
             bindings: vec![],
             limits: Some(wire::ActorLimits {

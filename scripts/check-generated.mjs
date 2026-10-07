@@ -167,6 +167,9 @@ try {
     const committed = readFileSync(join(committedRust, relative), "utf8");
     if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
   }
+  // The Actors descriptor destination is the current Buf fixture, not the
+  // immutable archive baseline. Rust runtime parity with both the current Buf
+  // fixture and the archive is proved by descriptor_compatibility.rs.
   for (const [source, destination] of generatedDescriptors) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
     const built = spawnSync(executable, ["build", "--path", source, "-o", descriptor], {

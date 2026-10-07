@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
 const modules = [
+  "stage-actors-contract.mjs",
   "generate-runtime-routes.mjs",
   "filesystem-napi-types.mjs",
   "generate-filesystem-defaults.mjs",
