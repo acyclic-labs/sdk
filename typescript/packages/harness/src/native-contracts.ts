@@ -1,6 +1,7 @@
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
+  Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput,
   InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
@@ -27,6 +28,9 @@ export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
 export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
 /** JSON value accepted by the Rust admission ABI after schema validation. */
 export type NativeJsonValue = WasmToolJsonValue;
+/** Pinned composition values generated from the production Rust types. */
+export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
+  ContextRepresentation, ContextExtent, ContextRenderMode, ContextPlacement } from "../generated/wasm/acyclic_harness_wasm.js";
 export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
@@ -211,6 +215,19 @@ export class NativeContracts {
   /** The Rust tool registry's JSON Schema admission, before a typed parser runs. */
   validateToolValue(schema: ToolJsonSchema, value: unknown): unknown {
     return normalizeNativeValue(this.native.validateToolValue(schema, value), true);
+  }
+
+  /** Validate host-approved selections without granting read authority. */
+  validateContextSelection(selection: ContextSelection, limits: Limits): void {
+    this.native.validateContextSelection(selection, limits);
+  }
+
+  /** Shared Rust projection placement and finite bounds; performs no effects. */
+  applyContextProjection(context: Context, messages: readonly WasmModelMessageInput[],
+    mode: ContextRenderMode, placement: ContextPlacement, limits: Limits): Context {
+    return freezeNative(normalizeNativeValue(this.native.applyContextProjection(
+      context, messages, mode, placement, limits,
+    ))) as Context;
   }
 
   /** Rust owns the complete model-visible tool definition contract. */

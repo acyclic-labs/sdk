@@ -19,6 +19,9 @@ use acyclic_stream::{
 use bytes::Bytes;
 use futures::StreamExt as _;
 
+mod selection;
+pub use selection::*;
+
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct CompactionReference {
@@ -100,16 +103,7 @@ impl DurableContextProvider {
             ));
         }
         if let Some(reference) = &compaction {
-            let revisions = self.revisions().await?;
-            let source = expected_revision
-                .checked_sub(1)
-                .and_then(|index| usize::try_from(index).ok())
-                .and_then(|index| revisions.get(index))
-                .ok_or_else(|| {
-                    crate::Error::Invalid(
-                        "compaction must reference the immediately preceding context".into(),
-                    )
-                })?;
+            let source = self.read_revision(expected_revision).await?;
             validate_compaction(reference, &source.context, &context)?;
         }
         let record = ContextRevision {
@@ -176,26 +170,7 @@ impl DurableContextProvider {
         let mut revisions: Vec<ContextRevision> = Vec::new();
         while let Some(record) = stream.next().await {
             let record = record.map_err(|error| crate::Error::Storage(error.to_string()))?;
-            let revision: ContextRevision = serde_json::from_slice(&record.value)
-                .map_err(|error| crate::Error::Storage(error.to_string()))?;
-            if crate::contract::canonical_json_bytes(&revision)
-                .map_err(|error| crate::Error::Storage(error.to_string()))?
-                != record.value.as_ref()
-            {
-                return Err(crate::Error::Storage(
-                    "durable context revision is not canonical JSON".into(),
-                ));
-            }
-            let expected = next_revision(record.sequence)?;
-            if revision.format_version != 2
-                || revision.revision != expected
-                || revision.source != self.source
-                || revision.source_revision != self.source_revision
-            {
-                return Err(crate::Error::Storage(
-                    "durable context history failed identity or revision validation".into(),
-                ));
-            }
+            let revision = self.decode_revision(record.sequence, &record.value).await?;
             if let Some(reference) = &revision.compaction {
                 let source = revisions.last().ok_or_else(|| {
                     crate::Error::Storage(
@@ -205,7 +180,6 @@ impl DurableContextProvider {
                 validate_compaction(reference, &source.context, &revision.context)
                     .map_err(|error| crate::Error::Storage(error.to_string()))?;
             }
-            validate_context_refs(&revision.context, self.content_verifier.as_ref()).await?;
             revisions.push(revision);
         }
         if revisions.len() as u64 != tail {
@@ -216,14 +190,68 @@ impl DurableContextProvider {
         Ok(revisions)
     }
 
-    /// Returns the latest reconstructed context, or an empty context before the first append.
+    async fn decode_revision(&self, sequence: u64, bytes: &[u8]) -> Result<ContextRevision> {
+        let revision: ContextRevision = serde_json::from_slice(bytes)
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        if crate::contract::canonical_json_bytes(&revision)? != bytes
+            || revision.format_version != 2
+            || revision.revision != next_revision(sequence)?
+            || revision.source != self.source
+            || revision.source_revision != self.source_revision
+        {
+            return Err(crate::Error::Storage(
+                "durable context identity, revision or canonical bytes are invalid".into(),
+            ));
+        }
+        validate_context_refs(&revision.context, self.content_verifier.as_ref()).await?;
+        Ok(revision)
+    }
+
+    async fn read_revision(&self, revision: u64) -> Result<ContextRevision> {
+        if revision == 0 || revision > u64::from(self.maximum_revisions) {
+            return Err(crate::Error::Invalid(
+                "context revision is outside configured bounds".into(),
+            ));
+        }
+        let mut stream = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from: revision - 1,
+                limit: 1,
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        let record = stream
+            .next()
+            .await
+            .ok_or_else(|| crate::Error::Storage("context revision is missing".into()))?
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        if record.sequence != revision - 1 || stream.next().await.is_some() {
+            return Err(crate::Error::Storage(
+                "context revision read returned an invalid range".into(),
+            ));
+        }
+        self.decode_revision(record.sequence, &record.value).await
+    }
+
+    /// Returns a captured latest revision with at most two record reads, independent
+    /// of retained revision count. Explicit `revisions()` remains bounded archival replay.
     pub async fn latest(&self) -> Result<Context> {
-        Ok(self
-            .revisions()
-            .await?
-            .last()
-            .map(|revision| revision.context.clone())
-            .unwrap_or_default())
+        let tail = match self.provider.tail(self.path.clone()).await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(crate::Error::Storage(error.to_string())),
+        };
+        if tail == 0 {
+            return Ok(Context::default());
+        }
+        let revision = self.read_revision(tail).await?;
+        if let Some(reference) = &revision.compaction {
+            let source = self.read_revision(tail - 1).await?;
+            validate_compaction(reference, &source.context, &revision.context)?;
+        }
+        Ok(revision.context)
     }
 
     /// Deterministically compacts a context and returns its immutable source reference.
@@ -335,8 +363,16 @@ pub trait ContextSource: Send + Sync {
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
 
+impl ContextSource for Context {
+    fn load<'a>(&'a self, _: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+        Box::pin(async move { Ok(self.messages.clone()) })
+    }
+}
+
 /// Placement of source messages relative to existing context.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub enum ContextPlacement {
     /// Insert before current messages.
     Prepend,
@@ -371,6 +407,11 @@ impl SourceStage {
 }
 
 impl ContextStage for SourceStage {
+    fn validate(&self) -> Result<()> {
+        crate::contract::validate_component_label(&self.name, "context source")?;
+        crate::contract::validate_component_label(&self.revision, "context source revision")
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -389,18 +430,11 @@ impl ContextStage for SourceStage {
     fn apply<'a>(
         &'a self,
         input: &'a ContextInput,
-        mut context: Context,
+        context: Context,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            let mut loaded = self.source.load(input).await?;
-            match self.placement {
-                ContextPlacement::Prepend => {
-                    loaded.append(&mut context.messages);
-                    context.messages = loaded;
-                }
-                ContextPlacement::Append => context.messages.append(&mut loaded),
-            }
-            Ok(context)
+            let loaded = self.source.load(input).await?;
+            Ok(selection::place_messages(context, loaded, self.placement))
         })
     }
 }
@@ -414,6 +448,15 @@ pub struct CompactionStage {
 }
 
 impl ContextStage for CompactionStage {
+    fn validate(&self) -> Result<()> {
+        if self.max_messages == 0 {
+            return Err(crate::Error::Invalid(
+                "compaction max_messages must be positive".into(),
+            ));
+        }
+        Ok(())
+    }
+
     fn name(&self) -> &str {
         "compaction"
     }
@@ -433,11 +476,7 @@ impl ContextStage for CompactionStage {
         mut context: Context,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            if self.max_messages == 0 {
-                return Err(crate::Error::Invalid(
-                    "compaction max_messages must be positive".into(),
-                ));
-            }
+            self.validate()?;
             if context.messages.len() > self.max_messages {
                 let keep = self
                     .max_messages
@@ -456,10 +495,14 @@ impl ContextStage for CompactionStage {
 
 /// Mutable context assembled for one model step.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
 pub struct Context {
     /// Ordered model-visible messages.
+    #[cfg_attr(feature = "wasm", tsify(type = "WasmModelMessageWire[]"))]
     pub messages: Vec<ModelMessage>,
     /// Stage-owned, namespaced version-pinned metadata files.
+    #[cfg_attr(feature = "wasm", tsify(type = "Record<string, WasmFileRefWire>"))]
     pub metadata: BTreeMap<String, FileRef>,
 }
 
@@ -486,6 +529,18 @@ pub trait ContextStage: Send + Sync {
     /// Immutable serializable identity included in durable execution binding.
     fn contract(&self) -> Value;
 
+    /// Validates a replacement before installation. Custom implementations may
+    /// reject incompatible configuration; rejection never replaces the last valid pipeline.
+    fn validate(&self) -> Result<()> {
+        crate::contract::validate_component_label(self.name(), "context stage")?;
+        if !self.contract().is_object() {
+            return Err(crate::Error::Invalid(
+                "context stage contract must be an object".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Transforms context; stage order is the order supplied by application code.
     fn apply<'a>(
         &'a self,
@@ -499,6 +554,23 @@ pub trait ContextStage: Send + Sync {
 pub struct ContextPipeline(Vec<Arc<dyn ContextStage>>);
 
 impl ContextPipeline {
+    /// Validates stage identities before installation or explicit reload.
+    /// Implementations must keep their contract and pinned state immutable.
+    pub fn validate(&self) -> Result<()> {
+        for stage in &self.0 {
+            stage.validate()?;
+        }
+        Ok(())
+    }
+
+    /// Installs a structurally valid replacement for future operations only.
+    /// Failure leaves this pipeline and its visibly inspectable contracts intact;
+    /// existing clones retain their original stage implementations.
+    pub fn reload(&self, replacement: Self) -> Result<Self> {
+        replacement.validate()?;
+        Ok(replacement)
+    }
+
     /// Creates a pipeline in exact execution order.
     #[must_use]
     pub fn new(stages: impl IntoIterator<Item = Arc<dyn ContextStage>>) -> Self {
@@ -514,6 +586,23 @@ impl ContextPipeline {
 
     /// Runs every stage in declared order.
     pub async fn run(&self, input: &ContextInput) -> Result<Context> {
+        self.run_bounded(input, crate::conversation::Limits::default())
+            .await
+    }
+
+    /// Bounds the initial view and every intermediate projection, without truncation.
+    pub async fn run_bounded(
+        &self,
+        input: &ContextInput,
+        limits: crate::conversation::Limits,
+    ) -> Result<Context> {
+        limits.validate()?;
+        self.validate()?;
+        if self.0.len() > limits.context_messages {
+            return Err(crate::Error::Invalid(
+                "context stage count exceeds limit".into(),
+            ));
+        }
         input.input.validate_user_input()?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input)?;
@@ -534,8 +623,10 @@ impl ContextPipeline {
                 .collect(),
             metadata: BTreeMap::new(),
         };
+        validate_projected_context(&context, limits)?;
         for stage in &self.0 {
             context = stage.apply(input, context).await?;
+            validate_projected_context(&context, limits)?;
         }
         Ok(context)
     }
@@ -566,6 +657,224 @@ mod tests {
     use std::{future::Future, pin::Pin};
 
     struct RefVerifier;
+
+    struct CountingVerifier(std::sync::atomic::AtomicUsize);
+    impl ContentResidencyVerifier for CountingVerifier {
+        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                file.validate()
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_context_work_is_independent_of_retained_revisions() -> Result<()> {
+        for retained in [1, 16, 128] {
+            let verifier = Arc::new(CountingVerifier(std::sync::atomic::AtomicUsize::new(0)));
+            let provider = DurableContextProvider::new(
+                Arc::new(MemoryStream::default()),
+                StreamPath::new("bounded/context")
+                    .map_err(|error| crate::Error::Invalid(error.to_string()))?,
+                "instructions",
+                "1",
+                128,
+                verifier.clone(),
+            )?;
+            let context = Context {
+                messages: vec![message(ModelRole::System, "pinned")?],
+                metadata: BTreeMap::new(),
+            };
+            for revision in 0..retained {
+                provider
+                    .append(
+                        revision,
+                        context.clone(),
+                        None,
+                        Bytes::from(format!("revision-{revision}")),
+                    )
+                    .await?;
+            }
+            verifier.0.store(0, std::sync::atomic::Ordering::SeqCst);
+            let started = std::time::Instant::now();
+            assert_eq!(provider.latest().await?, context);
+            assert_eq!(verifier.0.load(std::sync::atomic::Ordering::SeqCst), 1);
+            eprintln!(
+                "context retained={retained} verified_refs=1 active_wire_bytes={} elapsed_us={}",
+                crate::contract::canonical_json_bytes(&context)?.len(),
+                started.elapsed().as_micros()
+            );
+        }
+        Ok(())
+    }
+
+    struct AttributeRenderer;
+
+    impl ContextRenderer for AttributeRenderer {
+        fn contract(&self) -> Value {
+            serde_json::json!({"revision": "1"})
+        }
+
+        fn render<'a>(
+            &'a self,
+            selection: &'a ContextSelection,
+            mode: ContextRenderMode,
+            _: &'a ContextInput,
+            _: crate::conversation::Limits,
+        ) -> BoxFuture<'a, Result<Vec<ModelMessage>>> {
+            Box::pin(async move {
+                let ContextSourceValue::Attribute { attribute } = &selection.source else {
+                    return Err(crate::Error::Unsupported(
+                        "test renderer handles attributes".into(),
+                    ));
+                };
+                Ok(vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!(
+                        "{mode:?}:{:?}:{}:{}",
+                        selection.representation, attribute.state_revision, attribute.value
+                    )),
+                }])
+            })
+        }
+    }
+
+    fn attribute_pipeline(
+        value: &str,
+        mode: ContextRenderMode,
+        representation: ContextRepresentation,
+    ) -> Result<ContextPipeline> {
+        let attribute = ContextAttribute::typed(
+            "example.role".into(),
+            "1".into(),
+            serde_json::json!({"type":"string"}),
+            value.into(),
+            &value,
+        )?;
+        Ok(ContextPipeline::new([Arc::new(SelectionStage::new(
+            "role".into(),
+            ContextSelection {
+                source: ContextSourceValue::Attribute { attribute },
+                extent: ContextExtent::Whole,
+                representation,
+            },
+            Arc::new(AttributeRenderer),
+            Arc::new(RefVerifier),
+            mode,
+            ContextPlacement::Prepend,
+            crate::conversation::Limits::default(),
+        )?) as Arc<dyn ContextStage>]))
+    }
+
+    #[tokio::test]
+    async fn attribute_update_reload_and_bounds_use_one_pinned_state() -> Result<()> {
+        let input = ContextInput {
+            input: ModelContent::Text("task".into()),
+            selected_context: None,
+            step: 0,
+            prior_messages: Vec::new(),
+        };
+        let old = attribute_pipeline(
+            "old",
+            ContextRenderMode::Prompt,
+            ContextRepresentation::Full,
+        )?;
+        let snapshot = old.clone();
+        let current = old.reload(attribute_pipeline(
+            "new",
+            ContextRenderMode::Prompt,
+            ContextRepresentation::Full,
+        )?)?;
+        assert_ne!(snapshot.contracts(), current.contracts());
+        let rebuilt = current.run(&input).await?;
+        let update = attribute_pipeline(
+            "new",
+            ContextRenderMode::Update,
+            ContextRepresentation::Full,
+        )?
+        .run(&input)
+        .await?;
+        assert_eq!(
+            rebuilt.messages.first().map(|m| &m.content),
+            Some(&ModelContent::Text("Prompt:Full:new:\"new\"".into()))
+        );
+        assert_eq!(
+            update.messages.last().map(|m| &m.content),
+            Some(&ModelContent::Text("Update:Full:new:\"new\"".into()))
+        );
+        for representation in [
+            ContextRepresentation::Full,
+            ContextRepresentation::Summary,
+            ContextRepresentation::Reference,
+        ] {
+            let view = attribute_pipeline("new", ContextRenderMode::Prompt, representation)?
+                .run(&input)
+                .await?;
+            assert_eq!(
+                view.messages.first().map(|m| &m.content),
+                Some(&ModelContent::Text(format!(
+                    "Prompt:{representation:?}:new:\"new\""
+                )))
+            );
+        }
+        assert_eq!(snapshot.run(&input).await?, old.run(&input).await?);
+        assert!(
+            old.reload(ContextPipeline::new([Arc::new(CompactionStage {
+                max_messages: 0,
+                summary: None,
+            })
+                as Arc<dyn ContextStage>]))
+                .is_err()
+        );
+        assert_eq!(old.contracts(), snapshot.contracts());
+        assert!(
+            ContextAttribute::typed(
+                "example.role".into(),
+                "1".into(),
+                serde_json::json!({"type":"integer"}),
+                "2".into(),
+                &"invalid"
+            )
+            .is_err()
+        );
+        let tiny = SelectionStage::new(
+            "role".into(),
+            ContextSelection {
+                source: ContextSourceValue::Attribute {
+                    attribute: ContextAttribute::typed(
+                        "example.role".into(),
+                        "1".into(),
+                        serde_json::json!({"type":"string"}),
+                        "1".into(),
+                        &"role",
+                    )?,
+                },
+                extent: ContextExtent::Whole,
+                representation: ContextRepresentation::Full,
+            },
+            Arc::new(AttributeRenderer),
+            Arc::new(RefVerifier),
+            ContextRenderMode::Prompt,
+            ContextPlacement::Append,
+            crate::conversation::Limits {
+                render_bytes: 1,
+                ..crate::conversation::Limits::default()
+            },
+        );
+        assert!(tiny.is_err());
+        Ok(())
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn file_spans_are_exact_and_bounded(start in 0u64..20, end in 0u64..20) {
+            let content = message(ModelRole::User, "1234567890").unwrap();
+            let ModelContent::Part(ModelContentPart::File { file, .. }) = content.content else { unreachable!() };
+            let selection = ContextSelection { source: ContextSourceValue::File { file },
+                extent: ContextExtent::Span { start, end }, representation: ContextRepresentation::Full };
+            proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default()).is_ok(), start < end && end <= 10);
+        }
+    }
 
     impl ContentResidencyVerifier for RefVerifier {
         fn verify<'a>(

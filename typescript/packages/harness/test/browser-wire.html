@@ -14,7 +14,7 @@
 <body data-result="pending">
 <script type="module">
 import { create } from "@bufbuild/protobuf";
-import { EmbeddedWireTransport, Harness, WireError } from "../dist/index.js";
+import { DEFAULT_LIMITS, EmbeddedWireTransport, Harness, NativeContracts, WireError } from "../dist/index.js";
 import { ErrorCode, HandshakeRequestSchema, HandshakeResponseSchema, ResumeRequestSchema } from "../dist/proto.js";
 
 try {
@@ -40,6 +40,23 @@ try {
   }
   const harness = await Harness.create(options);
   globalThis.fetch = originalFetch;
+  const contracts = await NativeContracts.create();
+  const role = new URL(location.href).searchParams.get("role") ?? "browser";
+  const selection = { source: { kind: "attribute", attribute: {
+    type_name: "example.role", type_revision: "1", state_revision: "2",
+    schema: { type: "string" }, value: role,
+  } }, extent: { kind: "whole" }, representation: "full" };
+  contracts.validateContextSelection(selection, DEFAULT_LIMITS);
+  const base = { messages: [{ role: "user", content: "task" }], metadata: {} };
+  const rendered = [{ role: "system", content: role }];
+  const rebuilt = contracts.applyContextProjection(base, rendered, "prompt", "prepend", DEFAULT_LIMITS);
+  const update = contracts.applyContextProjection(base, rendered, "update", "prepend", DEFAULT_LIMITS);
+  if (rebuilt.messages[0].content !== role || update.messages[1].content !== role
+      || base.messages.length !== 1) throw new Error("context projection/state isolation failed");
+  let rejected = false;
+  try { contracts.applyContextProjection(base, rendered, "prompt", "prepend", { ...DEFAULT_LIMITS, render_bytes: 1 }); }
+  catch { rejected = true; }
+  if (!rejected) throw new Error("oversized mandatory context accepted");
   const protocol = harness.protocolIdentity();
   const api = {
     async handshake(request) {

@@ -24,7 +24,27 @@ Durable scheduler declarations pin initial process state by `FileRef`, not inlin
 cargo add acyclic-harness
 ```
 
-The smallest custom integration is the [`custom_executor`](examples/custom_executor.rs) example. A custom executor receives typed `ModelContent`, stages only ref-bearing journal observations, and returns ordered `Attachment` refs. It can therefore replace the stock loop without changing conversation storage or smuggling file bytes into events. For a stock local loop, bind `model`, `context`, `tools`, and an owner-controlled `journal` on `HarnessBuilder`; every binding is explicit and can be replaced independently.
+The [`custom_executor`](examples/custom_executor.rs) example uses public
+`StockExecutor::model_step` independently of the stock control loop. It reuses
+turn/step validation, exact request admission, durable observations and
+reconciliation. A started request loads its retained canonical artifact before
+recovery; it never reloads sources or transforms. New projections require new
+admissions. A custom loop must finish each tool exchange before requesting the
+next model step or publishing a child prefix.
+
+`ContextPipeline` composes ordered sources and transformations. `SelectionStage`
+registers a pinned file/span or schema-validated custom attribute with a typed
+`ContextRenderer`; full, summary and reference representations are explicit
+renderer policies. Summaries must come from separately admitted operations and
+pin their dependencies in the renderer contract. Prompt rebuilds and appended
+updates use the same immutable attribute state. `reload` validates replacement
+stages and returns a new pipeline; failures leave the inspectable previous
+contracts intact. Existing clones retain their implementations. Compiled changes
+require rebuild/restart unless the host supplies replacement implementations.
+`run_bounded` bounds each intermediate projection without truncation. Browser
+hosts use generated selection types and `NativeContracts.applyContextProjection`
+for the same Rust placement/bounds; they supply authorized file reads and custom
+rendering. No constructor grants authority or starts effects.
 
 `HarnessBuilder` composes the stock journaled turn executor from an immutable model binding, context pipeline, and versioned tool registry, or accepts a replacement executor. `agent_loop` separately binds a typed live `AgentLoop` over the public `TaskContext`; it can recursively spawn and join ordinary tasks without a turn journal, while its Rust future is explicitly not resumable. The same builder can bind model and context stages for live task code independently of the turn executor. Conversation records are typed and ref-only: primary text, attachments, tool artifacts, and extension content are `FileRef`s pinned to an exact provider, owner, volume, generation, SHA-256 digest, length, and media type. Possessing a ref does not grant access; resolution requires a signed scope with either the matching volume read grant or an exact-version file read grant. Private-volume writes additionally require a host-signed acting-agent identity matching that volume's original owner; scoped descendants inherit that identity without being able to change it. An owner can delegate a pinned private-file read or a segment-bounded, read-only private-directory grant to any agent without creating a fork. The directory grant supports lazy discovery but cannot expose internal storage paths or grant writes.
 

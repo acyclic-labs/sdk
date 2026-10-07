@@ -15,6 +15,29 @@ const contracts = await NativeContracts.create();
 const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
 
+test("generated context selections and updates use native schemas, placement and bounds", () => {
+  const selection = { source: { kind: "attribute" as const, attribute: {
+    type_name: "example.role", type_revision: "1", state_revision: "2",
+    schema: { type: "string" }, value: "reviewer",
+  } }, extent: { kind: "whole" as const }, representation: "full" as const };
+  contracts.validateContextSelection(selection, DEFAULT_LIMITS);
+  expect(() => contracts.validateContextSelection({ ...selection, source: {
+    kind: "attribute", attribute: { ...selection.source.attribute, value: 3 },
+  } }, DEFAULT_LIMITS)).toThrow();
+  expect(() => contracts.validateContextSelection(selection, {
+    ...DEFAULT_LIMITS, render_bytes: 1,
+  })).toThrow();
+  const base = { messages: [{ role: "user" as const, content: "task" }], metadata: {} };
+  const rendered = [{ role: "system" as const, content: "reviewer" }];
+  const rebuilt = contracts.applyContextProjection(base, rendered, "prompt", "prepend", DEFAULT_LIMITS);
+  const update = contracts.applyContextProjection(base, rendered, "update", "prepend", DEFAULT_LIMITS);
+  expect(rebuilt.messages[0]).toEqual(update.messages[1]);
+  expect(base.messages).toHaveLength(1);
+  expect(() => contracts.applyContextProjection(base, rendered, "prompt", "prepend", {
+    ...DEFAULT_LIMITS, render_bytes: 1,
+  })).toThrow();
+});
+
 test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {
   const fixture = await readFile(new URL("../../../../rust/crates/harness/fixtures/model-request.json", import.meta.url));
   const wire = contracts.decodeModelJson(fixture) as unknown as WasmModelRequestWire;
