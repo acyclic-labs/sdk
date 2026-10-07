@@ -37,15 +37,19 @@ evidence because that extraction had the stale `3b5ctbbe.re3` assembly identity.
 The fresh corrected package qualification is recorded in the external
 `package-receipt.json` under `fresh_corrected_extraction`. It targets
 `consumer/installed-corrected` (archive SHA-256
-`2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0`, managed
+`5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC`, managed
+assembly SHA-256 `0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269`,
 assembly identity `Acyclic.Actors`, version `0.2.0.0`) and reruns all eight
 operations plus three gated cancellation requests. The live fixtures used by
 that run were `https://localhost:55169` for all-eight and
 `https://localhost:56426` with control endpoint
 `http://127.0.0.1:56428` for pending cancellation. Its terminal logs record
 the corrected all-eight PASS, cancellation cleanup `baseline=0`,
-`peaks=1,1,1`, `started=6/aborted=6/active=0`, and fresh CS1729/CS1503
-negative probes against the corrected assembly.
+`peaks=1,1,1`, `started=9/aborted=9/active=0`, and fresh CS1729/CS1503
+negative probes against the corrected assembly. A clean external net8.0
+MSBuild consumer restores from the local feed and builds with zero warnings and
+errors; the package targets copy the native closure with SHA-256
+`A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241`.
 
 The generated source and consumers are retained as qualification artifacts;
 no DLL, native binary, Cargo target, or managed build output is persisted in

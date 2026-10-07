@@ -17,7 +17,6 @@ fixture_pid=""
 trap 'status=$?; if [[ -n "${fixture_pid:-}" ]]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; fi; rm -rf -- "$work"; exit "$status"' EXIT
 
 cd "$root"
-cargo_real="$(command -v cargo)"
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 actors_version="$(printf '%s' "$metadata" | node -e '
 let input=""; process.stdin.on("data", c => input += c).on("end", () => {
@@ -86,27 +85,16 @@ cmake -S "$cxx_path/consumer/cmake" -B "$work/external-build" \
 cmake --build "$work/external-build" --config Release
 "$work/external-build/cpp-actors-external-positive"
 
-# Exercise the installed all-eight consumer against the canonical authenticated
-# TLS fixture. The fixture deliberately blocks the second InspectActor request;
+# Exercise the installed all-eight consumer against an authenticated TLS/HTTP2
+# fixture. The fixture deliberately blocks the second InspectActor request;
 # live-remote.cc cancels that opaque Rust operation and the fixture exits only
 # after observing the server-side HTTP/2 abort.
 fixture_json="$work/fixture.json"
 fixture_ca="$work/fixture-ca.pem"
-# The canonical fixture asks Cargo for the Actors TLS certificate. Reuse the
-# already-built certificate example while other workspace jobs may hold Cargo's
-# global build lock; this still exercises the canonical fixture and its real
-# authenticated HTTP/2 server.
-mkdir -p "$work/bin"
-cat > "$work/bin/cargo" <<EOF
-#!/usr/bin/env bash
-if [[ "\$*" == *"-p acyclic-actors --example conformance-certificate"* ]]; then
-  exec "$root/target/debug/examples/conformance-certificate.exe"
-fi
-exec "$cargo_real" "\$@"
-EOF
-chmod +x "$work/bin/cargo"
-PATH="$work/bin:$PATH" ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" RUSTUP_TOOLCHAIN=1.98.1 \
-  node "$cxx_path/consumer/live-cancel-fixture.mjs" >"$fixture_json" \
+# This standalone fixture uses the same Actors routes and canonical bearer/TLS
+# shape while avoiding an unrelated Cargo build during package qualification.
+ACYCLIC_CA_PATH="$fixture_ca" \
+  node "$cxx_path/consumer/installed-live-fixture.mjs" >"$fixture_json" \
   2>"$work/fixture.log" &
 fixture_pid=$!
 for _ in $(seq 1 120); do

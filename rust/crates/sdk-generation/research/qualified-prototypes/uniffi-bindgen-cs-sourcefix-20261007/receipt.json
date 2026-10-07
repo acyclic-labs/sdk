@@ -41,6 +41,9 @@
   "historical_managed_probes_stale_package": {
     "qualification_status": "historical; prior outputs came from the stale external extraction and are not evidence for the corrected package",
     "stale_assembly_identity": "3b5ctbbe.re3",
+    "stale_managed_sha256": "E42833C2D989C647C2302E47F20EB87B0CA8B2A01F22BC8634F1CC3F8E2B985B",
+    "prior_archive_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0",
+    "terminal_logs": ["Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-probe.terminal.log", "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-negative.terminal.log", "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-artifact-identity.terminal.log"],
     "ordinary_all8": {
       "source": "managed/AllEightProgram.cs",
       "compile": "PASS",
@@ -63,11 +66,11 @@
     "qualification_status": "fresh corrected extraction",
     "external_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json#fresh_corrected_extraction",
     "extraction": "consumer/installed-corrected",
-    "archive_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0",
-    "managed_sha256": "F4BF113447E7F3E1198D03E902EC5D72D7F80B6CE7AC4DA1EB62A6F72B90E094",
+    "archive_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC",
+    "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
     "assembly_identity": "Acyclic.Actors",
     "assembly_version": "0.2.0.0",
-    "assembly_mvid": "55a5bb42-fdba-4a49-b3a7-99e7f8cfe49b",
+    "assembly_mvid": "f825bea3-9d44-4f3c-a7a8-605fb59691a3",
     "assembly_informational_version": "0.2.0+rust-371bb4170e16",
     "native_imports": ["acyclic_actors_uniffi"],
     "native_closure_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
@@ -80,20 +83,36 @@
       "all8_process_id": 31976,
       "pending_process_id": 41152
     },
+    "fixture_lifecycle": "Both qualification fixtures were stopped after terminal evidence; endpoints and process IDs above identify the exact run.",
     "terminal_evidence": {
-      "runtime_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-probe.terminal.log",
-      "negative_compile_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-negative.terminal.log",
-      "artifact_identity_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-artifact-identity.terminal.log",
+      "net8_runtime_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-net8-probe.terminal.log",
+      "net8_negative_msbuild_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-net8-negative-msbuild.terminal.log",
+      "net8_artifact_identity_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-net8-artifact-identity.terminal.log",
       "all8": "NUPKG_CORRECTED_ALL8_RUNTIME=PASS",
-      "cancellation": "NUPKG_CORRECTED_CANCELLATION_RUNTIME=PASS baseline=0 peaks=1,1,1 final=6/6/0",
+      "cancellation": "NUPKG_CORRECTED_CANCELLATION_RUNTIME=PASS baseline=0 peaks=1,1,1 final=9/9/0",
       "raw_handle_negative": "NUPKG_CORRECTED_RAW_HANDLE_NEGATIVE=EXPECTED_FAIL CS1729",
       "strong_type_negative": "NUPKG_CORRECTED_STRONG_TYPE_NEGATIVE=EXPECTED_FAIL CS1503"
     },
+    "external_msbuild": {
+      "project": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\consumer\\clean-msbuild\\CleanConsumer.csproj",
+      "terminal_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-net8-msbuild.terminal.log",
+      "restore": "PASS; local feed only, package version 0.2.0",
+      "build": "PASS; net8.0, 0 warnings, 0 errors",
+      "managed_output_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+      "native_output_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+      "platform_capability": "Windows SDK 8.0.425; WSL2 Ubuntu has no dotnet SDK/runtime installed; package native closure is win-x64 only"
+    },
+    "external_negative_msbuild": {
+      "project": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\consumer\\negative-msbuild\\NegativeConsumer.csproj",
+      "terminal_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-net8-negative-msbuild.terminal.log",
+      "restore": "PASS; local feed only, package version 0.2.0",
+      "build": "EXPECTED FAIL; CS1729 and CS1503"
+    },
     "probe_sources": [
       "managed/InstalledPackageReflectionProbe.ps1",
-      "managed/CorrectedNegativeCompile.ps1",
       "managed/InstalledArtifactIdentityProbe.ps1",
-      "managed/InstalledArtifactIdentityProbe.ps1"
+      "consumer/clean-msbuild/CleanConsumer.csproj",
+      "consumer/negative-msbuild/NegativeConsumer.csproj"
     ]
   },
   "provenance": {
@@ -122,6 +141,6 @@
     "native_or_managed_build_outputs_persisted": false,
     "nuget_recipe": "repro-package/nuget/PACKAGE-RECIPE.md",
     "external_package_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json",
-    "external_nupkg_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0"
+    "external_nupkg_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC"
   }
 }

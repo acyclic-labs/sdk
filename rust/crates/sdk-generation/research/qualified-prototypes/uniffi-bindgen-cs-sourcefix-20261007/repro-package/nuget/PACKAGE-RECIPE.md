@@ -24,11 +24,15 @@ native library; it contains no transport, semantic, or cancellation runtime.
 
 External receipt:
 
-- archive SHA256:
-  `2E33DC70607AAA01FE2BFA979E8AF7782CE3A3AA70EDD6933F6CC9720E844A5D`
-- installed package all-eight/null-handle runtime: PASS
-- installed package three-iteration CancellationToken abort and cleanup: PASS
-- installed package external raw-handle forge: expected CS1729
+- corrected archive SHA256:
+  `5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC`
+- corrected managed assembly SHA256:
+  `0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269`
+- clean external net8.0 MSBuild restore/build: PASS, 0 warnings, 0 errors
+- installed corrected package all-eight/null-handle runtime: PASS
+- installed corrected package three-iteration CancellationToken abort and cleanup: PASS
+- installed corrected package external raw-handle forge: expected CS1729
+- installed corrected package external strong-type misuse: expected CS1503
 
 The artifact remains external and unpublished. Keep this recipe and receipt
 with the source qualification cohort when reviewing a future package build.

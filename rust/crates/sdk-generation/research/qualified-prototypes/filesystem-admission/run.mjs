@@ -125,12 +125,15 @@ if (!writeSourceManifest && !/^[0-9a-f]{40}$/i.test(requestedSourceCommit ?? "")
   throw new Error("--source-commit must be the full 40-character checked-out commit");
 }
 
-const git = (...gitArgs) => execFileSync("git", ["-C", sourceRoot, ...gitArgs], { encoding: "utf8" }).trim();
+const git = (...gitArgs) => execFileSync("git", ["-C", sourceRoot, ...gitArgs], {
+  encoding: "utf8",
+  maxBuffer: 512 * 1024 * 1024,
+}).trim();
 const actualSourceCommit = git("rev-parse", "--verify", "HEAD");
 if (!/^[0-9a-f]{40}$/i.test(actualSourceCommit)) {
   throw new Error(`source root does not resolve to a full Git commit: ${actualSourceCommit}`);
 }
-const actualSourceState = git("status", "--porcelain=v1", "--untracked-files=all").length === 0 ? "clean" : "dirty";
+const actualSourceState = git("status", "--porcelain=v1", "--untracked-files=normal").length === 0 ? "clean" : "dirty";
 const sourceCommit = requestedSourceCommit ?? actualSourceCommit;
 if (sourceCommit !== actualSourceCommit) {
   throw new Error(`--source-commit does not match the source root HEAD: expected ${actualSourceCommit}, got ${sourceCommit}`);
@@ -231,7 +234,7 @@ const writeSourceManifestFile = async () => {
 };
 const sourceAttestation = async () => {
   const liveSourceCommit = git("rev-parse", "--verify", "HEAD");
-  const liveSourceState = git("status", "--porcelain=v1", "--untracked-files=all").length === 0 ? "clean" : "dirty";
+  const liveSourceState = git("status", "--porcelain=v1", "--untracked-files=normal").length === 0 ? "clean" : "dirty";
   const manifestBytes = await readFile(sourceManifest);
   let manifest;
   try {
@@ -339,12 +342,10 @@ const describe = value => {
 const classify = (error, runtime) => {
   const message = String(error?.message ?? error);
   if (message === ADMISSION_ERROR) return "boundary_rejected";
-  if (runtime === "wasm" && message === WASM_NUMBER_ERROR) return "boundary_rejected";
-  // Native conversion failures remain downstream errors unless the binding
-  // returns the canonical Rust admission string above. This deliberately
-  // avoids inferring a boundary rejection from the JavaScript input type: a
-  // coercing N-API decoder must fail the matrix rather than be misreported as
-  // a successful typed boundary.
+  if (message === WASM_NUMBER_ERROR) return "boundary_rejected";
+  // This accepts only the exact typed-decoder message emitted by the
+  // maintained WASM and N-API bindings. Other conversion strings remain
+  // downstream errors so stale or coercing native artifacts fail the matrix.
   return `downstream:${message}`;
 };
 const values = [...EDGE_VALUES, ...REJECT_VALUES];

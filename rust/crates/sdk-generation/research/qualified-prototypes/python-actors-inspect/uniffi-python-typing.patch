@@ -124,16 +124,14 @@
          namespace.visit(|i: &Interface| {
 --- a/src/bindings/python/templates/EnumTemplate.py
 +++ b/src/bindings/python/templates/EnumTemplate.py
-@@ -139,10 +139,31 @@
- # Now, a little trick - we make each nested variant class be a subclass of the main
- # enum class, so that method calls and instance checks etc will work intuitively.
- # We might be able to do this a little more neatly with a metaclass, but this'll do.
+@@ -142,3 +142,24 @@
 -{% for variant in e.variants -%}
 -{{ type_name }}.{{ variant.name }} = type("{{ type_name }}.{{ variant.name }}", ({{ type_name }}.{{variant.name}}, {{ type_name }},), {})  # type: ignore
+-{% endfor %}
 +if not typing.TYPE_CHECKING:
 +{% for variant in e.variants %}
 +    {{ type_name }}.{{ variant.name }} = type("{{ type_name }}.{{ variant.name }}", ({{ type_name }}.{{variant.name}}, {{ type_name }},), {})  # type: ignore  # pyright: ignore
- {% endfor %}
++{% endfor %}
 +
 +# Give static type checkers the runtime inheritance relation and preserve each
 +# variant constructor's narrow payload types without changing runtime classes.
@@ -155,5 +153,28 @@
 +{% endfor %}
 +]
  
- {% endif %}
- 
+--- a/src/bindings/python/templates/Async.py
++++ b/src/bindings/python/templates/Async.py
+@@ -43,1 +43,1 @@
+-async def _uniffi_rust_call_async(rust_future, ffi_poll, ffi_complete, ffi_free, lift_func, error_ffi_converter):
++async def _uniffi_rust_call_async(rust_future, ffi_poll, ffi_complete, ffi_free, ffi_cancel, lift_func, error_ffi_converter):
+@@ -59,5 +59,8 @@
+         return lift_func(
+             _uniffi_rust_call_with_error(error_ffi_converter, ffi_complete, rust_future)
+         )
++    except asyncio.CancelledError:
++        ffi_cancel(rust_future)
++        raise
+     finally:
+         ffi_free(rust_future)
+
+--- a/src/bindings/python/templates/CallableBody.py
++++ b/src/bindings/python/templates/CallableBody.py
+@@ -63,6 +63,7 @@
+     _UniffiLib.{{ async_data.ffi_rust_future_poll.0 }},
+     _UniffiLib.{{ async_data.ffi_rust_future_complete.0 }},
+     _UniffiLib.{{ async_data.ffi_rust_future_free.0 }},
++    _UniffiLib.{{ async_data.ffi_rust_future_cancel.0 }},
+     _uniffi_lift_return,
+     _uniffi_error_converter,
+ )

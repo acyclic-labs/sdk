@@ -19,6 +19,17 @@ async def main():
     if receipt_path:
         # Do not leave a prior PASS receipt behind when this run fails.
         Path(receipt_path).unlink(missing_ok=True)
+    artifact_identity = None
+    artifact_path = os.environ.get("ACYCLIC_ARTIFACT_PATH")
+    if receipt_path:
+        if not artifact_path:
+            raise AssertionError("ACYCLIC_ARTIFACT_PATH is required when emitting a qualification receipt")
+        artifact = Path(artifact_path)
+        artifact_identity = {
+            "path": str(artifact),
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "bytes": artifact.stat().st_size,
+        }
     import acyclic_actors_uniffi as m
 
     operations = []
@@ -86,8 +97,52 @@ async def main():
         assert "cancel" in type(error).__name__.lower() or "cancel" in str(error).lower()
     else:
         raise AssertionError("pre-cancelled operation completed")
-    checks.append("cancellation")
+    checks.append("pre-cancelled")
+    pending_fixture_path = os.environ.get("ACYCLIC_PENDING_FIXTURE_OPTIONS")
+    if pending_fixture_path:
+        pending_fixture = json.loads(Path(pending_fixture_path).read_text(encoding="utf-8"))
+        pending_client = await m.connect_actors_with_ca(
+            pending_fixture["endpoint"],
+            pending_fixture["token"],
+            pending_fixture["caCertificate"].encode("utf-8"),
+            None,
+        )
+        marker_path = os.environ.get("ACYCLIC_PENDING_MARKER_PATH")
+        if not marker_path:
+            raise AssertionError("ACYCLIC_PENDING_MARKER_PATH is required with a pending fixture")
+        marker = Path(marker_path)
+        task = asyncio.create_task(pending_client.inspect_actor(actor, None))
+        for _ in range(200):
+            if marker.exists() and "request path=" in marker.read_text(encoding="utf-8", errors="replace"):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise AssertionError("pending fixture never observed the in-flight request")
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("in-flight asyncio.Task.cancel did not cancel the request")
+        for _ in range(200):
+            if "stream-close" in marker.read_text(encoding="utf-8", errors="replace"):
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("server did not observe stream close after task cancellation")
+        checks.extend(("in-flight-task-cancellation", "server-abort-cleanup"))
     if receipt_path:
+        artifact = Path(artifact_path)
+        artifact_after = {
+            "path": str(artifact),
+            "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            "bytes": artifact.stat().st_size,
+        }
+        if artifact_after != artifact_identity:
+            raise AssertionError("artifact identity changed during qualification")
         receipt = {
             "schema": "acyclic.language-package.qualification/v1",
             "status": "PASS",
@@ -95,14 +150,7 @@ async def main():
             "checks": checks,
             "fixture_options_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
         }
-        artifact_path = os.environ.get("ACYCLIC_ARTIFACT_PATH")
-        if artifact_path:
-            artifact = Path(artifact_path)
-            receipt["artifact"] = {
-                "path": str(artifact),
-                "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest(),
-                "bytes": artifact.stat().st_size,
-            }
+        receipt["artifact"] = artifact_identity
         Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print("Installed all-eight Python wheel remote conformance: PASS")
 
