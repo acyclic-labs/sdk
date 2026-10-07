@@ -1,7 +1,7 @@
 import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
-import { isSafeAuthorityId } from "./authority-contract.js";
+import { isSafeAuthorityId } from "./rust-policy.js";
 
 export interface ReplayCursor {
   readonly generation: string;
@@ -250,28 +250,28 @@ export class HarnessClient<Event = unknown> {
     readonly cursorStore: CursorStore = isCursorStore(outbox) ? outbox : new MemoryCursorStore(),
   ) {}
 
-  handle(kind: AggregateKind, id: string): AggregateHandle<Event> {
-    return new AggregateHandle(this, authority(kind, id));
+  async handle(kind: AggregateKind, id: string): Promise<AggregateHandle<Event>> {
+    return new AggregateHandle(this, await authority(kind, id));
   }
 
-  agent(id: string): AgentHandle<Event> {
-    return new AgentHandle(this, authority("agent", id));
+  async agent(id: string): Promise<AgentHandle<Event>> {
+    return new AgentHandle(this, await authority("agent", id));
   }
 
-  conversation(id: string): ConversationHandle<Event> {
-    return new ConversationHandle(this, authority("conversation", id));
+  async conversation(id: string): Promise<ConversationHandle<Event>> {
+    return new ConversationHandle(this, await authority("conversation", id));
   }
 
-  session(id: string): SessionHandle<Event> {
-    return new SessionHandle(this, authority("session", id));
+  async session(id: string): Promise<SessionHandle<Event>> {
+    return new SessionHandle(this, await authority("session", id));
   }
 
-  turn(id: string): TurnHandle<Event> {
-    return new TurnHandle(this, authority("turn", id));
+  async turn(id: string): Promise<TurnHandle<Event>> {
+    return new TurnHandle(this, await authority("turn", id));
   }
 
-  task(id: string): TaskHandle<Event> {
-    return new TaskHandle(this, authority("task", id));
+  async task(id: string): Promise<TaskHandle<Event>> {
+    return new TaskHandle(this, await authority("task", id));
   }
 
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
@@ -486,8 +486,8 @@ function authorityKey(authority: Authority): string {
   return `${authority.kind}:${authority.id}`;
 }
 
-function authority(kind: AggregateKind, id: string): Authority {
-  if (!isSafeAuthorityId(id)) throw new TypeError("aggregate identity is not a safe path segment");
+async function authority(kind: AggregateKind, id: string): Promise<Authority> {
+  if (!(await isSafeAuthorityId(id))) throw new TypeError("aggregate identity is not a safe path segment");
   return { kind, id };
 }
 
@@ -520,7 +520,7 @@ async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> 
     || !Object.keys(admitted.authority).every(field => field === "kind" || field === "id")) {
     throw new TypeError("offline outbox authority contains an unsupported field");
   }
-  if (!isSafeAuthorityId(admitted.authority.id)) {
+  if (!(await isSafeAuthorityId(admitted.authority.id))) {
     throw new TypeError("offline outbox authority contains an unsafe identity");
   }
   const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;

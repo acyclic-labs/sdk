@@ -17,7 +17,7 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -45,7 +45,7 @@ use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::collections::BTreeSet;
-use tsify::Tsify;
+use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(target_arch = "wasm32")]
@@ -453,6 +453,24 @@ struct WasmBatchAdmissionRequest {
 #[derive(Serialize)]
 struct WasmGroupPolicy {
     kind: BatchGroupPolicy,
+}
+
+/// Public Rust projection for the immutable workflow admission envelope.
+///
+/// The validator still consumes the canonical `WorkflowAdmission`; this DTO
+/// only gives the generated TypeScript surface the exact serde shape and
+/// bigint treatment used by the Rust value.
+#[derive(Clone, Debug, Serialize, Tsify)]
+#[tsify(large_number_types_as_bigints)]
+pub struct WasmWorkflowAdmissionWire {
+    #[tsify(type = "string")]
+    operation_id: String,
+    #[tsify(type = "readonly number[]")]
+    request_digest: Vec<u8>,
+    #[tsify(
+        type = "Readonly<{ readonly machine: WasmMachineIdentityWire; readonly revision: bigint; readonly state: unknown }>"
+    )]
+    initial: crate::workflow::MachineCheckpoint,
 }
 
 fn hex_bytes(bytes: &[u8]) -> String {
@@ -1229,6 +1247,59 @@ pub fn validate_identity(kind: &str, value: &str) -> Result<String, JsValue> {
     Ok(normalized)
 }
 
+/// Validates one aggregate identity with the same path-segment policy used by
+/// every Rust stream access. The returned spelling is unchanged so hosts can
+/// retain their branded string facade without reimplementing the policy.
+#[wasm_bindgen(js_name = validateAuthorityPathSegment)]
+pub fn validate_authority_path_segment(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+) -> Result<String, JsValue> {
+    let value = checked_js_string(value, "authority identity")?;
+    let authority = Authority {
+        kind: AggregateKind::Agent,
+        id: value.clone(),
+    };
+    authority.stream_path().map(|_| value).map_err(js_error)
+}
+
+/// Validates one component name with the canonical Rust byte and character
+/// policy. The field-specific error text remains a thin TypeScript concern.
+#[wasm_bindgen(js_name = validateComponentLabel)]
+pub fn validate_component_label(
+    #[wasm_bindgen(unchecked_param_type = "string")] value: JsValue,
+) -> Result<String, JsValue> {
+    let value = checked_js_string(value, "component label")?;
+    crate::contract::validate_component_label(&value, "component label")
+        .map(|_| value)
+        .map_err(js_error)
+}
+
+fn checked_js_string(value: JsValue, field: &str) -> Result<String, JsValue> {
+    let js_value: js_sys::JsString = value
+        .dyn_into()
+        .map_err(|_| JsValue::from_str(&format!("{field} must be a string")))?;
+    let length = js_value.length();
+    let mut index = 0;
+    while index < length {
+        let code_unit = js_value.char_code_at(index) as u32;
+        if (0xd800..=0xdbff).contains(&code_unit) {
+            let next = index + 1;
+            if next >= length || !(0xdc00..=0xdfff).contains(&(js_value.char_code_at(next) as u32))
+            {
+                return Err(JsValue::from_str(&format!("{field} is invalid")));
+            }
+            index += 2;
+        } else if (0xdc00..=0xdfff).contains(&code_unit) {
+            return Err(JsValue::from_str(&format!("{field} is invalid")));
+        } else {
+            index += 1;
+        }
+    }
+    js_value
+        .as_string()
+        .ok_or_else(|| JsValue::from_str(&format!("{field} must be a string")))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one exhaustive traversal owns JS JSON admission"
@@ -1410,6 +1481,23 @@ fn conversation_page_data(
             .ok_or_else(|| JsValue::from_str("conversation page range is invalid"))?,
         next_sequence: (end < conversation.messages.len()).then_some(end as u64),
     })
+}
+
+/// Validates and projects one immutable workflow admission through Rust.
+/// Hosts retain this detached value before any replay or dispatch begins.
+#[wasm_bindgen(js_name = validateWorkflowAdmission)]
+pub fn validate_workflow_admission(
+    #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
+) -> Result<Ts<WasmWorkflowAdmissionWire>, JsValue> {
+    let value: crate::workflow::WorkflowAdmission = from_js(value)?;
+    value.validate().map_err(js_error)?;
+    WasmWorkflowAdmissionWire {
+        operation_id: value.operation_id.to_string(),
+        request_digest: value.request_digest.to_vec(),
+        initial: value.initial,
+    }
+    .into_ts()
+    .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Pure v2 contract admission shared by native and JavaScript hosts. The

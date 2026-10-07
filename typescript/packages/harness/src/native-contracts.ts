@@ -4,8 +4,10 @@ import type {
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
-  InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
+  WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
+  WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
+  WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
   WasmTaskDependencyInput,
@@ -40,32 +42,10 @@ export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
 
-/** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
-export interface ExecutionPlacementWire {
-  readonly provider: MachineIdentityWire;
-  readonly build: ResourceRef<"artifact">;
-  readonly environment: ResourceRef<"sandbox"> | null;
-  readonly readiness_revision: readonly number[];
-}
-
-export interface TaskRunLimitsWire {
-  /** Rust `usize`/`u64`; native admission preserves the full-width integer. */
-  readonly concurrency: bigint | null;
-  readonly max_steps: bigint | null;
-  readonly deadline_epoch_ms: bigint | null;
-}
-
-/** Rust `Limits` as returned by an admitted task/batch envelope. */
-export interface NativeLimitsWire {
-  readonly file_bytes: bigint;
-  readonly path_bytes: bigint;
-  readonly attachments: bigint;
-  readonly render_bytes: bigint;
-  readonly model_steps: bigint;
-  readonly model_events_per_step: bigint;
-  readonly tool_calls_per_step: bigint;
-  readonly context_messages: bigint;
-}
+/** Public names are aliases to the declarations emitted from the Rust WASM module. */
+export type ExecutionPlacementWire = WasmExecutionPlacementWire;
+export type TaskRunLimitsWire = WasmTaskRunLimitsWire;
+export type NativeLimitsWire = WasmNativeLimitsWire;
 
 /** Rust-owned per-step model event admission state with cumulative text bytes. */
 export type ModelEventAdmissionState = Readonly<Omit<WasmModelEventAdmissionState, "calls"> & Readonly<{
@@ -95,22 +75,9 @@ export interface NativeSelectedModelContext {
   }>[];
 }
 
-export interface MachineIdentityWire {
-  readonly name: string;
-  readonly version: string;
-  readonly digest: readonly number[];
-}
-
-/** Exact Rust serde shape for a pinned resumable-tool machine admission. */
-export interface WorkflowAdmissionWire {
-  readonly operation_id: string;
-  readonly request_digest: readonly number[];
-  readonly initial: Readonly<{
-    machine: MachineIdentityWire;
-    revision: bigint;
-    state: unknown;
-  }>;
-}
+export type MachineIdentityWire = WasmMachineIdentityWire;
+/** Exact Rust projection for a pinned resumable-tool machine admission. */
+export type WorkflowAdmissionWire = Readonly<WasmWorkflowAdmissionWire>;
 
 interface ContractValues {
   readonly limits: Limits;
@@ -156,10 +123,10 @@ export class NativeContracts {
 
   /**
    * Initialize once before using synchronous contract methods. Shares the one
-   * guarded WASM instance, so a second, different module is rejected.
+   * guarded package WASM instance shared by every Harness facade.
    */
-  static async create(module?: InitInput): Promise<NativeContracts> {
-    await ensureHarnessWasm(module);
+  static async create(): Promise<NativeContracts> {
+    await ensureHarnessWasm();
     if (NativeContracts.#instance === undefined) {
       const native: NativeExports = wasm;
       assertHarnessWasmExports(native);
@@ -186,7 +153,11 @@ export class NativeContracts {
     // Contract envelopes retain Rust u64/usize values as BigInt. Converting
     // them to Number here would silently change the wire shape and can lose
     // precision on retry/reconciliation paths.
-    const admitted = normalizeNativeValue(this.native.validateContract(kind, value, context ?? null));
+    const admitted = normalizeNativeValue(
+      kind === "workflow_admission"
+        ? this.native.validateWorkflowAdmission(value as WorkflowAdmissionWire)
+        : this.native.validateContract(kind, value, context ?? null),
+    );
     if (kind === "project_merge_receipt") {
       const receipt = admitted as ProjectMergeReceipt;
       const statement = normalizeNativeValue(receipt.provider_proof.statement, true) as ProjectMergeReceipt["provider_proof"]["statement"];
