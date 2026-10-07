@@ -42,6 +42,10 @@ export const qualificationEventKinds = Object.freeze({
 });
 
 export function classifyQualificationEvent({ eventName, ref, force = false }) {
+  // Reusable release callers inherit the caller's push/tag event.  An explicit
+  // force input is the authoritative signal that this invocation is a full
+  // qualification, regardless of the inherited event name.
+  if (force) return qualificationEventKinds.forcedDispatch;
   if (eventName === "pull_request") return qualificationEventKinds.pullRequest;
   if (eventName === "release") return qualificationEventKinds.release;
   if (eventName === "workflow_dispatch") {
@@ -116,7 +120,7 @@ export function chooseLanes(lanes, {
   const matrix = [];
   const reused = {};
   for (const lane of lanes) {
-    if ((pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
+    if (!force && (pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
     // Source-bound artifacts record the commit they were built from, so every
     // full qualification run must rebuild them for its exact checked-out commit.
     if (force || ((mainPush || fullQualification) && lane.source_bound)) {
