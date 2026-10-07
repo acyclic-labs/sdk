@@ -256,7 +256,8 @@ fn subscription_observation_preserves_full_width_cursors_and_presence() {
     let recoverable_cursor: u64 = kani::any();
     let failed_cursor: u64 = kani::any();
     let failed_present: bool = kani::any();
-    let wire_value = wire::SubscriptionObservation {
+    let expected_failed_cursor = failed_present.then_some(failed_cursor);
+    let semantic = SubscriptionObservation::try_from(wire::SubscriptionObservation {
         subscription_id: "subscription".to_owned(),
         stream_path: "stream/path".to_owned(),
         state: 1,
@@ -266,17 +267,18 @@ fn subscription_observation_preserves_full_width_cursors_and_presence() {
         placement_anchor: false,
         retry_count: 0,
         failure_code: "".to_owned(),
-        failed_cursor: failed_present.then_some(failed_cursor),
-    };
-
-    let semantic = SubscriptionObservation::try_from(wire_value.clone())
-        .expect("known state and fixed strings are valid");
+        failed_cursor: expected_failed_cursor,
+    })
+    .expect("known state and fixed strings are valid");
     assert_eq!(semantic.delivered_cursor(), delivered_cursor);
     assert_eq!(semantic.completed_cursor(), completed_cursor);
     assert_eq!(semantic.recoverable_cursor(), recoverable_cursor);
-    assert_eq!(semantic.failed_cursor(), failed_present.then_some(failed_cursor));
+    assert_eq!(semantic.failed_cursor(), expected_failed_cursor);
     let round_trip: wire::SubscriptionObservation = semantic.into();
-    assert_eq!(round_trip, wire_value);
+    assert_eq!(round_trip.delivered_cursor, delivered_cursor);
+    assert_eq!(round_trip.completed_cursor, completed_cursor);
+    assert_eq!(round_trip.recoverable_cursor, recoverable_cursor);
+    assert_eq!(round_trip.failed_cursor, expected_failed_cursor);
 }
 
 #[kani::proof]
@@ -345,3 +347,4 @@ fn update_request_preserves_full_width_configuration_revision() {
     let round_trip: wire::UpdateActorRequest = semantic.into();
     assert_eq!(round_trip, wire_value);
 }
+

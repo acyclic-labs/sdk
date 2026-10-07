@@ -99,6 +99,16 @@ pub struct LanguagePackageArtifact {
     pub qualification: QualificationMetadata,
 }
 
+/// The existing `sdk-generation` manifest already owns this exact wire shape
+/// for source file hashes. Keep the prototype's evidence model as an adapter
+/// over that vector instead of introducing another source-manifest format.
+#[derive(Debug, Deserialize)]
+struct ExistingGenerationManifest {
+    schema: String,
+    source: Vec<SourceFileIdentity>,
+    source_sha256: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("cargo metadata failed: {0}")]
@@ -143,6 +153,16 @@ pub enum Error {
     EmptyReceipt(PathBuf),
     #[error("git revision lookup failed: {0}")]
     Git(String),
+    #[error("sdk-generation manifest {0} is malformed or uses an unsupported schema")]
+    GenerationManifestMalformed(PathBuf),
+    #[error(
+        "sdk-generation manifest {path} source digest mismatch: expected {expected}, got {actual}"
+    )]
+    GenerationManifestDigestMismatch {
+        path: PathBuf,
+        expected: String,
+        actual: String,
+    },
 }
 
 pub fn source_revision(root: &Path) -> Result<String, Error> {
@@ -255,6 +275,10 @@ fn inventory_for_paths(root: &Path, package_roots: &[PathBuf]) -> Result<SourceI
             bytes: identity.bytes,
         });
     }
+    Ok(inventory_from_files(files))
+}
+
+fn inventory_from_files(files: Vec<SourceFileIdentity>) -> SourceInventory {
     let mut digest = Sha256::new();
     for file in &files {
         digest.update(file.path.as_bytes());
@@ -264,10 +288,33 @@ fn inventory_for_paths(root: &Path, package_roots: &[PathBuf]) -> Result<SourceI
         digest.update(file.bytes.to_string().as_bytes());
         digest.update([b'\n']);
     }
-    Ok(SourceInventory {
+    SourceInventory {
         files,
         sha256: format!("{:x}", digest.finalize()),
-    })
+    }
+}
+
+/// Adapt the source vector from the existing sdk-generation manifest. The
+/// manifest remains the authority for generation output; this only checks its
+/// integrity before binding a language artifact to the same source inputs.
+pub fn source_inventory_from_generation_manifest(
+    manifest: &Path,
+) -> Result<SourceInventory, Error> {
+    let bytes = fs::read(manifest)?;
+    let record: ExistingGenerationManifest = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::GenerationManifestMalformed(manifest.to_owned()))?;
+    if record.schema != "acyclic.sdk.generation.v1" {
+        return Err(Error::GenerationManifestMalformed(manifest.to_owned()));
+    }
+    let inventory = inventory_from_files(record.source);
+    if inventory.sha256 != record.source_sha256 {
+        return Err(Error::GenerationManifestDigestMismatch {
+            path: manifest.to_owned(),
+            expected: record.source_sha256,
+            actual: inventory.sha256,
+        });
+    }
+    Ok(inventory)
 }
 
 /// Hash the Rust package and local path-dependency closure, plus workspace
@@ -775,6 +822,46 @@ mod tests {
     }
 
     #[test]
+    fn sdk_generation_manifest_source_vector_is_reused_and_integrity_checked() {
+        let root = fixture_root();
+        let source = vec![SourceFileIdentity {
+            path: "rust/crates/example/src/lib.rs".into(),
+            sha256: "abc123".into(),
+            bytes: 7,
+        }];
+        let digest = inventory_from_files(source.clone()).sha256;
+        let manifest = root.join("generation-manifest.json");
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "schema": "acyclic.sdk.generation.v1",
+                "source": source,
+                "source_sha256": digest,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let adapted = source_inventory_from_generation_manifest(&manifest).unwrap();
+        assert_eq!(adapted.files[0].path, "rust/crates/example/src/lib.rs");
+
+        fs::write(
+            &manifest,
+            serde_json::json!({
+                "schema": "acyclic.sdk.generation.v1",
+                "source": adapted.files,
+                "source_sha256": "changed-without-source-change",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            source_inventory_from_generation_manifest(&manifest),
+            Err(Error::GenerationManifestDigestMismatch { .. })
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn passed_status_rejects_forged_receipt() {
         let root = committed_fixture();
         let artifact = root.join("artifact.whl");
@@ -817,6 +904,7 @@ mod tests {
                 family: "uniffi".into(),
                 version: "0.32.0".into(),
                 source: "mozilla/uniffi-rs".into(),
+                source_sha256: "generator-source-sha256".into(),
             },
             &artifact,
             &receipt,

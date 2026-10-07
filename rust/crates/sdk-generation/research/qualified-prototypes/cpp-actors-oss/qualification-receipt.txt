@@ -44,6 +44,14 @@ direct C++ future support or qualification of an internet service. cxx-async
 0.1.4 remains an unlinked option pending cppcoro/Folly executor dependencies;
 its generic Rust-future bridge does not inherently exclude Tokio.
 
+Installed artifact/external consumer:
+  CXX header and Windows static library copied to a clean temp install root.
+  cl compiled positive.cc and live-remote.cc outside the workspace; link PASS.
+  negative.cc and negative-nominal.cc both failed with the expected type errors.
+  cargo package --allow-dirty --no-verify cannot prepare an extracted archive:
+  acyclic-actors is an unpublished path dependency absent from crates.io.
+  See package-qualification.md for the source inventory and artifact hashes.
+
 Scope:
   source-only qualification evidence plus temporary WSL build output under /tmp;
   no Q checkout, public package, generated protobuf, or frozen ownership changed.

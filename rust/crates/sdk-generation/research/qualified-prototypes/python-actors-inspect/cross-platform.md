@@ -59,9 +59,12 @@ The patched Linux wheel is
 `acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl`, SHA-256
 `447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761`.
 It installed in a fresh WSL Python 3.10 environment and passed the generated
-union typing constructor probe. The live all-eight remote run was attempted
-through the Windows fixture; the WSL transport path did not complete the TLS
-connection, so no Linux remote pass is recorded.
+union typing constructor probe. The live all-eight remote run passed against
+the canonical Windows fixture through a local IPv6-aware Windows TCP relay and
+WSL relay, preserving the fixture CA and `localhost` SNI. The run included the
+typed service error and pre-cancelled operation checks. The fixture also
+survived an intentionally aborted TLS socket and then authenticated
+`InspectActor` successfully; that probe is recorded in the receipt.
 
 The patched macOS arm64 wheel reused the generated module hash above and
 installed in a fresh ivar Python environment. Its all-eight remote conformance

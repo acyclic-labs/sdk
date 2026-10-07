@@ -45,9 +45,11 @@ lockfiles, toolchain file, and generator scripts. A dirty source snapshot is
 allowed only when the manifest explicitly says `source_state: "dirty"`.
 
 The runner hashes the package archive, native archive, extracted WASM files,
-and installed native binding before and after the matrix. Any byte change
-during qualification fails the receipt. It also validates the source
-attestation before and after execution. The runner invokes `liveRebase` through the generated WASM module and through
+and installed native binding before and after the matrix. It indexes the
+native tar archive, rejects unsafe or duplicate paths, extracts the one
+binding entry, and compares those bytes with the installed `.node` file. Any
+byte change during qualification fails the receipt. It also validates the
+source attestation before and after execution. The runner invokes `liveRebase` through the generated WASM module and through
 the installed N-API binding. Each call uses the same Rust-owned boundary
 parameter. A value is classified as `boundary_rejected` only when the runtime
 returns the exact Rust admission error or the exact wasm-bindgen JavaScript

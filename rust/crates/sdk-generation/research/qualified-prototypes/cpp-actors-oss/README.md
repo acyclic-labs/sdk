@@ -50,6 +50,13 @@ The fixture uses the real `acyclic-actors` crate as a path dependency. The sampl
 observation is converted by `domain::ActorObservation::try_from`, rather than by
 reimplementing protobuf semantics.
 
+`package-qualification.md` records the installed-header/static-library inventory,
+external consumer compile and link, and the clean Cargo packaging boundary. Cargo
+cannot produce a standalone archive while `acyclic-actors` is an unpublished
+workspace path dependency; an internal registry or separately published Actors
+artifact is required for an extracted Cargo build. The qualification does not
+hide that dependency or copy its contract into C++.
+
 ## Consumer compile qualification
 
 `generated/lib.rs.h` is the CXX-generated header from this exact bridge source;

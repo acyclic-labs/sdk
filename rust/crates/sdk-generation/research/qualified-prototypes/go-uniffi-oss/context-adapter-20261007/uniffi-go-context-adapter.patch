@@ -1,0 +1,244 @@
+diff --git a/bindgen/src/gen_go/filters.rs b/bindgen/src/gen_go/filters.rs
+index ed82dda..e68e3bf 100644
+--- a/bindgen/src/gen_go/filters.rs
++++ b/bindgen/src/gen_go/filters.rs
+@@ -282,6 +282,13 @@ pub fn future_continuation_name(config: &Config) -> Result<String, askama::Error
+     ))
+ }
+ 
++/// Derive UniFFI's generated future-cancel symbol from its future-poll symbol.
++/// UniFFI exposes both symbols in the scaffolding header, but this backend only
++/// consumed the poll/free pair before context cancellation support was added.
++pub fn future_cancel_name(name: String) -> Result<String, askama::Error> {
++    Ok(name.replace("_rust_future_poll_", "_rust_future_cancel_"))
++}
++
+ /// Exported go function to "free"/"cancel" async callback
+ pub fn free_gorutine_callback(config: &Config) -> Result<String, askama::Error> {
+     Ok(format!(
+diff --git a/bindgen/templates/Async.go b/bindgen/templates/Async.go
+index 80e6f30..6adb6df 100644
+--- a/bindgen/templates/Async.go
++++ b/bindgen/templates/Async.go
+@@ -18,7 +18,9 @@ func {{ config|future_continuation_name }}(data C.uint64_t, pollResult C.int8_t)
+ 	waiter <- int8(pollResult)
+ }
+ 
+-func uniffiRustCallAsync[E any, T any, F any](
++func uniffiRustCallAsyncContext[E any, T any, F any](
++	ctx context.Context,
++	cancelFunc func(C.uint64_t),
+ 	errConverter BufReader[E],
+ 	completeFunc rustFutureCompleteFunc[F],
+ 	liftFunc func(F) T,
+@@ -27,6 +29,7 @@ func uniffiRustCallAsync[E any, T any, F any](
+ 	freeFunc rustFutureFreeFunc,
+ ) (T, E) {
+ 	defer freeFunc(rustFuture)
++	if ctx == nil { ctx = context.Background() }
+ 
+ 	pollResult := int8(-1)
+ 	waiter := make(chan int8, 1)
+@@ -40,7 +43,12 @@ func uniffiRustCallAsync[E any, T any, F any](
+ 			(C.UniffiRustFutureContinuationCallback)(C.{{ config|future_continuation_name }}),
+ 			C.uint64_t(chanHandle),
+ 		)
+-		pollResult = <-waiter
++		select {
++		case pollResult = <-waiter:
++		case <-ctx.Done():
++			cancelFunc(rustFuture)
++			pollResult = <-waiter
++		}
+ 	}
+ 
+ 	var goValue T
+diff --git a/bindgen/templates/EnumTemplate.go b/bindgen/templates/EnumTemplate.go
+index c4750f5..21c7bc8 100644
+--- a/bindgen/templates/EnumTemplate.go
++++ b/bindgen/templates/EnumTemplate.go
+@@ -32,7 +32,7 @@ const (
+ type {{ type_name }} interface {
+ 	Destroy()
+ 	{%- for meth in e.methods() %}
+-	{{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}) {% call go::return_type_decl(meth) %}
++	{{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}{% if meth.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(meth) %}
+ 	{%- endfor %}
+ }
+ 
+@@ -63,7 +63,7 @@ func (e {{ type_name }}{{ variant.name()|class_name }}) Destroy() {
+ {%- if e.is_flat() %}
+ {%- for meth in e.methods() %}
+ {%- call go::docstring(meth, 0) %}
+-func (_self {{ type_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}) {% call go::return_type_decl(meth) %} {
++func (_self {{ type_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}{% if meth.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(meth) %} {
+ 	_selfBuf := {{ ffi_converter_instance }}.Lower(_self)
+ 	{% if meth.is_async() %}
+ 	{% call go::async_ffi_call_binding(meth, "_selfBuf") %}
+@@ -77,7 +77,7 @@ func (_self {{ type_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_dec
+ {%- for variant in e.variants() %}
+ {%- for meth in e.methods() %}
+ {%- call go::docstring(meth, 0) %}
+-func (_self {{ type_name }}{{ variant.name()|class_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}) {% call go::return_type_decl(meth) %} {
++func (_self {{ type_name }}{{ variant.name()|class_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}{% if meth.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(meth) %} {
+ 	_selfBuf := {{ ffi_converter_instance }}.Lower(_self)
+ 	{% if meth.is_async() %}
+ 	{% call go::async_ffi_call_binding(meth, "_selfBuf") %}
+diff --git a/bindgen/templates/Helpers.go b/bindgen/templates/Helpers.go
+index 1e3a9d3..6f38834 100644
+--- a/bindgen/templates/Helpers.go
++++ b/bindgen/templates/Helpers.go
+@@ -16,6 +16,8 @@ func checkCallStatus[E any](converter BufReader[E], status C.RustCallStatus) E {
+ 		return zero
+ 	case 1:
+ 		return LiftFromRustBuffer(converter, GoRustBuffer { inner: status.errorBuf })
++	case 3:
++		return any(NewBindingErrorCancelled()).(E)
+ 	case 2:
+ 		// when the rust code sees a panic, it tries to construct a rustBuffer
+ 		// with the message.  but if that code panics, then it just sends back
+@@ -36,6 +38,8 @@ func checkCallStatusUnknown(status C.RustCallStatus) error {
+ 		return nil
+ 	case 1:
+ 		panic(fmt.Errorf("function not returning an error returned an error"))
++	case 3:
++		return NewBindingErrorCancelled()
+ 	case 2:
+ 		// when the rust code sees a panic, it tries to construct a C.RustBuffer
+ 		// with the message.  but if that code panics, then it just sends back
+@@ -63,3 +67,5 @@ func rustCall[U any](callback func(*C.RustCallStatus) U) U {
+ type NativeError interface {
+ 	AsError() error
+ }
++
++
+diff --git a/bindgen/templates/ObjectTemplate.go b/bindgen/templates/ObjectTemplate.go
+index d03658e..5aa9e52 100644
+--- a/bindgen/templates/ObjectTemplate.go
++++ b/bindgen/templates/ObjectTemplate.go
+@@ -14,7 +14,7 @@
+ type {{ interface_name }} interface {
+ 	{%- for func in obj.methods() -%}
+ 	{%- call go::docstring(func, 1) %}
+-	{{ func.name()|fn_name }}({%- call go::arg_list_decl(func) -%}) {% call go::return_type_decl(func) %}
++	{{ func.name()|fn_name }}({%- call go::arg_list_decl(func) -%}{% if func.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(func) %}
+ 	{%- endfor %}
+ }
+ 
+@@ -26,7 +26,7 @@ type {{ impl_name }} struct {
+ {%- match obj.primary_constructor() %}
+ {%- when Some with (cons) %}
+ {%- call go::docstring(cons, 0) %}
+-func New{{ impl_name }}({% call go::arg_list_decl(cons) -%}) {% call go::return_type_decl(cons) %} {
++func New{{ impl_name }}({% call go::arg_list_decl(cons) -%}{% if cons.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(cons) %} {
+ 	{%- if cons.is_async() %}
+ 	{% call go::async_ffi_call_binding(cons, "") %}
+ 	{%- else %}
+@@ -38,7 +38,7 @@ func New{{ impl_name }}({% call go::arg_list_decl(cons) -%}) {% call go::return_
+ 
+ {% for cons in obj.alternate_constructors() -%}
+ {%- call go::docstring(cons, 0) %}
+-func {{ impl_name }}{{ cons.name()|fn_name }}({% call go::arg_list_decl(cons) %}) {% call go::return_type_decl(cons) %} {
++func {{ impl_name }}{{ cons.name()|fn_name }}({% call go::arg_list_decl(cons) %}{% if cons.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(cons) %} {
+ 	{%- if cons.is_async() %}
+ 	{% call go::async_ffi_call_binding(cons, "") %}
+ 	{%- else %}
+@@ -50,7 +50,7 @@ func {{ impl_name }}{{ cons.name()|fn_name }}({% call go::arg_list_decl(cons) %}
+ {% for func in obj.methods() -%}
+ 
+ {%- call go::docstring(func, 0) %}
+-func (_self {{ impl_type_name }}) {{ func.name()|fn_name }}({%- call go::arg_list_decl(func) -%}) {% call go::return_type_decl(func) %} {
++func (_self {{ impl_type_name }}) {{ func.name()|fn_name }}({%- call go::arg_list_decl(func) -%}{% if func.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(func) %} {
+ 	_pointer := _self.ffiObject.incrementPointer("{{ type_name }}")
+ 	defer _self.ffiObject.decrementPointer()
+ 	{%- if func.is_async() %}
+diff --git a/bindgen/templates/RecordTemplate.go b/bindgen/templates/RecordTemplate.go
+index 7374f90..a37b1a5 100644
+--- a/bindgen/templates/RecordTemplate.go
++++ b/bindgen/templates/RecordTemplate.go
+@@ -25,7 +25,7 @@ func (r *{{ type_name }}) Destroy() {
+ 
+ {%- for meth in rec.methods() %}
+ {%- call go::docstring(meth, 0) %}
+-func (_self {{ type_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}) {% call go::return_type_decl(meth) %} {
++func (_self {{ type_name }}) {{ meth.name()|fn_name }}({%- call go::arg_list_decl(meth) -%}{% if meth.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(meth) %} {
+ 	_selfBuf := {{ ffi_converter_instance }}.Lower(_self)
+ 	{% if meth.is_async() %}
+ 	{% call go::async_ffi_call_binding(meth, "_selfBuf") %}
+diff --git a/bindgen/templates/TopLevelFunctionTemplate.go b/bindgen/templates/TopLevelFunctionTemplate.go
+index 411627e..531f35b 100644
+--- a/bindgen/templates/TopLevelFunctionTemplate.go
++++ b/bindgen/templates/TopLevelFunctionTemplate.go
+@@ -3,7 +3,7 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */#}
+ 
+ {%- call go::docstring(func, 0) %}
+-func {{ func.name()|fn_name}}({%- call go::arg_list_decl(func) -%}) {% call go::return_type_decl(func) %} {
++func {{ func.name()|fn_name}}({%- call go::arg_list_decl(func) -%}{% if func.is_async() %}, ctx context.Context{% endif %}) {% call go::return_type_decl(func) %} {
+ {%- if func.is_async() %}
+ 	{% call go::async_ffi_call_binding(func, "") %}
+ {%- else %}
+diff --git a/bindgen/templates/macros.go b/bindgen/templates/macros.go
+index 4ede2df..c1c54ca 100644
+--- a/bindgen/templates/macros.go
++++ b/bindgen/templates/macros.go
+@@ -154,10 +154,13 @@
+ 
+ {%- macro async_ffi_call_binding(func, prefix) -%}
+ 	{%- call func_return_vars_pairs(func, suffix = ":=") -%}
++	{% let cancel_name = func.ffi_rust_future_poll(ci)|future_cancel_name %}
+ 	
+     {%- match (func.return_type(), func.throws_type()) %}
+     {%- when (Some(return_type), Some(e)) -%}
+-	uniffiRustCallAsync[{{ e|type_name(ci) }}](
++	uniffiRustCallAsyncContext[{{ e|type_name(ci) }}](
++		ctx,
++		func(handle C.uint64_t) { C.{{ cancel_name }}(handle) },
+         {{ e|ffi_converter_instance(ci) }},
+ 		// completeFn
+ 		func(handle C.uint64_t, status *C.RustCallStatus) {{ return_type|ffi_type_name }} {
+@@ -169,7 +172,9 @@
+ 			return {{ return_type|lift_fn(ci) }}(ffi)
+ 		},
+     {%- when (None, Some(e)) -%}
+-	uniffiRustCallAsync[{{ e|type_name(ci) }}](
++	uniffiRustCallAsyncContext[{{ e|type_name(ci) }}](
++		ctx,
++		func(handle C.uint64_t) { C.{{ cancel_name }}(handle) },
+         {{ e|ffi_converter_instance(ci) }},
+ 		// completeFn
+ 		func(handle C.uint64_t, status *C.RustCallStatus) struct{} {
+@@ -179,7 +184,9 @@
+ 		// liftFn
+ 		func(_ struct{}) struct{} { return struct{}{} },
+     {%- when (Some(return_type), None) -%}
+-	uniffiRustCallAsync[error](
++	uniffiRustCallAsyncContext[error](
++		ctx,
++		func(handle C.uint64_t) { C.{{ cancel_name }}(handle) },
+         nil,
+ 		// completeFn
+ 		func(handle C.uint64_t, status *C.RustCallStatus) {{ return_type|ffi_type_name }} {
+@@ -191,7 +198,9 @@
+ 			return {{ return_type|lift_fn(ci) }}(ffi)
+ 		},
+     {%- when (None, None) -%}
+-	uniffiRustCallAsync[error](
++	uniffiRustCallAsyncContext[error](
++		ctx,
++		func(handle C.uint64_t) { C.{{ cancel_name }}(handle) },
+         nil,
+ 		// completeFn
+ 		func(handle C.uint64_t, status *C.RustCallStatus) struct{} {
+diff --git a/bindgen/templates/wrapper.go b/bindgen/templates/wrapper.go
+index 21eb6ba..e0c6d58 100644
+--- a/bindgen/templates/wrapper.go
++++ b/bindgen/templates/wrapper.go
+@@ -19,6 +19,7 @@ import (
+ 	"encoding/binary"
+ 	{%- if ci.has_async_fns() %}
+ 	"reflect"
++	"context"
+ 	"runtime/cgo"
+ 	{%- endif %}
+ 	{%- for imported_package in self.imports() %}

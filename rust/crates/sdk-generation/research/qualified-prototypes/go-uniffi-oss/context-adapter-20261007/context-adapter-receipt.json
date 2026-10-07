@@ -1,0 +1,47 @@
+{
+  "schema": "go-uniffi-context-adapter-receipt/v1",
+  "scope": "external maintained-generator prototype; no production API change",
+  "generatedAt": "2026-10-07",
+  "generator": {
+    "repository": "uniffi-bindgen-go",
+    "commit": "0b7fb4ceef12021bd7f790cc516fa9133e001813",
+    "version": "0.7.1+v0.31.0",
+    "sourceWorktree": "Q:\\sdk\\work\\uniffi-go-context-prototype-20261007",
+    "patchSha256": "D26B679FA35DB370851A7A82FFCD0ECF4012E46767937487C9EED363279C1D11"
+  },
+  "rustSource": {
+    "repository": "sdk",
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "domainHash": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "nativeDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241"
+  },
+  "design": {
+    "adapter": "generated generic context.Context helper selects waiter vs ctx.Done; calls ffi_rust_future_cancel_*; waits ready; completes once",
+    "runtimeGap": "RustCallStatus code 3 maps to generated NewBindingErrorCancelled in shared Helpers template",
+    "manualHandle": "nil",
+    "perOperationGlue": false,
+    "semanticRegistry": false
+  },
+  "fixture": {
+    "server": "canonical grpc-conformance-fixture.mjs",
+    "endpoint": "https://localhost:52650",
+    "caSha256": "5A0AA4F0A814EC3B8B3CCB6BB547137462B7733E84C0E91594DE19653F4F73BA",
+    "actorId": "actor-a",
+    "token": "conformance",
+    "cleanup": "fixture session exited code 0 after release-context-2-20261007 marker; canonical fixture handled the expected TLS/HTTP2 reset and closed listeners",
+    "probeMarker": "GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil endpoint=https://localhost:52650"
+  },
+  "artifacts": {
+    "patch": "D26B679FA35DB370851A7A82FFCD0ECF4012E46767937487C9EED363279C1D11",
+    "generatedGo": "C0CEED67736523871F361E461F2645C4FAE5C75E598E5C9138B37715084F1AA5",
+    "generatedHeader": "33318F4142D8168B09725D9636632589CB6D36957CCDC12BF4283DD2D0140A37",
+    "probe": "2AFDB09947CFA3047B7B42C6642BF40428A7494442E6CA5C8F40F007CEB2816E",
+    "nativeDll": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "ca": "5A0AA4F0A814EC3B8B3CCB6BB547137462B7733E84C0E91594DE19653F4F73BA"
+  },
+  "limitations": [
+    "Generated package was external research output; not copied into production.",
+    "The generated Go file includes the same shared status-code-3 mapping as the recorded source patch; a release rebuild should regenerate it before upstream use.",
+    "This receipt proves one current Actors InspectActor async call plus generic generated wrapper mechanics, not full all-eight semantic qualification."
+  ]
+}

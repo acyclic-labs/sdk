@@ -6,12 +6,18 @@ this loop.
 
 ## Authoritative state
 
-- Remote main verified by ls-remote: ef65198d08ddf59d632e73ff8c7c362defb9ffda.
+- Remote main after coordinator merge: 03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1.
   PR262 changes binding conversions, dependencies and generation scripts. Every
   pending port must preserve these fixes rather than overwrite newer main files.
 - Coordinator merged PR252, PR254 and PR258. PR258 merged at
   3a7ca21c8195e0ef847cf88c12a950dd41b903f0 on 2026-10-07 08:12:48 UTC.
   It supplies Cargo-bound v2 package/search docs metadata and immutable bundles.
+- Coordinator merged PR263 at 03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1
+  on 2026-10-07 09:48:48 UTC. Exact signed candidate
+  cdfb3c072f065f6a8a517205fa81f200127776ea passed independent review,
+  27 Machines tests, TypeScript, and every required cheap CI gate. Primitive
+  transport and page-size checks now execute in Rust before custom providers;
+  TypeScript retains thin error-class adapters and removes duplicate policy.
 - Verified remote WIP checkpoint refs before this update:
   foundation 4ef2b10761afde394f49cc4f7b30f10cca1658e1;
   Actors generation 1429d5cf38b982ba0be4d87233a6bacbdda85ac7.
@@ -34,9 +40,8 @@ this loop.
   Rust u64 preservation and extracted-package finite-type compile negatives.
   This proves that snapshot only. The old 0D29 archive cannot be relabeled with
   a new source identity. Build and attest the exact final signed candidate.
-- Machines transport validation reuses the Rust safe-integer predicate. Its WASM
-  build, 24 tests and TypeScript check pass. Keep it out of the Filesystem PR;
-  port the bounded TypeScript deletion while retaining main's conversion fixes.
+- Machines validation cutover is merged. Broader handwritten Machines type
+  definitions and the other families' TypeScript policies remain to migrate.
 - Actors has Rust-owned Protify contracts, descriptor semantic parity, archive
   all-target compilation and 70 passing tests. The pinned ten-owner release
   fixture now passes (625.66 seconds), including package/version/source SHA,

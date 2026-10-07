@@ -12,7 +12,7 @@ The model keeps four identities together:
 - the artifact and qualification receipt hashes.
 
 The receipt is a typed JSON document. A passed record requires its source
-revision, `source_inventory_sha256`, generator version, language-specific
+revision, `source_inventory_sha256`, generator version, generator source digest, language-specific
 artifact entry, artifact path, artifact hash, and byte length to match the
 current Rust checkout and produced artifact. A marker alone is not sufficient.
 The source inventory covers the selected Cargo package and local path
@@ -30,7 +30,8 @@ runner:
       --source-root <sdk> \
       --manifest-path <sdk>/rust/crates/actors-uniffi/Cargo.toml \
       --package acyclic-actors-uniffi --language python \
-      --generator 0.31.0 --artifact <wheel> \
+      --generator 0.31.0 --generator-source-sha256 <patch-or-source-digest> \
+      --artifact <wheel> \
       --receipt <typed-qualification-receipt.json> --receipt-marker PASS
 
 The current historical all8 receipt is intentionally rejected because it does
@@ -39,7 +40,11 @@ release gate must emit that digest in the typed receipt before a `passed`
 record can be claimed.
 
 The existing Rust integration point is `rust/crates/sdk-generation/src/main.rs`,
-where the generator currently defines its own manifest and file-hash records.
-The smallest integration is to reuse this model's source inventory and receipt
-binding there, preserving the existing manifest schema adapter at the boundary;
-no separate TypeScript or JSON authority is needed.
+where the generator already owns the `source: Vec<FileHash>` and
+`source_sha256` fields in `acyclic.sdk.generation.v1`. The prototype's
+`source_inventory_from_generation_manifest` consumes that vector and verifies
+its declared digest; it does not emit a competing source manifest. The smallest
+production port is therefore to move that adapter and receipt binding into the
+existing generator module, while keeping Cargo metadata as the sole package and
+target identity source. No separate TypeScript or JSON authority is needed.
+

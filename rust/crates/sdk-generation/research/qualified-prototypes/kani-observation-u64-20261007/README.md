@@ -22,6 +22,7 @@ cargo-kani --manifest-path source/rust/crates/actors/Cargo.toml --package acycli
 cargo-kani --manifest-path source/rust/crates/actors/Cargo.toml --package acyclic-actors --harness domain::kani_proofs::update_request_preserves_full_width_configuration_revision --exact --default-unwind 1 --harness-timeout 300 -Z unstable-options -j1
 ```
 
-The receipt records the observed runs. They did not reach a verification marker: the explicit invocations remained in Cargo metadata access on the shared registry mount, while the earlier combined attempt reached CBMC only for the final update harness and was stopped during propositional reduction. Therefore this prototype is an execution diagnostic and mathematical property design, not a successful qualification.
+The receipt records the observed runs. The explicit invocations, including a reduced clone-free subscription projection harness, remained in Cargo metadata access on the shared registry mount before harness checking. The earlier combined attempt reached CBMC only for the final update harness and was stopped during propositional reduction. No verification marker was produced. Therefore this prototype is an execution diagnostic and mathematical property design, not a successful qualification.
 
 No `target/`, Cargo cache, or generated binary is part of this research copy.
+

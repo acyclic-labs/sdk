@@ -22,13 +22,7 @@ const REQUIRED_SOURCE_ROOTS = [
   "rust/crates/native-runtime",
   "rust/crates/objects",
   "rust/crates/stream",
-  "rust/crates/actors",
-  "rust/crates/workers",
-  "rust/crates/harness",
-  "rust/crates/inference-contract",
-  "rust/crates/inference-wasm",
-  "rust/crates/machines",
-  "rust/crates/sdk-generation",
+  "rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/run.mjs",
   "scripts/build-wasm.mjs",
   "scripts/check-filesystem-napi.mjs",
   "scripts/check-filesystem-package.sh",
@@ -67,15 +61,12 @@ const GENERATOR_PROVENANCE = Object.freeze({
     "scripts/sync-generated.mjs",
     "scripts/validate-npm-package.mjs",
     "typescript/packages/filesystem/package.json",
+    "rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/run.mjs",
   ],
   path_dependencies: [
-    "rust/crates/actors",
-    "rust/crates/workers",
-    "rust/crates/harness",
-    "rust/crates/inference-contract",
-    "rust/crates/inference-wasm",
-    "rust/crates/machines",
-    "rust/crates/sdk-generation",
+    "rust/crates/native-runtime",
+    "rust/crates/objects",
+    "rust/crates/stream",
   ],
 });
 const EDGE_VALUES = [
@@ -199,7 +190,6 @@ const generatorProvenancePaths = () => [
   ...GENERATOR_PROVENANCE.lockfiles,
   ...GENERATOR_PROVENANCE.toolchain,
   ...GENERATOR_PROVENANCE.generator_files,
-  ...GENERATOR_PROVENANCE.path_dependencies,
 ];
 const validateGeneratorProvenance = (manifest, entries) => {
   if (JSON.stringify(manifest.generator_provenance) !== JSON.stringify(GENERATOR_PROVENANCE)) {
@@ -208,6 +198,11 @@ const validateGeneratorProvenance = (manifest, entries) => {
   const paths = new Set(entries.map(entry => entry.path));
   for (const path of generatorProvenancePaths()) {
     if (!paths.has(path)) throw new Error(`source manifest omits generator provenance file: ${path}`);
+  }
+  for (const root of GENERATOR_PROVENANCE.path_dependencies) {
+    if (![...paths].some(path => path === root || path.startsWith(`${root}/`))) {
+      throw new Error(`source manifest omits generator provenance root: ${root}`);
+    }
   }
 };
 const writeSourceManifestFile = async () => {
@@ -235,6 +230,8 @@ const writeSourceManifestFile = async () => {
   }, null, 2));
 };
 const sourceAttestation = async () => {
+  const liveSourceCommit = git("rev-parse", "--verify", "HEAD");
+  const liveSourceState = git("status", "--porcelain=v1", "--untracked-files=all").length === 0 ? "clean" : "dirty";
   const manifestBytes = await readFile(sourceManifest);
   let manifest;
   try {
@@ -251,11 +248,11 @@ const sourceAttestation = async () => {
   if (manifest.source_commit !== sourceCommit) {
     throw new Error(`source manifest commit mismatch: expected ${sourceCommit}, got ${manifest.source_commit}`);
   }
-  if (manifest.source_commit !== actualSourceCommit) {
-    throw new Error(`source manifest commit is not the source root HEAD: expected ${actualSourceCommit}, got ${manifest.source_commit}`);
+  if (manifest.source_commit !== liveSourceCommit) {
+    throw new Error(`source manifest commit is not the source root HEAD: expected ${liveSourceCommit}, got ${manifest.source_commit}`);
   }
-  if (manifest.source_state !== actualSourceState) {
-    throw new Error(`source manifest state does not match Git: expected ${actualSourceState}, got ${manifest.source_state}`);
+  if (manifest.source_state !== liveSourceState) {
+    throw new Error(`source manifest state does not match Git: expected ${liveSourceState}, got ${manifest.source_state}`);
   }
   if (JSON.stringify(manifest.required_source_roots) !== JSON.stringify(REQUIRED_SOURCE_ROOTS)) {
     throw new Error("source manifest required source selector differs from the Rust qualification selector");
@@ -341,7 +338,7 @@ const describe = value => {
 
 const classify = (error, runtime) => {
   const message = String(error?.message ?? error);
-  if (message.includes(ADMISSION_ERROR)) return "boundary_rejected";
+  if (message === ADMISSION_ERROR) return "boundary_rejected";
   if (runtime === "wasm" && message === WASM_NUMBER_ERROR) return "boundary_rejected";
   // Native conversion failures remain downstream errors unless the binding
   // returns the canonical Rust admission string above. This deliberately
@@ -439,6 +436,69 @@ const captureQualificationArtifacts = async () => Promise.all(
     bytes: (await lstat(artifact.path)).size,
   })),
 );
+const archiveEntries = archivePath => {
+  const listing = execFileSync("tar", ["-tzf", archivePath], { encoding: "utf8" })
+    .split(/\r?\n/)
+    .map(entry => entry.trim())
+    .filter(Boolean);
+  const entries = listing.filter(entry => !entry.endsWith("/"));
+  const seen = new Set();
+  for (const entry of entries) {
+    const normalized = entry.replaceAll("\\", "/");
+    if (
+      normalized.startsWith("/") ||
+      /^[A-Za-z]:\//.test(normalized) ||
+      normalized.split("/").includes("..") ||
+      seen.has(normalized)
+    ) {
+      throw new Error(`archive has an unsafe or duplicate entry: ${entry}`);
+    }
+    seen.add(normalized);
+  }
+  return entries;
+};
+const extractArchiveEntry = (archivePath, archiveEntry) => execFileSync("tar", ["-xOf", archivePath, archiveEntry], {
+  maxBuffer: 512 * 1024 * 1024,
+});
+const archiveEntryForPath = (entries, expectedPath) => {
+  const normalizedPath = expectedPath.replaceAll("\\", "/");
+  const matches = entries.filter(entry => {
+    const normalized = entry.replaceAll("\\", "/");
+    return normalized === normalizedPath || normalized === `package/${normalizedPath}` || normalized.endsWith(`/${normalizedPath}`);
+  });
+  if (matches.length !== 1) {
+    throw new Error(`archive must contain exactly one ${expectedPath}, found ${matches.length}`);
+  }
+  return matches[0];
+};
+const validateArchiveFile = async (archivePath, expectedPath, installedPath, label) => {
+  const entries = archiveEntries(archivePath);
+  const archiveEntry = archiveEntryForPath(entries, expectedPath);
+  const archivedBytes = extractArchiveEntry(archivePath, archiveEntry);
+  const archivedDigest = createHash("sha256").update(archivedBytes).digest("hex");
+  const installedDigest = await digest(installedPath);
+  const installedBytes = (await lstat(installedPath)).size;
+  if (archivedDigest !== installedDigest || archivedBytes.length !== installedBytes) {
+    throw new Error(`${label} differs from archive entry: ${archiveEntry}`);
+  }
+  return { archive_entry: archiveEntry, sha256: archivedDigest, bytes: archivedBytes.length };
+};
+const validateNativeArchiveBinding = async () => {
+  const entries = archiveEntries(nativeArchivePath);
+  const bindingName = basename(nativeBinding);
+  const matches = entries.filter(entry => basename(entry.replaceAll("\\", "/")) === bindingName);
+  if (matches.length !== 1) {
+    throw new Error(`native archive must contain exactly one ${bindingName}, found ${matches.length}`);
+  }
+  const archiveEntry = matches[0];
+  const archivedBinding = extractArchiveEntry(nativeArchivePath, archiveEntry);
+  const archivedDigest = createHash("sha256").update(archivedBinding).digest("hex");
+  const installedDigest = await digest(nativeBinding);
+  if (archivedDigest !== installedDigest) {
+    throw new Error(`installed native binding differs from native archive entry: ${archiveEntry}`);
+  }
+  return { archive_entry: archiveEntry, sha256: archivedDigest, bytes: archivedBinding.length };
+};
 const assertStableQualificationArtifacts = (before, after) => {
   for (let index = 0; index < before.length; index += 1) {
     const expected = before[index];
@@ -450,6 +510,21 @@ const assertStableQualificationArtifacts = (before, after) => {
 };
 const sourceBefore = await sourceAttestation();
 const artifactsBefore = await captureQualificationArtifacts();
+const packageArchiveFiles = {
+  wasm_js: await validateArchiveFile(
+    archivePath,
+    "generated/wasm/acyclic_fs_wasm.js",
+    join(packageRoot, "generated", "wasm", "acyclic_fs_wasm.js"),
+    "package WASM JavaScript",
+  ),
+  wasm_binary: await validateArchiveFile(
+    archivePath,
+    "generated/wasm/acyclic_fs_wasm_bg.wasm",
+    join(packageRoot, "generated", "wasm", "acyclic_fs_wasm_bg.wasm"),
+    "package WASM binary",
+  ),
+};
+const nativeArchiveBinding = await validateNativeArchiveBinding();
 const runtimes = [await qualifyWasm(), await qualifyNative()];
 const artifactsAfter = await captureQualificationArtifacts();
 assertStableQualificationArtifacts(artifactsBefore, artifactsAfter);
@@ -482,8 +557,16 @@ const receipt = {
   schema: 1,
   source_commit: sourceCommit,
   source_attestation: attestation,
-  package_archive: { path: basename(archivePath), sha256: await digest(archivePath) },
-  native_archive: { path: basename(nativeArchivePath), sha256: await digest(nativeArchivePath) },
+  package_archive: {
+    path: basename(archivePath),
+    sha256: artifactsBefore.find(artifact => artifact.label === "package_archive").sha256,
+    files: packageArchiveFiles,
+  },
+  native_archive: {
+    path: basename(nativeArchivePath),
+    sha256: artifactsBefore.find(artifact => artifact.label === "native_archive").sha256,
+    binding: nativeArchiveBinding,
+  },
   matrix_sha256: createHash("sha256").update(matrix).digest("hex"),
   runtimes,
 };

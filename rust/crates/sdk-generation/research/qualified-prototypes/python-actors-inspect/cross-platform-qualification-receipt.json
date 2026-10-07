@@ -69,7 +69,11 @@
     "linux": {
       "wheel_sha256": "447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761",
       "fresh_python_install": "PASS: isolated WSL Python 3.10 environment and generated union constructor probe",
-      "all_eight_remote": "BLOCKED: WSL-to-Windows fixture TLS path did not complete; no pass recorded"
+      "all_eight_remote": "PASS: canonical Windows fixture through IPv6-aware Windows TCP relay and WSL relay with fixture CA and localhost SNI; typed service error and pre-cancel checks passed",
+      "conformance_script_sha256": "57F778967C80A3109CA96A14009C7007235FE913645EE4824E7652A0A418857A",
+      "fixture_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",
+      "server_abort_resilience": "PASS: aborted TLS socket followed by authenticated InspectActor against the same canonical fixture",
+      "server_abort_probe_sha256": "5B9A82F75DAFD8CF0F3C956A939D22BA57C380E961654F75C248AAD3FAAA4FAD"
     },
     "macos": {
       "wheel_sha256": "F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B",
