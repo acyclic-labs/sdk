@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { Buffer } from "node:buffer";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import {
@@ -19,12 +19,14 @@ import {
 } from "../src/wasm-adapter.js";
 import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
 import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
+import { nodeWasmBindings } from "../src/wasm-node.js";
 import { portableVolumeOptions } from "../src/contracts.js";
 import type { OperationEvent } from "../src/observe.js";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
 import { copyMergeConflict, decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 
 const identity = (byte: number): number[] => Array.from({ length: 16 }, () => byte);
+beforeAll(async () => { await nodeWasmBindings(); });
 const id = (byte: number): Uint8Array => Uint8Array.from(identity(byte));
 const snapshot = (revision: bigint, options: { contextId?: Uint8Array; parentContextId?: Uint8Array; roots?: WireRoot[] } = {}) =>
   toBinary(WorkspaceContextSnapshotSchema, create(WorkspaceContextSnapshotSchema, {
@@ -328,11 +330,11 @@ describe("WASM adapter canonical boundaries", () => {
       const checkout = await volume.checkout({
         access: "read-write", consistency: "pinned", mutationMode: "private-cow",
       });
-      expect(typeof checkout.acquisitionWork.bytesCopied).toBe("number");
-      expect(typeof checkout.acquisitionWork.sourcePathComponents).toBe("number");
+      expect(typeof checkout.acquisitionWork.bytesCopied).toBe("bigint");
+      expect(typeof checkout.acquisitionWork.sourcePathComponents).toBe("bigint");
       const mutation = await checkout.createFile("/adapter-dto", Uint8Array.of(4));
-      expect(typeof mutation.work.bytesCopied).toBe("number");
-      expect(typeof mutation.work.sourcePathComponents).toBe("number");
+      expect(typeof mutation.work.bytesCopied).toBe("bigint");
+      expect(typeof mutation.work.sourcePathComponents).toBe("bigint");
     } finally {
       fs.close();
     }
