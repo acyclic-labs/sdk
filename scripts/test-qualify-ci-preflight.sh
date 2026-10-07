@@ -6,8 +6,8 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/acyclic-qualify-ci-test.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 mkdir -p "$work/bin"
 
-# The macOS runner's sha256sum accepts -c but not GNU long options. Exercise
-# the actual verifier with that interface, including rejected archive bytes.
+# Exercise the actual verifier with a digest-only sha256sum interface,
+# including rejected archive bytes and failed reads.
 mkdir -p "$work/portable-sha/bin"
 printf 'verified archive\n' >"$work/portable-sha/archive"
 printf 'corrupted archive\n' >"$work/portable-sha/corrupt"
@@ -17,7 +17,7 @@ archive_checksum="$(sha256sum "$work/portable-sha/archive" | cut -d ' ' -f 1)"
 cat >"$work/portable-sha/bin/sha256sum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "$*" == '-c' ]] || exit 2
+[[ "$#" -eq 1 && "$1" != -* ]] || exit 2
 exec "$TEST_REAL_SHA256" "$@"
 EOF
 chmod +x "$work/portable-sha/bin/sha256sum"
@@ -68,6 +68,10 @@ cat >"$work/bin/sha256sum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_SHA256_LOG"
+if [[ "$*" != '--check --status' ]]; then
+  # Signature fixtures use a stub archive, not downloaded tool bytes.
+  printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$1"
+fi
 EOF
 
 cat >"$work/bin/gpg" <<'EOF'
