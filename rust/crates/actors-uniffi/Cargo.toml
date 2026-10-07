@@ -21,7 +21,8 @@ required-features = ["bindgen"]
 
 [dependencies]
 acyclic-actors = { path = "../actors", features = ["uniffi"] }
+acyclic-stream = { path = "../stream", features = ["grpc"] }
 thiserror = "2.0.17"
 tokio-util = "=0.7.19"
-uniffi = { version = "=0.31.0", features = ["tokio"] }
+uniffi = { version = "=0.31.0", features = ["tokio", "scaffolding-ffi-buffer-fns"] }
 

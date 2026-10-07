@@ -1,0 +1,110 @@
+# GENERATED FILE: derive with `cargo run -p acyclic-actors-uniffi --bin export-nominal-metadata --`
+# Rust source: src/nominal.rs::NOMINAL_METADATA
+
+[bindings.kotlin]
+generate_immutable_records = true
+
+[bindings.kotlin.custom_types.ActorId]
+nominal = true
+validator = "validateActorId"
+imports = ["uniffi.acyclic_actors_uniffi.validateActorId"]
+
+[bindings.kotlin.custom_types.CodeSha256]
+nominal = true
+validator = "validateCodeSha256"
+imports = ["uniffi.acyclic_actors_uniffi.validateCodeSha256"]
+
+[bindings.kotlin.custom_types.PositiveU64]
+nominal = true
+validator = "validatePositiveU64"
+imports = ["uniffi.acyclic_actors_uniffi.validatePositiveU64"]
+
+[bindings.kotlin.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "validateCurrentHeadMarker"
+imports = ["uniffi.acyclic_actors_uniffi.validateCurrentHeadMarker"]
+
+[bindings.kotlin.custom_types.StreamPath]
+nominal = true
+validator = "validateStreamPath"
+imports = ["uniffi.acyclic_actors_uniffi.validateStreamPath"]
+
+[bindings.kotlin.custom_types.CommitId]
+nominal = true
+validator = "validateCommitId"
+imports = ["uniffi.acyclic_actors_uniffi.validateCommitId"]
+
+[bindings.kotlin.custom_types.IdempotencyKey]
+nominal = true
+validator = "validateIdempotencyKey"
+imports = ["uniffi.acyclic_actors_uniffi.validateIdempotencyKey"]
+
+[bindings.python.custom_types.ActorId]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_actor_id"
+
+[bindings.python.custom_types.CodeSha256]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_code_sha256"
+
+[bindings.python.custom_types.PositiveU64]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_positive_u64"
+
+[bindings.python.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_current_head_marker"
+
+[bindings.python.custom_types.StreamPath]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_stream_path"
+
+[bindings.python.custom_types.CommitId]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_commit_id"
+
+[bindings.python.custom_types.IdempotencyKey]
+nominal = true
+validator = "acyclic_actors_uniffi.validate_idempotency_key"
+
+[bindings.dart]
+readonly_collections = true
+
+[bindings.dart.custom_types.ActorId]
+nominal = true
+validator = "validate_actor_id"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.CodeSha256]
+nominal = true
+safe_value = "fixed-bytes-32"
+validator = "validate_code_sha256"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.PositiveU64]
+nominal = true
+validator = "validate_positive_u64"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.CurrentHeadMarker]
+nominal = true
+validator = "validate_current_head_marker"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.StreamPath]
+nominal = true
+validator = "validate_stream_path"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.CommitId]
+nominal = true
+safe_value = "fixed-bytes-32"
+validator = "validate_commit_id"
+imports = ["acyclic_actors_uniffi.dart"]
+
+[bindings.dart.custom_types.IdempotencyKey]
+nominal = true
+safe_value = "bytes"
+validator = "validate_idempotency_key"
+imports = ["acyclic_actors_uniffi.dart"]
+

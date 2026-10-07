@@ -10,6 +10,8 @@ use std::sync::Arc;
 use acyclic_actors::{client, domain};
 use tokio_util::sync::CancellationToken;
 
+mod nominal;
+
 uniffi::setup_scaffolding!();
 
 // Re-export the producer declarations so Rust and generated foreign callers
@@ -22,6 +24,12 @@ pub use domain::{
     RemoveSubscriptionResponse, ResumeSubscriptionRequest, ResumeSubscriptionResponse,
     ServiceError, SubscriptionObservation, SubscriptionSpec, SubscriptionStart, SubscriptionState,
     UpdateActorRequest, UpdateActorResponse,
+};
+
+pub use domain::subscription_start::CurrentHeadMarker;
+pub use nominal::{
+    CommitId, IdempotencyKey, NOMINAL_METADATA, NominalCarrier, NominalMetadata, StreamPath,
+    nominal_metadata_toml,
 };
 
 /// Errors crossing the generated foreign-language boundary.
@@ -60,6 +68,68 @@ fn domain_error(error: domain::DomainError) -> BindingError {
             detail_message: error.to_string(),
         },
     }
+}
+
+/// Validates an Actor identity through the canonical Rust constructor.
+#[uniffi::export]
+pub fn validate_actor_id(value: String) -> Result<(), BindingError> {
+    domain::ActorId::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates a code digest through the canonical Rust constructor.
+#[uniffi::export]
+pub fn validate_code_sha256(value: Vec<u8>) -> Result<(), BindingError> {
+    domain::CodeSha256::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates a positive unsigned integer through the canonical Rust constructor.
+#[uniffi::export]
+pub fn validate_positive_u64(value: u64) -> Result<(), BindingError> {
+    domain::PositiveU64::new(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates the true-only current-head marker through Rust.
+#[uniffi::export]
+pub fn validate_current_head_marker(value: bool) -> Result<(), BindingError> {
+    domain::subscription_start::CurrentHeadMarker::try_from(value)
+        .map(|_| ())
+        .map_err(domain_error)
+}
+
+/// Validates a Stream path through the canonical Rust constructor.
+#[uniffi::export]
+pub fn validate_stream_path(value: String) -> Result<(), BindingError> {
+    StreamPath::new(value)
+        .map(|_| ())
+        .map_err(|error| BindingError::Semantic {
+            detail_message: error.to_string(),
+        })
+}
+
+/// Validates an exact-width Stream commit identity through Rust.
+#[uniffi::export]
+pub fn validate_commit_id(value: Vec<u8>) -> Result<(), BindingError> {
+    CommitId::new(value)
+        .map(|_| ())
+        .map_err(|error| BindingError::Semantic {
+            detail_message: error.to_string(),
+        })
+}
+
+/// Validates a non-empty bounded retry identity through Rust.
+#[uniffi::export]
+pub fn validate_idempotency_key(value: Vec<u8>) -> Result<(), BindingError> {
+    IdempotencyKey::new(value)
+        .map(|_| ())
+        .map_err(|error| BindingError::Semantic {
+            detail_message: error.to_string(),
+        })
 }
 
 fn client_error(error: client::Error) -> BindingError {

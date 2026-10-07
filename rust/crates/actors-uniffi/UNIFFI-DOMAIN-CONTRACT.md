@@ -25,11 +25,25 @@ and uses its `run_with_cancellation` helper. The root workspace registration
 is intentionally left to the workspace owner.
 
 The producer contract also covers semantic roots used inside those records:
-`ActorId`, `CodeSha256`, and `PositiveU64` are tuple newtypes and must expose
-feature-gated UniFFI custom-type conversions while retaining their existing
-validation; `SubscriptionStart` must expose a feature-gated UniFFI enum
-implementation. Plain `Record` derives on the tuple newtypes are insufficient
-for UniFFI 0.31 because they do not provide the required `TypeId`, `Lower`,
-and `Lift` implementations. These conversions belong beside the declarations
-in the domain crate, so the facade continues to consume the actual semantic
-types without mirrors.
+`ActorId`, `CodeSha256`, `PositiveU64`, and the true-only
+`subscription_start::CurrentHeadMarker` are Rust-owned nominal values and must
+expose feature-gated UniFFI custom-type conversions while retaining their
+existing validation; `SubscriptionStart` must expose a feature-gated UniFFI
+enum implementation. Plain `Record` derives on the tuple newtypes are
+insufficient for UniFFI 0.31 because they do not provide the required `TypeId`,
+`Lower`, and `Lift` implementations. These conversions belong beside the
+declarations in the domain crate, so the facade continues to consume the
+actual semantic types without mirrors.
+
+The declarations and constructors live in `domain/nominal.rs`. The facade's
+`validate_actor_id`, `validate_code_sha256`, `validate_positive_u64`, and
+`validate_current_head` exports are unit-returning bridges for generated
+nominal factories; each delegates to the corresponding Rust constructor or
+conversion. Generated bindings must keep trusted Rust decode on a private
+constructor path and route caller-created values through these bridges.
+
+`src/nominal.rs::NOMINAL_METADATA` is the single producer metadata table for
+nominal names and wire carriers. `src/bin/export-nominal-metadata.rs` emits
+`uniffi.nominal.toml` from that table; language-specific configs and consumer
+fixtures must use this generated projection rather than maintain a separate
+type or validator registry.

@@ -60,6 +60,7 @@ name = "acyclic-actors-uniffi"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-stream",
  "thiserror 2.0.21",
  "tokio-util",
  "uniffi",

@@ -171,6 +171,16 @@ impl CommitId {
         Self(bytes)
     }
 
+    /// Constructs an ID from foreign bytes without duplicating the fixed-width
+    /// admission rule in a language binding.
+    pub fn try_from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self, StreamError> {
+        let bytes: [u8; 32] = bytes
+            .as_ref()
+            .try_into()
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(Self::from_bytes(bytes))
+    }
+
     /// Returns exact bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
