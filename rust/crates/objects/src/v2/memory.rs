@@ -430,7 +430,10 @@ fn timestamp() -> Result<prost_types::Timestamp, Error> {
     })
 }
 #[cfg(target_arch = "wasm32")]
-#[allow(clippy::cast_possible_truncation)] // Finite milliseconds are checked within the exact integer range before conversion.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "finite milliseconds are checked within the exact integer range before conversion"
+)]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
     let now = js_sys::Date::now();
     if !now.is_finite() || !(-62_167_219_200_000.0..=253_402_300_799_999.0).contains(&now) {
