@@ -1,6 +1,10 @@
 //! Ref-only durable executor observations across Stream and Filesystem.
 #![cfg(feature = "filesystem")]
-#![allow(clippy::too_many_lines, clippy::indexing_slicing)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::indexing_slicing,
+    reason = "ordered journal scenarios index the entries they appended"
+)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{

@@ -1159,7 +1159,6 @@ fn defensive_context<'a>(
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn defensive_extent_helpers_and_frames_are_total() -> Result<(), Box<dyn std::error::Error>> {
     let root = ObjectId {
         kind: ObjectKind::ExtentPage,

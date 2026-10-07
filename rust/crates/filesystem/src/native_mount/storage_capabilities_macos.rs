@@ -12,7 +12,10 @@ struct VolumeCapabilities {
     values: libc::vol_capabilities_attr_t,
 }
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "reads volume capabilities with fgetattrlist and statfs"
+)]
 pub(super) fn probe(
     root: &Path,
 ) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {

@@ -1634,6 +1634,13 @@ export declare type ForkWorkspaceRequest = Message<"acyclic.filesystem.v2.ForkWo
    * @generated from field: acyclic.filesystem.v2.OperationOptions operation = 3;
    */
   operation?: OperationOptions | undefined;
+
+  /**
+   * Absence inherits all. An empty selection keeps lineage with an empty view.
+   *
+   * @generated from field: acyclic.filesystem.v2.ForkPathSelection selection = 4;
+   */
+  selection?: ForkPathSelection | undefined;
 };
 
 /**
@@ -1641,6 +1648,22 @@ export declare type ForkWorkspaceRequest = Message<"acyclic.filesystem.v2.ForkWo
  * Use `create(ForkWorkspaceRequestSchema)` to create a new message.
  */
 export declare const ForkWorkspaceRequestSchema: GenMessage<ForkWorkspaceRequest>;
+
+/**
+ * @generated from message acyclic.filesystem.v2.ForkPathSelection
+ */
+export declare type ForkPathSelection = Message<"acyclic.filesystem.v2.ForkPathSelection"> & {
+  /**
+   * @generated from field: repeated string paths = 1;
+   */
+  paths: string[];
+};
+
+/**
+ * Describes the message acyclic.filesystem.v2.ForkPathSelection.
+ * Use `create(ForkPathSelectionSchema)` to create a new message.
+ */
+export declare const ForkPathSelectionSchema: GenMessage<ForkPathSelection>;
 
 /**
  * @generated from message acyclic.filesystem.v2.DiffRequest

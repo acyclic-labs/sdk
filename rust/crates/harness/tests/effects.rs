@@ -1,6 +1,9 @@
 //! End-to-end ref-only effect intent and result across Filesystem and Stream.
 #![cfg(feature = "filesystem")]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{FilesystemContentVerifier, FilesystemHost};

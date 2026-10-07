@@ -5,7 +5,11 @@
 //! handle closes. Rename and hard-link notifications preserve stable identity,
 //! and every acknowledged authored notification seals the checkout generation.
 
-#![allow(unsafe_code, unsafe_op_in_unsafe_fn)]
+#![allow(
+    unsafe_code,
+    unsafe_op_in_unsafe_fn,
+    reason = "audited Windows ProjFS FFI"
+)]
 
 use super::provider_stack;
 use super::{
@@ -3017,7 +3021,6 @@ fn remove_directory_itself(directory: &std::path::Path) -> std::io::Result<()> {
     delete_through(&handle)
 }
 
-#[allow(unsafe_code)]
 fn reparse_tag(
     path: &std::path::Path,
 ) -> Result<(Option<u32>, crate::NativeRootIdentity), NativeMountError> {
@@ -4219,7 +4222,6 @@ fn callbacks() -> PRJ_CALLBACKS {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::{
         CallbackGate, PostOperationFailures, ReadBasis, finish_cleanup, flush_callback_gate,

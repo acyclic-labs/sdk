@@ -68,7 +68,10 @@ impl ForkCaptureProvider for LostCaptureReply {
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 async fn exact_fork_preparation_reconciles_without_allocating_another_child() -> Result<()> {
     let provider = ProviderRef::new("fork-e2e", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("fork-e2e", "stream", "2")?;
@@ -251,6 +254,20 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
         selections: vec![
             ForkSelection {
                 required: true,
+                revision: ResourceRevision::PrivateVolume {
+                    volume: parent_private.clone(),
+                    generation: host
+                        .resolve(&workspace_ref(
+                            provider.clone(),
+                            &parent_private.storage_name()?,
+                        )?)
+                        .await?
+                        .generation,
+                    paths: Vec::new(),
+                },
+            },
+            ForkSelection {
+                required: true,
                 revision: ResourceRevision::History(StreamRef::new(
                     stream_provider.clone(),
                     parent.stream_path()?.into_bytes(),
@@ -396,7 +413,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     lost_reply.observation_ready.store(true, Ordering::SeqCst);
     let recovered = aggregate.prepare_fork(&composed, uncertain.clone()).await?;
     assert!(matches!(
-        recovered.captures.get(2),
+        recovered.captures.get(3),
         Some(Capture::Captured(_))
     ));
     assert_eq!(recovered.attachment_manifests, vec![manifest.clone()]);

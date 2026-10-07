@@ -5,7 +5,7 @@
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
-    conversation::{ConversationMessage, MessageKind, VolumeClass, VolumeRef},
+    conversation::{ConversationMessage, MessageKind, VolumeRef},
     core::{Authority, Scope},
     fork::{ForkSeed, ResourceRevision},
     resources::{GenerationRef, ProviderRef},
@@ -112,14 +112,15 @@ pub trait ProjectWorkspaceProvider: Send + Sync {
         child: &'a VolumeRef,
         key: &'a IdempotencyKey,
     ) -> BoxFuture<'a, Result<GenerationRef>>;
-    /// Inspect against the caller's current parent reducer, so a provider
-    /// bound before child publication cannot retain a stale fork registry.
-    fn prepare_project_merge<'a>(
+    /// Inspects a pinned readable source for import into this binding's writable
+    /// destination. Ancestry grants no authority and source state is never changed.
+    fn prepare_project_import<'a>(
         &'a self,
         scope: &'a Scope,
-        parent: &'a crate::core::Reducer,
-        child: &'a Authority,
-        child_project: &'a VolumeRef,
+        destination: &'a crate::core::Reducer,
+        source: &'a Authority,
+        source_project: &'a VolumeRef,
+        source_generation: &'a GenerationRef,
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>>;
 }
 
@@ -200,11 +201,8 @@ impl ProjectMergeReceipt {
     /// Checks ref-only shape and provider identities without fork lineage.
     pub fn validate_shape(&self) -> Result<()> {
         if self.child.kind != crate::core::AggregateKind::Conversation
-            || self.source_project.class() != VolumeClass::Project
-            || self.target_project.class() != VolumeClass::Project
             || self.source_project == self.target_project
             || self.source_project.provider() != self.target_project.provider()
-            || self.source_project.owner() != self.target_project.owner()
             || self.result_generation == self.expected_target_generation
             || self.source_generation.as_resource().provider() != self.source_project.provider()
             || self.expected_target_generation.as_resource().provider()

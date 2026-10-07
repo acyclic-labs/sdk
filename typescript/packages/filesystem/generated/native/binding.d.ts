@@ -1137,7 +1137,7 @@ export declare class NativeWorkspace {
    *
    * Returns name, foreign-generation, authority, authentication, or storage failures.
    */
-  forkAt(destination: string, generation: NativeGeneration): Promise<NativeWorkspace>
+  forkAt(destination: string, generation: NativeGeneration, options: NativeForkOptions): Promise<NativeWorkspace>
   /**
    * Begins one sparse atomic transaction at the current workspace head.
    *
@@ -1625,6 +1625,14 @@ export interface NativeFileRecordRead {
   workJson: string
 }
 
+/** Explicit immutable inheritance and stable retry identity. */
+export interface NativeForkOptions {
+  /** Absent inherits all; empty inherits no paths while preserving lineage. */
+  paths?: Array<string>
+  /** Exact caller-owned stable creation key. */
+  idempotencyKey?: Buffer
+}
+
 /** Bounded generation diff result. */
 export interface NativeGenerationDiff {
   /** Stable-file-record changes. */
@@ -1667,6 +1675,10 @@ export interface NativeJoinOptions {
   maximumChanges: number
   /** Maximum exact conflicts returned by application. */
   maximumConflicts: number
+  /** Optional caller-pinned source generation. */
+  sourceGeneration?: Buffer
+  /** Optional exact target CAS precondition. */
+  targetGeneration?: Buffer
 }
 
 /** Terminal result of applying one immutable join plan. */

@@ -2,6 +2,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_type, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export interface ObjectsV2HttpOptions {
   readonly endpoint: string;
@@ -9,6 +10,7 @@ export interface ObjectsV2HttpOptions {
   readonly maximumResponseBytes?: number;
   readonly maximumRequestBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
+  readonly observer?: AcyclicObserver;
 }
 /** Browser-compatible HTTP binding with bounded wire responses and decoded reads. */
 export class HttpObjectsV2 extends ObjectsV2Provider {
@@ -16,6 +18,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
   private readonly maximumResponse: number;
   private readonly maximumRequest: number;
   private readonly fetcher: typeof globalThis.fetch;
+  private readonly observer: AcyclicObserver | undefined;
   constructor(private readonly options: ObjectsV2HttpOptions) {
     super();
     const endpoint = new URL(options.endpoint);
@@ -27,8 +30,12 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v2/objects/";
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.observer = resolveObserver(options.observer);
   }
-  protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
+  protected invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
+    return observed(this.observer, "objects", route, sizes => this.send(route, bytes, body, maximum, sizes));
+  }
+  private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes): Promise<readonly Uint8Array[]> {
     const requestType = objects_v2_http_type(route, false);
     const responseType = objects_v2_http_type(route, true);
     const decodeResponse = (data: Uint8Array, maximum: number) => {
@@ -65,6 +72,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     const request = new Uint8Array(requestSize);
     let offset = 0;
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
+    if (sizes) sizes.requestBytes = requestSize;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30000);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -113,6 +121,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
           }
         }
         if (lineLength !== 0 || expected === undefined || bodySize !== expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+        if (sizes) sizes.responseBytes = wireSize;
         return frames;
       }
       const chunks: Uint8Array[] = [];
@@ -125,6 +134,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         if (size > this.maximumResponse) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
         chunks.push(value);
       }
+      if (sizes) sizes.responseBytes = size;
       const data = new Uint8Array(size);
       offset = 0;
       for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }

@@ -725,7 +725,6 @@ fn persistent_key_and_value_clones_have_exact_allocation_and_copy_lifetimes()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn shared_copy_and_batch_retention_failures_release_every_logical_byte()
 -> Result<(), Box<dyn std::error::Error>> {
     let shared = OwnedPage::<TreeFormat> {

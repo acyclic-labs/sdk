@@ -1,5 +1,6 @@
 import type * as NativeBinding from "../generated/native/binding.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
+import type { AcyclicObserver } from "./observe.js";
 import {
   DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS,
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
@@ -87,6 +88,7 @@ export interface HostedFsOptions {
   readonly bearerToken: string;
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
+  readonly observer?: AcyclicObserver;
 }
 
 export interface HostedFsCapabilities extends EngineCapabilities {
@@ -126,7 +128,7 @@ export interface HostedFsWorkspace extends FsWorkspace {
     idempotencyKey?: Uint8Array,
   ): Promise<S3Access>;
   fork(destination: string): Promise<HostedFsWorkspace>;
-  forkAt(destination: string, generation: FsGeneration): Promise<HostedFsWorkspace>;
+  forkAt(destination: string, generation: FsGeneration, options?: WorkspaceForkOptions): Promise<HostedFsWorkspace>;
   sourceState(): Promise<SourceResult>;
   reconcileSource(idempotencyKey?: Uint8Array): Promise<SourceResult>;
   rescanSource(idempotencyKey?: Uint8Array): Promise<SourceResult>;
@@ -170,7 +172,7 @@ export interface FsWorkspace {
   write(path: string, bytes: Uint8Array): Promise<WorkspaceCommit>;
   remove(path: string): Promise<WorkspaceCommit>;
   fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace>;
-  forkAt(destination: string, generation: FsGeneration): Promise<FsWorkspace>;
+  forkAt(destination: string, generation: FsGeneration, options?: WorkspaceForkOptions): Promise<FsWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction>;
   liveRebase(options: WorkspaceRebaseOptions, idempotencyKey?: Uint8Array): Promise<WorkspaceRebaseResult>;
   diff(from: FsGeneration, to: FsGeneration, maximumChanges: number): Promise<FsChangeSet>;
@@ -206,12 +208,9 @@ export interface FsChangeSet {
 
 export type JoinHistory = "merge" | "rebase" | "squash" | "cherry-pick";
 
-export interface JoinOptions {
-  readonly history: JoinHistory;
-  readonly maximumGenerations: number;
-  readonly maximumChanges: number;
-  readonly maximumConflicts: number;
-}
+/** Rust-owned immutable fork selection and creation retry identity. */
+export type WorkspaceForkOptions = ReadonlyDeep<WasmBinding.BrowserForkOptions>;
+export type JoinOptions = ReadonlyDeep<Omit<WasmBinding.BrowserJoinOptions, "history">> & { readonly history: JoinHistory };
 
 export type JoinStatus = WasmBinding.BrowserJoinResult["status"];
 
@@ -862,12 +861,16 @@ export interface BrowserFsOptions {
   readonly maximumObjectBytes: number;
   readonly objectAcceleration: "indexeddb" | "opfs";
   readonly objectCache: ObjectCacheOptions;
+  /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
+  readonly observer?: AcyclicObserver;
 }
 
 export interface MemoryFsOptions {
   readonly maximumObjectBytes: number;
   readonly maximumMemoryBytes: number;
   readonly objectCache: ObjectCacheOptions;
+  /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
+  readonly observer?: AcyclicObserver;
 }
 
 export interface NativeFsOptions {

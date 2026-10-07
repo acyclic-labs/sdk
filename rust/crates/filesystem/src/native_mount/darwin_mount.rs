@@ -3,7 +3,10 @@
 //! The embedded C transport translates NFS requests into this module's bounded
 //! callbacks; the canonical Rust checkout remains the only filesystem state.
 
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "drives the embedded C NFSv4 transport through FFI"
+)]
 
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, DriverStartFailure,
@@ -1448,7 +1451,10 @@ impl DarwinMountSession {
             .ok_or_else(|| NativeMountError::Driver("Darwin mount session has stopped".to_owned()))
     }
 
-    #[allow(clippy::unnecessary_wraps)]
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "keeps the fallible stop signature the other mount drivers share"
+    )]
     pub(super) fn stop(&mut self) -> Result<(), NativeMountError> {
         if self.teardown_complete {
             return Ok(());
@@ -3113,7 +3119,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn revalidation_waits_out_the_attribute_timeout_for_changes_around_the_mount() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let context = context.observing_source();
@@ -3188,28 +3193,24 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_read_answers_short_reads_as_eof_in_place() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_read_reply() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_fileids_name_nodes_so_hard_links_share_one() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_node_identity() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_durable_writes_are_stable_without_a_sync() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_durable_writes() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn only_a_publishing_source_leaves_writes_unstable() -> TestResult {
         for (publication, durable) in [
             (MountPublication::Manual, 1),
@@ -3267,7 +3268,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn renaming_over_an_open_file_keeps_it_for_its_handles() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let (replaced, replacement) = (
@@ -3311,7 +3311,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn named_attribute_probes_need_no_source_call_without_attributes() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let path = MountPath::root().child(b"plain".to_vec());
@@ -3340,28 +3339,24 @@ mod tests {
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_change_attribute_travels_with_its_attributes() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_change_attribute() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_access_applies_the_callers_identity_to_mode_bits() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_access_rights() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_verify_compares_current_attribute_values() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_verify_attributes() }, 0);
     }
 
     #[test]
-    #[allow(unsafe_code)]
     fn nfs_teardown_releases_every_open_handle_once() {
         // SAFETY: the test hook owns all callback state.
         assert_eq!(unsafe { nfs4_test_release_open_files() }, 0);
@@ -3403,7 +3398,10 @@ mod tests {
     }
 
     /// Mounts a fresh checkout for one live macOS test.
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "the tuple keeps the temporary directory, source, and session alive together for one test"
+    )]
     fn live_mount() -> Result<
         (
             tempfile::TempDir,
@@ -3580,8 +3578,8 @@ mod tests {
             l_type: libc::c_short::try_from(libc::F_WRLCK)?,
             l_whence: libc::c_short::try_from(libc::SEEK_SET)?,
         };
-        // SAFETY: `region` outlives the call on the live descriptor.
         assert_eq!(
+            // SAFETY: `region` outlives the call on the live descriptor.
             unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &raw const region) },
             0
         );

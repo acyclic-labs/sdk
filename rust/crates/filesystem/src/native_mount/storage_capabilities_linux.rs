@@ -6,7 +6,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "reads the root's file system with fstatfs")]
 pub(super) fn probe(
     root: &Path,
 ) -> Result<NativeStorageCapabilities, NativeStorageCapabilityError> {

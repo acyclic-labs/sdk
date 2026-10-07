@@ -583,7 +583,10 @@ pub(crate) async fn serve_unix_control(
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "getpeereid is the peer-credential call on non-Linux unix"
+)]
 pub(crate) fn same_user_peer(stream: &tokio::net::UnixStream) -> Result<bool, String> {
     use std::os::fd::AsRawFd as _;
     let mut uid = 0;
@@ -651,7 +654,10 @@ pub(crate) async fn serve_windows_control(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "the current-user pipe ACL needs Win32 security-descriptor calls"
+)]
 pub(crate) fn create_current_user_pipe(
     pipe_path: &str,
     first: bool,

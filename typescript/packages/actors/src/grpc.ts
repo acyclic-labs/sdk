@@ -1,6 +1,7 @@
 import { rootCertificates } from "node:tls";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 
 export interface ActorsGrpcOptions {
@@ -8,6 +9,7 @@ export interface ActorsGrpcOptions {
   readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 
 /** Complete Actors v1 gRPC client for Node and Bun over authenticated HTTP/2. */
@@ -22,5 +24,5 @@ export function createActorsGrpcClient(options: ActorsGrpcOptions) {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);
   };
-  return createClient(ActorsService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  return createClient(ActorsService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "actors"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
 }

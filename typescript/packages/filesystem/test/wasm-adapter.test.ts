@@ -20,6 +20,7 @@ import {
 import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
 import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
 import { portableVolumeOptions } from "../src/contracts.js";
+import type { OperationEvent } from "../src/observe.js";
 import { adaptWorkspaceContextRegistry } from "../src/workspace-context.js";
 import { copyMergeConflict, decodeMergeConflict, parseJoinResult, parseMergePreparation, parseWorkspaceCommit, parseWorkspaceRebaseResult } from "../src/workspace-results.js";
 
@@ -332,6 +333,21 @@ describe("WASM adapter canonical boundaries", () => {
       const mutation = await checkout.createFile("/adapter-dto", Uint8Array.of(4));
       expect(typeof mutation.work.bytesCopied).toBe("number");
       expect(typeof mutation.work.sourcePathComponents).toBe("number");
+    } finally {
+      fs.close();
+    }
+  });
+
+  test("reports each observed WASM call once with its work receipt and no paths", async () => {
+    const events: OperationEvent[] = [];
+    const fs = await openMemoryFs({ ...DEFAULT_MEMORY_FS_OPTIONS, observer: { onOperation: event => events.push(event) } });
+    try {
+      const volume = await fs.createVolume(portableVolumeOptions("ephemeral"));
+      const checkout = await volume.checkout({ access: "read-write", consistency: "pinned", mutationMode: "private-cow" });
+      await checkout.createFile("/observed-name", Uint8Array.of(4));
+      expect(events.map(event => `${event.family}.${event.op}:${event.ok}`)).toEqual(["fs.createVolume:true", "fs.checkout:true", "fs.createFile:true"]);
+      expect(typeof (events[2]?.work as { bytesCopied?: unknown } | undefined)?.bytesCopied).toBe("bigint");
+      expect(JSON.stringify(events, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).not.toContain("observed-name");
     } finally {
       fs.close();
     }

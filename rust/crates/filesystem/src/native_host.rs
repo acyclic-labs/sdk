@@ -1,5 +1,8 @@
 //! Capability-rooted native filesystem access shared by capture and materialization.
-#![allow(missing_docs, unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "isolates the reviewed platform calls of native filesystem access"
+)]
 
 use cap_fs_ext::DirExt as _;
 use cap_std::fs::{Dir, Metadata, OpenOptions, Permissions, ReadDir};
@@ -323,7 +326,6 @@ impl HostStatReader {
     const BUFFER_BYTES: usize = 64 * 1024;
 
     /// Reads the next buffer of records; `false` once none remain.
-    #[allow(unsafe_code)]
     fn refill(&mut self) -> io::Result<bool> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Win32::Foundation::{ERROR_NO_MORE_FILES, HANDLE};
@@ -362,7 +364,6 @@ impl HostStatReader {
     }
 
     /// Decodes the record at `offset` and advances past it.
-    #[allow(unsafe_code)]
     fn take(&mut self, offset: usize) -> io::Result<Option<HostListedEntry>> {
         use std::mem::{offset_of, size_of};
         use std::os::windows::ffi::OsStringExt as _;
@@ -500,7 +501,6 @@ fn status_error(status: windows::Win32::Foundation::NTSTATUS) -> io::Error {
 /// reported, not resolved. `None` when the path names the directory itself
 /// or redirection was refused, which only a held walk may resolve.
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn stat_information_at(
     directory: &Dir,
     path: &Path,
@@ -684,7 +684,6 @@ fn held_parent_leaf(root: &Dir, path: &Path) -> io::Result<(Dir, std::ffi::CStri
 }
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 impl LinuxMetadataTarget {
     fn open(root: &Dir, path: &Path) -> io::Result<Self> {
@@ -724,7 +723,6 @@ impl LinuxMetadataTarget {
     /// Sets POSIX extended attributes on the pinned inode, each by its full
     /// raw name, and reads each back. Linux gives a symbolic link no user
     /// attributes, so asking for any on one fails closed.
-    #[allow(unsafe_code)]
     #[cfg(feature = "native-mount")]
     pub(crate) fn set_extended_attributes(
         &self,
@@ -926,7 +924,6 @@ fn validate_linux_metadata(
 }
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // An invalid descriptor makes the capability probe non-mutating. A kernel
@@ -1227,7 +1224,6 @@ impl HostRoot {
     /// name: one `FileStatInformation` query on the handle, or, for a
     /// reparse point, the handle facts the held walk also reads.
     #[cfg(windows)]
-    #[allow(unsafe_code)]
     pub fn stat_file(&self, file: &File) -> io::Result<HostStat> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
         use windows::Wdk::Storage::FileSystem::{
@@ -1417,7 +1413,6 @@ impl HostRoot {
     /// `None` when the path names the root itself or redirection was
     /// refused, which only the held walk may resolve.
     #[cfg(windows)]
-    #[allow(unsafe_code)]
     fn open_by_name(
         &self,
         path: &Path,
@@ -1542,7 +1537,6 @@ impl HostRoot {
     /// Creates an APFS copy-on-write clone when the hosting volume supports it.
     /// The source and destination remain rooted in held directory capabilities.
     #[cfg(target_os = "macos")]
-    #[allow(unsafe_code)]
     pub fn clone_file(&self, source: &Path, destination: &Path) -> io::Result<bool> {
         self.clone_file_from(self, source, destination)
     }
@@ -1550,7 +1544,6 @@ impl HostRoot {
     /// Clones one regular file from a held source root into this held destination.
     /// This does not seal a multi-file source view; the caller must do that.
     #[cfg(target_os = "macos")]
-    #[allow(unsafe_code)]
     pub fn clone_file_from(
         &self,
         source_root: &HostRoot,
@@ -1756,7 +1749,6 @@ impl HostRoot {
     /// Special files must never be chmodded through an open file
     /// description: opening a FIFO blocks until a peer appears.
     #[cfg(unix)]
-    #[allow(unsafe_code)]
     pub fn set_permissions_without_open(&self, path: &Path, mode: u32) -> io::Result<()> {
         use std::os::fd::AsRawFd;
         let (parent, destination) = held_parent_leaf(&self.directory, path)?;
@@ -1780,7 +1772,6 @@ impl HostRoot {
     }
 
     #[cfg(unix)]
-    #[allow(unsafe_code)]
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn create_fifo_held(&self, path: &Path, mode: u32) -> io::Result<()> {
         use std::os::fd::AsRawFd as _;
@@ -1797,7 +1788,6 @@ impl HostRoot {
     }
 
     #[cfg(unix)]
-    #[allow(unsafe_code)]
     #[allow(
         clippy::useless_conversion,
         reason = "libc file-type constants differ in width between Linux and macOS"
@@ -1896,7 +1886,6 @@ fn open_macos_metadata_target(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 impl MacMetadataTarget {
     /// Sets each extended attribute on the held inode by its exact raw
@@ -2066,7 +2055,6 @@ fn validate_macos_metadata_fields(
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 fn apply_macos_timestamp_metadata(
     fd: libc::c_int,
@@ -2147,7 +2135,6 @@ fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> 
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 #[cfg(any(feature = "native-mount", test))]
 fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
@@ -2338,7 +2325,6 @@ fn verify_windows_basic_info(
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
-#[allow(unsafe_code)]
 fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_INFO> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle as _;
@@ -2363,7 +2349,6 @@ fn query_windows_basic_info(file: &cap_std::fs::File) -> io::Result<FILE_BASIC_I
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
-#[allow(unsafe_code)]
 fn set_windows_basic_info(
     file: &cap_std::fs::File,
     information: FILE_BASIC_INFO,
@@ -2443,7 +2428,6 @@ impl Drop for StagedWindowsFile {
     /// once every handle to the file closes, and another process (a virus
     /// scanner) may hold one for a while; a POSIX delete takes the name away
     /// now. Where the file system cannot, delete-on-close still removes it.
-    #[allow(unsafe_code)]
     fn drop(&mut self) {
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::HANDLE;
@@ -2553,7 +2537,6 @@ impl StagedWindowsFile {
         self.link(directory, name, true)
     }
 
-    #[allow(unsafe_code)]
     fn link(&self, directory: &Dir, name: &OsStr, replace: bool) -> io::Result<()> {
         use std::mem::{offset_of, size_of};
         use std::os::windows::ffi::OsStrExt as _;
@@ -2754,10 +2737,8 @@ async fn copy_windows_file_worker(
         acyclic_native_runtime::run_blocking_io(move || writer.open_writer(true)).await??;
     // SAFETY: both handles were opened with FILE_FLAG_OVERLAPPED and are
     // transferred once; no independent I/O is performed after this point.
-    #[allow(unsafe_code)]
     let source = unsafe { NativeFile::from_overlapped_file_unchecked(source)? };
     // SAFETY: as above.
-    #[allow(unsafe_code)]
     let destination = unsafe { NativeFile::from_overlapped_file_unchecked(destination)? };
     let mut offset = 0_u64;
     while offset < length {
@@ -2874,7 +2855,6 @@ fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
 /// bound node is the one visible through the held descriptor; on mismatch the
 /// stray node is removed and the bind reports a race.
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 fn bind_unix_socket_in(parent: &Dir, name: &OsStr) -> io::Result<()> {
     use cap_std::fs::MetadataExt;
     use std::os::fd::AsRawFd;
@@ -2947,7 +2927,6 @@ const REMOTE_FILESYSTEMS: [u64; 13] = [
 ];
 
 #[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
 fn filesystem_is_local(directory: &Dir) -> bool {
     use std::os::fd::AsRawFd as _;
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -2962,7 +2941,6 @@ fn filesystem_is_local(directory: &Dir) -> bool {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 fn filesystem_is_local(directory: &Dir) -> bool {
     use std::os::fd::AsRawFd as _;
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -2976,7 +2954,6 @@ fn filesystem_is_local(directory: &Dir) -> bool {
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn filesystem_is_local(directory: &Dir) -> bool {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::{
@@ -3017,7 +2994,6 @@ fn filesystem_is_local(_directory: &Dir) -> bool {
 /// alignment. Unsupported or failed deallocation is reported rather than
 /// silently materializing a dense file.
 #[cfg(target_os = "macos")]
-#[allow(unsafe_code)]
 pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) -> io::Result<()> {
     let fd = file.as_raw_fd();
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
@@ -3072,7 +3048,6 @@ pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) ->
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn clone_windows_file(
     source: &mut cap_std::fs::File,
     target: &mut File,
@@ -3229,7 +3204,6 @@ struct OplockRequest {
 #[cfg(windows)]
 impl YieldingFile {
     /// Holds `file`, an overlapped handle, under a read-handle oplock.
-    #[allow(unsafe_code)]
     fn new(file: File) -> io::Result<Self> {
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE};
@@ -3354,7 +3328,6 @@ impl YieldingFile {
 
     /// Reads at `offset` into `destination` through an overlapped request
     /// of its own, which the oplock's completion never answers for.
-    #[allow(unsafe_code)]
     pub fn read_at(&self, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
         use std::os::windows::io::AsRawHandle as _;
         use windows::Win32::Foundation::{CloseHandle, ERROR_HANDLE_EOF, ERROR_IO_PENDING, HANDLE};
@@ -3435,7 +3408,6 @@ impl YieldingFile {
 /// Closes the handle whose oplock broke, which lets the rename or delete
 /// that broke it proceed.
 #[cfg(windows)]
-#[allow(unsafe_code)]
 unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_out: bool) {
     // SAFETY: the context is the held state, alive until this wait is
     // unregistered, which waits for this callback.
@@ -3457,7 +3429,6 @@ unsafe extern "system" fn yield_on_break(context: *mut std::ffi::c_void, _timed_
 
 #[cfg(windows)]
 impl Drop for YieldingFile {
-    #[allow(unsafe_code)]
     fn drop(&mut self) {
         use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows::Win32::System::Threading::{INFINITE, UnregisterWaitEx, WaitForSingleObject};
@@ -3498,7 +3469,6 @@ pub fn allocated_data_ranges(
 }
 
 #[cfg(unix)]
-#[allow(unsafe_code)]
 fn allocated_data_ranges_platform(
     file: &cap_std::fs::File,
     logical_bytes: u64,
@@ -3553,7 +3523,6 @@ fn allocated_data_ranges_platform(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 fn allocated_data_ranges_platform(
     file: &cap_std::fs::File,
     logical_bytes: u64,
@@ -3563,7 +3532,6 @@ fn allocated_data_ranges_platform(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
 #[allow(
     clippy::too_many_lines,
     reason = "one bounded native range query and validation"
@@ -4984,7 +4952,6 @@ mod windows_clone_tests {
         let file = root.create_overlapped_file(path)?;
         // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is
         // transferred directly, with no other I/O or completion-port owner.
-        #[allow(unsafe_code)]
         let native = unsafe { NativeFile::from_overlapped_file_unchecked(file)? };
         native.set_len_async(8).await?;
         native

@@ -635,7 +635,6 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

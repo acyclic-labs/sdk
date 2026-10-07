@@ -55,7 +55,10 @@ enum Task {
     After(ObjectId),
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded traversal walks both persistent trees in key order"
+)]
 pub(crate) async fn diff_async<S, F>(
     store: &S,
     before: Option<ObjectId>,
@@ -324,7 +327,10 @@ fn internal_children<F: Format>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "pushes one page into the shared task stack, change map, truncation flag, allocations, and work counters"
+)]
 fn push_owned_page<F: Format>(
     page: OwnedPage<F>,
     before: bool,

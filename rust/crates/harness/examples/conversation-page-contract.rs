@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::conversation::{
     DEFAULT_CONVERSATION_PAGE_MESSAGES, MAX_CONVERSATION_PAGE_MESSAGES,

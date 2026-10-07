@@ -5,7 +5,6 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ConversationMessage, VolumeRef},
     core::{Authority, AuthorityVerifier, Reducer, Scope},
-    fork::ResourceRevision,
     merge::{
         ProjectConflict, ProjectConflictSelection, ProjectConflictSide, ProjectJoinOutcome,
         ProjectJoinPlan, ProjectWorkspaceProvider,
@@ -112,58 +111,36 @@ where
         })
     }
 
-    fn prepare_project_merge<'a>(
+    fn prepare_project_import<'a>(
         &'a self,
         scope: &'a Scope,
-        parent: &'a Reducer,
-        child: &'a Authority,
-        child_project: &'a VolumeRef,
+        destination: &'a Reducer,
+        source: &'a Authority,
+        source_project: &'a VolumeRef,
+        source_generation: &'a GenerationRef,
     ) -> BoxFuture<'a, Result<Box<dyn ProjectJoinPlan>>> {
         Box::pin(async move {
             self.require_scope(scope)?;
-            if parent.authority() != &self.parent
-                || parent.conversation().and_then(|state| state.agent) != scope.agent()
+            if destination.authority() != &self.parent
+                || destination.conversation().and_then(|state| state.agent) != scope.agent()
+                || source.kind != crate::core::AggregateKind::Conversation
             {
                 return Err(Error::Unauthorized(
-                    "project merge requires the current parent conversation".into(),
+                    "import is outside the bound destination conversation".into(),
                 ));
             }
-            if child.kind != crate::core::AggregateKind::Conversation {
-                return Err(Error::Invalid(
-                    "project join child is not a conversation".into(),
-                ));
-            }
-            child.stream_path()?;
-            // The reducer is supplied for this call so a binding created before
-            // publication can authorize a later fork. Never consult or retain a
-            // fork registry captured when this provider was constructed.
-            let seed = parent.fork(child).ok_or_else(|| {
-                Error::Unauthorized("project join child has no published parent fork".into())
-            })?;
-            seed.validate()?;
-            if !seed.resources.iter().any(|resource| {
-                matches!(
-                    (&resource.source, &resource.revision),
-                    (ResourceRevision::Project { volume: source, .. },
-                     ResourceRevision::Project { volume: forked, .. })
-                        if source == &self.project && forked == child_project
-                )
-            }) {
-                return Err(Error::Unauthorized(
-                    "project join is outside the published fork".into(),
-                ));
-            }
+            source.stream_path()?;
             let plan = self
                 .controller()
-                .prepare_project_merge(child_project)
+                .prepare_project_import(source_project, source_generation)
                 .await?;
-            let source = self.host.generation_ref_id(plan.source_head())?;
+            let source_generation = self.host.generation_ref_id(plan.source_head())?;
             let target = self.host.generation_ref_id(plan.target_head())?;
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
-                child: child.clone(),
-                source,
+                child: source.clone(),
+                source: source_generation,
                 target,
             }) as Box<dyn ProjectJoinPlan>)
         })

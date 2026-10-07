@@ -2817,7 +2817,6 @@ where
 
     /// Opens `path`, with the facts the open proved when it opened a source
     /// file directly.
-    #[allow(clippy::type_complexity)]
     fn open_proven(
         &self,
         path: &MountPath,
@@ -3253,7 +3252,10 @@ fn field<T>(value: Option<T>) -> MetadataField<T> {
     value.map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the error by value"
+)]
 fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     match error {
         LazyWorkspaceError::NotFound => MountSourceError::NotFound,
@@ -3274,7 +3276,6 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -3450,7 +3451,6 @@ mod tests {
     /// A lazy view over a fresh native source holding `source-only`, which
     /// reports its changes to the returned record.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[allow(clippy::type_complexity)]
     async fn recorded_view(
         source_root: &Path,
     ) -> Result<

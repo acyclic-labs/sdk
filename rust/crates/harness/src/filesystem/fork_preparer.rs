@@ -157,6 +157,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                         "fork project is not the bound parent project".into(),
                     ));
                 }
+                ResourceRevision::PrivateVolume { volume, .. } => {
+                    if volume.owner()
+                        != &crate::conversation::VolumeOwner::Agent(self.scope.agent().ok_or_else(
+                            || Error::Unauthorized("scratch fork requires a parent agent".into()),
+                        )?)
+                    {
+                        return Err(Error::Unauthorized(
+                            "scratch fork is not from the direct parent owner".into(),
+                        ));
+                    }
+                    ContentGrant::verify(
+                        &self.verifier,
+                        &self.scope,
+                        volume,
+                        VolumeOperation::Read,
+                    )?;
+                }
                 _ => {}
             }
         }
@@ -484,7 +501,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 .await?;
         }
         let private = request.preparation.child_private_volume.clone();
-        let private_observation = self.host.create_volume(&private).await?;
+        let (source_private, private_generation, paths) = request
+            .selections
+            .iter()
+            .find_map(|selection| {
+                if let ResourceRevision::PrivateVolume {
+                    volume,
+                    generation,
+                    paths,
+                } = &selection.revision
+                {
+                    Some((volume, generation, paths))
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| Error::Invalid("fork has no parent scratch selection".into()))?;
+        let private_key = IdempotencyKey::new(format!(
+            "fork:{}:{request_digest}:scratch",
+            request.operation_id
+        ))?;
+        let private_observation = self
+            .host
+            .fork_volume_pinned(
+                source_private,
+                private_generation,
+                &private,
+                Some(paths.clone()),
+                &private_key,
+            )
+            .await?;
         let controller = ParentProjectController::new(
             &self.host,
             &self.parent,
@@ -505,20 +551,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             .await?;
         let (child_private_generation, inherited_context, reference_grants, attachment_manifests) =
             if request.preparation.inherited_through_sequence == 0 {
-                let entries = self
-                    .host
-                    .list(
-                        &private_observation.workspace,
-                        Some(&private_observation.generation),
-                        "/",
-                        1,
-                    )
-                    .await?;
-                if !entries.entries.is_empty() {
-                    return Err(Error::Conflict("child private volume is not empty".into()));
-                }
                 (
-                    private_observation.generation,
+                    private_observation.generation.clone(),
                     Vec::new(),
                     Vec::new(),
                     Vec::new(),
@@ -532,6 +566,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                     .materialize_inherited_conversation(
                         &self.parent,
                         &private,
+                        &private_observation.generation,
                         request.child_agent,
                         &request.attached_agents,
                         request.preparation.inherited_through_sequence,
@@ -566,6 +601,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                         generation: child_project.generation.clone(),
                     },
                 }),
+                ResourceRevision::PrivateVolume { paths, .. } => {
+                    Capture::Captured(CapturedResource {
+                        source: selection.revision.clone(),
+                        revision: ResourceRevision::PrivateVolume {
+                            volume: private.clone(),
+                            generation: private_observation.generation.clone(),
+                            paths: paths.clone(),
+                        },
+                    })
+                }
                 ResourceRevision::SharedVolume(volume)
                     if volume.provider() == &self.host.provider =>
                 {

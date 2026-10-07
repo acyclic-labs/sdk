@@ -592,7 +592,11 @@ fn direct_child_seek(
 /// Merges directory-page lower bounds and object keys in flattened UTF-8
 /// order. A directory's `name/` bound is distinct from its component name:
 /// sibling `a.` must precede a descendant `a/x`.
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one merge of directory-page bounds and object keys needs the query, frontier, and prefix state together"
+)]
 async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     checkout: &mut crate::Checkout<A, O>,
     options: &S3ListOptions,

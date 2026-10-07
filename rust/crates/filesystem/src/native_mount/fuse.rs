@@ -169,9 +169,10 @@ const REQUESTED_CAPABILITIES: InitFlags = InitFlags::FUSE_DO_READDIRPLUS
     .union(InitFlags::FUSE_CACHE_SYMLINKS);
 /// FUSE RENAME2 wire flag; equals Linux renameat2's `RENAME_NOREPLACE`.
 const RENAME_NOREPLACE: u32 = 1;
-// FUSE hands modes as `u32` while Darwin's `mode_t` is `u16`; widen the file
-// type masks once so match arms and metadata stay wire-width on every host.
-#[allow(clippy::unnecessary_cast)]
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "FUSE hands modes as u32 while Darwin's mode_t is u16; the casts widen the masks once so they stay wire-width on every host"
+)]
 mod mode {
     pub(super) const S_IFMT: u32 = libc::S_IFMT as u32;
     pub(super) const S_IFIFO: u32 = libc::S_IFIFO as u32;
@@ -1867,7 +1868,10 @@ fn retire_reused_identity(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // Projection indexes are updated together.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "projection indexes are updated together"
+)]
 fn intern_projected(
     next_inode: &mut u64,
     by_inode: &mut HashMap<u64, InodeEntry>,
@@ -2523,7 +2527,10 @@ impl FuseSession {
 }
 
 /// Attribute changes one `SETATTR` requests.
-#[allow(clippy::struct_field_names)]
+#[allow(
+    clippy::struct_field_names,
+    reason = "field names follow the SETATTR attribute names"
+)]
 struct AttributeChanges {
     mode: Option<u32>,
     uid: Option<u32>,
@@ -3077,7 +3084,10 @@ impl FuseProjection {
     /// Opens `path` in the source for an open with `flags` and returns the
     /// file with its facts, the position they were read after, and whether
     /// the open truncated it.
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "returns the opened file with its facts, stamp, and truncation flag in one tuple"
+    )]
     fn open_source(
         &self,
         source: &dyn MountFilesystem,
@@ -3716,7 +3726,10 @@ impl FuseProjection {
         i64::try_from(found).map_err(|_| libc::EOVERFLOW)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the copy_file_range request: two inodes, two handles, two offsets, a length, and flags"
+    )]
     fn copy_range(
         &self,
         source_inode: u64,
@@ -3902,7 +3915,10 @@ impl Filesystem for FuseProjection {
         respond!(reply, self.read_link(inode.0), |target| reply.data(&target));
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn setattr(
         &self,
         request: &Request,
@@ -4104,7 +4120,10 @@ impl Filesystem for FuseProjection {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn write(
         &self,
         request: &Request,
@@ -4172,7 +4191,10 @@ impl Filesystem for FuseProjection {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn release(
         &self,
         request: &Request,
@@ -4258,7 +4280,10 @@ impl Filesystem for FuseProjection {
         respond!(reply, self.source().flush().map_err(errno), |()| reply.ok());
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn setxattr(
         &self,
         request: &Request,
@@ -4309,7 +4334,10 @@ impl Filesystem for FuseProjection {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn fallocate(
         &self,
         request: &Request,
@@ -4350,7 +4378,10 @@ impl Filesystem for FuseProjection {
         });
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn copy_file_range(
         &self,
         request: &Request,
@@ -4383,7 +4414,10 @@ impl Filesystem for FuseProjection {
         respond!(reply, copied, |written| reply.written(written));
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the fuser Filesystem trait fixes this signature"
+    )]
     fn create(
         &self,
         request: &Request,

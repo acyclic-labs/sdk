@@ -87,9 +87,11 @@ import type {
   WorkspaceStat,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
+import { observeInterceptors, resolveObserver } from "./observe.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
+export { performanceObserver } from "./observe.js";
 
 /** Local client failures plus the gRPC status names a hosted service can report. */
 export type HostedFsErrorCode =
@@ -146,7 +148,7 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   };
   const rpcClient = createClient(FilesystemService, createGrpcWebTransport({
     baseUrl: endpoint.href.replace(/\/$/, ""),
-    interceptors: [authorize, boundRequest],
+    interceptors: observeInterceptors([authorize, boundRequest], resolveObserver(options.observer), "fs"),
     fetch: boundedFetch(send, maximumResponseBytes),
   }));
   const handshake = await call(rpcClient.handshake({
@@ -334,8 +336,8 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     async fork(destination) {
       return fork(client, await currentGeneration(client, reference), destination);
     },
-    async forkAt(destination, selected) {
-      return fork(client, requireGeneration(selected, client, reference.workspaceId), destination);
+    async forkAt(destination, selected, options = {}) {
+      return fork(client, requireGeneration(selected, client, reference.workspaceId), destination, options);
     },
     async beginTransaction(idempotencyKey) {
       return transaction(client, await currentGeneration(client, reference), idempotencyKey);
@@ -372,8 +374,8 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
       requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);
       const plan = await call(client.rpc.planJoin({
-        source: await currentGeneration(client, reference),
-        target: await currentGeneration(client, destination.reference),
+        source: options.sourceGeneration === undefined ? await currentGeneration(client, reference) : { workspace: reference, generationId: options.sourceGeneration },
+        target: options.targetGeneration === undefined ? await currentGeneration(client, destination.reference) : { workspace: destination.reference, generationId: options.targetGeneration },
         maximumChanges: options.maximumChanges,
         maximumConflicts: options.maximumConflicts,
         maximumGenerations: options.maximumGenerations,
@@ -501,12 +503,14 @@ async function fork(
   client: HostedClient,
   source: WireGenerationRef,
   destinationName: string,
+  options: import("./contracts.js").WorkspaceForkOptions = {},
 ): Promise<HostedFsWorkspace> {
   requireName(destinationName);
   const response = await call(client.rpc.forkWorkspace({
     source,
     destinationName,
-    operation: operation(),
+    operation: operation(options.idempotencyKey),
+    selection: options.paths === undefined ? undefined : { paths: [...options.paths] },
   }));
   return workspace(client, required(response.workspace, "forked workspace"));
 }

@@ -953,7 +953,11 @@ pub mod native {
 
         /// One watch covers the whole root on every other host.
         #[cfg(not(target_os = "linux"))]
-        #[allow(clippy::unused_self, clippy::unnecessary_wraps)]
+        #[allow(
+            clippy::unused_self,
+            clippy::unnecessary_wraps,
+            reason = "the Linux variant admits directories to inotify watches and can fail; this one keeps its signature"
+        )]
         fn admit_to_watches(&self, _directory: &NamespacePath) -> Result<bool, DemandError> {
             Ok(false)
         }
@@ -1057,7 +1061,10 @@ pub mod native {
 
         /// Watches elsewhere report a moved root rather than prevent it.
         #[cfg(not(windows))]
-        #[allow(clippy::unused_self)]
+        #[allow(
+            clippy::unused_self,
+            reason = "the Windows variant reads the live watch set; this one keeps its signature"
+        )]
         const fn root_named_while_watched(&self) -> bool {
             false
         }
@@ -2558,7 +2565,10 @@ mod tests {
     /// rename while any handle to the file is open, however shared.)
     #[cfg(windows)]
     #[tokio::test]
-    #[allow(unsafe_code)]
+    #[allow(
+        unsafe_code,
+        reason = "renames over the held file with MoveFileExW, as editors save"
+    )]
     async fn a_held_file_gives_way_to_a_save_over_it() -> Result<(), Box<dyn Error>> {
         use std::os::windows::ffi::OsStrExt as _;
         use windows::Win32::Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MoveFileExW};

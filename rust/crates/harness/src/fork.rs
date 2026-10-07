@@ -667,6 +667,16 @@ pub enum ResourceRevision {
         /// Exact immutable generation in that volume.
         generation: GenerationRef,
     },
+    /// Direct parent's pinned scratch. Empty paths select an empty initial view;
+    /// every selected path includes its namespace subtree, preserving lineage.
+    PrivateVolume {
+        /// Parent or captured child scratch identity.
+        volume: VolumeRef,
+        /// Immutable source or child generation.
+        generation: GenerationRef,
+        /// Explicit scratch paths, excluding reserved runtime state.
+        paths: Vec<String>,
+    },
     /// Selected model context revision.
     Context(ContextRef),
     /// Qualified process checkpoint.
@@ -694,7 +704,9 @@ impl ResourceRevision {
     pub fn provider(&self) -> &ProviderRef {
         match self {
             Self::History(value) => value.as_resource().provider(),
-            Self::Project { volume, .. } | Self::SharedVolume(volume) => volume.provider(),
+            Self::Project { volume, .. }
+            | Self::PrivateVolume { volume, .. }
+            | Self::SharedVolume(volume) => volume.provider(),
             Self::Context(value) => value.as_resource().provider(),
             Self::Process(value) => value.as_resource().provider(),
             Self::Artifact(value) => value.as_resource().provider(),
@@ -705,12 +717,37 @@ impl ResourceRevision {
     /// Checks provider families and the semantic resource class.
     pub fn validate(&self) -> Result<()> {
         match self {
+            Self::PrivateVolume {
+                volume,
+                generation,
+                paths,
+            } if volume.class() == VolumeClass::AgentPrivate
+                && generation.as_resource().provider() == volume.provider()
+                && volume.provider().family() == "filesystem" =>
+            {
+                volume.validate()?;
+                generation.validate()?;
+                if paths.len() > MAX_FORK_RESOURCES {
+                    return Err(Error::Invalid("too many scratch paths".into()));
+                }
+                for path in paths {
+                    let relative = path
+                        .strip_prefix('/')
+                        .ok_or_else(|| Error::Invalid("scratch path must be absolute".into()))?;
+                    crate::conversation::validate_content_path(relative)?;
+                    if relative.split('/').any(|segment| segment == ".system") {
+                        return Err(Error::Unauthorized(
+                            "scratch selection includes reserved runtime state".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
             Self::History(value) if value.as_resource().provider().family() == "stream" => {
                 value.validate()
             }
             Self::Project { volume, generation }
-                if volume.class() == VolumeClass::Project
-                    && generation.as_resource().provider() == volume.provider()
+                if generation.as_resource().provider() == volume.provider()
                     && volume.provider().family() == "filesystem" =>
             {
                 volume.validate()?;
@@ -818,6 +855,26 @@ pub struct ForkPreparation {
     pub maximum_inherited_references: u32,
 }
 
+impl ForkPreparation {
+    fn validate(&self, child_agent: AgentId) -> Result<()> {
+        self.child_project_volume.validate()?;
+        self.child_private_volume.validate()?;
+        if self.child_private_volume.class() != VolumeClass::AgentPrivate
+            || self.child_private_volume.owner() != &VolumeOwner::Agent(child_agent)
+            || self.child_project_volume.class() != VolumeClass::Project
+            || self.child_private_volume.provider() != self.child_project_volume.provider()
+            || self.child_private_volume.provider().family() != "filesystem"
+            || self.maximum_inherited_messages == 0
+            || self.inherited_through_sequence > self.maximum_inherited_messages
+            || self.maximum_inherited_bytes == 0
+            || self.maximum_inherited_references == 0
+        {
+            return Err(Error::Invalid("fork preparation is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
 /// Provider-neutral owner boundary for an idempotent multi-resource fork
 /// preparation. Each provider reports its own capture result; this trait does
 /// not imply a cross-provider atomic snapshot.
@@ -883,24 +940,7 @@ impl ForkRequest {
         }
         self.parent.stream_path()?;
         self.child.stream_path()?;
-        self.preparation.child_project_volume.validate()?;
-        self.preparation.child_private_volume.validate()?;
-        if self.preparation.child_private_volume.class() != VolumeClass::AgentPrivate
-            || self.preparation.child_private_volume.owner()
-                != &VolumeOwner::Agent(self.child_agent)
-            || self.preparation.child_project_volume.class() != VolumeClass::Project
-            || self.preparation.child_private_volume.provider()
-                != self.preparation.child_project_volume.provider()
-            || self.preparation.child_private_volume.provider().family() != "filesystem"
-            || self.preparation.maximum_inherited_messages == 0
-            || self.preparation.inherited_through_sequence
-                > self.preparation.maximum_inherited_messages
-            || self.preparation.maximum_inherited_bytes == 0
-            || self.preparation.maximum_inherited_references == 0
-            || u64::from(self.preparation.maximum_inherited_references) > MAX_FORK_REFERENCES as u64
-        {
-            return Err(Error::Invalid("fork preparation is invalid".into()));
-        }
+        self.preparation.validate(self.child_agent)?;
         let attached: BTreeSet<_> = self.attached_agents.iter().copied().collect();
         if attached.len() != self.attached_agents.len() || attached.contains(&self.child_agent) {
             return Err(Error::Invalid("fork attached agents are not unique".into()));
@@ -908,6 +948,7 @@ impl ForkRequest {
         let mut selected = BTreeSet::new();
         let mut histories = 0_usize;
         let mut projects = 0_usize;
+        let mut private = 0_usize;
         let mut contexts = 0_usize;
         let mut processes = 0_usize;
         for selection in &self.selections {
@@ -934,15 +975,21 @@ impl ForkRequest {
                         ));
                     }
                 }
-                ResourceRevision::Project { volume, .. } => {
-                    projects += 1;
+                ResourceRevision::Project { volume, .. }
+                | ResourceRevision::PrivateVolume { volume, .. } => {
+                    let (destination, count) = match &selection.revision {
+                        ResourceRevision::Project { .. } => {
+                            (&self.preparation.child_project_volume, &mut projects)
+                        }
+                        _ => (&self.preparation.child_private_volume, &mut private),
+                    };
+                    *count += 1;
                     if !selection.required
-                        || volume == &self.preparation.child_project_volume
-                        || volume.provider() != self.preparation.child_project_volume.provider()
-                        || volume.owner() != self.preparation.child_project_volume.owner()
+                        || volume == destination
+                        || volume.provider() != destination.provider()
                     {
                         return Err(Error::Invalid(
-                            "fork project selection does not match child allocation".into(),
+                            "fork selected volume does not match child allocation".into(),
                         ));
                     }
                 }
@@ -951,9 +998,9 @@ impl ForkRequest {
                 _ => {}
             }
         }
-        if histories != 1 || projects != 1 || contexts > 1 || processes > 1 {
+        if histories != 1 || projects != 1 || private != 1 || contexts > 1 || processes > 1 {
             return Err(Error::Invalid(
-                "fork requires one history and project selection".into(),
+                "fork requires one history, project and scratch selection".into(),
             ));
         }
         if let Some(boundary) = &self.boundary {
@@ -1089,12 +1136,28 @@ impl CapturedResource {
             (
                 ResourceRevision::Project { volume: source, .. },
                 ResourceRevision::Project { volume: child, .. },
+            ) if source.provider() == child.provider() && source != child => Ok(()),
+            (
+                ResourceRevision::PrivateVolume {
+                    volume: source,
+                    paths: selected,
+                    ..
+                },
+                ResourceRevision::PrivateVolume {
+                    volume: child,
+                    paths: captured,
+                    ..
+                },
             ) if source.provider() == child.provider()
-                && source.owner() == child.owner()
-                && source != child =>
+                && source != child
+                && selected == captured =>
             {
                 Ok(())
             }
+            (ResourceRevision::PrivateVolume { .. }, _)
+            | (_, ResourceRevision::PrivateVolume { .. }) => Err(Error::Invalid(
+                "scratch capture changed its selection".into(),
+            )),
             (ResourceRevision::Project { .. }, _) | (_, ResourceRevision::Project { .. }) => Err(
                 Error::Invalid("project capture has an invalid child volume".into()),
             ),
@@ -1333,7 +1396,7 @@ pub struct ForkSeed {
 }
 
 impl ForkSeed {
-    /// Prevents private-volume inheritance, duplicate singletons, and malformed refs.
+    /// Validates pinned scratch lineage, singleton selections, and resource references.
     #[allow(
         clippy::too_many_lines,
         reason = "validates the complete fork seed contract"
@@ -1379,6 +1442,7 @@ impl ForkSeed {
         }
         let mut history = 0;
         let mut project = 0;
+        let mut private = 0;
         let mut context = 0;
         let mut process = 0;
         let mut unique = BTreeSet::new();
@@ -1406,6 +1470,14 @@ impl ForkSeed {
                     }
                 }
                 ResourceRevision::Project { .. } => project += 1,
+                ResourceRevision::PrivateVolume { volume, .. } => {
+                    private += 1;
+                    if volume != &self.child_private_volume {
+                        return Err(Error::Invalid(
+                            "scratch capture names another child volume".into(),
+                        ));
+                    }
+                }
                 ResourceRevision::Context(_) => context += 1,
                 ResourceRevision::Process(_) => process += 1,
                 ResourceRevision::SharedVolume(volume) => {
@@ -1490,9 +1562,9 @@ impl ForkSeed {
                 }
             }
         }
-        if history != 1 || project != 1 || context > 1 || process > 1 {
+        if history != 1 || project != 1 || private != 1 || context > 1 || process > 1 {
             return Err(Error::Invalid(
-                "fork needs one history and project revision".into(),
+                "fork needs one history, project, and scratch revision".into(),
             ));
         }
         self.validate_inherited_context()?;
@@ -1898,7 +1970,7 @@ mod tests {
     }
 
     #[test]
-    fn project_capture_requires_new_same_owner_volume() -> Result<()> {
+    fn project_capture_requires_new_volume_with_independent_owner() -> Result<()> {
         let provider = ProviderRef::new("test", "filesystem", "2")?;
         let parent = VolumeRef::new(
             provider.clone(),
@@ -1948,7 +2020,7 @@ mod tests {
                 revision: foreign
             }
             .validate()
-            .is_err()
+            .is_ok()
         );
         Ok(())
     }
@@ -2002,6 +2074,28 @@ mod tests {
                     revision: ResourceRevision::Project {
                         volume: child_project,
                         generation: GenerationRef::new(filesystem.clone(), [4; 32], None)?,
+                    },
+                },
+                CapturedResource {
+                    source: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "parent-scratch",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem.clone(), [98; 32], None)?,
+                        paths: Vec::new(),
+                    },
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "scratch",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([2; 16])),
+                        )?,
+                        generation: GenerationRef::new(filesystem.clone(), [99; 32], None)?,
+                        paths: Vec::new(),
                     },
                 },
             ],

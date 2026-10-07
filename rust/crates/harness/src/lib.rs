@@ -4,7 +4,8 @@
     allow(
         clippy::indexing_slicing,
         clippy::too_many_lines,
-        clippy::cognitive_complexity
+        clippy::cognitive_complexity,
+        reason = "unit tests run ordered scenarios over fixtures they built"
     )
 )]
 #![doc = include_str!("../README.md")]
@@ -67,8 +68,8 @@ pub mod workflow;
 #[allow(
     missing_docs,
     clippy::pedantic,
-    clippy::too_many_lines,
-    clippy::large_enum_variant
+    clippy::large_enum_variant,
+    reason = "generated prost bindings"
 )]
 mod generated {
     pub mod acyclic {

@@ -71,7 +71,7 @@ runs:
       uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/tools
-        key: sdk-tools-v6-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}
+        key: sdk-tools-v7-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}
 
     # Only main saves compiler output; every other run restores main's newest
     # entry. Caches are branch-scoped, so a cache saved by a pull request would
@@ -160,6 +160,28 @@ runs:
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
       run: .\scripts\qualify-ci.ps1 -Lane windows
+
+    # Step wall times, the slowest tests and compiler cache statistics, kept
+    # briefly even when the lane fails so slow steps and tests stay visible.
+    - name: Summarize lane timings
+      if: ${{ !cancelled() }}
+      shell: bash
+      env:
+        LANE: ${{ inputs.lane }}
+        OBSERVABILITY: ${{ runner.temp }}/sdk/observability
+      run: |
+        mkdir -p "$OBSERVABILITY"
+        cp target/bun-test.xml "$OBSERVABILITY/" 2>/dev/null || true
+        sccache --show-stats --stats-format=json >"$OBSERVABILITY/sccache.json" || true
+        node scripts/ci-summary.mjs "$OBSERVABILITY" "$LANE lane"
+    - name: Retain lane timings
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      with:
+        name: timings-${{ inputs.lane }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/sdk/observability
+        if-no-files-found: ignore
+        retention-days: 7
 
     # Saved even when a test fails: entries are content-addressed, and a red
     # main must not leave pull requests compiling cold.

@@ -3,12 +3,14 @@ import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v2/objects_pb.js";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
 /** Node/Bun transport configuration for the logical Objects service. */
 export interface ObjectsV2GrpcOptions {
   readonly endpoint: string;
   readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
@@ -38,7 +40,7 @@ export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   // Identity encoding preserves gRPC streaming in both supported runtimes.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: 30000, acceptCompression: [], baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum });
+  const transport = createGrpcTransport({ sessionManager: session, defaultTimeoutMs: 30000, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), readMaxBytes: maximum, writeMaxBytes: maximum });
   return { buckets: createClient(BucketsService, transport), objects: createClient(ObjectsService, transport), multipart: createClient(MultipartService, transport), close: () => session.abort() };
 }
 

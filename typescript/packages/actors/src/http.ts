@@ -22,12 +22,14 @@ import type {
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
 import { HTTP_ROUTES } from "./routes.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export interface HttpActorsOptions {
   readonly endpoint: string;
   readonly token: string;
   readonly fetcher?: typeof fetch;
   readonly maximumResponseBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 
 export class ActorsTransportError extends Error {
@@ -40,6 +42,7 @@ export class HttpActorsClient {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
@@ -51,37 +54,43 @@ export class HttpActorsClient {
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
+    this.#observer = resolveObserver(options.observer);
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
 
   async createActor(request: CreateActorRequest): Promise<CreateActorResponse> {
-    return fromJsonString(CreateActorResponseSchema, await this.#post(HTTP_ROUTES.createActor, toJsonString(CreateActorRequestSchema, request)));
+    return fromJsonString(CreateActorResponseSchema, await this.#post("createActor", toJsonString(CreateActorRequestSchema, request)));
   }
   async updateActor(request: UpdateActorRequest): Promise<UpdateActorResponse> {
-    return fromJsonString(UpdateActorResponseSchema, await this.#post(HTTP_ROUTES.updateActor, toJsonString(UpdateActorRequestSchema, request)));
+    return fromJsonString(UpdateActorResponseSchema, await this.#post("updateActor", toJsonString(UpdateActorRequestSchema, request)));
   }
   async inspectActor(request: InspectActorRequest): Promise<InspectActorResponse> {
-    return fromJsonString(InspectActorResponseSchema, await this.#post(HTTP_ROUTES.inspectActor, toJsonString(InspectActorRequestSchema, request)));
+    return fromJsonString(InspectActorResponseSchema, await this.#post("inspectActor", toJsonString(InspectActorRequestSchema, request)));
   }
   async addSubscription(request: AddSubscriptionRequest): Promise<AddSubscriptionResponse> {
-    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.addSubscription, toJsonString(AddSubscriptionRequestSchema, request)));
+    return fromJsonString(AddSubscriptionResponseSchema, await this.#post("addSubscription", toJsonString(AddSubscriptionRequestSchema, request)));
   }
   async removeSubscription(request: RemoveSubscriptionRequest): Promise<RemoveSubscriptionResponse> {
-    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.removeSubscription, toJsonString(RemoveSubscriptionRequestSchema, request)));
+    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post("removeSubscription", toJsonString(RemoveSubscriptionRequestSchema, request)));
   }
   async resumeSubscription(request: ResumeSubscriptionRequest): Promise<ResumeSubscriptionResponse> {
-    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.resumeSubscription, toJsonString(ResumeSubscriptionRequestSchema, request)));
+    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post("resumeSubscription", toJsonString(ResumeSubscriptionRequestSchema, request)));
   }
   async checkpointActor(request: CheckpointActorRequest): Promise<CheckpointActorResponse> {
-    return fromJsonString(CheckpointActorResponseSchema, await this.#post(HTTP_ROUTES.checkpointActor, toJsonString(CheckpointActorRequestSchema, request)));
+    return fromJsonString(CheckpointActorResponseSchema, await this.#post("checkpointActor", toJsonString(CheckpointActorRequestSchema, request)));
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
   async invokeActor(request: InvokeActorRequest): Promise<InvokeActorResponse> {
-    return fromJsonString(InvokeActorResponseSchema, await this.#post(HTTP_ROUTES.invokeActor, toJsonString(InvokeActorRequestSchema, request)));
+    return fromJsonString(InvokeActorResponseSchema, await this.#post("invokeActor", toJsonString(InvokeActorRequestSchema, request)));
   }
 
-  async #post(path: string, body: string): Promise<string> {
+  #post(route: keyof typeof HTTP_ROUTES, body: string, path: string = HTTP_ROUTES[route]): Promise<string> {
+    return observed(this.#observer, "actors", route, sizes => this.#send(path, body, sizes));
+  }
+
+  async #send(path: string, body: string, sizes?: OperationSizes): Promise<string> {
+    if (sizes) sizes.requestBytes = new TextEncoder().encode(body).byteLength;
     const response = await this.#fetcher(new URL(path, `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
       redirect: "error",
@@ -89,6 +98,7 @@ export class HttpActorsClient {
       body,
     });
     const bytes = await boundedBytes(response, this.#maximum);
+    if (sizes) sizes.responseBytes = bytes.byteLength;
     let json: string;
     try { json = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new ActorsTransportError("malformed UTF-8 response", response.status); }

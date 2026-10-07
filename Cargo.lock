@@ -28,6 +28,8 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -102,6 +104,8 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "tsify",
  "unicode-normalization",
  "urlencoding",
@@ -177,6 +181,8 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
  "tsify",
  "uuid",
  "wasm-bindgen",
@@ -201,6 +207,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -219,6 +226,8 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
  "zeroize",
 ]
@@ -254,6 +263,8 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 
@@ -272,6 +283,7 @@ dependencies = [
  "sha2",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -304,6 +316,8 @@ dependencies = [
  "libc",
  "rustix",
  "tempfile",
+ "tracing",
+ "tracing-subscriber",
  "windows-sys 0.61.2",
 ]
 
@@ -337,6 +351,8 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -376,6 +392,9 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -411,6 +430,8 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "tower",
+ "tracing",
+ "tracing-subscriber",
  "tsify",
  "uuid",
  "wasm-bindgen",
@@ -429,6 +450,8 @@ dependencies = [
  "thiserror",
  "tonic",
  "tonic-prost",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4339,6 +4362,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "tracing-chrome"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf0a738ed5d6450a9fb96e86a23ad808de2b727fd1394585da5cdd6788ffe724"
+dependencies = [
+ "serde_json",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]

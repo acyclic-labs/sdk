@@ -93,8 +93,7 @@ pub(crate) fn shell_command_in_directory(
     }
 }
 
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn pre_tool_update(updated: Value) -> Value {
+pub(crate) fn pre_tool_update(updated: &Value) -> Value {
     json!({
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",

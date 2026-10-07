@@ -8,7 +8,12 @@ pub mod http;
 /// Generated Actors v1 wire types. The documented schema is `proto/actors/v1/actors.proto`.
 pub mod wire {
     #![allow(missing_docs, reason = "generated from the public Actors schema")]
-    #![allow(clippy::all, clippy::pedantic, reason = "generated protobuf bindings")]
+    #![allow(
+        clippy::all,
+        clippy::pedantic,
+        clippy::allow_attributes_without_reason,
+        reason = "generated protobuf bindings"
+    )]
     include!("generated/acyclic.actors.v1.rs");
 }
 

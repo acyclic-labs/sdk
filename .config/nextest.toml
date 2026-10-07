@@ -1,0 +1,7 @@
+# CI test profile: flags slow tests in the log and records per-test timings
+# as JUnit for the job summary (scripts/ci-summary.mjs).
+[profile.ci]
+slow-timeout = { period = "30s" }
+
+[profile.ci.junit]
+path = "junit.xml"

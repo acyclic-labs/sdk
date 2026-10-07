@@ -1,8 +1,6 @@
 #![allow(
-    clippy::expect_used,
     clippy::indexing_slicing,
-    clippy::panic,
-    clippy::unwrap_in_result
+    reason = "tests index collections whose shape they just built or asserted"
 )]
 
 use super::*;
@@ -2118,7 +2116,7 @@ async fn a_pipe_served_by_this_user_is_accepted() {
         .expect("pipe client");
     assert!(windows_pipe_server_is_this_user(&client).expect("server user"));
     // SAFETY: the pseudo-handle of this process needs no closing.
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "reads this process's pseudo-handle")]
     let own =
         windows_token_user(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() })
             .expect("own user");

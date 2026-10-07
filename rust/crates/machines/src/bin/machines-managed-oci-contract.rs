@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract binary, not public API")]
 
 use acyclic_machines::{
     MANAGED_OCI_DIGEST_HEX_LENGTH, MANAGED_OCI_HEX_DIGITS, MANAGED_OCI_REFERENCE_SEPARATOR,
