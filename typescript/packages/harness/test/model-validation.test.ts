@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import {
-  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
+  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef, type PinnedContextPath,
 } from "../src/index.js";
 import {
   prepareModelRequest, encodeModelPrefix, WasmReducer, validateModelContent, validateUserInput,
@@ -14,6 +14,31 @@ import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime
 const contracts = await NativeContracts.create();
 const rawWasmExports = await initWasm();
 const agent = "07070707-0707-0707-0707-070707070707" as AgentId;
+
+test("generated skill parser and immutable projection share Rust validation and bounds", () => {
+  const provider = { namespace: "discovery", family: "filesystem", version: "2" };
+  const source: PinnedContextPath = {
+    root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
+    generation: { kind: "generation", provider, key: [1], version: "pinned" }, path: "inspect/SKILL.md",
+  };
+  const prefix = new TextEncoder().encode("---\r\nname: inspect\r\ndescription: >-\r\n  Inspect selected\r\n  files\r\nmetadata: {category: review}\r\n---\r\nSECRET BODY");
+  const skill = contracts.parseSkillMetadata(prefix, source);
+  expect(skill.description).toBe("Inspect selected files");
+  expect(skill.fields).toEqual({ metadata: { category: "review" } });
+  expect(skill.source).toEqual(source);
+  expect(Object.isFrozen(skill)).toBe(true);
+  const snapshot = { instructions: [], skills: [skill] };
+  const base = { messages: [{ role: "user" as const, content: "inspect" }], metadata: {} };
+  const projected = contracts.projectDiscoveredContext(snapshot, base, "prepend", DEFAULT_LIMITS);
+  expect(base.messages).toHaveLength(1);
+  expect(projected.messages).toHaveLength(2);
+  expect(JSON.stringify(projected)).toContain("Inspect selected files");
+  expect(JSON.stringify(projected)).not.toContain("SECRET BODY");
+  expect(() => contracts.projectDiscoveredContext(snapshot, base, "prepend", { ...DEFAULT_LIMITS, render_bytes: 1 })).toThrow();
+  expect(() => contracts.projectDiscoveredContext({ ...snapshot, skills: [{ ...skill, name: "Invalid" }] }, base, "prepend", DEFAULT_LIMITS)).toThrow();
+  expect(() => contracts.parseSkillMetadata(new TextEncoder().encode("---\nname: inspect\ndescription: &x hidden\nmetadata: *x\n---\n"), source)).toThrow();
+  expect(() => contracts.parseSkillMetadata(prefix, { ...source, path: ".system/private" })).toThrow();
+});
 
 test("generated context selections and updates use native schemas, placement and bounds", () => {
   const selection = { source: { kind: "attribute" as const, attribute: {
@@ -36,6 +61,75 @@ test("generated context selections and updates use native schemas, placement and
   expect(() => contracts.applyContextProjection(base, rendered, "prompt", "prepend", {
     ...DEFAULT_LIMITS, render_bytes: 1,
   })).toThrow();
+});
+
+test("generated context composition preserves existing file wires without reinterpreting metadata", async () => {
+  const reference = await file();
+  const part = { kind: "file" as const, file: reference, policy: "reference" as const };
+  const opaque = Object.fromEntries([["sha256", "note"], ["byte_length", 7n], ["media_type", "note"],
+    ["__proto__", { marker: "literal" }]]);
+  const base = { messages: [{ role: "user" as const, content: part },
+    { role: "user" as const, content: [{ kind: "text" as const, text: "attached" }, part] },
+    { role: "assistant" as const, content: { kind: "tool_call" as const, call_id: "call", name: "inspect", arguments: opaque } },
+    { role: "tool" as const, content: { kind: "tool_result" as const, call_id: "call", name: "inspect", value: opaque } }],
+  metadata: Object.fromEntries([["attachment", reference], ["__proto__", reference]]) };
+  for (const placement of ["prepend", "append"] as const) {
+    const projections = [
+      contracts.projectDiscoveredContext({ instructions: [reference], skills: [] }, base, placement, DEFAULT_LIMITS),
+      contracts.applyContextProjection(base, [{ role: "system", content: part }], "prompt", placement, DEFAULT_LIMITS),
+    ];
+    for (const projected of projections) {
+      expect(projected.metadata).toEqual(base.metadata);
+      expect(Object.hasOwn(projected.metadata, "__proto__")).toBe(true);
+      const calls = projected.messages.filter(message => !Array.isArray(message.content)
+        && typeof message.content !== "string" && message.content.kind === "tool_call");
+      expect(calls[0]?.content).toMatchObject({ arguments: opaque });
+      const files = projected.messages.flatMap(message => {
+        const parts = typeof message.content === "string" ? []
+          : Array.isArray(message.content) ? message.content : [message.content];
+        return parts.flatMap(part => part.kind === "file" ? [part.file] : []);
+      });
+      expect(files).toHaveLength(3);
+      for (const file of files) expect(typeof file.descriptor.byte_length).toBe("number");
+      expect(() => prepareModelRequest({ model: { provider: "mock", name: "files", revision: "1", options: {} },
+        messages: projected.messages, tools: [{ name: "inspect", revision: "1", description: "Inspect files",
+          inputSchema: {}, outputSchema: {} }], maxOutputTokens: 4096 }, DEFAULT_LIMITS)).not.toThrow();
+    }
+  }
+});
+
+test("declared context binding pins metadata and preserves the prior binding on invalid replacement", async () => {
+  const provider = { namespace: "discovery", family: "filesystem", version: "2" };
+  const source: PinnedContextPath = {
+    root: { volume: { provider, id: "skills", class: "session_shared", owner: { kind: "session", id: "test" } }, directory: "" },
+    generation: { kind: "generation", provider, key: [1], version: "pinned" }, path: "inspect/SKILL.md",
+  };
+  const skill = contracts.parseSkillMetadata(new TextEncoder().encode(
+    "---\nname: inspect\ndescription: Inspect files\n---\nSECRET BODY"), source);
+  const snapshot = { instructions: [], skills: [skill] };
+  const admitted: Uint8Array[] = [];
+  const builder = Harness.builder(contracts)
+    .context({ async build() { return [{ role: "user", content: "custom context" }]; } })
+    .declaredContext(snapshot)
+    .model({ provider: "mock", name: "discovery", revision: "pinned", options: {} }, {
+      async *generate(request) {
+        admitted.push(request.serializedInput.slice());
+        yield { kind: "completed" as const, metadata: {} };
+      }, async reconcile() { return undefined; },
+    });
+  expect(() => builder.declaredContext({ ...snapshot,
+    skills: [{ ...skill, name: "Invalid" }] })).toThrow();
+  snapshot.skills = [];
+  await builder.build().run("go");
+  const first = new TextDecoder().decode(admitted[0]);
+  expect(first).toContain("Inspect files");
+  expect(first).toContain("custom context");
+  expect(first).not.toContain("SECRET BODY");
+  builder.context({ async build() { return [{ role: "user", content: "replacement" }]; } });
+  await builder.build().run("go");
+  const second = new TextDecoder().decode(admitted[1]);
+  expect(second).toContain("replacement");
+  expect(second).not.toContain("Inspect files");
 });
 
 test("native and WASM request construction preserve exact Unicode and paired tool bytes", async () => {

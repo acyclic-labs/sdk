@@ -1521,6 +1521,10 @@ export class BrowserWorkspace {
      */
     forkAt(destination: string, generation: BrowserGeneration, options: BrowserForkOptions): Promise<BrowserWorkspace>;
     /**
+     * Reopens an authenticated exact retained generation without moving the head.
+     */
+    generation(id: Uint8Array): Promise<BrowserGeneration>;
+    /**
      * Current immutable generation identity.
      */
     head(): Promise<Uint8Array>;
@@ -1840,6 +1844,7 @@ export interface InitOutput {
     readonly browserworkspace_diff: (a: number, b: number, c: number, d: any) => any;
     readonly browserworkspace_fork: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: any) => any;
+    readonly browserworkspace_generation: (a: number, b: number, c: number) => any;
     readonly browserworkspace_head: (a: number) => any;
     readonly browserworkspace_id: (a: number) => [number, number];
     readonly browserworkspace_joinInto: (a: number, b: number, c: any) => any;
