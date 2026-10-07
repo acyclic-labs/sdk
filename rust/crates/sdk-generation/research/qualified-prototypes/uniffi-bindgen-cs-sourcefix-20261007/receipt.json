@@ -38,7 +38,9 @@
     "public_access_modifier": true,
     "compile": "PASS; Add-Type C# compiler, 0 errors"
   },
-  "managed_probes": {
+  "historical_managed_probes_stale_package": {
+    "qualification_status": "historical; prior outputs came from the stale external extraction and are not evidence for the corrected package",
+    "stale_assembly_identity": "3b5ctbbe.re3",
     "ordinary_all8": {
       "source": "managed/AllEightProgram.cs",
       "compile": "PASS",
@@ -57,6 +59,43 @@
       "compile": "EXPECTED FAIL; CS1729 PositiveU64 has no constructor taking two arguments"
     }
   },
+  "fresh_corrected_package_probe": {
+    "qualification_status": "fresh corrected extraction",
+    "external_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json#fresh_corrected_extraction",
+    "extraction": "consumer/installed-corrected",
+    "archive_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0",
+    "managed_sha256": "F4BF113447E7F3E1198D03E902EC5D72D7F80B6CE7AC4DA1EB62A6F72B90E094",
+    "assembly_identity": "Acyclic.Actors",
+    "assembly_version": "0.2.0.0",
+    "assembly_mvid": "55a5bb42-fdba-4a49-b3a7-99e7f8cfe49b",
+    "assembly_informational_version": "0.2.0+rust-371bb4170e16",
+    "native_imports": ["acyclic_actors_uniffi"],
+    "native_closure_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "fixtures": {
+      "all8_endpoint": "https://localhost:55169",
+      "all8_http_endpoint": "http://localhost:55170",
+      "pending_endpoint": "https://localhost:56426",
+      "pending_http_endpoint": "http://localhost:56427",
+      "pending_control_endpoint": "http://127.0.0.1:56428",
+      "all8_process_id": 31976,
+      "pending_process_id": 41152
+    },
+    "terminal_evidence": {
+      "runtime_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-probe.terminal.log",
+      "negative_compile_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-negative.terminal.log",
+      "artifact_identity_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-artifact-identity.terminal.log",
+      "all8": "NUPKG_CORRECTED_ALL8_RUNTIME=PASS",
+      "cancellation": "NUPKG_CORRECTED_CANCELLATION_RUNTIME=PASS baseline=0 peaks=1,1,1 final=6/6/0",
+      "raw_handle_negative": "NUPKG_CORRECTED_RAW_HANDLE_NEGATIVE=EXPECTED_FAIL CS1729",
+      "strong_type_negative": "NUPKG_CORRECTED_STRONG_TYPE_NEGATIVE=EXPECTED_FAIL CS1503"
+    },
+    "probe_sources": [
+      "managed/InstalledPackageReflectionProbe.ps1",
+      "managed/CorrectedNegativeCompile.ps1",
+      "managed/InstalledArtifactIdentityProbe.ps1",
+      "managed/InstalledArtifactIdentityProbe.ps1"
+    ]
+  },
   "provenance": {
     "primary_files": [
       "Async.cs",
@@ -70,6 +109,8 @@
       "managed/Program.cs",
       "managed/AllEightProgram.cs",
       "managed/RawHandleNegative.cs",
+      "managed/InstalledPackageReflectionProbe.ps1",
+      "managed/CorrectedNegativeCompile.ps1",
       "receipt.json",
       "README.md",
       "repro-package/nuget/Acyclic.Actors.nuspec",

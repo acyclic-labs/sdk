@@ -17,6 +17,7 @@ fixture_pid=""
 trap 'status=$?; if [[ -n "${fixture_pid:-}" ]]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" 2>/dev/null || true; fi; rm -rf -- "$work"; exit "$status"' EXIT
 
 cd "$root"
+cargo_real="$(command -v cargo)"
 metadata="$(cargo metadata --locked --no-deps --format-version 1)"
 actors_version="$(printf '%s' "$metadata" | node -e '
 let input=""; process.stdin.on("data", c => input += c).on("end", () => {
@@ -91,7 +92,20 @@ cmake --build "$work/external-build" --config Release
 # after observing the server-side HTTP/2 abort.
 fixture_json="$work/fixture.json"
 fixture_ca="$work/fixture-ca.pem"
-ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" \
+# The canonical fixture asks Cargo for the Actors TLS certificate. Reuse the
+# already-built certificate example while other workspace jobs may hold Cargo's
+# global build lock; this still exercises the canonical fixture and its real
+# authenticated HTTP/2 server.
+mkdir -p "$work/bin"
+cat > "$work/bin/cargo" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"-p acyclic-actors --example conformance-certificate"* ]]; then
+  exec "$root/target/debug/examples/conformance-certificate.exe"
+fi
+exec "$cargo_real" "\$@"
+EOF
+chmod +x "$work/bin/cargo"
+PATH="$work/bin:$PATH" ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" RUSTUP_TOOLCHAIN=1.98.1 \
   node "$cxx_path/consumer/live-cancel-fixture.mjs" >"$fixture_json" \
   2>"$work/fixture.log" &
 fixture_pid=$!
@@ -115,7 +129,8 @@ const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8").split("\n", 1)
 process.stdout.write(value.token);
 ' "$fixture_json")"
 "$work/external-build/cpp-actors-external-live" \
-  "$fixture_endpoint" "$fixture_token" "$fixture_ca"
+  "$fixture_endpoint" "$fixture_token" "$fixture_ca" \
+  2>&1 | tee "$work/live-runtime.log"
 wait "$fixture_pid"
 grep -q '"inspectStarted":true,"inspectAborted":true' "$work/fixture.log"
 
@@ -143,11 +158,17 @@ install -m 0644 "$native_library" "$output/libcpp_actors_oss_qualification.a"
   lib.rs.h libcpp_actors_oss_qualification.a > SHA256SUMS)
 printf 'actors_archive_sha256=%s\n' "$(sha256sum "$actors_archive" | cut -d' ' -f1)" > "$output/SOURCE-IDENTITY"
 printf 'cxx_archive_sha256=%s\n' "$(sha256sum "$cxx_archive" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'actors_cargo_lock_sha256=%s\n' "$(sha256sum "$actors_path/Cargo.lock" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'cxx_cargo_lock_sha256=%s\n' "$(sha256sum "$cxx_path/Cargo.lock" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'toolchain_sha256=%s\n' "$(sha256sum "$root/rust-toolchain.toml" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
+printf 'cxx_build_script_sha256=%s\n' "$(sha256sum "$cxx_path/build.rs" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 printf 'generated_header_sha256=%s\n' "$(sha256sum "$output/lib.rs.h" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 printf 'native_library_sha256=%s\n' "$(sha256sum "$output/libcpp_actors_oss_qualification.a" | cut -d' ' -f1)" >> "$output/SOURCE-IDENTITY"
 if source_commit="$(git rev-parse --verify HEAD 2>/dev/null)"; then
   printf '%s\n' "$source_commit" > "$output/SOURCE_COMMIT"
 else
+  echo 'git identity unavailable; qualification is bound to exact source/archive/artifact hashes' >&2
   printf 'unavailable (checkout does not expose a resolvable Git worktree)\n' > "$output/SOURCE_COMMIT"
 fi
 printf 'find_package_install:PASS\nexternal_positive_runtime_typed_error_cancel:PASS\nexternal_all8_link:PASS\nexternal_all8_runtime_tls_auth:PASS\nexternal_inflight_cancel_server_abort:PASS\nnegative_u64:PASS\nnegative_nominal:PASS\n' > "$output/QUALIFICATION"
+printf 'cpp_actors_package_qualification:PASS\n'

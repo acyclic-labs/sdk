@@ -30,8 +30,22 @@ and runs all eight ordinary operations using only `null` for the Rust
 cancellation handle. `managed/Program.cs` runs three gated pending operations:
 continuation-map peaks are `1,1,1`, each map returns to zero, the fixture
 observes started=3/aborted=3/active=0, and each await throws
-`OperationCanceledException` whose token is the request token. The pending
-fixture options are the exclusive `root-pending-actors-fixture-options.json`.
+`OperationCanceledException` whose token is the request token. Earlier
+consumer outputs from `consumer/installed-final` are retained as historical
+evidence because that extraction had the stale `3b5ctbbe.re3` assembly identity.
+
+The fresh corrected package qualification is recorded in the external
+`package-receipt.json` under `fresh_corrected_extraction`. It targets
+`consumer/installed-corrected` (archive SHA-256
+`2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0`, managed
+assembly identity `Acyclic.Actors`, version `0.2.0.0`) and reruns all eight
+operations plus three gated cancellation requests. The live fixtures used by
+that run were `https://localhost:55169` for all-eight and
+`https://localhost:56426` with control endpoint
+`http://127.0.0.1:56428` for pending cancellation. Its terminal logs record
+the corrected all-eight PASS, cancellation cleanup `baseline=0`,
+`peaks=1,1,1`, `started=6/aborted=6/active=0`, and fresh CS1729/CS1503
+negative probes against the corrected assembly.
 
 The generated source and consumers are retained as qualification artifacts;
 no DLL, native binary, Cargo target, or managed build output is persisted in

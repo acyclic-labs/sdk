@@ -62,6 +62,27 @@
       "jdk_target": "17"
     }
   },
+  "fresh_current_lock_rebuild": {
+    "cargo_lock_sha256": "B1E42E6BA03A535A25A1E369AE3BAAE1BCCB3789360D709229C67581FEE5AA11",
+    "windows_native_sha256": "E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F",
+    "generated_kotlin_sha256": "201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58",
+    "jar_path": "Q:\\sdk\\work\\actors-uniffi-kotlin-internal-current-20261007\\consumer\\target\\acyclic-actors-uniffi-kotlin-0.2.0.jar",
+    "jar_sha256": "6A616B2A73774F150E36C050E6D6FBD1AA5E21C5CBE801F0AACE04C38C16C5E4",
+    "native_resources": {
+      "linux-x86-64/libacyclic_actors_uniffi.so": "AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24",
+      "win32-x86-64/acyclic_actors_uniffi.dll": "E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F",
+      "darwin-aarch64/libacyclic_actors_uniffi.dylib": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719"
+    },
+    "receipts": {
+      "wsl_constructor": "KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS",
+      "windows_all8": "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
+      "windows_pending": "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS",
+      "macos_all8": "KOTLIN_ALL8_IMMUTABLE_PROBE_PASS",
+      "macos_pending": "KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS",
+      "macos_continuation_map": "KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS"
+    },
+    "loader_policy": "standard JNA Platform.RESOURCE_PREFIX resources; no custom loader or native-path setup"
+  },
   "typing_review": {
     "immutable_records": true,
     "typed_enum_payloads": "SubscriptionStart.Cursor(ULong) and SubscriptionStart.CurrentHead(Boolean); wrong Kotlin payload types fail at compile time.",

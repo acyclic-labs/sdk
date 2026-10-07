@@ -11,6 +11,7 @@
 
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package, TargetKind};
 use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -183,7 +184,7 @@ pub struct ProfileSpec {
     pub features: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProfileId(pub String);
 
 impl ProfileSpec {
@@ -411,6 +412,7 @@ pub struct OwnedApiItem {
     pub published_owner: String,
     pub profile: ProfileId,
     pub key: ProjectionKey,
+    pub rustdoc_version: Option<String>,
     pub docs_present: bool,
 }
 
@@ -452,6 +454,7 @@ pub fn extract_owned_api(
                     kind: format!("{:?}", summary.kind).to_lowercase(),
                     signature: format!("{:?}", item.inner),
                 },
+                rustdoc_version: receipt.crate_version.clone(),
                 docs_present: item.docs.is_some(),
             })
         })
@@ -538,6 +541,181 @@ pub fn merge_projection(
         .into_iter()
         .map(|(key, profiles)| AvailableItem { key, profiles })
         .collect()
+}
+
+/// Stable sidecar schema for target/feature availability projected onto the
+/// existing docs item IDs. The docs catalog remains authoritative for item
+/// content; this sidecar only records where each exact signature was emitted.
+pub const PROFILE_AVAILABILITY_SCHEMA: &str = "sdk-docs-profile-availability.v1";
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAvailability {
+    pub schema: String,
+    pub entries: Vec<ProfileAvailabilityEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAvailabilityEntry {
+    pub item_id: String,
+    pub path: String,
+    pub kind: String,
+    pub signature: String,
+    pub profiles: Vec<ProfileAvailabilityProfile>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileAvailabilityProfile {
+    pub profile: ProfileId,
+    pub rustdoc_package: String,
+    pub published_owner: String,
+    pub rustdoc_version: String,
+    pub published_version: String,
+    pub owner_kind: String,
+    pub target: String,
+    pub default_features: bool,
+    pub features: Vec<String>,
+    pub capabilities: Vec<String>,
+}
+
+/// Resolve owned profile items to the IDs already emitted by `sdk-docs`.
+///
+/// The adapter is deliberately signature-aware: two overloads with the same
+/// path and kind remain separate entries. Cargo metadata supplies the exact
+/// package versions, while the Rustdoc receipt supplies the observed version;
+/// a mismatch fails closed before a sidecar can be written.
+pub fn project_into_docs(
+    data: &crate::DocsData,
+    metadata: &Metadata,
+    items: impl IntoIterator<Item = OwnedApiItem>,
+    profiles: &BTreeMap<ProfileId, ProfileSpec>,
+) -> Result<ProfileAvailability, ProfileError> {
+    let mut lookup = BTreeMap::<(String, ProjectionKey), String>::new();
+    for family in &data.families {
+        for item in &family.items {
+            lookup.insert(
+                (
+                    family.crate_name.clone(),
+                    ProjectionKey {
+                        path: item.path.clone(),
+                        kind: item.kind.clone(),
+                        signature: item.signature.clone(),
+                    },
+                ),
+                item.id.clone(),
+            );
+        }
+    }
+
+    let mut entries =
+        BTreeMap::<(String, ProjectionKey), BTreeSet<ProfileAvailabilityProfile>>::new();
+    for item in items {
+        let profile = profiles.get(&item.profile).ok_or_else(|| {
+            ProfileError::InvalidRustdoc(format!(
+                "profile {} has no Cargo profile specification",
+                item.profile.0
+            ))
+        })?;
+        if profile.package != item.rustdoc_package {
+            return Err(ProfileError::InvalidRustdoc(format!(
+                "profile {} belongs to {}, receipt belongs to {}",
+                item.profile.0, profile.package, item.rustdoc_package
+            )));
+        }
+        let owner = api_owner_for_package(metadata, &item.rustdoc_package)?;
+        if owner.published_package != item.published_owner {
+            return Err(ProfileError::InvalidRustdoc(format!(
+                "receipt owner for {} is {}, expected {}",
+                item.rustdoc_package, item.published_owner, owner.published_package
+            )));
+        }
+        let rustdoc_package = package_by_name(metadata, &item.rustdoc_package)
+            .ok_or_else(|| ProfileError::UnknownPackage(item.rustdoc_package.clone()))?;
+        let published_package = package_by_name(metadata, &owner.published_package)
+            .ok_or_else(|| ProfileError::UnknownPackage(owner.published_package.clone()))?;
+        let rustdoc_version = item.rustdoc_version.clone().ok_or_else(|| {
+            ProfileError::InvalidRustdoc(format!(
+                "Rustdoc receipt for {} has no crate version",
+                item.rustdoc_package
+            ))
+        })?;
+        let expected_rustdoc_version = rustdoc_package.version.to_string();
+        if rustdoc_version != expected_rustdoc_version {
+            return Err(ProfileError::InvalidRustdoc(format!(
+                "Rustdoc receipt for {} reports {}, Cargo reports {}",
+                item.rustdoc_package, rustdoc_version, expected_rustdoc_version
+            )));
+        }
+        let crate_name = item.rustdoc_package.replace('-', "_");
+        let Some(item_id) = lookup.get(&(crate_name, item.key.clone())) else {
+            return Err(ProfileError::InvalidRustdoc(format!(
+                "profile item {} is absent from the generated docs catalog",
+                item.key.path
+            )));
+        };
+        let availability = ProfileAvailabilityProfile {
+            profile: item.profile,
+            rustdoc_package: item.rustdoc_package,
+            published_owner: item.published_owner,
+            rustdoc_version,
+            published_version: published_package.version.to_string(),
+            owner_kind: owner_kind_name(owner.kind).into(),
+            target: profile.target.clone(),
+            default_features: profile.default_features,
+            features: profile.features.iter().cloned().collect(),
+            capabilities: profile_capabilities(owner.kind, &profile.target),
+        };
+        entries
+            .entry((item_id.clone(), item.key))
+            .or_default()
+            .insert(availability);
+    }
+
+    Ok(ProfileAvailability {
+        schema: PROFILE_AVAILABILITY_SCHEMA.into(),
+        entries: entries
+            .into_iter()
+            .map(|((item_id, key), profiles)| ProfileAvailabilityEntry {
+                item_id,
+                path: key.path,
+                kind: key.kind,
+                signature: key.signature,
+                profiles: profiles.into_iter().collect(),
+            })
+            .collect(),
+    })
+}
+
+fn profile_capabilities(kind: ApiOwnerKind, target: &str) -> Vec<String> {
+    let mut capabilities = BTreeSet::from([if target.starts_with("wasm32") {
+        "browser"
+    } else {
+        "native"
+    }
+    .to_owned()]);
+    capabilities.insert(
+        match kind {
+            ApiOwnerKind::PublishedRoot => "rust",
+            ApiOwnerKind::NapiBinding => "napi",
+            ApiOwnerKind::WasmBinding => "wasm",
+            ApiOwnerKind::UniFfiBinding => "uniffi",
+            ApiOwnerKind::OtherBinding => "binding",
+        }
+        .to_owned(),
+    );
+    capabilities.into_iter().collect()
+}
+
+fn owner_kind_name(kind: ApiOwnerKind) -> &'static str {
+    match kind {
+        ApiOwnerKind::PublishedRoot => "publishedRoot",
+        ApiOwnerKind::NapiBinding => "napiBinding",
+        ApiOwnerKind::WasmBinding => "wasmBinding",
+        ApiOwnerKind::UniFfiBinding => "uniFfiBinding",
+        ApiOwnerKind::OtherBinding => "otherBinding",
+    }
 }
 
 #[cfg(test)]
@@ -738,6 +916,109 @@ mod tests {
             item.rustdoc_package == "acyclic-fs-napi" && item.published_owner == "acyclic-fs"
         }));
         assert!(items.iter().any(|item| item.docs_present));
+    }
+
+    #[test]
+    fn real_binding_projection_keeps_binding_only_types_when_requested() {
+        let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
+            return;
+        };
+        let owner = ApiOwner {
+            published_package: "acyclic-fs".into(),
+            rustdoc_package: "acyclic-fs-napi".into(),
+            kind: ApiOwnerKind::NapiBinding,
+        };
+        let items =
+            extract_owned_api(path, &owner, ProfileId("binding-host-default".into())).unwrap();
+
+        // These types belong to the binding crate. A projection through the
+        // published core owner would lose the binding namespace entirely.
+        assert!(items.iter().any(|item| {
+            item.key.kind == "struct"
+                && item.key.path.starts_with("acyclic_fs_napi::Native")
+                && item.rustdoc_package == "acyclic-fs-napi"
+                && item.published_owner == "acyclic-fs"
+        }));
+    }
+
+    #[test]
+    fn projection_sidecar_preserves_binding_identity_versions_and_capabilities() {
+        let Some(path) = std::env::var_os("RUSTDOC_BINDING_FIXTURE") else {
+            return;
+        };
+        let Some(metadata_path) = std::env::var_os("CARGO_METADATA_PROFILE_FIXTURE") else {
+            return;
+        };
+        let metadata: Metadata =
+            serde_json::from_slice(&fs::read(metadata_path).unwrap()).expect("Cargo metadata");
+        let owner = ApiOwner {
+            published_package: "acyclic-fs".into(),
+            rustdoc_package: "acyclic-fs-napi".into(),
+            kind: ApiOwnerKind::NapiBinding,
+        };
+        let profile = ProfileSpec {
+            package: "acyclic-fs-napi".into(),
+            target: "x86_64-pc-windows-msvc".into(),
+            default_features: true,
+            features: BTreeSet::new(),
+        };
+        let profile_id = profile.id();
+        let items = extract_owned_api(path, &owner, profile_id.clone()).unwrap();
+        let api_items = items
+            .iter()
+            .map(|item| crate::ApiItem {
+                id: format!("binding:{}", item.key.path),
+                parent_id: None,
+                name: item.key.path.rsplit("::").next().unwrap().into(),
+                kind: item.key.kind.clone(),
+                path: item.key.path.clone(),
+                signature: item.key.signature.clone(),
+                docs: None,
+                links: BTreeMap::new(),
+                source: None,
+                reexport: None,
+                reexport_target: None,
+            })
+            .collect();
+        let data = crate::DocsData {
+            schema: crate::DATA_SCHEMA_VERSION.into(),
+            schema_version: crate::DATA_SCHEMA_VERSION.into(),
+            version: "0.2.0".into(),
+            channel: crate::Channel::Preview,
+            source: crate::SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "working-tree".into(),
+                source_sha256: None,
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: crate::Navigation {
+                entries: Vec::new(),
+            },
+            families: vec![crate::Family {
+                slug: "acyclic-fs-napi".into(),
+                title: "acyclic-fs-napi".into(),
+                crate_name: "acyclic_fs_napi".into(),
+                items: api_items,
+                guides: Vec::new(),
+            }],
+        };
+        let profiles = BTreeMap::from([(profile_id, profile)]);
+        let sidecar = project_into_docs(&data, &metadata, items, &profiles).unwrap();
+        assert_eq!(sidecar.schema, PROFILE_AVAILABILITY_SCHEMA);
+        let native_binding = sidecar.entries.iter().find(|entry| {
+            entry.path.starts_with("acyclic_fs_napi::Native") && entry.kind == "struct"
+        });
+        let native_binding = native_binding.expect("binding-only type should be projected");
+        assert!(native_binding
+            .profiles
+            .iter()
+            .any(|profile| profile.rustdoc_package == "acyclic-fs-napi"
+                && profile.published_owner == "acyclic-fs"
+                && profile.rustdoc_version == "0.2.0"
+                && profile.published_version == "0.2.0"
+                && profile.capabilities == vec!["napi", "native"]));
     }
 
     #[test]

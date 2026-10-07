@@ -13,11 +13,12 @@ $assembly = [Reflection.Assembly]::LoadFrom($managed)
 
 function New-Managed([string]$Name, [object[]]$Arguments = @()) {
     $type = $assembly.GetType("Acyclic.Actors.$Name", $true)
+    $lastError = $null
     foreach ($constructor in $type.GetConstructors([Reflection.BindingFlags]'Public,Instance')) {
         if ($constructor.GetParameters().Count -ne $Arguments.Count) { continue }
-        try { return $constructor.Invoke($Arguments) } catch { }
+        try { return $constructor.Invoke($Arguments) } catch { $lastError = $_.Exception.ToString() }
     }
-    throw "constructor not found: $Name"
+    throw "constructor not found: $Name ($lastError)"
 }
 
 function Await([object]$Task) {
@@ -62,7 +63,8 @@ $resume = New-Managed 'ResumeSubscriptionRequest' ([object[]]@($actorId, 'subscr
 $checkpoint = New-Managed 'CheckpointActorRequest' ([object[]]@($actorId, 'checkpoint-a'))
 $header = New-Managed 'Header' ([object[]]@('content-type', 'application/json'))
 $headers = [Array]::CreateInstance($header.GetType(), 1); $headers.SetValue($header, 0)
-$invoke = New-Managed 'InvokeActorRequest' ([object[]]@($actorId, 'POST', '/invoke', ,([byte[]][Text.Encoding]::UTF8.GetBytes('request-body')), $headers))
+$body = [byte[]][Text.Encoding]::UTF8.GetBytes('request-body')
+$invoke = New-Managed 'InvokeActorRequest' ([object[]]@($actorId, 'POST', '/invoke', [object]$body, $headers))
 Write-Output 'CHECKPOINT_REQUESTS'
 
 Invoke-Method $client 'CreateActor' ([object[]]@($create, $null, [Threading.CancellationToken]::None))

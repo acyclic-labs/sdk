@@ -100,3 +100,25 @@ was rejected because the payload must be `ULong`. The production cohort's
 constructor probe, all-eight
 operation/service-error/cancellation probe, and generated-null pending
 cancellation probe all passed with the unchanged native resources.
+
+## Fresh current-lock patched package
+
+The standalone crate was rebuilt with the current shared lockfile rather than
+reusing the earlier native output. The task-local package is
+`Q:\sdk\work\actors-uniffi-kotlin-internal-current-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar`, SHA-256
+`6A616B2A73774F150E36C050E6D6FBD1AA5E21C5CBE801F0AACE04C38C16C5E4`.
+Its Cargo.lock SHA-256 is
+`B1E42E6BA03A535A25A1E369AE3BAAE1BCCB3789360D709229C67581FEE5AA11`, and
+its freshly rebuilt Windows x86_64 native resource is
+`E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F`.
+The generated Kotlin source remains the patched source-derived file with
+SHA-256 `201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58`.
+
+The fresh JAR passed the standard-resource constructor probe under WSL, the
+live all-eight and service-error probe on Windows, and the live all-eight,
+generated-null pending server-abort, and continuation-map probes on macOS
+arm64 using the task-local Temurin 17 runtime. The macOS continuation map was
+0 at baseline, 1 while each real native request was pending, and 0 after each
+of three coroutine cancellations. Linux, Windows, and macOS resources remain
+under JNA's standard resource prefixes; no loader, `java.library.path`, or
+custom native-path setup was introduced.

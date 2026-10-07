@@ -111,7 +111,7 @@ Portability and installability matrix (2026-10-07):
 
 Classpath-native Kotlin/JVM package receipt (2026-10-07):
 - package design: KOTLIN-PORTABLE-PACKAGE.md
-- package design SHA-256 after pinned Temurin Mac runtime qualification, loader review, and patched-generator cohort: 8E6DA14B17C23C0ED0F0039271BD13EC1349CD07C5EBD7C1B422A584D8C92682
+- package design SHA-256 after pinned Temurin Mac runtime qualification, loader review, patched-generator cohort, and current-lock rebuild: 7965DD8E8BB1CD1E658BB0BAC599CBDF8C39740285142941F30489F6D2BCBCD7
 - JNA maintained `Native.extractFromResourcePath` resolves the generated basename from standard root prefixes `linux-x86-64/`, `win32-x86-64/`, and `darwin-aarch64/`; no source loader, java.library.path, or native-path setting; UniFFI's optional libraryOverride property is unset
 - generated Kotlin remained unchanged, SHA-256 6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B
 - Linux x86_64 resource SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
@@ -139,7 +139,7 @@ Rust-owned JVM generation inputs and derived evidence (source only; no registry 
 - Rust source authority: rust/crates/actors-uniffi/src/kotlin_generation_metadata.rs
 - maintained template patch: rust/crates/actors-uniffi/generator-patches/uniffi-0.31.0-kotlin-opaque-constructors.patch, SHA-256 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474
 - Rust metadata source SHA-256: 3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9
-- derived artifact evidence: KOTLIN-GENERATION-EVIDENCE.json, SHA-256 04675B31C0FAE57A6799F0E7E345A616FB2D7191E85D1B5EC82CA344E97F94A1
+- derived artifact evidence: KOTLIN-GENERATION-EVIDENCE.json, SHA-256 E99E9F48121EB37C88F4C204251E18015B77A938F7A93F00E0A7CFF759B17B4A
 - design notes: KOTLIN-GENERATION-DESIGN-NOTES.md, SHA-256 17B65BC1A9DA958832E2802302480BE1BC9E78A29862B23423B76AE961E45432
 - Cargo authority: acyclic-actors-uniffi version 0.2.0 from cargo metadata; manifest SHA-256 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377; lock SHA-256 97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE
 - generated coordinate: dev.acyclic:acyclic-actors-uniffi-kotlin:0.2.0, version emitted from Cargo metadata
@@ -150,3 +150,16 @@ Rust-owned JVM generation inputs and derived evidence (source only; no registry 
 - patched cohort Maven JAR: Q:\sdk\work\actors-uniffi-kotlin-internal-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar; SHA-256 A5E5C1D76ABC11A97DCC96C32A5B5D4C51879C19BAFA3C794C20E9D76E662CFE
 - patched cohort external negative: raw ActorId handle constructor rejected as internal; Cursor(Boolean) rejected as ULong mismatch
 - patched cohort runtime markers: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS; KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
+
+Fresh current-lock patched package rebuild (2026-10-07):
+- standalone Cargo.lock SHA-256: B1E42E6BA03A535A25A1E369AE3BAAE1BCCB3789360D709229C67581FEE5AA11
+- fresh Windows x86_64 native resource SHA-256: E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F
+- maintained patch SHA-256: 275222CFE64FD25C3723F6619FA87929713D7950320D46777D9B732A3C41A474; Rust metadata source SHA-256: 3FFD3FBED012AB61EF2BC77544B91F322590A56F795EBD89701CCED4BF1E38A9
+- generated Kotlin remained source-derived and unchanged: SHA-256 201C988FA9B679784EE12E6FFC5C72EE88D5AD001633D085FFEFD628E392AC58
+- fresh patched JAR: Q:\sdk\work\actors-uniffi-kotlin-internal-current-20261007\consumer\target\acyclic-actors-uniffi-kotlin-0.2.0.jar; SHA-256 6A616B2A73774F150E36C050E6D6FBD1AA5E21C5CBE801F0AACE04C38C16C5E4
+- native resources in the fresh JAR use standard JNA roots only: Linux AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24; Windows E78550ED0A5EE2A3365F9738D692B5952936536DA980DB3F9FB4BC4042D0DE1F; macOS arm64 28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719
+- offline Maven package: PASS; WSL installed-JAR constructor probe: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS
+- Windows installed-JAR live fixture: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; generated-null pending probe observed server abort and active=0: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
+- macOS arm64 ivar installed-JAR live fixture: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; generated-null pending probe observed server abort and active=0: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS
+- macOS arm64 ivar maintained-runtime probe: continuation map baseline=0, during=1, after=0 across three cancelled operations; KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS
+- no generated Kotlin source, native loader, java.library.path, or custom native-path code was added; the previous JAR and DLL were retained as historical receipts rather than retagged
