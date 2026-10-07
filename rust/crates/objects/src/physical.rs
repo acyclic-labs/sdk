@@ -648,7 +648,7 @@ fn publish_new(temporary: &Path, destination: &Path) -> std::io::Result<()> {
     )
 }
 
-fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
+pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
         LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
         LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,

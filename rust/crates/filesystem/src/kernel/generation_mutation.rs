@@ -14,7 +14,7 @@ use super::{
 };
 use crate::async_storage::{AsyncObjectStore, BoxStorageFuture};
 use crate::cancellation::CancellationToken;
-use crate::foundation::{FileId, GenerationId};
+use crate::foundation::{FileId, GenerationId, usize_to_u64};
 use crate::heap_future::in_heap;
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
@@ -348,7 +348,7 @@ async fn verify_created_identities<S: AsyncObjectStore>(
             context.generation.file_table,
             &created_ids,
             context.config.limits.maximum_mutations_per_batch,
-            decode_limits(context.config),
+            DecodeLimits::for_volume(context.config),
             nested_budget(*work, context.budget, allocations.live_bytes())?,
             context.cancellation,
         )
@@ -491,11 +491,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
     // `dedup` examines every sorted identity once. Keep that deterministic
     // linear pass visible in the exact-work receipt instead of hiding it in
     // standard-library collection maintenance.
-    charge_items(
-        work,
-        crate::foundation::usize_to_u64(identity_ids.len()),
-        context.budget,
-    )?;
+    charge_items(work, usize_to_u64(identity_ids.len()), context.budget)?;
     identity_ids.dedup();
     let identity_id_bytes = logical_vec_bytes(&identity_ids)?;
     let identities = if identity_ids.is_empty() {
@@ -507,7 +503,7 @@ async fn load_identity_lookups<S: AsyncObjectStore>(
             &identity_ids,
             u32::try_from(identity_ids.len())
                 .map_err(|_| failed(WorkError::Overflow.into(), *work))?,
-            decode_limits(context.config),
+            DecodeLimits::for_volume(context.config),
             nested_budget(*work, context.budget, allocations.live_bytes())?,
             context.cancellation,
         )
@@ -1600,7 +1596,7 @@ impl TransactionState {
             .split_last()
             .map(|(_, name)| name)
             .ok_or_else(|| failed(GenerationMutationError::InconsistentState, self.work))?;
-        let bytes = u64::try_from(name.as_bytes().len()).unwrap_or(u64::MAX);
+        let bytes = usize_to_u64(name.as_bytes().len());
         self.allocations
             .claim_bytes(bytes, 1, &mut self.work, self.budget)
             .map_err(|error| allocation_failure(error, self.work))?;
@@ -1781,7 +1777,7 @@ impl TransactionState {
                     entries,
                     mutations,
                     config.limits.maximum_mutations_per_batch,
-                    decode_limits(config),
+                    DecodeLimits::for_volume(config),
                     nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                     cancellation,
                 )
@@ -1830,7 +1826,7 @@ impl TransactionState {
         charge_items(&mut self.work, comparisons.get(), self.budget)?;
         charge_items(
             &mut self.work,
-            u64::try_from(self.removed_directories.len().saturating_sub(1)).unwrap_or(u64::MAX),
+            usize_to_u64(self.removed_directories.len().saturating_sub(1)),
             self.budget,
         )?;
         self.removed_directories.dedup();
@@ -1856,7 +1852,7 @@ impl TransactionState {
                 entries,
                 None,
                 1,
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                 cancellation,
             )
@@ -1908,7 +1904,7 @@ impl TransactionState {
                 .count();
             charge_items(
                 &mut self.work,
-                u64::try_from(self.records.len()).unwrap_or(u64::MAX),
+                usize_to_u64(self.records.len()),
                 self.budget,
             )?;
             if mutation_count == 0 {
@@ -1947,7 +1943,7 @@ impl TransactionState {
                 mutations,
                 u32::try_from(mutation_count)
                     .map_err(|_| failed(WorkError::Overflow.into(), self.work))?,
-                decode_limits(config),
+                DecodeLimits::for_volume(config),
                 nested_budget(self.work, self.budget, self.allocations.live_bytes())?,
                 cancellation,
             )
@@ -2132,7 +2128,7 @@ fn reserve_exact<T>(
 ) -> Result<Vec<T>, GenerationMutationFailure> {
     let bytes = count
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| failed(WorkError::Overflow.into(), *work))?;
     allocations
         .claim_bytes(bytes, u64::from(count != 0), work, budget)
@@ -2152,22 +2148,10 @@ fn logical_vec_bytes<T>(values: &Vec<T>) -> Result<u64, GenerationMutationFailur
     values
         .capacity()
         .checked_mul(size_of::<T>())
-        .map(crate::foundation::usize_to_u64)
+        .map(usize_to_u64)
         .ok_or_else(|| {
             OperationFailure::before_work(GenerationMutationError::Work(WorkError::Overflow))
         })
-}
-
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
-    }
 }
 
 #[inline]
@@ -2189,18 +2173,13 @@ fn nested_budget(
 #[inline]
 fn merge_nested(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, GenerationMutationFailure> {
-    let peak = live_bytes
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| failed(WorkError::Overflow.into(), prior))?;
-    nested.peak_allocation_bytes = 0;
-    let mut work = prior
-        .checked_add(nested)
+    let work = prior
+        .with_backend(nested, live_bytes)
         .map_err(|error| failed(error.into(), prior))?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(peak);
     work.verify(budget)
         .map_err(|error| failed(error.into(), work))?;
     Ok(work)
@@ -2208,19 +2187,14 @@ fn merge_nested(
 
 fn nested_failure(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     error: GenerationMutationError,
 ) -> GenerationMutationFailure {
-    let Some(peak) = live_bytes.checked_add(nested.peak_allocation_bytes) else {
-        return failed(WorkError::Overflow.into(), prior);
-    };
-    nested.peak_allocation_bytes = 0;
-    let Ok(mut work) = prior.checked_add(nested) else {
-        return failed(WorkError::Overflow.into(), prior);
-    };
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(peak);
-    failed(error, work)
+    match prior.with_backend(nested, live_bytes) {
+        Ok(work) => failed(error, work),
+        Err(overflow) => failed(overflow.into(), prior),
+    }
 }
 
 #[inline]
@@ -2234,17 +2208,10 @@ fn charge_items(
 }
 
 fn allocation_failure(error: AllocationError, work: WorkCounters) -> GenerationMutationFailure {
-    match error {
-        AllocationError::Work(error) => failed(error.into(), work),
-        AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-            failed(WorkError::Overflow.into(), work)
-        }
-        AllocationError::InvalidCapacity
-        | AllocationError::CapacityExceeded
-        | AllocationError::AllocationFailed => {
-            failed(GenerationMutationError::AllocationFailed, work)
-        }
-    }
+    OperationFailure::new(
+        error.into_work_or(GenerationMutationError::AllocationFailed),
+        work,
+    )
 }
 
 fn path_cancelled() -> GenerationMutationError {

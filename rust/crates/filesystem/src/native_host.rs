@@ -236,10 +236,31 @@ fn relative_kernel_name(path: &Path) -> Option<(Vec<u16>, u16)> {
     Some((name, length))
 }
 
+/// `FILETIME` ticks (100 ns since 1601-01-01 UTC) at the Unix epoch.
+#[cfg(windows)]
+pub(crate) const UNIX_EPOCH_FILETIME: i64 = 116_444_736_000_000_000;
+
+/// Unix nanoseconds one `FILETIME` names. Every tick is a whole number of
+/// nanoseconds, so this is exact or `None` beyond the `i64` nanosecond range.
+#[cfg(all(windows, any(feature = "native-mount", test)))]
+pub(crate) fn filetime_to_unix_nanoseconds(ticks: i64) -> Option<i64> {
+    ticks.checked_sub(UNIX_EPOCH_FILETIME)?.checked_mul(100)
+}
+
+/// The `FILETIME` tick containing one Unix-nanosecond instant: the instant
+/// rounded toward the past, so ordering is preserved, including before 1970.
+/// It never overflows, because `i64` nanoseconds span far fewer ticks than
+/// `i64`. A writer that must reproduce an instant exactly rejects
+/// `nanoseconds % 100 != 0` first.
+#[cfg(all(windows, any(feature = "native-mount", test)))]
+pub(crate) fn unix_nanoseconds_to_filetime(nanoseconds: i64) -> i64 {
+    nanoseconds.div_euclid(100) + UNIX_EPOCH_FILETIME
+}
+
 /// The instant one `FILETIME` names, as the standard library reads it.
 #[cfg(windows)]
 fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
-    const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
+    const UNIX_EPOCH_TICKS: u64 = UNIX_EPOCH_FILETIME.unsigned_abs();
     let since = |ticks: u64| std::time::Duration::from_nanos(ticks.saturating_mul(100));
     cap_std::time::SystemTime::from_std(if ticks >= UNIX_EPOCH_TICKS {
         std::time::UNIX_EPOCH + since(ticks - UNIX_EPOCH_TICKS)
@@ -682,8 +703,8 @@ impl LinuxMetadataTarget {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
-        // SAFETY: successful openat returned one exclusively owned descriptor.
         Ok(Self {
+            // SAFETY: successful openat returned one exclusively owned descriptor.
             inode: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
         })
     }
@@ -911,6 +932,7 @@ fn linux_require_fchmodat2() -> Result<(), LinuxMetadataError> {
     // An invalid descriptor makes the capability probe non-mutating. A kernel
     // with fchmodat2 and AT_EMPTY_PATH support returns EBADF; an older kernel
     // returns ENOSYS or EINVAL before any ownership change is attempted.
+    // SAFETY: the probe passes only descriptor -1 and a static empty C string.
     let result = unsafe {
         libc::syscall(
             LINUX_FCHMODAT2_SYSCALL,
@@ -1985,6 +2007,7 @@ impl MacMetadataTarget {
             // Ownership changes may clear setuid/setgid, so mode is applied last.
             let mask = libc::mode_t::try_from(mode & 0o7777)
                 .map_err(|_| MacMetadataError::Unsupported("posix_mode"))?;
+            // SAFETY: fd pins the admitted inode; fchmod reads no memory.
             if unsafe { libc::fchmod(fd, mask) } != 0 {
                 return Err(io::Error::last_os_error().into());
             }
@@ -2132,6 +2155,7 @@ fn macos_fstat(fd: std::os::fd::RawFd) -> io::Result<libc::stat> {
     if unsafe { libc::fstat(fd, observed.as_mut_ptr()) } != 0 {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: fstat succeeded above, so it initialized `observed`.
     Ok(unsafe { observed.assume_init() })
 }
 
@@ -2732,6 +2756,7 @@ async fn copy_windows_file_worker(
     // transferred once; no independent I/O is performed after this point.
     #[allow(unsafe_code)]
     let source = unsafe { NativeFile::from_overlapped_file_unchecked(source)? };
+    // SAFETY: as above.
     #[allow(unsafe_code)]
     let destination = unsafe { NativeFile::from_overlapped_file_unchecked(destination)? };
     let mut offset = 0_u64;
@@ -2771,17 +2796,15 @@ fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,
 ) -> Result<i64, WindowsMetadataError> {
-    const WINDOWS_EPOCH_TICKS: i64 = 116_444_736_000_000_000;
     let crate::kernel::MetadataField::Value(nanoseconds) = field else {
         return Ok(current);
     };
+    // Applying metadata must reproduce the captured instant, so an instant
+    // between ticks is refused rather than silently moved.
     if nanoseconds % 100 != 0 {
         return Err(WindowsMetadataError::Unsupported("sub-100ns timestamp"));
     }
-    nanoseconds
-        .checked_div(100)
-        .and_then(|ticks| ticks.checked_add(WINDOWS_EPOCH_TICKS))
-        .ok_or(WindowsMetadataError::Unsupported("timestamp range"))
+    Ok(unix_nanoseconds_to_filetime(nanoseconds))
 }
 
 impl HostDirectory {
@@ -3075,6 +3098,8 @@ fn clone_windows_file(
     }
     // The materializer creates sparse source files on Windows. The target
     // must also be sparse for the clone FSCTL to preserve holes.
+    // SAFETY: the target handle is live for this synchronous FSCTL, which takes
+    // no buffers.
     unsafe {
         DeviceIoControl(
             HANDLE(target.as_raw_handle()),
@@ -3848,6 +3873,7 @@ mod macos_metadata_tests {
         let temporary = tempfile::tempdir()?;
         let pipe = temporary.path().join("pipe");
         let name = std::ffi::CString::new(pipe.as_os_str().as_bytes())?;
+        // SAFETY: `name` is a NUL-terminated path that outlives the call.
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let socket = temporary.path().join("socket");
         let _listener = std::os::unix::net::UnixListener::bind(&socket)?;
@@ -4223,8 +4249,53 @@ mod tests {
 
 #[cfg(all(test, windows))]
 mod windows_clone_tests {
-    use super::{HostRoot, WindowsMetadataError, allocated_data_ranges};
+    use super::{
+        HostRoot, UNIX_EPOCH_FILETIME, WindowsMetadataError, allocated_data_ranges,
+        filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,
+    };
     use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn filetime_conversions_round_trip(nanoseconds in any::<i64>(), ticks in any::<i64>()) {
+            let tick = unix_nanoseconds_to_filetime(nanoseconds);
+            prop_assert_eq!(
+                filetime_to_unix_nanoseconds(tick),
+                nanoseconds.checked_sub(nanoseconds.rem_euclid(100))
+            );
+            match filetime_to_unix_nanoseconds(ticks) {
+                Some(exact) => prop_assert_eq!(unix_nanoseconds_to_filetime(exact), ticks),
+                None => prop_assert!(
+                    i128::from(ticks) - i128::from(UNIX_EPOCH_FILETIME) > i128::from(i64::MAX / 100)
+                        || i128::from(ticks) - i128::from(UNIX_EPOCH_FILETIME)
+                            < i128::from(i64::MIN / 100)
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn filetime_conversions_cover_their_extremes() {
+        assert_eq!(unix_nanoseconds_to_filetime(0), UNIX_EPOCH_FILETIME);
+        assert_eq!(unix_nanoseconds_to_filetime(-1), UNIX_EPOCH_FILETIME - 1);
+        assert_eq!(unix_nanoseconds_to_filetime(99), UNIX_EPOCH_FILETIME);
+        // Rounding the earliest nanosecond down to a tick leaves the range.
+        assert_eq!(
+            filetime_to_unix_nanoseconds(unix_nanoseconds_to_filetime(i64::MIN)),
+            None
+        );
+        assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
+        assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
+        // 1601 itself precedes the earliest `i64` nanosecond (1677).
+        assert_eq!(filetime_to_unix_nanoseconds(0), None);
+        assert!(
+            super::metadata_time(crate::kernel::MetadataField::Value(150), 7).is_err(),
+            "exact writers refuse instants between ticks"
+        );
+    }
     use bytes::Bytes;
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::os::windows::io::AsRawHandle;
@@ -4891,10 +4962,9 @@ mod windows_clone_tests {
             std::fs::metadata(&original)?.file_attributes(),
             replacement_attributes
         );
-        const WINDOWS_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
         assert_eq!(
             std::fs::metadata(&moved)?.last_write_time(),
-            WINDOWS_EPOCH_TICKS + u64::try_from(MODIFIED_NS)? / 100
+            u64::try_from(unix_nanoseconds_to_filetime(MODIFIED_NS))?
         );
         assert_eq!(
             std::fs::metadata(&original)?.last_write_time(),

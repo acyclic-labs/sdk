@@ -3,8 +3,10 @@
 use super::allocation::{AllocationError, AllocationLedger, VisitedObjectSet};
 use super::codec::DecodedPageShape;
 use super::persistent_io::{self, OwnedPage};
+use super::search::counted_binary_search;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
@@ -316,7 +318,7 @@ where
     if count < 2 {
         return Ok(());
     }
-    let scan_bound = crate::foundation::usize_to_u64(count - 1);
+    let scan_bound = usize_to_u64(count - 1);
     work.checked_add(WorkCounters {
         items_examined: scan_bound,
         ..WorkCounters::default()
@@ -342,9 +344,8 @@ where
     }
 
     let levels = usize::BITS - count.leading_zeros();
-    let maximum_comparisons = u64::try_from(count)
-        .ok()
-        .and_then(|value| value.checked_mul(u64::from(levels)))
+    let maximum_comparisons = usize_to_u64(count)
+        .checked_mul(u64::from(levels))
         .and_then(|value| value.checked_mul(3))
         .ok_or(WorkError::Overflow)?;
     work.checked_add(WorkCounters {
@@ -528,7 +529,9 @@ where
             .map_err(map_io)?;
         match page {
             Page::Leaf(entries) => {
-                validate_leaf::<F, M>(&entries, request.lower.as_ref(), request.upper.as_ref())?;
+                if !leaf_within::<F>(&entries, request.lower.as_ref(), request.upper.as_ref()) {
+                    return Err(Error::ChildBoundsMismatch);
+                }
                 // `request.mutations` is a `Range<usize>` into this same
                 // `mutations` slice, threaded unchanged through the whole
                 // traversal (`rewrite` -> `enter_node`/`advance_frame`).
@@ -551,11 +554,9 @@ where
                 Ok(EnteredNode::Complete(result?))
             }
             Page::Internal(children) => {
-                validate_children::<F, M>(
-                    &children,
-                    request.lower.as_ref(),
-                    request.upper.as_ref(),
-                )?;
+                if !children_within(&children, request.lower.as_ref(), request.upper.as_ref()) {
+                    return Err(Error::ChildBoundsMismatch);
+                }
                 Ok(EnteredNode::Internal(InternalFrame {
                     original: request.page,
                     children,
@@ -934,7 +935,7 @@ where
 
     async fn write_page(&mut self, page: &PageRef<'_, F>) -> Result<ObjectId, Error<M::Error>> {
         let encoded_length = F::page_encoded_length(page, self.limits.maximum_page_items)?;
-        let encoded_bytes = crate::foundation::usize_to_u64(encoded_length);
+        let encoded_bytes = usize_to_u64(encoded_length);
         if encoded_bytes > self.limits.maximum_page_object_bytes() {
             return Err(Error::PageItemTooLarge);
         }
@@ -1079,7 +1080,7 @@ where
                 maximum_bytes: usize::try_from(limits.maximum_page_bytes)
                     .map_err(|_| Error::InvalidLimits)?,
             },
-            crate::foundation::usize_to_u64(items.len()),
+            usize_to_u64(items.len()),
         ))
     }
 
@@ -1117,32 +1118,12 @@ where
             .ok_or(Error::PageItemTooLarge)?;
         self.start += count;
         self.remaining_bytes = self.remaining_bytes.saturating_sub(payload);
-        Ok(Some((page, crate::foundation::usize_to_u64(count))))
+        Ok(Some((page, usize_to_u64(count))))
     }
 }
 
 fn search<F: Format>(entries: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    let mut left = 0;
-    let mut right = entries.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        // Standard binary search invariant: the loop guard `left < right`
-        // holds here, and `right <= entries.len()` is established at
-        // initialization and only ever shrinks, so `middle` (strictly
-        // between `left` and `right`) is always `< entries.len()`.
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary search invariant: left < middle_bound <= right <= entries.len()"
-        )]
-        match F::key(&entries[middle]).cmp(key) {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(entries, |entry| F::key(entry).cmp(key))
 }
 
 fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
@@ -1153,44 +1134,45 @@ fn unchanged<K: Eq>(rewritten: &[Summary<K>], children: &[Child<K>]) -> bool {
             .all(|(left, right)| left.first == right.first && left.page == right.page)
 }
 
-fn validate_leaf<F, M>(
-    entries: &[F::Value],
-    lower: Option<&F::Key>,
-    upper: Option<&F::Key>,
-) -> Result<(), Error<M::Error>>
-where
-    F: Format,
-    M: Mutation<F>,
-{
-    if lower.is_some() && entries.first().map(F::key) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && entries.last().is_some_and(|entry| F::key(entry) >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
+/// Whether a page whose first and last keys are `first` and `last` matches its
+/// parent's routing: it starts exactly at `lower` and stays below `upper`.
+pub(crate) fn within_bounds<K: Ord>(
+    first: Option<&K>,
+    last: Option<&K>,
+    lower: Option<&K>,
+    upper: Option<&K>,
+) -> bool {
+    (lower.is_none() || first == lower)
+        && !matches!((last, upper), (Some(last), Some(upper)) if last >= upper)
 }
 
-fn validate_children<F, M>(
-    children: &[Child<F::Key>],
+/// [`within_bounds`] for a leaf's values.
+pub(crate) fn leaf_within<F: Format>(
+    values: &[F::Value],
     lower: Option<&F::Key>,
     upper: Option<&F::Key>,
-) -> Result<(), Error<M::Error>>
-where
-    F: Format,
-    M: Mutation<F>,
-{
-    if lower.is_some() && children.first().map(|child| &child.first) != lower {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children.last().is_some_and(|child| &child.first >= upper)
-    {
-        return Err(Error::ChildBoundsMismatch);
-    }
-    Ok(())
+) -> bool {
+    within_bounds(
+        values.first().map(F::key),
+        values.last().map(F::key),
+        lower,
+        upper,
+    )
+}
+
+/// [`within_bounds`] for an internal page's routing keys.
+pub(crate) fn children_within<K: Ord>(
+    children: &[Child<K>],
+    lower: Option<&K>,
+    upper: Option<&K>,
+) -> bool {
+    let (first, last) = (children.first(), children.last());
+    within_bounds(
+        first.map(|child| &child.first),
+        last.map(|child| &child.first),
+        lower,
+        upper,
+    )
 }
 
 #[cfg(test)]

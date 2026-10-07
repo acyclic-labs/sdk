@@ -1,5 +1,7 @@
 //! Deterministic, host-neutral durable substrate semantics.
 
+use crate::contract::capability;
+use crate::contract::next_revision;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId,
     PolicyLayer, Result,
@@ -1213,12 +1215,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        jsonschema::validator_for(&schema)
-            .map_err(|error| Error::Invalid(format!("invalid JSON Schema: {error}")))?;
+        crate::contract::compile_json_schema(&schema, "extension")?;
         if let Some(configuration_schema) = &configuration_schema {
-            jsonschema::validator_for(configuration_schema).map_err(|error| {
-                Error::Invalid(format!("invalid configuration JSON Schema: {error}"))
-            })?;
+            crate::contract::compile_json_schema(configuration_schema, "configuration")?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -1367,12 +1366,7 @@ impl SchemaRegistry {
         let value: Value = serde_json::from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
-        jsonschema::validator_for(&binding.schema)
-            .map_err(|error| Error::Invalid(format!("invalid registered JSON Schema: {error}")))?
-            .validate(&value)
-            .map_err(|error| {
-                Error::Invalid(format!("extension payload failed validation: {error}"))
-            })?;
+        crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload")?;
         Ok(())
     }
 
@@ -1411,10 +1405,7 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        jsonschema::validator_for(schema)
-            .map_err(|error| Error::Invalid(format!("invalid configuration schema: {error}")))?
-            .validate(&value)
-            .map_err(|error| Error::Invalid(format!("configuration failed validation: {error}")))
+        crate::contract::validate_json_schema_value(schema, &value, "configuration")
     }
 }
 
@@ -1515,7 +1506,7 @@ impl Reducer {
     ) -> Result<()> {
         self.authority_verifier.verify_audience(&self.authority)?;
         self.authority_verifier.verify(scope)?;
-        require_capability(scope, "extension:migrate")?;
+        require_capability(scope, capability::EXTENSION_MIGRATE)?;
         ContentGrant::verify(
             &self.authority_verifier,
             scope,
@@ -1699,7 +1690,7 @@ impl Reducer {
     /// Hosts append the returned event to Stream and call [`Self::apply_committed`]
     /// only after the append is known to have committed.
     pub fn plan(&self, command: &Command) -> Result<ApplyResult> {
-        self.plan_with_migration_boundary(command, false)
+        self.plan_with_migration_boundary(command, Migration::Unverified)
     }
 
     /// Provider admission has verified residency and independently executed
@@ -1710,7 +1701,7 @@ impl Reducer {
                 "verified migration planner requires a migration action".into(),
             ));
         }
-        self.plan_with_migration_boundary(command, true)
+        self.plan_with_migration_boundary(command, Migration::Verified)
     }
 
     #[allow(
@@ -1720,7 +1711,7 @@ impl Reducer {
     fn plan_with_migration_boundary(
         &self,
         command: &Command,
-        migration_verified: bool,
+        migration: Migration,
     ) -> Result<ApplyResult> {
         self.authority_verifier.verify_audience(&self.authority)?;
         IdempotencyKey::new(command.idempotency_key.0.clone())?;
@@ -1742,95 +1733,42 @@ impl Reducer {
                 command.expected_revision, self.revision
             )));
         }
-        require_capability(&command.scope, command.action.required_capability())?;
-        if let Action::MigrateExtensionState { content, .. } = &command.action {
-            ContentGrant::verify(
-                &self.authority_verifier,
-                &command.scope,
-                content.volume(),
-                VolumeOperation::Write,
-            )?;
-            if !migration_verified {
-                return Err(Error::Unsupported(
-                    "extension migration requires an executing content-admission host".into(),
-                ));
-            }
-        }
-        if let Action::BindConversation { agent } = &command.action
-            && command.scope.agent().is_some_and(|acting| acting != *agent)
-        {
-            return Err(Error::Unauthorized(
-                "conversation binding does not match the authenticated agent".into(),
-            ));
-        }
+        self.authorize(
+            |capability| require_capability(&command.scope, capability),
+            command.scope.agent(),
+            command.operation_id,
+            command.action.kind(),
+        )?;
         match &command.action {
-            Action::PlanEffect { .. } => require_capability(&command.scope, "effect:plan")?,
-            Action::MarkEffectDispatched { effect_id, .. } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                require_capability(
+            Action::MigrateExtensionState { content, .. } => {
+                ContentGrant::verify(
+                    &self.authority_verifier,
                     &command.scope,
-                    &format!("effect:provider:{}", effect.provider),
+                    content.volume(),
+                    VolumeOperation::Write,
                 )?;
+                if migration != Migration::Verified {
+                    return Err(Error::Unsupported(
+                        "extension migration requires an executing content-admission host".into(),
+                    ));
+                }
             }
-            Action::ResolveEffect { observation } => {
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                require_capability(
-                    &command.scope,
-                    &format!("effect:provider:{}", effect.provider),
-                )?;
-            }
-            Action::ResolveInteraction { resolution } => {
-                validate_interaction_operation(resolution, command.operation_id)?;
-                let (ticket, _) = self
-                    .interactions
-                    .get(&resolution.id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-                require_capability(&command.scope, &ticket.responder_grant())?;
-            }
-            _ => {}
-        }
-        if let Action::PublishFork { seed } = &command.action {
-            if self.conversation.agent.is_none() || command.scope.agent() != self.conversation.agent
+            Action::BindConversation { agent }
+                if command.scope.agent().is_some_and(|acting| acting != *agent) =>
             {
                 return Err(Error::Unauthorized(
-                    "fork must be published by the parent agent".into(),
+                    "conversation binding does not match the authenticated agent".into(),
                 ));
             }
-            if seed.validate().is_err()
-                || seed.operation_id != command.operation_id
-                || seed.parent != self.authority
-                || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err()
-            {
-                return Err(Error::Invalid(
-                    "fork manifest is not bound to its command and parent revision".into(),
-                ));
-            }
-            self.require_fresh_fork(seed)?;
-        }
-        if let Action::PublishProjectMerge { receipt } = &command.action
-            && (receipt.operation_id != command.operation_id
-                || command.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "merge receipt is not bound to the parent agent and operation".into(),
-            ));
+            Action::PublishFork { seed } => self.require_fresh_fork(seed)?,
+            _ => {}
         }
         validate_causal_parent(
             &self.authority,
             self.revision,
             command.causal_parent.as_ref(),
         )?;
-        let revision = self
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?;
+        let revision = next_revision(self.revision)?;
         let payload = self.transition(&command.action)?;
         let mut event = Event {
             revision,
@@ -1843,6 +1781,62 @@ impl Reducer {
         };
         event.attestation = self.authority_verifier.attest_event(&event)?;
         Ok(ApplyResult::Applied { event })
+    }
+
+    /// Authorizes one transition identically when planned and when committed.
+    fn authorize(
+        &self,
+        require: impl Fn(&str) -> Result<()>,
+        agent: Option<AgentId>,
+        operation_id: OperationId,
+        (kind, subject): (TransitionKind, Subject<'_>),
+    ) -> Result<()> {
+        require(kind.spec().2)?;
+        match subject {
+            Subject::None => Ok(()),
+            Subject::PlannedEffect => require(capability::EFFECT_PLAN),
+            Subject::Effect(effect_id) => {
+                let effect = self
+                    .effects
+                    .get(effect_id)
+                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
+                require(&capability::effect_provider(&effect.provider))
+            }
+            Subject::Interaction(resolution) => {
+                validate_interaction_operation(resolution, operation_id)?;
+                let (ticket, _) = self
+                    .interactions
+                    .get(&resolution.id)
+                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+                require(&ticket.responder_grant())
+            }
+            Subject::Fork(seed) => {
+                if self.conversation.agent.is_none() || agent != self.conversation.agent {
+                    return Err(Error::Unauthorized(
+                        "fork must be published by the parent agent".into(),
+                    ));
+                }
+                if seed.validate().is_err()
+                    || seed.operation_id != operation_id
+                    || seed.parent != self.authority
+                    || seed.parent_revision != self.revision
+                    || self.validate_fork_reference_ownership(seed).is_err()
+                {
+                    return Err(Error::Invalid(
+                        "fork manifest is not bound to its operation and parent revision".into(),
+                    ));
+                }
+                Ok(())
+            }
+            Subject::Merge(receipt) => {
+                if receipt.operation_id != operation_id || agent != self.conversation.agent {
+                    return Err(Error::Unauthorized(
+                        "merge receipt is not bound to the parent agent and operation".into(),
+                    ));
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Applies an event only after its canonical Stream append commits.
@@ -1858,10 +1852,7 @@ impl Reducer {
                 "operation identity is already bound to another event".into(),
             ));
         }
-        let expected = self
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("aggregate revision exhausted".into()))?;
+        let expected = next_revision(self.revision)?;
         if event.revision != expected {
             return Err(Error::Conflict(format!(
                 "expected committed revision {expected}, found {}",
@@ -1869,66 +1860,13 @@ impl Reducer {
             )));
         }
         self.authority_verifier.verify_event(&event)?;
-        require_recorded_capability(&event.scope, event.payload.required_capability())?;
-        match &event.payload {
-            EventPayload::EffectPlanned { .. } => {
-                require_recorded_capability(&event.scope, "effect:plan")?;
-            }
-            EventPayload::EffectDispatched { effect_id, .. } => {
-                let effect = self
-                    .effects
-                    .get(effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {effect_id}")))?;
-                require_recorded_capability(
-                    &event.scope,
-                    &format!("effect:provider:{}", effect.provider),
-                )?;
-            }
-            EventPayload::EffectResolved { observation } => {
-                let effect = self
-                    .effects
-                    .get(&observation.effect_id)
-                    .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-                require_recorded_capability(
-                    &event.scope,
-                    &format!("effect:provider:{}", effect.provider),
-                )?;
-            }
-            EventPayload::InteractionResolved { resolution } => {
-                validate_interaction_operation(resolution, event.operation_id)?;
-                let (ticket, _) = self
-                    .interactions
-                    .get(&resolution.id)
-                    .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-                require_recorded_capability(&event.scope, &ticket.responder_grant())?;
-            }
-            _ => {}
-        }
+        self.authorize(
+            |capability| require_recorded_capability(&event.scope, capability),
+            event.scope.agent(),
+            event.operation_id,
+            event.payload.kind(),
+        )?;
         validate_causal_parent(&self.authority, self.revision, event.causal_parent.as_ref())?;
-        if matches!(&event.payload, EventPayload::ForkPublished { .. })
-            && (self.conversation.agent.is_none() || event.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "fork was not published by the parent agent".into(),
-            ));
-        }
-        if let EventPayload::ForkPublished { seed } = &event.payload
-            && (seed.validate().is_err()
-                || seed.operation_id != event.operation_id
-                || seed.parent != self.authority
-                || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err())
-        {
-            return Err(Error::Invalid("fork event binding is invalid".into()));
-        }
-        if let EventPayload::ProjectMergePublished { receipt } = &event.payload
-            && (receipt.operation_id != event.operation_id
-                || event.scope.agent() != self.conversation.agent)
-        {
-            return Err(Error::Unauthorized(
-                "project merge was not published by the parent agent".into(),
-            ));
-        }
         self.apply_payload(&event.payload, event.revision)?;
         self.revision = event.revision;
         self.events.push(event.clone());
@@ -2843,47 +2781,135 @@ impl Reducer {
     }
 }
 
-impl Action {
-    fn required_capability(&self) -> &'static str {
-        match self {
-            Self::TransitionLifecycle { .. } => "lifecycle:manage",
-            Self::AppendCustom { .. } => "event:append",
-            Self::MigrateExtensionState { .. } => "extension:migrate",
-            Self::SelectExtensions { .. } => "extension:activate",
-            Self::ConfigureExtension { .. } => "extension:configure",
-            Self::PlanEffect { .. }
-            | Self::MarkEffectDispatched { .. }
-            | Self::ResolveEffect { .. } => "effect:run",
-            Self::PublishFork { .. } => "fork:publish",
-            Self::PublishProjectMerge { .. } => "project:merge",
-            Self::BindConversation { .. } => "conversation:bind",
-            Self::AppendConversationMessage { .. } => "conversation:append",
-            Self::SelectModelContext { .. } => "conversation:select_context",
-            Self::OpenInteraction { .. } => "interaction:open",
-            Self::ResolveInteraction { .. } => "interaction:resolve",
+/// Whether provider admission executed a migration before planning it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Migration {
+    Unverified,
+    Verified,
+}
+
+/// Declares [`TransitionKind`] from one table: each transition's serde `kind`
+/// tag as an [`Action`], as an [`EventPayload`], and the capability both require.
+macro_rules! transition_kinds {
+    ($($kind:ident => $action:literal, $event:literal, $capability:ident;)*) => {
+        /// One reducer transition, shared by its command and its committed event.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub(crate) enum TransitionKind {
+            $($kind,)*
         }
+
+        impl TransitionKind {
+            #[cfg(test)]
+            const ALL: &[Self] = &[$(Self::$kind,)*];
+
+            const fn spec(self) -> (&'static str, &'static str, &'static str) {
+                match self {
+                    $(Self::$kind => ($action, $event, capability::$capability),)*
+                }
+            }
+        }
+    };
+}
+
+transition_kinds! {
+    Lifecycle => "transition_lifecycle", "lifecycle_transitioned", LIFECYCLE_MANAGE;
+    Custom => "append_custom", "custom", EVENT_APPEND;
+    Migration => "migrate_extension_state", "extension_state_migrated", EXTENSION_MIGRATE;
+    Selection => "select_extensions", "extensions_selected", EXTENSION_ACTIVATE;
+    Configuration => "configure_extension", "extension_configured", EXTENSION_CONFIGURE;
+    PlanEffect => "plan_effect", "effect_planned", EFFECT_RUN;
+    DispatchEffect => "mark_effect_dispatched", "effect_dispatched", EFFECT_RUN;
+    ResolveEffect => "resolve_effect", "effect_resolved", EFFECT_RUN;
+    Fork => "publish_fork", "fork_published", FORK_PUBLISH;
+    ProjectMerge => "publish_project_merge", "project_merge_published", PROJECT_MERGE;
+    BindConversation => "bind_conversation", "conversation_bound", CONVERSATION_BIND;
+    AppendMessage => "append_conversation_message", "conversation_message_appended", CONVERSATION_APPEND;
+    SelectContext => "select_model_context", "model_context_selected", CONVERSATION_SELECT_CONTEXT;
+    OpenInteraction => "open_interaction", "interaction_opened", INTERACTION_OPEN;
+    ResolveInteraction => "resolve_interaction", "interaction_resolved", INTERACTION_RESOLVE;
+}
+
+/// Transition input whose authorization depends on reducer state.
+enum Subject<'a> {
+    None,
+    PlannedEffect,
+    Effect(&'a EffectId),
+    Interaction(&'a InteractionResolution),
+    Fork(&'a ForkSeed),
+    Merge(&'a ProjectMergeReceipt),
+}
+
+impl Action {
+    fn kind(&self) -> (TransitionKind, Subject<'_>) {
+        use TransitionKind as Kind;
+        match self {
+            Self::TransitionLifecycle { .. } => (Kind::Lifecycle, Subject::None),
+            Self::AppendCustom { .. } => (Kind::Custom, Subject::None),
+            Self::MigrateExtensionState { .. } => (Kind::Migration, Subject::None),
+            Self::SelectExtensions { .. } => (Kind::Selection, Subject::None),
+            Self::ConfigureExtension { .. } => (Kind::Configuration, Subject::None),
+            Self::PlanEffect { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::MarkEffectDispatched { effect_id, .. } => {
+                (Kind::DispatchEffect, Subject::Effect(effect_id))
+            }
+            Self::ResolveEffect { observation } => {
+                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+            }
+            Self::PublishFork { seed } => (Kind::Fork, Subject::Fork(seed)),
+            Self::PublishProjectMerge { receipt } => (Kind::ProjectMerge, Subject::Merge(receipt)),
+            Self::BindConversation { .. } => (Kind::BindConversation, Subject::None),
+            Self::AppendConversationMessage { .. } => (Kind::AppendMessage, Subject::None),
+            Self::SelectModelContext { .. } => (Kind::SelectContext, Subject::None),
+            Self::OpenInteraction { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::ResolveInteraction { resolution } => {
+                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+            }
+        }
+    }
+
+    /// Serde `kind` tag, carried beside canonical action JSON on the wire.
+    #[cfg_attr(
+        not(all(feature = "wasm", target_arch = "wasm32")),
+        allow(dead_code, reason = "only the WASM command decoder reads it")
+    )]
+    pub(crate) fn tag(&self) -> &'static str {
+        self.kind().0.spec().0
     }
 }
 
 impl EventPayload {
-    fn required_capability(&self) -> &'static str {
+    fn kind(&self) -> (TransitionKind, Subject<'_>) {
+        use TransitionKind as Kind;
         match self {
-            Self::LifecycleTransitioned { .. } => "lifecycle:manage",
-            Self::Custom { .. } => "event:append",
-            Self::ExtensionStateMigrated { .. } => "extension:migrate",
-            Self::ExtensionsSelected { .. } => "extension:activate",
-            Self::ExtensionConfigured { .. } => "extension:configure",
-            Self::EffectPlanned { .. }
-            | Self::EffectDispatched { .. }
-            | Self::EffectResolved { .. } => "effect:run",
-            Self::ForkPublished { .. } => "fork:publish",
-            Self::ProjectMergePublished { .. } => "project:merge",
-            Self::ConversationBound { .. } => "conversation:bind",
-            Self::ConversationMessageAppended { .. } => "conversation:append",
-            Self::ModelContextSelected { .. } => "conversation:select_context",
-            Self::InteractionOpened { .. } => "interaction:open",
-            Self::InteractionResolved { .. } => "interaction:resolve",
+            Self::LifecycleTransitioned { .. } => (Kind::Lifecycle, Subject::None),
+            Self::Custom { .. } => (Kind::Custom, Subject::None),
+            Self::ExtensionStateMigrated { .. } => (Kind::Migration, Subject::None),
+            Self::ExtensionsSelected { .. } => (Kind::Selection, Subject::None),
+            Self::ExtensionConfigured { .. } => (Kind::Configuration, Subject::None),
+            Self::EffectPlanned { .. } => (Kind::PlanEffect, Subject::PlannedEffect),
+            Self::EffectDispatched { effect_id, .. } => {
+                (Kind::DispatchEffect, Subject::Effect(effect_id))
+            }
+            Self::EffectResolved { observation } => {
+                (Kind::ResolveEffect, Subject::Effect(&observation.effect_id))
+            }
+            Self::ForkPublished { seed } => (Kind::Fork, Subject::Fork(seed)),
+            Self::ProjectMergePublished { receipt } => {
+                (Kind::ProjectMerge, Subject::Merge(receipt))
+            }
+            Self::ConversationBound { .. } => (Kind::BindConversation, Subject::None),
+            Self::ConversationMessageAppended { .. } => (Kind::AppendMessage, Subject::None),
+            Self::ModelContextSelected { .. } => (Kind::SelectContext, Subject::None),
+            Self::InteractionOpened { .. } => (Kind::OpenInteraction, Subject::None),
+            Self::InteractionResolved { resolution } => {
+                (Kind::ResolveInteraction, Subject::Interaction(resolution))
+            }
         }
+    }
+
+    /// Serde `kind` tag, carried beside canonical payload JSON on the wire.
+    pub(crate) fn tag(&self) -> &'static str {
+        self.kind().0.spec().1
     }
 }
 
@@ -2896,12 +2922,7 @@ fn validate_interaction_transition(
     if prior.is_some_and(|value| value.outcome.is_terminal()) {
         return Err(Error::Conflict("interaction is already resolved".into()));
     }
-    let expected = prior.map_or(Ok(1_u64), |value| {
-        value
-            .expected_version
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("interaction revision exhausted".into()))
-    })?;
+    let expected = prior.map_or(Ok(1_u64), |value| next_revision(value.expected_version))?;
     if resolution.expected_version != expected {
         return Err(Error::Conflict(
             "interaction resolution version mismatch".into(),
@@ -3118,6 +3139,187 @@ fn json_digest(value: &Value) -> Result<[u8; 32]> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// One generated reducer input; indices select earlier operations.
+    #[derive(Clone, Debug)]
+    enum Step {
+        Lifecycle(usize),
+        Custom(u8),
+        Bind(u8),
+        Resubmit(usize),
+        ConflictingIntent(usize),
+        StaleRevision,
+    }
+
+    fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+        use proptest::prelude::*;
+        prop_oneof![
+            (0..6_usize).prop_map(Step::Lifecycle),
+            any::<u8>().prop_map(Step::Custom),
+            any::<u8>().prop_map(Step::Bind),
+            any::<usize>().prop_map(Step::Resubmit),
+            any::<usize>().prop_map(Step::ConflictingIntent),
+            Just(Step::StaleRevision),
+        ]
+    }
+
+    fn pick_admitted(
+        admitted: &[(Command, Event)],
+        pick: usize,
+    ) -> std::result::Result<&(Command, Event), proptest::test_runner::TestCaseError> {
+        admitted
+            .get(pick % admitted.len())
+            .ok_or_else(|| proptest::test_runner::TestCaseError::fail("no admitted operation"))
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+        #[test]
+        fn reducer_admission_is_replayable_and_atomic(
+            steps in proptest::collection::vec(step(), 1..24),
+        ) {
+            use proptest::prelude::*;
+            let fail = |error: Error| TestCaseError::fail(error.to_string());
+            let lifecycle = [
+                LifecycleState::Pending,
+                LifecycleState::Active,
+                LifecycleState::Waiting,
+                LifecycleState::Completed,
+                LifecycleState::Failed,
+                LifecycleState::Cancelled,
+            ];
+            let authority = issuer().verifier();
+            let mut reducer = Reducer::new(
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "conversation-1".into(),
+                },
+                authority.clone(),
+                schemas(),
+            );
+            let mut admitted: Vec<(Command, Event)> = Vec::new();
+            for (index, step) in steps.into_iter().enumerate() {
+                let id = OperationId::from_bytes(
+                    u128::try_from(index + 1).unwrap_or_default().to_be_bytes(),
+                );
+                let revision = reducer.revision();
+                let next = match step {
+                    Step::Lifecycle(to) => command(id, revision, Action::TransitionLifecycle {
+                        to: *lifecycle.get(to).ok_or_else(|| TestCaseError::fail("state"))?,
+                        reason: None,
+                    }),
+                    Step::Custom(text) => command(id, revision, Action::AppendCustom {
+                        schema: "example.message".into(),
+                        version: 1,
+                        content: request_file(format!(r#"{{"text":"{text}"}}"#).as_bytes())
+                            .map_err(fail)?,
+                    }),
+                    Step::Bind(agent) => command(id, revision, Action::BindConversation {
+                        agent: AgentId::from_bytes([agent; 16]),
+                    }),
+                    Step::Resubmit(_) | Step::ConflictingIntent(_) if admitted.is_empty() => {
+                        continue;
+                    }
+                    Step::Resubmit(pick) => {
+                        // (b) the exact admitted command replays its event.
+                        let (prior, event) = pick_admitted(&admitted, pick)?;
+                        let replayed = reducer.apply(prior.clone()).map_err(fail)?;
+                        prop_assert_eq!(replayed, ApplyResult::Replayed { event: event.clone() });
+                        continue;
+                    }
+                    Step::ConflictingIntent(pick) => {
+                        let (prior, _) = pick_admitted(&admitted, pick)?;
+                        let conflicting = command(prior.operation_id, revision, Action::TransitionLifecycle {
+                            to: LifecycleState::Active,
+                            reason: Some("other intent".into()),
+                        });
+                        // (e) a conflicting intent leaves state unchanged.
+                        let before = reducer.clone();
+                        prop_assert!(matches!(
+                            reducer.apply(conflicting),
+                            Err(Error::Conflict(_))
+                        ));
+                        prop_assert_eq!(&reducer, &before);
+                        continue;
+                    }
+                    Step::StaleRevision => command(
+                        id,
+                        revision.wrapping_add(1),
+                        Action::TransitionLifecycle {
+                            to: LifecycleState::Active,
+                            reason: None,
+                        },
+                    ),
+                };
+                match reducer.plan(&next) {
+                    Ok(ApplyResult::Applied { event }) => {
+                        // (a) every planned event commits, (d) one revision at a time.
+                        prop_assert_eq!(event.revision, revision + 1);
+                        let committed = reducer.apply_committed(event.clone()).map_err(fail)?;
+                        prop_assert_eq!(committed, ApplyResult::Applied { event: event.clone() });
+                        prop_assert_eq!(reducer.revision(), revision + 1);
+                        admitted.push((next, event));
+                    }
+                    Ok(ApplyResult::Replayed { .. }) => {
+                        prop_assert!(false, "fresh operation replayed");
+                    }
+                    Err(_) => {
+                        let before = reducer.clone();
+                        prop_assert!(reducer.apply(next).is_err());
+                        prop_assert_eq!(&reducer, &before);
+                    }
+                }
+            }
+            // (c) restoring a snapshot equals replaying every committed event.
+            let restored = Reducer::restore(
+                reducer.snapshot().map_err(fail)?,
+                authority.clone(),
+                schemas(),
+            )
+            .map_err(fail)?;
+            let mut replayed = Reducer::new(reducer.authority().clone(), authority, schemas());
+            for (_, event) in &admitted {
+                replayed.apply_committed(event.clone()).map_err(fail)?;
+            }
+            prop_assert_eq!(&restored, &reducer);
+            prop_assert_eq!(&replayed, &reducer);
+        }
+    }
+
+    #[test]
+    fn transition_tags_and_capabilities_are_pinned() {
+        const PINNED: &str = "\
+transition_lifecycle lifecycle_transitioned lifecycle:manage
+append_custom custom event:append
+migrate_extension_state extension_state_migrated extension:migrate
+select_extensions extensions_selected extension:activate
+configure_extension extension_configured extension:configure
+plan_effect effect_planned effect:run
+mark_effect_dispatched effect_dispatched effect:run
+resolve_effect effect_resolved effect:run
+publish_fork fork_published fork:publish
+publish_project_merge project_merge_published project:merge
+bind_conversation conversation_bound conversation:bind
+append_conversation_message conversation_message_appended conversation:append
+select_model_context model_context_selected conversation:select_context
+open_interaction interaction_opened interaction:open
+resolve_interaction interaction_resolved interaction:resolve";
+        let mut actual = Vec::new();
+        for kind in TransitionKind::ALL {
+            let (action, event, capability) = kind.spec();
+            actual.push(format!("{action} {event} {capability}"));
+            // Each tag names a real serde variant: decoding fails on its
+            // missing fields, never on an unknown variant.
+            let action = serde_json::from_value::<Action>(json!({ "kind": action }));
+            let event = serde_json::from_value::<EventPayload>(json!({ "kind": event }));
+            for error in [action.err(), event.err()] {
+                let error = error.map(|error| error.to_string()).unwrap_or_default();
+                assert!(error.contains("missing field"), "{kind:?}: {error}");
+            }
+        }
+        assert_eq!(actual.join("\n"), PINNED);
+    }
 
     #[test]
     fn v2_extension_record_fixture_round_trips_canonically() -> Result<()> {

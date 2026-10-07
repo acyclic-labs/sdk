@@ -2,7 +2,7 @@
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
-use crate::foundation::{AuthorityId, Digest, VolumeId};
+use crate::foundation::{AuthorityId, Digest, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
 use thiserror::Error;
@@ -86,7 +86,7 @@ pub fn retention_authority_id(
     hasher.update(ID_DOMAIN);
     hasher.update(&volume_id.into_bytes());
     hasher.update(&[kind.tag()]);
-    hasher.update(&u64::try_from(label.len()).unwrap_or(u64::MAX).to_le_bytes());
+    hasher.update(&usize_to_u64(label.len()).to_le_bytes());
     hasher.update(label.as_bytes());
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);

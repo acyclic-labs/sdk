@@ -29,9 +29,10 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
-    const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
+    const requestType = objects_v2_http_type(route, false);
+    const responseType = objects_v2_http_type(route, true);
     const decodeResponse = (data: Uint8Array, maximum: number) => {
-      try { return decode_objects_v2_json(types[1], data, maximum); }
+      try { return decode_objects_v2_json(responseType, data, maximum); }
       catch (error) { throw new ObjectsV2Error(objectsV2Error(error).code === wire.ErrorCode.QUOTA_EXCEEDED ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE); }
     };
     const streaming = route === "objects/put" || route === "multipart/upload-part";
@@ -48,19 +49,19 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       const header = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "header", value: fromBinary(wire.PutObjectHeaderSchema, bytes) } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "header", value: fromBinary(wire.UploadPartHeaderSchema, bytes) } }));
-      add(encode_objects_v2_json(types[0], header, 128 * 1024));
+      add(encode_objects_v2_json(requestType, header, 128 * 1024));
       for (let offset = 0; offset < body.byteLength; offset += 65536) {
         const chunk = body.subarray(offset, offset + 65536);
         const frame = put
           ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "body", value: chunk } }))
           : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "body", value: chunk } }));
-        add(encode_objects_v2_json(types[0], frame, 128 * 1024));
+        add(encode_objects_v2_json(requestType, frame, 128 * 1024));
       }
       const complete = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "complete", value: true } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "complete", value: true } }));
-      add(encode_objects_v2_json(types[0], complete, 128 * 1024));
-    } else add(encode_objects_v2_json(types[0], bytes, 16 * 1024 * 1024));
+      add(encode_objects_v2_json(requestType, complete, 128 * 1024));
+    } else add(encode_objects_v2_json(requestType, bytes, 16 * 1024 * 1024));
     const request = new Uint8Array(requestSize);
     let offset = 0;
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
@@ -71,7 +72,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${this.options.token}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
       if (response.status === 304) throw new ObjectsV2Error(wire.ErrorCode.NOT_MODIFIED);
       if (route === "objects/get" && response.status === 200) {
-        if (response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+        if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
         const line = new Uint8Array(128 * 1024);
@@ -135,7 +136,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         const code = response.status === 400 ? wire.ErrorCode.INVALID_ARGUMENT : response.status === 401 || response.status === 403 ? wire.ErrorCode.ACCESS_DENIED : response.status === 404 ? wire.ErrorCode.NOT_FOUND : response.status === 412 ? wire.ErrorCode.PRECONDITION_FAILED : response.status === 416 ? wire.ErrorCode.RANGE_NOT_SATISFIABLE : response.status === 413 || response.status === 429 ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE;
         throw new ObjectsV2Error(code);
       }
-      const media = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+      const media = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
       if (media !== "application/json") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
       return [decodeResponse(data, this.maximumResponse)];
     } finally {

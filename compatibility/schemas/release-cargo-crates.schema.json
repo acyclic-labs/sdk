@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/sdk-release-cargo-crates.json",
+  "type": "array",
+  "minItems": 1,
+  "uniqueItems": true,
+  "items": { "type": "string", "pattern": "^acyclic(-[a-z]+)*$" }
+}

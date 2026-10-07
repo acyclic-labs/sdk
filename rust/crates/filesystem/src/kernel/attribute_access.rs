@@ -5,12 +5,15 @@ use super::attribute::attribute_page_decode_shape;
 use super::attribute_mutation::AttributeFormat;
 use super::codec::DecodedPageKind;
 use super::persistent_batch;
+use super::persistent_btree::within_bounds;
+use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     AttributeChild, AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
     DecodeLimits, decode_attribute_page,
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectReadRetention, ObjectStoreError};
 use std::mem::size_of;
@@ -213,8 +216,11 @@ pub async fn lookup_attribute_async<S: AsyncObjectStore>(
 
         match decoded.page {
             AttributePage::Leaf(mut entries) => {
-                validate_leaf(&entries, routing.lower.as_ref(), routing.upper.as_ref())
-                    .map_err(|error| failed(error, work))?;
+                let first = entries.first().map(|entry| &entry.name);
+                let last = entries.last().map(|entry| &entry.name);
+                if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
+                    return Err(failed(AttributeLookupError::ChildBoundsMismatch, work));
+                }
                 let (position, comparisons) = search_entries(&entries, name);
                 charge_items(&mut work, comparisons, budget)?;
                 let entry = position.ok().map(|index| entries.swap_remove(index));
@@ -267,8 +273,11 @@ fn advance_internal(
     work: &mut WorkCounters,
     budget: WorkBudget,
 ) -> Result<ObjectId, AttributeLookupFailure> {
-    validate_children(&children, routing.lower.as_ref(), routing.upper.as_ref())
-        .map_err(|error| failed(error, *work))?;
+    let first = children.first().map(|child| &child.first_name);
+    let last = children.last().map(|child| &child.first_name);
+    if !within_bounds(first, last, routing.lower.as_ref(), routing.upper.as_ref()) {
+        return Err(failed(AttributeLookupError::ChildBoundsMismatch, *work));
+    }
     let (partition, comparisons) = upper_bound_children(&children, name);
     charge_items(work, comparisons, budget)?;
     let selected = partition.saturating_sub(1);
@@ -309,9 +318,7 @@ fn advance_internal(
 }
 
 fn nested_name_bytes(name: Option<&AttributeName>) -> u64 {
-    name.map_or(0, |bound| {
-        u64::try_from(bound.as_bytes().len()).unwrap_or(u64::MAX)
-    })
+    name.map_or(0, |bound| usize_to_u64(bound.as_bytes().len()))
 }
 
 struct DecodedAttributePage {
@@ -350,12 +357,13 @@ async fn read_page<S: AsyncObjectStore>(
     )
     .await
     .map_err(|failure| {
-        match merge_backend_work(prospective, *failure.work, allocations.live_bytes()) {
+        match prospective.with_backend(*failure.work, allocations.live_bytes()) {
             Ok(spent) => failed(map_storage(failure.error), spent),
             Err(error) => failed(error.into(), prospective),
         }
     })?;
-    *work = merge_backend_work(prospective, receipt.work, allocations.live_bytes())
+    *work = prospective
+        .with_backend(receipt.work, allocations.live_bytes())
         .map_err(|error| failed(error.into(), prospective))?;
     work.verify(budget)
         .map_err(|error| failed(error.into(), *work))?;
@@ -369,7 +377,7 @@ async fn read_page<S: AsyncObjectStore>(
         .map_err(|error| failed(map_allocation(error), *work))?;
     let shape = attribute_page_decode_shape(&receipt.value, limits)
         .map_err(|error| failed(error.into(), *work))?;
-    charge_items(work, u64::try_from(shape.items).unwrap_or(u64::MAX), budget)?;
+    charge_items(work, usize_to_u64(shape.items), budget)?;
     let decoded_work = work
         .checked_add(WorkCounters {
             bytes_copied: shape.nested_bytes,
@@ -384,7 +392,7 @@ async fn read_page<S: AsyncObjectStore>(
         DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<AttributeEntry>()),
         DecodedPageKind::Internal => shape.items.checked_mul(size_of::<AttributeChild>()),
     }
-    .map(crate::foundation::usize_to_u64)
+    .map(usize_to_u64)
     .ok_or_else(|| failed(AttributeLookupError::AllocationFailed, *work))?;
     let logical_bytes = container_bytes
         .checked_add(shape.nested_bytes)
@@ -404,85 +412,11 @@ async fn read_page<S: AsyncObjectStore>(
 }
 
 fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<usize, usize>, u64) {
-    let mut left = 0_usize;
-    let mut right = entries.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to entries.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < entries.len()` always holds here"
-        )]
-        let ordering = entries[middle].name.cmp(name);
-        match ordering {
-            std::cmp::Ordering::Less => left = middle + 1,
-            std::cmp::Ordering::Greater => right = middle,
-            std::cmp::Ordering::Equal => return (Ok(middle), comparisons),
-        }
-    }
-    (Err(left), comparisons)
+    counted_binary_search(entries, |entry| entry.name.cmp(name))
 }
 
 fn upper_bound_children(children: &[AttributeChild], name: &AttributeName) -> (usize, u64) {
-    let mut left = 0_usize;
-    let mut right = children.len();
-    let mut comparisons = 0_u64;
-    while left < right {
-        comparisons = comparisons.saturating_add(1);
-        let middle = left + (right - left) / 2;
-        #[allow(
-            clippy::indexing_slicing,
-            reason = "binary-search invariant: the loop guard `left < right` with `right` \
-                      initialized to children.len() and only ever narrowed to `middle` keeps \
-                      `middle = left + (right - left) / 2` strictly within `[left, right)`, so \
-                      `middle < children.len()` always holds here"
-        )]
-        let below_name = children[middle].first_name <= *name;
-        if below_name {
-            left = middle + 1;
-        } else {
-            right = middle;
-        }
-    }
-    (left, comparisons)
-}
-
-fn validate_leaf(
-    entries: &[AttributeEntry],
-    lower: Option<&AttributeName>,
-    upper: Option<&AttributeName>,
-) -> Result<(), AttributeLookupError> {
-    if lower.is_some() && entries.first().map(|entry| &entry.name) != lower {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && entries.last().is_some_and(|entry| entry.name >= *upper)
-    {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    Ok(())
-}
-
-fn validate_children(
-    children: &[AttributeChild],
-    lower: Option<&AttributeName>,
-    upper: Option<&AttributeName>,
-) -> Result<(), AttributeLookupError> {
-    if lower.is_some() && children.first().map(|child| &child.first_name) != lower {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    if let Some(upper) = upper
-        && children
-            .last()
-            .is_some_and(|child| child.first_name >= *upper)
-    {
-        return Err(AttributeLookupError::ChildBoundsMismatch);
-    }
-    Ok(())
+    counted_partition_point(children, |child| child.first_name <= *name)
 }
 
 fn charge_items(
@@ -492,20 +426,6 @@ fn charge_items(
 ) -> Result<(), AttributeLookupFailure> {
     work.charge_items(count, &budget)
         .map_err(|error| failed(error.into(), *work))
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 fn map_allocation(error: AllocationError) -> AttributeLookupError {

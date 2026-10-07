@@ -2,7 +2,7 @@
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
-use crate::foundation::{Digest, GenerationId, VolumeId};
+use crate::foundation::{Digest, GenerationId, VolumeId, usize_to_u64};
 use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::storage::{ObjectId, ObjectKind};
 use std::cmp::Ordering;
@@ -149,7 +149,7 @@ pub fn validate_generation_export_manifest(
     if manifest.file_count > manifest.config.limits.maximum_files_per_generation {
         return Err(GenerationExportManifestError::TooManyFiles);
     }
-    let count = u64::try_from(manifest.objects.len()).unwrap_or(u64::MAX);
+    let count = usize_to_u64(manifest.objects.len());
     if count > maximum_objects || count > manifest.config.limits.maximum_objects_per_generation {
         return Err(GenerationExportManifestError::TooManyObjects);
     }

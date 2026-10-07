@@ -10,6 +10,7 @@ use crate::async_storage::{
     AsyncObjectStore, DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue,
 };
 use crate::cancellation::CancellationToken;
+use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
@@ -472,7 +473,8 @@ impl RangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(ExtentReadError::TraversalState, self.work))?;
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
             .map_err(|error| failed(error.into(), prospective))?;
         self.work
             .verify(self.budget)
@@ -503,7 +505,7 @@ impl RangeMachine {
         let shape = extent_page_decode_shape(&receipt.value, self.limits)
             .map_err(|error| failed(error.into(), self.work))?;
         self.add_work(WorkCounters {
-            items_examined: u64::try_from(shape.items).unwrap_or(u64::MAX),
+            items_examined: usize_to_u64(shape.items),
             ..WorkCounters::default()
         })?;
         let item_bytes = match shape.kind {
@@ -513,7 +515,7 @@ impl RangeMachine {
         let decoded_bytes = shape
             .items
             .checked_mul(item_bytes)
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or_else(|| failed(ExtentReadError::AllocationFailed, self.work))?;
         self.allocations
             .claim_bytes(
@@ -556,7 +558,8 @@ impl RangeMachine {
             .awaiting
             .take()
             .ok_or_else(|| failed(ExtentReadError::TraversalState, self.work))?;
-        self.work = merge_backend_work(prospective, receipt.work, self.allocations.live_bytes())
+        self.work = prospective
+            .with_backend(receipt.work, self.allocations.live_bytes())
             .map_err(|error| failed(error.into(), prospective))?;
         self.work
             .verify(self.budget)
@@ -910,30 +913,8 @@ pub enum ExtentReadError {
 
 impl From<AllocationError> for ExtentReadError {
     fn from(error: AllocationError) -> Self {
-        match error {
-            AllocationError::Work(error) => Self::Work(error),
-            AllocationError::Overflow | AllocationError::ReleaseInvariant => {
-                Self::Work(WorkError::Overflow)
-            }
-            AllocationError::InvalidCapacity
-            | AllocationError::CapacityExceeded
-            | AllocationError::AllocationFailed => Self::AllocationFailed,
-        }
+        error.into_work_or(Self::AllocationFailed)
     }
-}
-
-fn merge_backend_work(
-    prior: WorkCounters,
-    mut backend: WorkCounters,
-    live_bytes: u64,
-) -> Result<WorkCounters, WorkError> {
-    let simultaneous_peak = live_bytes
-        .checked_add(backend.peak_allocation_bytes)
-        .ok_or(WorkError::Overflow)?;
-    backend.peak_allocation_bytes = 0;
-    let mut merged = prior.checked_add(backend)?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    Ok(merged)
 }
 
 /// Sparse extent-plan failure retaining exact spent work.

@@ -198,35 +198,21 @@ fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std:
     changed[1].page = root(ObjectKind::TreePage, 9);
     assert!(!unchanged(&changed, &children));
 
-    assert!(validate_leaf::<TreeFormat, TreeMutation>(&entries, None, None).is_ok());
-    assert!(
-        validate_leaf::<TreeFormat, TreeMutation>(&entries, Some(&name(2)?), Some(&name(7)?))
-            .is_ok()
-    );
-    assert!(matches!(
-        validate_leaf::<TreeFormat, TreeMutation>(&entries, Some(&name(3)?), None),
-        Err(Error::ChildBoundsMismatch)
+    assert!(leaf_within::<TreeFormat>(&entries, None, None));
+    assert!(leaf_within::<TreeFormat>(
+        &entries,
+        Some(&name(2)?),
+        Some(&name(7)?)
     ));
-    assert!(matches!(
-        validate_leaf::<TreeFormat, TreeMutation>(&entries, None, Some(&name(6)?)),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(validate_leaf::<TreeFormat, TreeMutation>(&[], None, Some(&name(1)?)).is_ok());
+    assert!(!leaf_within::<TreeFormat>(&entries, Some(&name(3)?), None));
+    assert!(!leaf_within::<TreeFormat>(&entries, None, Some(&name(6)?)));
+    assert!(leaf_within::<TreeFormat>(&[], None, Some(&name(1)?)));
 
-    assert!(validate_children::<TreeFormat, TreeMutation>(&children, None, None).is_ok());
-    assert!(
-        validate_children::<TreeFormat, TreeMutation>(&children, Some(&name(2)?), Some(&name(5)?))
-            .is_ok()
-    );
-    assert!(matches!(
-        validate_children::<TreeFormat, TreeMutation>(&children, Some(&name(3)?), None),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(matches!(
-        validate_children::<TreeFormat, TreeMutation>(&children, None, Some(&name(4)?)),
-        Err(Error::ChildBoundsMismatch)
-    ));
-    assert!(validate_children::<TreeFormat, TreeMutation>(&[], None, Some(&name(1)?)).is_ok());
+    assert!(children_within(&children, None, None));
+    assert!(children_within(&children, Some(&name(2)?), Some(&name(5)?)));
+    assert!(!children_within(&children, Some(&name(3)?), None));
+    assert!(!children_within(&children, None, Some(&name(4)?)));
+    assert!(children_within(&[], None, Some(&name(1)?)));
     Ok(())
 }
 

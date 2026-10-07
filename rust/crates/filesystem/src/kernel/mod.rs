@@ -41,6 +41,7 @@ mod read;
 mod rebase;
 mod regular_mutation;
 mod retention;
+mod search;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_state;
 mod transfer;

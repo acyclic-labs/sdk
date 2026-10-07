@@ -1,3 +1,10 @@
+[advisories]
+yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0388", reason = "transitive via indexed_db_futures 0.6 (acyclic-fs-wasm only); the advisory lists no safe upgrade" },
+  { id = "RUSTSEC-2025-0048", reason = "direct dependency of the fs, machines and objects WASM bindings; the advisory lists no safe upgrade and moving to tsify is a separate binding change" },
+]
+
 [licenses]
 confidence-threshold = 0.93
 allow = [
@@ -26,6 +33,9 @@ version = "=0.2.0"
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Path-only dev-dependencies of publishable crates and path dependencies of
+# private crates never reach a published manifest.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

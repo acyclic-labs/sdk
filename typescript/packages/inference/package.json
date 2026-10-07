@@ -14,7 +14,7 @@
   "files": ["dist", "generated", "CHANGELOG.md"],
   "scripts": {
     "build": "bun run build:wasm && tsc -b",
-    "build:wasm": "bun scripts/build-wasm.mjs",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs inference",
     "test": "bun run build:wasm && tsc -b --pretty false && tsc -p tsconfig.type-tests.json --pretty false && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },

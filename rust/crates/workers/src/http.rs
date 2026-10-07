@@ -2,7 +2,10 @@
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
-use reqwest::{Client as Transport, Url};
+use reqwest::{
+    Client as Transport, Url,
+    header::{AUTHORIZATION, HeaderValue},
+};
 
 /// HTTP configuration, encoding, or remote service failure.
 #[derive(Debug, thiserror::Error)]
@@ -29,12 +32,24 @@ pub enum Error {
     },
 }
 
+/// Plain HTTP is admitted only for `localhost` and loopback IP literals.
+fn loopback(endpoint: &Url) -> bool {
+    endpoint.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    })
+}
+
 /// Typed HTTP operations with bearer authentication and bounded responses.
 #[derive(Clone)]
 pub struct Client {
     transport: Transport,
     endpoint: Url,
-    token: String,
+    authorization: HeaderValue,
     maximum: usize,
     descriptors: DescriptorPool,
 }
@@ -46,23 +61,19 @@ impl Client {
     /// Rejects unsafe endpoints, invalid credentials, or a zero response bound.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidArgument)?;
-        let loopback = matches!(
-            endpoint.host_str(),
-            Some("localhost" | "127.0.0.1" | "[::1]")
-        );
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback(&endpoint))
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.contains(['\r', '\n'])
+            || !crate::valid_token(token)
             || maximum_response_bytes == 0
         {
             return Err(Error::InvalidArgument);
         }
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        let mut authorization = HeaderValue::from_str(&format!("Bearer {token}"))
             .map_err(|_| Error::InvalidArgument)?;
+        authorization.set_sensitive(true);
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
@@ -71,7 +82,7 @@ impl Client {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             endpoint,
-            token: token.to_owned(),
+            authorization,
             maximum: maximum_response_bytes,
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
@@ -99,7 +110,7 @@ impl Client {
                     .join(route)
                     .map_err(|_| Error::InvalidArgument)?,
             )
-            .bearer_auth(&self.token)
+            .header(AUTHORIZATION, self.authorization.clone())
             .header("content-type", "application/json")
             .body(body)
             .send()

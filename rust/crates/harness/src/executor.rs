@@ -1,5 +1,6 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
+use crate::contract::capability;
 use crate::{
     Error, InteractionId, OperationId, Result,
     context::{ContextInput, ContextPipeline},
@@ -562,7 +563,7 @@ impl StockExecutor {
                 .filter(|tool| {
                     self.tool_scope
                         .grants()
-                        .contains(&format!("tool:call:{}", tool.name))
+                        .contains(&capability::tool_call(&tool.name))
                 })
                 .collect(),
             max_output_tokens: Some(4_096),
@@ -780,7 +781,7 @@ impl StockExecutor {
         // never granted would let a model probe the contract of an ungranted tool by naming it
         // with deliberately malformed arguments. An ungranted call is refused on its own terms,
         // whatever its arguments look like.
-        let capability = format!("tool:call:{}", tool.definition.name);
+        let capability = capability::tool_call(&tool.definition.name);
         if !self.tool_scope.grants().contains(&capability) {
             return Err(Error::Unauthorized(format!("scope lacks {capability}")));
         }
@@ -856,7 +857,7 @@ impl StockExecutor {
                             return Err(Error::Unauthorized(reason));
                         }
                         ToolPolicyDecision::RequireApproval { prompt } => {
-                            if !scope.grants().contains("interaction:route") {
+                            if !scope.grants().contains(capability::INTERACTION_ROUTE) {
                                 return Err(Error::Unauthorized(
                                     "stock tool approval requires interaction:route".into(),
                                 ));

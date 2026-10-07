@@ -1,5 +1,6 @@
 //! Conversation-owned reconciliation of already dispatched provider effects.
 
+use crate::contract::capability;
 use crate::{
     EffectId, Error, IdempotencyKey, OperationId, Result,
     conversation::ContentResidencyVerifier,
@@ -43,7 +44,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         let verifier = issuer.verifier();
         verifier.verify_audience(&authority)?;
         verifier.verify(&scope)?;
-        if !scope.capabilities().contains("effect:run") {
+        if !scope.capabilities().contains(capability::EFFECT_RUN) {
             return Err(Error::Unauthorized(
                 "effect host scope lacks effect:run".into(),
             ));

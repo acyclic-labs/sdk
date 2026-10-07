@@ -1,5 +1,6 @@
 //! Deterministic logical allocation accounting for bounded kernel work.
 
+use crate::foundation::usize_to_u64;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
 use crate::storage::ObjectId;
 use std::mem::size_of;
@@ -73,7 +74,7 @@ impl AllocationLedger {
     ) -> Result<u64, AllocationError> {
         let bytes = count
             .checked_mul(size_of::<T>())
-            .map(crate::foundation::usize_to_u64)
+            .map(usize_to_u64)
             .ok_or(AllocationError::Overflow)?;
         self.claim_bytes(bytes, u64::from(count != 0), work, budget)?;
         Ok(bytes)
@@ -172,7 +173,7 @@ impl VisitedObjectSet {
             let mask = self.slots.len() - 1;
             let mut index = object_hash(object) & mask;
             loop {
-                Self::charge_items(work, budget, 1)?;
+                work.charge_items(1, budget)?;
                 probes = probes.checked_add(1).ok_or(AllocationError::Overflow)?;
                 match self.slots[index] {
                     Some(existing) if existing == object => {
@@ -233,9 +234,9 @@ impl VisitedObjectSet {
         for object in self.slots.iter().flatten().copied() {
             let mut index = object_hash(object) & mask;
             loop {
-                if let Err(error) = Self::charge_items(work, budget, 1) {
+                if let Err(error) = work.charge_items(1, budget) {
                     ledger.release(new_bytes)?;
-                    return Err(error);
+                    return Err(error.into());
                 }
                 let Some(next_probes) = probes.checked_add(1) else {
                     ledger.release(new_bytes)?;
@@ -271,20 +272,10 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)
     }
 
-    #[inline]
-    fn charge_items(
-        work: &mut WorkCounters,
-        budget: &WorkBudget,
-        count: u64,
-    ) -> Result<(), AllocationError> {
-        Ok(work.charge_items(count, budget)?)
-    }
-
     fn charge_copied(work: &mut WorkCounters, budget: &WorkBudget) -> Result<(), AllocationError> {
         work.charge(
             &WorkCounters {
-                bytes_copied: u64::try_from(size_of::<ObjectId>())
-                    .map_err(|_| AllocationError::Overflow)?,
+                bytes_copied: usize_to_u64(size_of::<ObjectId>()),
                 ..WorkCounters::UNCHARGED
             },
             budget,
@@ -332,6 +323,18 @@ pub(crate) enum AllocationError {
     AllocationFailed,
     #[error(transparent)]
     Work(#[from] WorkError),
+}
+
+impl AllocationError {
+    /// Maps onto an operation error: budget failures and accounting overflow
+    /// stay work errors, and every failed allocation becomes `failed`.
+    pub(crate) fn into_work_or<E: From<WorkError>>(self, failed: E) -> E {
+        match self {
+            Self::Work(error) => error.into(),
+            Self::Overflow | Self::ReleaseInvariant => WorkError::Overflow.into(),
+            Self::InvalidCapacity | Self::CapacityExceeded | Self::AllocationFailed => failed,
+        }
+    }
 }
 
 #[cfg(test)]

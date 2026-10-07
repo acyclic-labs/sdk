@@ -1281,8 +1281,11 @@ impl DarwinMountSession {
         // exact loop. The bridge registry keeps native control state scoped to
         // this session, so independent mounts do not share an interrupt target.
         let source_context = Arc::into_raw(context) as usize;
+        // SAFETY: the session allocator has no preconditions; null is handled below.
         let driver_session = unsafe { acyclic_fs_darwin_mount_session_new() } as usize;
         if driver_session == 0 {
+            // SAFETY: `source_context` came from `Arc::into_raw` above and was never
+            // handed to the bridge, so this reclaims its only reference once.
             unsafe { drop(Arc::from_raw(source_context as *const DarwinMountContext)) };
             return Err(NativeMountError::Driver(
                 "Darwin mount session allocation failed".to_owned(),
@@ -1304,6 +1307,9 @@ impl DarwinMountSession {
                     .iter()
                     .map(|argument| argument.as_ptr())
                     .collect::<Vec<_>>();
+                // SAFETY: this closure owns `arguments`, `pointers` and `destination_c` for
+                // the whole blocking loop; `loop_resources` keeps the session and context
+                // allocations alive and `exit_report` keeps the reported events alive.
                 unsafe {
                     acyclic_fs_darwin_mount_run(
                         loop_resources.driver_session as *mut c_void,
@@ -1467,6 +1473,8 @@ impl DarwinMountSession {
             .is_none_or(|result| matches!(result, MountLoopResult::TimedOut))
         {
             if let Some(resources) = &self.resources {
+                // SAFETY: `resources` keeps the bridge session alive; interrupting it only
+                // signals that session's loop.
                 unsafe {
                     acyclic_fs_darwin_mount_interrupt(resources.driver_session as *mut c_void);
                 }
@@ -1695,6 +1703,9 @@ fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     if address == 0 {
         return Err(libc::ESTALE);
     }
+    // SAFETY: nonzero addresses come only from the bridge, which passes back the
+    // `Arc::into_raw` context that `DriverSessionResources` keeps alive until
+    // the loop has exited.
     Ok(unsafe { &*(address as *const DarwinMountContext) })
 }
 
@@ -1738,6 +1749,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getattr(
 ) -> c_int {
     ffi_status(address, |context| {
         let attributes = context.attributes(&mount_path(path)?, handle)?;
+        // SAFETY: the bridge passes a valid, writable `NativeStat` for the callback.
         unsafe { result.write(attributes) };
         Ok(0)
     })
@@ -1754,6 +1766,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_open(
         if flags & libc::O_ACCMODE != libc::O_RDONLY {
             context.admit_write()?;
         }
+        // SAFETY: the bridge passes a valid, writable handle slot for the callback.
         unsafe { handle.write(context.open(&mount_path(path)?, InitialHandleState::Clean)?) };
         Ok(0)
     })
@@ -1778,6 +1791,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_create(
         })?;
         context.remember_current_lookup(&path, Some(lookup))?;
         context.namespace_changed();
+        // SAFETY: the bridge passes a valid, writable handle slot for the callback.
         unsafe { handle.write(context.open(&path, InitialHandleState::Written)?) };
         Ok(0)
     })
@@ -1822,6 +1836,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_read(
         if bytes.len() > usize::try_from(requested_length).unwrap_or(usize::MAX) {
             return Err(libc::EIO);
         }
+        // SAFETY: the bridge buffer holds `length` writable bytes, `bytes` is no
+        // longer than that (checked above), and Rust owns `bytes` separately.
         unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.cast(), bytes.len()) };
         c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW)
     })
@@ -1839,6 +1855,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_write(
     ffi_status(address, |context| {
         let length = bounded_length(length)?;
         let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
+        // SAFETY: the bridge forwards FUSE's `length`-byte write buffer, readable for
+        // the callback; `bounded_length` capped that length.
         let bytes = unsafe { std::slice::from_raw_parts(buffer.cast::<u8>(), length as usize) };
         context.mutate_file(&mount_path(path)?, handle, |file| {
             file.write_range(offset, Bytes::copy_from_slice(bytes))
@@ -1916,6 +1934,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_opendir(
         let mut directories = context.directories.lock().map_err(|_| libc::EIO)?;
         directories.try_reserve(1).map_err(|_| libc::ENOMEM)?;
         directories.insert(allocated, Arc::new(Mutex::new(directory)));
+        // SAFETY: the bridge passes a valid, writable handle slot for the callback.
         unsafe { handle.write(allocated) };
         Ok(0)
     })
@@ -1975,6 +1994,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
         while directory.emitted < 2 {
             let name = if directory.emitted == 0 { c"." } else { c".." };
             let next = directory.emitted + 1;
+            // SAFETY: `buffer` and `filler` are FUSE's live readdir fill context for
+            // this callback, and `name` outlives the synchronous call.
             let buffer_full = unsafe {
                 acyclic_fs_darwin_mount_fill_directory(
                     buffer,
@@ -2003,6 +2024,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readdir(
             };
             let (name, attributes) = directory_entry(context, &directory, entry)?;
             let next = directory.emitted.checked_add(1).ok_or(libc::EOVERFLOW)?;
+            // SAFETY: `buffer` and `filler` are FUSE's live readdir fill context for
+            // this callback; `name` and `attributes` outlive the synchronous call.
             let buffer_full = unsafe {
                 acyclic_fs_darwin_mount_fill_directory(
                     buffer,
@@ -2253,6 +2276,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
     gid: u32,
 ) -> c_int {
     ffi_status(address, |context| {
+        // SAFETY: the bridge forwards FUSE's NUL-terminated link target, valid for
+        // the callback.
         let target = unsafe { CStr::from_ptr(target) }.to_bytes();
         let destination = mount_path(destination)?;
         context.mutate(|| {
@@ -2285,6 +2310,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         if target.len() >= length {
             return Err(libc::ENAMETOOLONG);
         }
+        // SAFETY: the bridge buffer holds `length` bytes and `target.len() < length`,
+        // so the copy and its NUL terminator stay in bounds.
         unsafe {
             ptr::copy_nonoverlapping(target.as_ptr(), buffer.cast(), target.len());
             buffer.add(target.len()).write(0);
@@ -2376,6 +2403,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_utimens(
     handle: u64,
 ) -> c_int {
     ffi_status(address, |context| {
+        // SAFETY: the bridge passes null (rejected here) or a `NativeTimes` valid for
+        // the callback.
         let times = unsafe { times.as_ref() }.ok_or(libc::EINVAL)?;
         context.mutate_metadata(&mount_path(path)?, handle, |metadata| {
             update_time(
@@ -2435,6 +2464,8 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
             libc::XATTR_REPLACE => MountAttributeWriteMode::Replace,
             _ => return Err(libc::EINVAL),
         };
+        // SAFETY: the bridge forwards FUSE's `length`-byte attribute value, readable
+        // for the callback.
         let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) };
         let (path, name) = (mount_path(path)?, c_bytes(name)?);
         context.mutate(|| {
@@ -2637,6 +2668,8 @@ fn c_bytes<'a>(value: *const c_char) -> Result<&'a [u8], i32> {
     if value.is_null() {
         return Err(libc::EINVAL);
     }
+    // SAFETY: callers pass only bridge strings, which FUSE NUL-terminates and keeps
+    // valid for the callback; null was rejected above.
     Ok(unsafe { CStr::from_ptr(value) }.to_bytes())
 }
 
@@ -2658,6 +2691,8 @@ fn copy_variable_result(bytes: &[u8], output: *mut c_char, length: usize) -> Res
     if output.is_null() || bytes.len() > length {
         return Err(libc::ERANGE);
     }
+    // SAFETY: `output` is a non-null bridge buffer of `length` bytes and
+    // `bytes` fits in it (checked above).
     unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) };
     c_int::try_from(bytes.len()).map_err(|_| libc::EOVERFLOW)
 }

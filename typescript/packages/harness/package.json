@@ -15,7 +15,7 @@
     "./protocol": { "types": "./generated/proto/protocol/v1/protocol_pb.d.ts", "default": "./generated/proto/protocol/v1/protocol_pb.js" }
   },
   "scripts": {
-    "build:wasm": "bun ../../../scripts/build-harness-wasm.mjs",
+    "build:wasm": "bun ../../../scripts/build-wasm.mjs harness",
     "build": "bun run build:wasm && bun x tsc -p tsconfig.json",
     "check": "bun run build:wasm && bun x tsc -p tsconfig.json --noEmit",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",

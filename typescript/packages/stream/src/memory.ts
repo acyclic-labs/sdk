@@ -11,7 +11,7 @@ import type {
   CommitId, CommitOptions, CommitResult,
   EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey,
   IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence,
-  StreamProvider, ChildrenPage, ChildrenPageRequest,
+  StreamProvider, ChildrenPage, ChildrenPageRequest, StreamFailureCode,
 } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 
@@ -174,7 +174,7 @@ function streamError(error: unknown, operation: string): Error {
   if (typeof rawCode !== "string" || !isKnownStreamErrorCode(rawCode)) {
     return error instanceof Error ? error : new Error(message);
   }
-  let code: string = rawCode;
+  let code: StreamFailureCode = rawCode;
   if (rawCode === "not_found") code = operation === "read_commit" ? "commit_not_found" : "stream_not_found";
   else if (rawCode === "already_exists") code = "destination_exists";
   else if (rawCode === "prefix_not_retained" && operation === "commit") code = "invalid_argument";

@@ -1,5 +1,6 @@
 //! Typed, durable, executor-neutral open interactions.
 
+use crate::contract::capability;
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use serde::{Deserialize, Serialize, de::Error as _};
 use serde_json::Value;
@@ -69,7 +70,7 @@ impl InteractionTicket {
     /// The one exact capability that may resolve this request.
     #[must_use]
     pub fn responder_grant(&self) -> String {
-        format!("interaction:respond:{}", self.id)
+        capability::interaction_respond(self.id)
     }
 
     /// Checks the ref-only envelope before provider byte admission.
@@ -597,15 +598,11 @@ impl Interaction {
                     ..
                 },
                 InteractionResponse::Form { value },
-            ) => {
-                jsonschema::validator_for(response_schema)
-                    .map_err(|error| Error::Invalid(error.to_string()))?
-                    .validate(value)
-                    .map_err(|error| {
-                        Error::Invalid(format!("interaction response failed validation: {error}"))
-                    })?;
-                Ok(())
-            }
+            ) => crate::contract::validate_json_schema_value(
+                response_schema,
+                value,
+                "interaction response",
+            ),
             (
                 Self::Choice {
                     options,
@@ -664,9 +661,7 @@ pub enum InteractionResponse {
 }
 
 fn validate_schema(schema: &Value) -> Result<()> {
-    jsonschema::validator_for(schema)
-        .map(|_| ())
-        .map_err(|error| Error::Invalid(format!("invalid interaction JSON Schema: {error}")))
+    crate::contract::compile_json_schema(schema, "interaction").map(|_| ())
 }
 
 fn nonempty(value: &str, name: &str) -> Result<()> {

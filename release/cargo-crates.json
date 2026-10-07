@@ -1,6 +1,5 @@
 [
   "acyclic-inference",
-  "acyclic-inference-contract",
   "acyclic-machines",
   "acyclic-native-runtime",
   "acyclic-objects",

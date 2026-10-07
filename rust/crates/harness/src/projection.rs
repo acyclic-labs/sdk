@@ -543,23 +543,10 @@ fn validate_model_json_numbers(value: &serde_json::Value) -> Result<()> {
             values.values().try_for_each(validate_model_json_numbers)
         }
         serde_json::Value::Number(number) => {
-            const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
-            if let Some(value) = number.as_i64() {
-                if !(-MAX_SAFE_INTEGER..=MAX_SAFE_INTEGER).contains(&value) {
-                    return Err(Error::Invalid(
-                        "tool artifact contains an inexact number".into(),
-                    ));
-                }
-            } else if let Some(value) = number.as_u64() {
-                if value > MAX_SAFE_INTEGER as u64 {
-                    return Err(Error::Invalid(
-                        "tool artifact contains an inexact number".into(),
-                    ));
-                }
-            } else if let Some(value) = number.as_f64()
-                && (!value.is_finite()
-                    || (value == 0.0 && value.is_sign_negative())
-                    || (value.fract() == 0.0 && value.abs() > 9_007_199_254_740_991.0))
+            if !crate::conversation::is_exact_js_integer(number)
+                || number
+                    .as_f64()
+                    .is_some_and(|value| !crate::conversation::is_exact_js_number(value))
             {
                 return Err(Error::Invalid(
                     "tool artifact contains an inexact number".into(),

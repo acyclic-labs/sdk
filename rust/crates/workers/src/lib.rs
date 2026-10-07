@@ -36,6 +36,12 @@ export interface WorkerModule {
 }
 "#;
 
+/// Bearer credentials must be nonblank and at most 8 KiB; the HTTP and gRPC
+/// header parsers additionally reject control characters such as CR, LF, and NUL.
+fn valid_token(token: &str) -> bool {
+    !token.trim().is_empty() && token.len() <= 8192
+}
+
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("publishVersion", "v1/workers/versions/publish"),
@@ -268,5 +274,31 @@ mod tests {
             ),
             Err(ContractError::LimitExceeded)
         );
+    }
+
+    #[test]
+    fn clients_share_endpoint_and_credential_policy() {
+        let long = "t".repeat(8193);
+        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+            assert!(matches!(
+                http::Client::new("https://example.test", token, 1),
+                Err(http::Error::InvalidArgument)
+            ));
+        }
+        for endpoint in [
+            "http://localhost:1",
+            "http://127.0.0.2:1",
+            "http://[::1]:1",
+            "https://example.test",
+        ] {
+            assert!(http::Client::new(endpoint, &"t".repeat(8192), 1).is_ok());
+        }
+        for endpoint in [
+            "http://example.test",
+            "http://10.0.0.1",
+            "https://u@example.test",
+        ] {
+            assert!(http::Client::new(endpoint, "t", 1).is_err());
+        }
     }
 }

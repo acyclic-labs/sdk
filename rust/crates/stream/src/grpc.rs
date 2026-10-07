@@ -41,8 +41,7 @@ const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 pub const MAX_ENDPOINTS: usize = 16;
 /// Maximum canonical URI bytes accepted for one endpoint.
 pub const MAX_ENDPOINT_URI_BYTES: usize = 2_048;
-/// Maximum caller-supplied private CA bundle bytes.
-pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
+pub use crate::MAX_CA_CERTIFICATE_BYTES;
 
 /// Connection configuration failure.
 #[derive(Debug, Error)]
@@ -213,9 +212,14 @@ impl Client {
         channels: Arc<[Channel]>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        let authorization = format!("Bearer {}", bearer_token.as_ref())
+        let token = bearer_token.as_ref();
+        if token.trim().is_empty() || token.len() > 8192 {
+            return Err(ConnectError::InvalidCredential);
+        }
+        let mut authorization = format!("Bearer {token}")
             .parse::<MetadataValue<Ascii>>()
             .map_err(|_| ConnectError::InvalidCredential)?;
+        authorization.set_sensitive(true);
         Ok(Self {
             channels,
             authorization,
@@ -1230,6 +1234,13 @@ mod tests {
             Client::connect_endpoints([oversized], "fixture").await,
             Err(ConnectError::EndpointLimit)
         ));
+        let long = "t".repeat(8193);
+        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+            assert!(matches!(
+                Client::connect_endpoints(["https://data.invalid"], token).await,
+                Err(ConnectError::InvalidCredential)
+            ));
+        }
         Ok(())
     }
 

@@ -6,6 +6,7 @@
 //! the decision pauses recovery instead of overwriting external work.
 
 use crate::async_storage::StorageFuture;
+use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ConflictKey,
     ConflictSide, DefaultTextMergeDriver, DriverError, ForkOptions, GenerationId, IdempotencyKey,
@@ -22,7 +23,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use thiserror::Error;
 
-const MULTI_ROOT_VERSION: u32 = 2;
+pub(crate) const MULTI_ROOT_VERSION: u32 = 2;
 
 /// One root pinned by an immutable cross-root merge plan.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -2430,8 +2431,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         &self,
         mut journal: MultiRootPublication,
     ) -> Result<MultiRootPublication, MultiRootPublicationError<S::Error, P::Error, A::Error>> {
-        let expected = journal.revision;
-        journal.revision = expected.saturating_add(1);
+        let expected = next_revision(&mut journal.revision);
         if self
             .store
             .compare_and_swap(
@@ -2449,7 +2449,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
     }
 }
 
-fn validate_candidate(candidate: &MultiRootMergeCandidate) -> Result<(), ()> {
+pub(crate) fn validate_candidate(candidate: &MultiRootMergeCandidate) -> Result<(), ()> {
     if candidate.plan.roots.is_empty()
         || candidate.plan.parent_context_id == candidate.plan.child_context_id
         || candidate.plan.roots.keys().ne(candidate.resolutions.keys())
@@ -2475,7 +2475,7 @@ fn is_pristine_unclaimed(journal: &MultiRootPublication) -> bool {
         && journal.paused_root.is_none()
 }
 
-fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()> {
+pub(crate) fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()> {
     let roots: BTreeSet<_> = journal.candidate.plan.roots.keys().copied().collect();
     let fence_roots: BTreeSet<_> = journal.fences.keys().copied().collect();
     let generation_roots: BTreeSet<_> = journal.published_generations.keys().copied().collect();
@@ -2556,7 +2556,7 @@ fn validate_journal(journal: &MultiRootPublication) -> Result<(), ()> {
 /// Process-local durable-state substitute for deterministic tests.
 #[derive(Default)]
 pub struct MemoryMultiRootPublicationStore {
-    records: Mutex<BTreeMap<OperationId, MultiRootPublication>>,
+    records: MemoryRecords<OperationId, MultiRootPublication>,
     parents: Mutex<BTreeMap<WorkspaceContextId, OperationId>>,
     #[cfg(test)]
     fail_claim_once: std::sync::atomic::AtomicBool,
@@ -2575,9 +2575,8 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
         operation_id: OperationId,
     ) -> Result<Option<MultiRootPublication>, Self::Error> {
         self.records
-            .lock()
+            .load(&operation_id)
             .map_err(|_| MemoryMultiRootPublicationStoreError)
-            .map(|records| records.get(&operation_id).cloned())
     }
 
     async fn compare_and_swap(
@@ -2586,23 +2585,15 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
         expected_revision: u64,
         replacement: MultiRootPublication,
     ) -> Result<bool, Self::Error> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| MemoryMultiRootPublicationStoreError)?;
-        if records.get(&operation_id).map_or(0, |value| value.revision) != expected_revision {
-            return Ok(false);
-        }
-        records.insert(operation_id, replacement);
-        Ok(true)
+        self.records
+            .compare_and_swap(operation_id, expected_revision, replacement)
+            .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 
     async fn list_operations(&self) -> Result<Vec<OperationId>, Self::Error> {
-        let records = self
-            .records
-            .lock()
-            .map_err(|_| MemoryMultiRootPublicationStoreError)?;
-        Ok(records.keys().copied().collect())
+        self.records
+            .keys()
+            .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 
     async fn compare_and_delete(
@@ -2610,15 +2601,9 @@ impl MultiRootPublicationStore for MemoryMultiRootPublicationStore {
         operation_id: OperationId,
         expected_revision: u64,
     ) -> Result<bool, Self::Error> {
-        let mut records = self
-            .records
-            .lock()
-            .map_err(|_| MemoryMultiRootPublicationStoreError)?;
-        if records.get(&operation_id).map_or(0, |value| value.revision) != expected_revision {
-            return Ok(false);
-        }
-        records.remove(&operation_id);
-        Ok(true)
+        self.records
+            .compare_and_delete(&operation_id, expected_revision)
+            .map_err(|_| MemoryMultiRootPublicationStoreError)
     }
 
     async fn claim_parent(

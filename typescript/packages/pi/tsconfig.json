@@ -1,5 +1,6 @@
 {
-  "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "declaration": true, "outDir": "dist", "rootDir": "src", "strict": true, "composite": true, "skipLibCheck": true },
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "outDir": "dist", "rootDir": "src" },
   "include": ["src/**/*.ts"],
   "references": [{ "path": "../harness" }]
 }

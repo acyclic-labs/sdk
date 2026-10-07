@@ -1,5 +1,5 @@
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
-import initWasm, * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
+import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   InitInput, WasmBatchAdmissionInput, WasmDurableBatchWire, WasmReducer, WasmToolJsonValue,
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
@@ -19,7 +19,7 @@ import type { ProjectMergeReceipt } from "./project.js";
 import type { BatchAdmissionRequest, BatchId, GroupId, PrivateDirectoryPage, RuntimeTaskId, TaskChildrenPage } from "./runtime.js";
 import type { ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId } from "./index.js";
-import { assertHarnessWasmExports, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
+import { assertHarnessWasmExports, ensureHarnessWasm, REQUIRED_HARNESS_WASM_EXPORTS } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
 /** Rust generated admission projection input and output shapes. */
@@ -142,31 +142,21 @@ type NativeExports = Pick<typeof wasm, typeof REQUIRED_HARNESS_WASM_EXPORTS[numb
 
 /** Rust performs admission validation; TypeScript preserves the exact public shape. */
 export class NativeContracts {
-  static #default: Promise<NativeContracts> | undefined;
+  static #instance: NativeContracts | undefined;
   private constructor(private readonly native: NativeExports) {}
 
-  /** Initialize once before using synchronous contract methods. */
-  static create(module?: InitInput): Promise<NativeContracts> {
-    if (module !== undefined) return this.#initialize(module);
-    return this.#default ??= this.#initialize().catch(error => {
-      this.#default = undefined;
-      throw error;
-    });
-  }
-
-  static async #initialize(module?: InitInput): Promise<NativeContracts> {
-    if (module === undefined) {
-      const bundled = new URL("../generated/wasm/acyclic_harness_wasm_bg.wasm", import.meta.url);
-      if (bundled.protocol === "file:") {
-        const filesystem: string = "node:fs/promises";
-        const { readFile } = await import(filesystem) as { readFile(url: URL): Promise<Uint8Array> };
-        await initWasm({ module_or_path: await readFile(bundled) });
-      } else await initWasm();
+  /**
+   * Initialize once before using synchronous contract methods. Shares the one
+   * guarded WASM instance, so a second, different module is rejected.
+   */
+  static async create(module?: InitInput): Promise<NativeContracts> {
+    await ensureHarnessWasm(module);
+    if (NativeContracts.#instance === undefined) {
+      const native: NativeExports = wasm;
+      assertHarnessWasmExports(native);
+      NativeContracts.#instance = new NativeContracts(native);
     }
-    else await initWasm({ module_or_path: module });
-    const native: NativeExports = wasm;
-    assertHarnessWasmExports(native);
-    return new NativeContracts(native);
+    return NativeContracts.#instance;
   }
 
   /** Admit task dependencies with the same graph and capability rules as Rust. */

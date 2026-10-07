@@ -1,37 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+export const rust = [["acyclic-fs", "example", "filesystem-git-compat-contract"]];
 
-const scriptPath = fileURLToPath(import.meta.url);
-
-function readRustContract(root) {
-  const result = spawnSync(
-    process.env.ACYCLIC_CARGO_BIN || "cargo",
-    [
-      "run",
-      "--manifest-path",
-      join(root, "Cargo.toml"),
-      "--package",
-      "acyclic-fs",
-      "--example",
-      "filesystem-git-compat-contract",
-      "--no-default-features",
-      "--locked",
-      "--quiet",
-    ],
-    { cwd: root, encoding: "utf8" },
-  );
-  if (result.status !== 0) {
-    process.stderr.write(result.stdout ?? "");
-    process.stderr.write(result.stderr ?? "");
-    throw new Error(`Rust filesystem Git contract generator failed with status ${result.status ?? "unknown"}`);
-  }
-  const lines = (result.stdout ?? "").trim().split(/\r?\n/).filter(Boolean);
-  const json = lines.at(-1);
-  if (!json) throw new Error("Rust filesystem Git contract generator produced no JSON");
-  const contract = JSON.parse(json);
+function readRustContract(stdout) {
+  const contract = JSON.parse(stdout);
   if (!Array.isArray(contract.command_variants) ||
       !contract.command_variants.every(value => typeof value === "string" && value.length > 0) ||
       new Set(contract.command_variants).size !== contract.command_variants.length) {
@@ -156,8 +126,8 @@ function readRustContract(root) {
   return contract;
 }
 
-function renderSources(root) {
-  const contract = readRustContract(root);
+export function render([stdout]) {
+  const contract = readRustContract(stdout);
   const identityLengths = Object.fromEntries(
     contract.identity_fields.map(field => [field.key, field.bytes]),
   );
@@ -244,35 +214,8 @@ function renderSources(root) {
     `export declare const GIT_COMPAT_PUBLIC_ALIASES: Readonly<Record<string, string>>;\n` +
     `export declare const GIT_COMPAT_PENDING_FIELDS: ReadonlySet<string>;\n` +
     `export declare const GIT_COMPAT_TRANSITION_IDENTITY_BYTES: ${contract.transition_identity_bytes};\n`;
-  return { source, declaration };
-}
-
-export function generateFilesystemGitCompatContract(root, outputDirectory) {
-  const output = outputDirectory ?? join(root, "typescript/packages/filesystem/generated");
-  const { source, declaration } = renderSources(root);
-  writeFileSync(join(output, "git-compat-contract.js"), source);
-  writeFileSync(join(output, "git-compat-contract.d.ts"), declaration);
-}
-
-export function checkFilesystemGitCompatContract(root) {
-  const temporary = mkdtempSync(join(tmpdir(), "acyclic-filesystem-git-compat-contract-"));
-  try {
-    generateFilesystemGitCompatContract(root, temporary);
-    for (const file of ["git-compat-contract.js", "git-compat-contract.d.ts"]) {
-      const committed = join(root, "typescript/packages/filesystem/generated", file);
-      if (!existsSync(committed) || !readFileSync(join(temporary, file)).equals(readFileSync(committed))) {
-        throw new Error(`filesystem Git compatibility contract is stale; run bun run generate (${file})`);
-      }
-    }
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
-  }
-}
-
-if (resolve(process.argv[1] ?? "") === resolve(scriptPath)) {
-  const root = join(dirname(scriptPath), "..");
-  const mode = process.argv[2] ?? "write";
-  if (mode === "check") checkFilesystemGitCompatContract(root);
-  else if (mode === "write") generateFilesystemGitCompatContract(root);
-  else throw new Error(`unknown mode: ${mode}`);
+  return {
+    "typescript/packages/filesystem/generated/git-compat-contract.js": source,
+    "typescript/packages/filesystem/generated/git-compat-contract.d.ts": declaration,
+  };
 }

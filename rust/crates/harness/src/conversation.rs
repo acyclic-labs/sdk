@@ -23,9 +23,31 @@ pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
 pub const MAX_PATH_BYTES: usize = 4_096;
 /// Maximum UTF-8 bytes in a protocol label or display name.
-pub const MAX_LABEL_BYTES: usize = 255;
+pub const MAX_LABEL_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
+#[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]
+const MAX_EXACT_JS_FLOAT: f64 = MAX_EXACT_JS_INTEGER as f64;
+
+/// Whether a JavaScript Number round-trips this value exactly: finite, not
+/// negative zero, and not an integral value beyond the safe-integer range.
+pub(crate) fn is_exact_js_number(value: f64) -> bool {
+    value.is_finite()
+        && !(value == 0.0 && value.is_sign_negative())
+        && (value.fract() != 0.0 || value.abs() <= MAX_EXACT_JS_FLOAT)
+}
+
+/// Whether a JSON integer, if `number` is one, is within the safe-integer range.
+pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
+    number.as_i64().map_or_else(
+        || {
+            number
+                .as_u64()
+                .is_none_or(|value| value <= MAX_EXACT_JS_INTEGER)
+        },
+        |value| value.unsigned_abs() <= MAX_EXACT_JS_INTEGER,
+    )
+}
 /// Maximum file byte length accepted by the limits validator.
 pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
 /// Maximum rendered byte length implied by the file byte ceiling.

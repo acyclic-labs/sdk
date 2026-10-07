@@ -17,7 +17,7 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        AggregateKind, ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
+        ApplyResult, Authority, AuthorityIssuer, Command, ExtensionAdmission,
         ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
         ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
     },
@@ -1261,10 +1261,7 @@ fn snapshot_js_json(
         return Err(JsValue::from_str("undefined is not canonical JSON"));
     }
     if let Some(number) = value.as_f64() {
-        if !number.is_finite()
-            || number == 0.0 && number.is_sign_negative()
-            || number.fract() == 0.0 && number.abs() > 9_007_199_254_740_991.0
-        {
+        if !crate::conversation::is_exact_js_number(number) {
             return Err(JsValue::from_str(
                 "JSON contains an unsafe JavaScript Number",
             ));
@@ -1733,19 +1730,7 @@ pub async fn select_model_context_wasm(
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = WasmProjectionResolver::from_js(files)?;
-    if !maximum_render_bytes.is_finite()
-        || maximum_render_bytes < 0.0
-        || maximum_render_bytes.fract() != 0.0
-        || maximum_render_bytes > 9_007_199_254_740_991.0
-    {
-        return Err(JsValue::from_str(
-            "maximum render bytes must be a safe non-negative integer",
-        ));
-    }
-    let maximum_render_bytes = maximum_render_bytes
-        .to_string()
-        .parse::<u64>()
-        .map_err(|_| JsValue::from_str("maximum render bytes are out of range"))?;
+    let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
     let selected = select_model_context_at_revision(
         &conversation,
         selection.clone(),
@@ -2330,7 +2315,7 @@ fn to_js_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 
 fn exact_js_number(value: u64) -> Result<JsValue, JsValue> {
-    if value > 9_007_199_254_740_991 {
+    if value > crate::conversation::MAX_EXACT_JS_INTEGER {
         return Err(JsValue::from_str(
             "integer exceeds JavaScript Number precision",
         ));
@@ -2392,8 +2377,13 @@ fn normalize_descriptor_lengths(js: &JsValue, value: &serde_json::Value) -> Resu
     Ok(())
 }
 
+/// Throws a JS `Error` whose `code` is the wire [`crate::wire::ErrorCode`].
 fn js_error(error: crate::Error) -> JsValue {
-    JsValue::from_str(&error.to_string())
+    let js = js_sys::Error::new(&error.to_string());
+    match js_sys::Reflect::set(&js, &"code".into(), &(error.code() as i32).into()) {
+        Ok(_) => js.into(),
+        Err(_) => JsValue::from_str(&error.to_string()),
+    }
 }
 
 /// Decodes one canonical event payload using the native event union.
@@ -2432,18 +2422,8 @@ pub fn decode_apply_response(bytes: Vec<u8>) -> Result<JsValue, JsValue> {
 /// Decodes a generated aggregate kind using the native enum mapping.
 #[wasm_bindgen(js_name = decodeAggregateKind)]
 pub fn decode_aggregate_kind_wasm(value: i32) -> Result<JsValue, JsValue> {
-    let kind = match crate::wire::AggregateKind::try_from(value)
-        .map_err(|_| JsValue::from_str("aggregate kind is invalid"))?
-    {
-        crate::wire::AggregateKind::Agent => AggregateKind::Agent,
-        crate::wire::AggregateKind::Conversation => AggregateKind::Conversation,
-        crate::wire::AggregateKind::Session => AggregateKind::Session,
-        crate::wire::AggregateKind::Turn => AggregateKind::Turn,
-        crate::wire::AggregateKind::Task => AggregateKind::Task,
-        crate::wire::AggregateKind::Unspecified => {
-            return Err(JsValue::from_str("aggregate kind is unspecified"));
-        }
-    };
+    let kind =
+        crate::wire_codec::decode_aggregate_kind(value, crate::Error::Invalid).map_err(js_error)?;
     to_js(&kind)
 }
 
@@ -2834,8 +2814,7 @@ fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec<u8> {
 }
 
 fn exact_nonnegative_u64(value: f64, field: &str) -> Result<u64, JsValue> {
-    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_991.0
-    {
+    if !crate::conversation::is_exact_js_number(value) || value < 0.0 || value.fract() != 0.0 {
         return Err(JsValue::from_str(&format!(
             "{field} must be a safe non-negative integer"
         )));
