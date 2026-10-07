@@ -491,3 +491,12 @@ Docs CLI5activeintegrationtests nowPASS stalerustdoc,sourceState,pluginclosure,r
 - Harness signedbb932f2a implements async policy/client and identity boundaries through Rust. Browser runner produced no result before hanging; source typecheck still needs exact maintained Objects declarations. No browser qualification or merge claim.
 - Docs foreground run7 session37987/PID84768 was authoritatively live at root observation. Eleven current CLI regression tests pass; complete54-profile generation and drift remain pending.
 - No new merge. Goal remains active.
+
+### 2026-10-07 final public-loader freeze and minimality review
+
+- Filesystem PR267 signed remote head84260e46a7558e3b693a4f003810b811031b60ce: createRequire installed native loader, bigint cache limit preserved, ObjectCacheOptions derived from Rust native declaration. Root TypeScript compilation and 17 tests/95 expectations pass. New package7a6225a14e7d80ff3cd963591f7564b979e3cbb5dc98b2f6c1d5b111d0650caf passed external installed Node24/Bun1.4.2 Windows and WSL Linux; 314 native producer inputs unchanged. macOS public consumer remains outstanding due Tailscale authentication; no three-platform loader claim.
+- Stream PR270 now signed c8f5466f0a28918ff9e6f6594fb5781ed9d52e51, cheap CI37688920922 passed. Three-platform cold/repeat bundle identity and TLS cancellation receipts complete; independent final review pending. No root merge yet.
+- Actors root9924150476d8ac61bd0f3c73789af57781d65832 fixes MODULE_NOT_FOUND absent optional-companion fallback. Source compilation passed; installed package baseline qualification active. Independent minimality audit identified duplicate maintained NAPI-RS runtime selector; isolated deletion/refactor assigned before final merge candidate.
+- Current main4e3ed22bdc2137a93cccdd66a3cbb815acf897cc includes peer PR253 Harness recovery changes. Harness owner must integrate preserving peer semantics and finish async consumer test migration.
+- Docs and Rust-owned example WIP remotely preserved signed60c0c67583ebbc100e7102f10628612f6dd434d7 branchcodex/docs-source-checkpoint-20261007-r4. Foreground docs run7 PID84768 verified live CPU583.25; generation incomplete.
+- Goal remains incomplete. Broad source authority, deletion, languages, docs and proofs gates are not replaced by these bounded results.
