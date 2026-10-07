@@ -1,0 +1,4 @@
+# Generated/build staging is intentionally outside the source-only qualification artifact.
+consumer/Generated/
+consumer/Native/
+consumer/.build/
