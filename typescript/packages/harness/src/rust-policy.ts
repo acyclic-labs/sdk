@@ -4,10 +4,14 @@ import {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureHarnessWasm } from "./wasm-runtime.js";
 
-// Public synchronous constructors are usable immediately after importing the
-// package. ES module initialization completes the canonical Rust/WASM load
-// before any caller can invoke these wrappers.
-await ensureHarnessWasm();
+// Start package-owned initialization without turning one transient fetch
+// failure into a permanently rejected ESM module. Async public factories call
+// `ensureHarnessWasm()` again and surface their own failure for retry.
+try {
+  await ensureHarnessWasm();
+} catch {
+  // The next Rust-backed async operation owns retry and error reporting.
+}
 
 export function validateAuthorityPathSegment(value: string): string {
   try {

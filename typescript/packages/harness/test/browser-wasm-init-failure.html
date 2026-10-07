@@ -1,30 +1,41 @@
 <!doctype html>
 <html lang="en">
 <meta charset="utf-8">
+<script type="importmap">
+  {"imports":{"@bufbuild/protobuf":"../../../../node_modules/@bufbuild/protobuf/dist/esm/index.js","@bufbuild/protobuf/codegenv2":"../../../../node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js"}}
+</script>
 <title>Harness automatic WASM initialization retry</title>
 <body data-result="pending">
 <script type="module">
 try {
   const originalFetch = globalThis.fetch;
-  let failed = false;
+  let failuresRemaining = 2;
   globalThis.fetch = (input, init) => {
     const url = new URL(input.url ?? input, location.href);
-    if (!failed && url.pathname.endsWith("acyclic_harness_wasm_bg.wasm")) {
-      failed = true;
+    if (failuresRemaining > 0 && url.pathname.endsWith("acyclic_harness_wasm_bg.wasm")) {
+      failuresRemaining -= 1;
       return Promise.reject(new Error("simulated first WASM fetch failure"));
     }
     return originalFetch(input, init);
   };
+  const harness = await import("../dist/index.js");
+  const options = {
+    authority: { kind: "agent", id: "browser-retry" },
+    issuerId: "browser-retry",
+    issuerKey: crypto.getRandomValues(new Uint8Array(32)),
+  };
+  let rejected = false;
   try {
-    await import("../dist/rust-policy.js?first=1");
-    throw new Error("first automatic WASM initialization unexpectedly succeeded");
+    await harness.Harness.create(options);
   } catch (error) {
-    if (!String(error?.message ?? error).includes("simulated first WASM fetch failure")) throw error;
+    rejected = String(error?.message ?? error).includes("simulated first WASM fetch failure");
   }
+  if (!rejected) throw new Error("failed WASM operation did not reject");
   globalThis.fetch = originalFetch;
-  const policy = await import("../dist/rust-policy.js?retry=1");
-  policy.validateComponentLabel("browser-retry");
-  document.body.dataset.result = failed ? "passed" : "failed: fetch was not intercepted";
+  const runtime = await harness.Harness.create(options);
+  runtime.free();
+  harness.validateComponentLabel("browser-retry", "component");
+  document.body.dataset.result = failuresRemaining === 0 ? "passed" : "failed: fetch was not intercepted twice";
 } catch (error) {
   document.body.dataset.result = `failed: ${error.message}`;
 }
