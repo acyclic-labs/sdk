@@ -3,4 +3,4 @@
 /**
  * Typed invocation response with byte-preserving body and headers.
  */
-export type InvokeActorResponse = { status: number, body: Uint8Array, headers: Array<{ name: string; value: string }>, };
+export type InvokeActorResponse = { status: number, body: import("../../readonly.js").ReadonlyBytes, headers: Array<{ name: string; value: string }>, };

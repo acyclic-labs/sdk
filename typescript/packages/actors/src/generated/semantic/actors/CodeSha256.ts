@@ -3,4 +3,4 @@
 /**
  * An exact, non-zero SHA-256 digest as used by the existing Actor validators.
  */
-export type CodeSha256 = Uint8Array & { readonly __brand: unique symbol; readonly __length: 32 };
+export type CodeSha256 = import("../../readonly.js").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 };

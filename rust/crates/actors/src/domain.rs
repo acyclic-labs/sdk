@@ -32,7 +32,7 @@ uniffi::custom_type!(ActorId, String, {
 /// An exact, non-zero SHA-256 digest as used by the existing Actor validators.
 #[derive(Clone, Debug, Eq, Hash, PartialEq, TS)]
 #[ts(export_to = "actors/CodeSha256.ts")]
-#[ts(type = "Uint8Array & { readonly __brand: unique symbol; readonly __length: 32 }")]
+#[ts(type = "import(\"../../readonly.js\").ReadonlyBytes & { readonly __brand: unique symbol; readonly __length: 32 }")]
 pub struct CodeSha256([u8; 32]);
 
 #[cfg(feature = "uniffi")]
@@ -1229,7 +1229,7 @@ pub struct InvokeActorRequest {
     #[proto(tag = 3)]
     url: String,
     #[proto(tag = 4, bytes)]
-    #[ts(type = "Uint8Array")]
+    #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes")]
     body: Vec<u8>,
     #[proto(tag = 5, repeated(message(proxied)))]
     #[ts(type = "Array<{ name: string; value: string }>")]
@@ -1286,7 +1286,7 @@ pub struct InvokeActorResponse {
     #[proto(tag = 1)]
     status: u32,
     #[proto(tag = 2, bytes)]
-    #[ts(type = "Uint8Array")]
+    #[ts(type = "import(\"../../readonly.js\").ReadonlyBytes")]
     body: Vec<u8>,
     #[proto(tag = 3, repeated(message(proxied)))]
     #[ts(type = "Array<{ name: string; value: string }>")]

@@ -28,6 +28,7 @@ const sourceRoots = [
   "typescript/packages/actors/src",
   "typescript/packages/actors/generated/proto",
   "scripts/build-actors-native.mjs",
+  "scripts/assemble-actors-native-package.mjs",
 ];
 
 function usage() {
