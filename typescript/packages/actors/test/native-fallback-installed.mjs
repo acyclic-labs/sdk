@@ -44,6 +44,28 @@ function assertFatal(executable, label) {
   assert.notEqual(result.status, 0, `${label} unexpectedly fell back:\n${result.stdout}`);
 }
 
+function assertWasmRetry(executable, label) {
+  const wasmPath = join(actorsRoot, "generated", "wasm", "acyclic_actors_wasm_bg.wasm");
+  const retryProbe = `
+    import assert from "node:assert/strict";
+    import { readFile } from "node:fs/promises";
+    const bytes = await readFile(${JSON.stringify(wasmPath)});
+    let fetches = 0;
+    globalThis.fetch = async () => {
+      fetches += 1;
+      if (fetches === 1) throw new Error("intentional WASM initialization failure");
+      return new Response(bytes, { status: 200, headers: { "content-type": "application/wasm" } });
+    };
+    globalThis.process = undefined;
+    const { ActorId } = await import("@acyclic-labs/actors");
+    await assert.rejects(ActorId("first-attempt"), /intentional WASM initialization failure/);
+    assert.equal(await ActorId("second-attempt"), "second-attempt");
+    assert.equal(fetches, 2);
+  `;
+  const result = spawnSync(executable, ["--input-type=module", "-e", retryProbe], { cwd: packageRoot, encoding: "utf8" });
+  assert.equal(result.status, 0, `${label} WASM retry failed:\n${result.stderr}`);
+}
+
 async function withMutations(callback) {
   const moved = [];
   const created = [];
@@ -80,6 +102,8 @@ await withMutations(async ({ move }) => {
   await move(nativeRoot);
   for (const executable of executables) assertFallback(executable.command, `${executable.name} missing-loader`);
 });
+
+for (const executable of executables) assertWasmRetry(executable.command, executable.name);
 
 const localCandidates = (await walk(nativeRoot)).filter(path => /[\\/]index\.[^\\/]+\.(?:node|cjs)$/.test(path));
 const companionDirectories = optionalNames
