@@ -869,7 +869,10 @@ actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[proto(
+    file = ACTORS_FILE,
+    post_from_proto = CreateActorRequest::validate_from_proto
+)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -907,8 +910,17 @@ impl CreateActorRequest {
             subscriptions: subscriptions.into_iter().map(Into::into).collect(),
             idempotency_key,
         };
-        crate::validate_create(&wire).map_err(DomainError::Contract)?;
         Self::try_from(wire)
+    }
+
+    /// Re-runs the canonical request validator after converting untrusted wire
+    /// fields into their semantic Rust representation. This deliberately uses
+    /// the infallible semantic-to-wire projection rather than recursively
+    /// invoking `TryFrom`, so wire-only collection and idempotency rules are
+    /// shared with the public constructor.
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::CreateActorRequest = self.clone().into();
+        crate::validate_create(&wire).map_err(DomainError::Contract)
     }
 
     /// Returns the code digest.
@@ -937,7 +949,10 @@ impl CreateActorRequest {
 
 /// Update request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[proto(
+    file = ACTORS_FILE,
+    post_from_proto = UpdateActorRequest::validate_from_proto
+)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -976,8 +991,14 @@ impl UpdateActorRequest {
             expected_configuration_revision,
             idempotency_key,
         };
-        crate::validate_update(&wire).map_err(DomainError::Contract)?;
         Self::try_from(wire)
+    }
+
+    /// Re-runs the canonical request validator without recursively invoking
+    /// the semantic `TryFrom` implementation.
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::UpdateActorRequest = self.clone().into();
+        crate::validate_update(&wire).map_err(DomainError::Contract)
     }
 
     /// Returns the Actor identity.
@@ -1034,7 +1055,10 @@ impl InspectActorRequest {
 
 /// Add subscription request after the canonical admission validator has run.
 #[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
+#[proto(
+    file = ACTORS_FILE,
+    post_from_proto = AddSubscriptionRequest::validate_from_proto
+)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
@@ -1060,8 +1084,14 @@ impl AddSubscriptionRequest {
             subscription: Some(subscription.into()),
             idempotency_key,
         };
-        crate::validate_add_subscription(&wire).map_err(DomainError::Contract)?;
         Self::try_from(wire)
+    }
+
+    /// Re-runs the canonical request validator without recursively invoking
+    /// the semantic `TryFrom` implementation.
+    fn validate_from_proto(&self) -> Result<(), DomainError> {
+        let wire: wire::AddSubscriptionRequest = self.clone().into();
+        crate::validate_add_subscription(&wire).map_err(DomainError::Contract)
     }
 
     /// Returns the Actor identity.
@@ -1598,6 +1628,118 @@ mod tests {
         assert_eq!(
             SubscriptionSpec::try_from(invalid_subscription),
             Err(DomainError::InvalidSubscription)
+        );
+    }
+
+    #[test]
+    fn wire_ingress_rechecks_request_admission_predicates() {
+        let subscription = wire::SubscriptionSpec {
+            subscription_id: "events".into(),
+            stream_path: "agents/a/events".into(),
+            start: Some(wire::SubscriptionStart {
+                start: Some(wire::subscription_start::Start::Cursor(0)),
+            }),
+            placement_anchor: false,
+        };
+        let binding = wire::Binding {
+            name: "storage".into(),
+            capability: "read".into(),
+            resource: "bucket/a".into(),
+        };
+        let create = wire::CreateActorRequest {
+            code_sha256: vec![1; 32].into(),
+            home_region: "eu".into(),
+            bindings: vec![binding.clone()],
+            limits: Some(wire::ActorLimits {
+                handler_timeout_millis: 1,
+                memory_bytes: 2,
+                checkpoint_bytes: 3,
+            }),
+            subscriptions: vec![subscription.clone()],
+            idempotency_key: "create-1".into(),
+        };
+
+        let mut duplicate = create.clone();
+        duplicate.subscriptions.push(subscription.clone());
+        assert_eq!(
+            CreateActorRequest::try_from(duplicate),
+            Err(DomainError::Contract(crate::ContractError::DuplicateName))
+        );
+
+        let mut multiple_anchors = create.clone();
+        multiple_anchors.subscriptions[0].placement_anchor = true;
+        let mut second_anchor = subscription;
+        second_anchor.subscription_id = "other-events".into();
+        second_anchor.placement_anchor = true;
+        multiple_anchors.subscriptions.push(second_anchor);
+        assert_eq!(
+            CreateActorRequest::try_from(multiple_anchors),
+            Err(DomainError::Contract(crate::ContractError::InvalidArgument))
+        );
+
+        let mut invalid_idempotency = create.clone();
+        invalid_idempotency.idempotency_key.clear();
+        assert_eq!(
+            CreateActorRequest::try_from(invalid_idempotency),
+            Err(DomainError::Contract(crate::ContractError::InvalidArgument))
+        );
+
+        let mut over_limit = create.clone();
+        over_limit
+            .bindings
+            .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
+                name: format!("binding-{index}"),
+                capability: "read".into(),
+                resource: "bucket/a".into(),
+            }));
+        assert_eq!(
+            CreateActorRequest::try_from(over_limit),
+            Err(DomainError::Contract(crate::ContractError::LimitExceeded))
+        );
+
+        let update = wire::UpdateActorRequest {
+            actor_id: "actor-1".into(),
+            code_sha256: vec![1; 32].into(),
+            bindings: vec![binding.clone()],
+            limits: Some(wire::ActorLimits {
+                handler_timeout_millis: 1,
+                memory_bytes: 2,
+                checkpoint_bytes: 3,
+            }),
+            expected_configuration_revision: 1,
+            idempotency_key: "update-1".into(),
+        };
+        let mut duplicate_bindings = update.clone();
+        duplicate_bindings.bindings.push(binding);
+        assert_eq!(
+            UpdateActorRequest::try_from(duplicate_bindings),
+            Err(DomainError::Contract(crate::ContractError::DuplicateName))
+        );
+
+        let mut invalid_update_idempotency = update.clone();
+        invalid_update_idempotency.idempotency_key.clear();
+        assert_eq!(
+            UpdateActorRequest::try_from(invalid_update_idempotency),
+            Err(DomainError::Contract(crate::ContractError::InvalidArgument))
+        );
+
+        let add = wire::AddSubscriptionRequest {
+            actor_id: "actor-1".into(),
+            subscription: Some(wire::SubscriptionSpec {
+                subscription_id: "events".into(),
+                stream_path: "agents/a/events".into(),
+                start: Some(wire::SubscriptionStart {
+                    start: Some(wire::subscription_start::Start::CurrentHead(true)),
+                }),
+                placement_anchor: false,
+            }),
+            idempotency_key: "add-1".into(),
+        };
+        let mut invalid_add_idempotency = add;
+        invalid_add_idempotency.idempotency_key.clear();
+        assert_eq!(
+            AddSubscriptionRequest::try_from(invalid_add_idempotency),
+            Err(DomainError::Contract(crate::ContractError::InvalidArgument))
         );
     }
 
