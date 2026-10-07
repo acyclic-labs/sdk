@@ -4264,7 +4264,7 @@ mod windows_clone_tests {
             let tick = unix_nanoseconds_to_filetime(nanoseconds);
             prop_assert_eq!(
                 filetime_to_unix_nanoseconds(tick),
-                Some(nanoseconds - nanoseconds.rem_euclid(100))
+                nanoseconds.checked_sub(nanoseconds.rem_euclid(100))
             );
             match filetime_to_unix_nanoseconds(ticks) {
                 Some(exact) => prop_assert_eq!(unix_nanoseconds_to_filetime(exact), ticks),
@@ -4282,6 +4282,11 @@ mod windows_clone_tests {
         assert_eq!(unix_nanoseconds_to_filetime(0), UNIX_EPOCH_FILETIME);
         assert_eq!(unix_nanoseconds_to_filetime(-1), UNIX_EPOCH_FILETIME - 1);
         assert_eq!(unix_nanoseconds_to_filetime(99), UNIX_EPOCH_FILETIME);
+        // Rounding the earliest nanosecond down to a tick leaves the range.
+        assert_eq!(
+            filetime_to_unix_nanoseconds(unix_nanoseconds_to_filetime(i64::MIN)),
+            None
+        );
         assert_eq!(filetime_to_unix_nanoseconds(i64::MAX), None);
         assert_eq!(filetime_to_unix_nanoseconds(i64::MIN), None);
         // 1601 itself precedes the earliest `i64` nanosecond (1677).
