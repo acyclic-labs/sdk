@@ -37,4 +37,5 @@ pub const PATHS: &[&str] = &[
     "rust/crates/sdk-generation/src/compiled_generator_inputs.rs",
     "rust/crates/sdk-generation/src/main.rs",
     "rust/crates/sdk-generation/src/native_targets.rs",
+    "rust/crates/sdk-generation/src/scenarios.rs",
 ];

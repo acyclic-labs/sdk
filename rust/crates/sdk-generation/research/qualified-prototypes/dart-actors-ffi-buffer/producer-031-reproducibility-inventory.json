@@ -39,8 +39,8 @@
   "installedDartPackage": {
     "path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007",
     "cleanArchive": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/actors-uniffi-dart-clean-package-031-20261007.zip",
-    "cleanArchiveSha256": "b3d95db58248ae9828cc5cabaf756a074472f6dabe43e2caad40907d152c581c",
-    "cleanArchiveBytes": 6031220,
+    "cleanArchiveSha256": "02CA64D74530AC8BBB6C745B0FE2812056B4B714236F49BD67E6D83E8C05CB36",
+    "cleanArchiveBytes": 5994867,
     "pubspecSha256": "CEBB5F962B21A01919F0B9B4EF3FCAAA55AA618DB061F1C263A7FD0D2119E483",
     "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
     "dartSdk": "3.7.0-209.1.beta",
@@ -68,29 +68,29 @@
   },
   "crossPlatformQualification": {
     "windows": {
-      "status": "qualified-installed-probe",
+      "status": "qualified-installed-remote",
       "nativeArtifact": "Windows x86_64 DLL",
       "nativeSha256": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402",
-      "evidence": "all eight remote operations, BigInt/error/presence, typed cancellation, server abort; clean external package local probe/analyzer also passed"
+      "evidence": "all eight remote operations, BigInt/error/presence, typed cancellation and server abort; clean external package probe passed"
     },
     "wslLinux": {
-      "status": "qualified-installed-local-probe",
+      "status": "qualified-installed-remote",
       "environment": "Ubuntu WSL2 x86_64; rustc 1.98.1; cargo 1.98.1; pinned Dart 3.7.0-209.1.beta",
       "metadata": "cargo metadata --locked passed; 2 workspace members",
       "producerBuild": "cargo build --locked -p acyclic-actors-uniffi --release passed",
       "nativeArtifact": "/tmp/actors-dart-linux-target/release/libacyclic_actors_uniffi.so",
       "nativeSha256": "03d2494b9e7df06deebdd6cd74030a5da8055c2ff7c27eeab86ae54754e268203",
-      "runtime": "clean external package dart analyze passed for local/all8/cancel probes; local BigInt/error/presence/cancellation probe passed"
+      "runtime": "clean external package all-eight remote operations and in-flight cancellation ran against the task-owned TLS fixture; BigInt 0/2^63/2^64-1, nullable checkpointUnixMillis, typed semantic error, BindingErrorExceptionCancelled, server active=0 after abort"
     },
     "sshMacOS": {
-      "status": "qualified-installed-local-probe",
+      "status": "qualified-installed-remote",
       "host": "ivar",
       "environment": "macOS 15.6 arm64; cargo +1.98.1; pinned Dart 3.7.0-209.1.beta",
       "metadata": "cargo +1.98.1 metadata --locked passed; 2 workspace members",
       "producerBuild": "cargo +1.98.1 build --locked -p acyclic-actors-uniffi --release passed",
       "nativeArtifact": "/tmp/producer-macos-target/release/libacyclic_actors_uniffi.dylib",
       "nativeSha256": "10e2144bd7bee9a0f636224ac44897d97ee736c2e881dea15a1997da3b89fdc7",
-      "runtime": "clean external package dart analyze passed for local/all8/cancel probes; local BigInt/error/presence/cancellation probe passed"
+      "runtime": "clean external package all-eight remote operations and in-flight cancellation ran against the task-owned TLS fixture; BigInt 0/2^63/2^64-1, nullable checkpointUnixMillis, typed semantic error, BindingErrorExceptionCancelled, server active=0 after abort"
     }
   },
   "requirements": {
@@ -99,7 +99,7 @@
     "typedErrors": true,
     "nullablePresence": true,
     "inflightCancellationAndServerAbort": true,
-    "remoteCohort": "Windows installed package all eight remote operations plus actual in-flight cancellation/server abort; Linux/macOS package probes include all8/cancel entry points and require the conformance fixture to run transport calls"
+    "remoteCohort": "All three installed cohorts ran the same eight remote operations; WSL Linux and authorized ivar macOS also ran the actual pending InspectActor cancellation with server active=0 after abort; Windows installed cancellation/server-abort evidence is in the source receipt."
   },
   "hostCheckout": {
     "root": "Q:/sdk",
@@ -127,5 +127,7 @@
       "bytes": 211890453,
       "sha256": "6b7b192988803409fb7bbccdd9a6ab3e785beeb9fd86ead1c7b67065836acb18"
     }
-  }
+  },
+  "runtimeReceipt": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/dart-installed-cross-platform-runtime.receipt.json",
+  "archiveQualification": "archive SHA256 before/after runtime qualification: 02CA64D74530AC8BBB6C745B0FE2812056B4B714236F49BD67E6D83E8C05CB36; bytes 5994867"
 }

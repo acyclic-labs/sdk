@@ -1,0 +1,1 @@
+interface Reader { [Async] void next(); }; namespace probe { Reader new_reader(); };

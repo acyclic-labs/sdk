@@ -1,0 +1,4 @@
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/ruby-negative-typed-20261007.rb
+RUBY_NEGATIVE_TYPE_PASS=TypeError:no implicit conversion of 123 into String
+RUBY_NEGATIVE_RANGE_PASS=RangeError:u64 requires 0 <= value < 18446744073709551616
+RUBY_TYPED_ERROR_PASS=AcyclicActorsUniffi::BindingError::Service:AcyclicActorsUniffi::BindingError::Service(grpc_code=16, service_code=nil, detail_message="service rejected operation")

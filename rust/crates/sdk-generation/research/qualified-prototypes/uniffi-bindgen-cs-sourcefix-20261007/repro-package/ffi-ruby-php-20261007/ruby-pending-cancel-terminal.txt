@@ -1,0 +1,3 @@
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/ruby-pending-cancel-20261007.rb
+RUBY_PENDING_CANCEL_PASS=Timeout::Error:ruby pending cancellation
+RUBY_PENDING_CANCEL_CLEANUP_PASS

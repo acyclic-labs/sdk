@@ -59,6 +59,14 @@ range`, `expected a JavaScript number`, or one of the seven exact N-API
 Any other conversion or policy string remains a downstream error, so stale or
 coercing native artifacts cannot be mistaken for a typed boundary rejection.
 
+For installed packages that expose the generated declarations, the runner also
+creates one ephemeral volume in each runtime and validates its acquisition work
+receipt. The expected counter names come from the installed
+`BrowserWorkCounters` declaration; every WASM bigint and every N-API decimal
+counter must be present, with no extras or omissions, and both runtimes must
+expose the same generated field set. This follows additions to the Rust
+counter model without a hardcoded field count.
+
 The required matrix is:
 
 | Class | Values |

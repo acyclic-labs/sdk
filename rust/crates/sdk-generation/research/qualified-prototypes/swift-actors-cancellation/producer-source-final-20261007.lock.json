@@ -1,0 +1,93 @@
+{
+  "schema": "acyclic.swift-maintained-uniffi-producer-lock/v2",
+  "producerWorkspace": "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+  "producerRoot": "rust/crates/actors-uniffi",
+  "semanticSourceRoots": [
+    "rust/crates/actors-uniffi",
+    "rust/crates/actors"
+  ],
+  "fingerprintAlgorithm": "sha256 of sorted relative-path TAB file-sha256 lines with trailing newline",
+  "fingerprint": "E9DC7271C3A051368AB6BDC23582E142DDCD25AF07A9EA22C0FB1E3F15B4AD4C",
+  "files": [
+    {
+      "path": "rust/crates/actors-uniffi/Cargo.toml",
+      "sha256": "03F3A7B92277A06FB9C544B711571840DBD6625F55D2D457CF1B3129586C5EBD"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/bin/actors-uniffi-bindgen.rs",
+      "sha256": "F7A2DD11FB370E9595BDFA6C32FC41A9B67A60BBAB06EC711CB7A03EB873FFA6"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/src/lib.rs",
+      "sha256": "116288CF44F352BDC5C1B395AF66B7F230AEAC25F4F9E8C7C466F38375BF4A98"
+    },
+    {
+      "path": "rust/crates/actors-uniffi/uniffi.toml",
+      "sha256": "ADAB4F663D8E89E40167715922CBA7EAD525F9E110C9C55C7960E7C69A8CE824"
+    },
+    {
+      "path": "rust/crates/actors/build.rs",
+      "sha256": "B75A8500213B502E08512E3C116B5EF962A8C53A69F4BA4FE6A5636A3D7B356D"
+    },
+    {
+      "path": "rust/crates/actors/Cargo.toml",
+      "sha256": "499A3DDA1B55A2CB3659E3FE9B08608253FBF6DB5AB4D18BE4B229A763E9E0FE"
+    },
+    {
+      "path": "rust/crates/actors/examples/actors-http-routes.rs",
+      "sha256": "4953BD466E38300B82E967C2EC2FFE664033E06FB28DA09FB7343A3864100511"
+    },
+    {
+      "path": "rust/crates/actors/examples/conformance-certificate.rs",
+      "sha256": "1707589419E871FCDFCFCC1301E6EDD51F41F6421FF845A8CC1F8349A39A5973"
+    },
+    {
+      "path": "rust/crates/actors/examples/transport-conformance.rs",
+      "sha256": "C622C21747B41C1C37DE2B5D76A2966F05FDA35C66FFD1E2AEB0D454A1FED353"
+    },
+    {
+      "path": "rust/crates/actors/src/client.rs",
+      "sha256": "750EA049379898E7A1BBADCA06F6FEF65CFD6068A570E7E74F66411F5443131B"
+    },
+    {
+      "path": "rust/crates/actors/src/codegen.rs",
+      "sha256": "7ECF0274BCFB916F8AC8BE031B3B5D02817F640047D7FCEB9CD0641F82AC33C6"
+    },
+    {
+      "path": "rust/crates/actors/src/contract_definitions.rs",
+      "sha256": "59C6199FF058A93734E248A1FA1746858003B728424C5E6D12874B7958940209"
+    },
+    {
+      "path": "rust/crates/actors/src/contract.rs",
+      "sha256": "40AC5645BADC1997100D8D110BD59077F9CB844C72289C49F57BAB3609AF0B76"
+    },
+    {
+      "path": "rust/crates/actors/src/domain.rs",
+      "sha256": "4FAFEDCEC9C205B13F700903E01F9C7B3D21AD60F2982A74624C4EEA41DE49F3"
+    },
+    {
+      "path": "rust/crates/actors/src/domain/kani_proofs.rs",
+      "sha256": "1B8E6785B888135993394B3C4CC9E9A6C544C0645466E5C71D67AF465B1CF462"
+    },
+    {
+      "path": "rust/crates/actors/src/grpc.rs",
+      "sha256": "C97C0FC82B2864979FEF4894C4340B7AC40308439BB2997991CB39DCF0CB6F57"
+    },
+    {
+      "path": "rust/crates/actors/src/http.rs",
+      "sha256": "A95B206C31F5816C9460EE46302C76B874EB4526BB851BEAD9EC483A6D2E15CB"
+    },
+    {
+      "path": "rust/crates/actors/src/lib.rs",
+      "sha256": "D28AB16915AA00899C4BB0DFAA5D6D9A107B9B31E07E5CCD5485B7BDD36C7FDE"
+    },
+    {
+      "path": "rust/crates/actors/src/wire.rs",
+      "sha256": "5773FBB750C9FAB97F177C86FD816D3EAEC175C806E30AC4C8ADD07DF363BD77"
+    },
+    {
+      "path": "rust/crates/actors/tests/descriptor_compatibility.rs",
+      "sha256": "8313512701783D71C54C1736FA30FEF7467E266FBCCCADE1D633C7713092719A"
+    }
+  ]
+}

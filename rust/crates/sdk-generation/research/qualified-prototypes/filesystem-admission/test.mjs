@@ -80,7 +80,10 @@ const makeFixture = async ({ mode = "normal", archiveJs = undefined, nativeName 
   await mkdir(nativeRoot, { recursive: true });
   await mkdir(nativeArchiveRoot, { recursive: true });
   await mkdir(join(archiveRoot, "generated", "wasm"), { recursive: true });
+  await mkdir(join(packageRoot, "dist"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n');
+  await writeFile(join(packageRoot, "dist", "contracts.js"), 'export function portableVolumeOptions(lifecycle) { return { lifecycle }; }\n');
+  await writeFile(join(wasmRoot, "acyclic_fs_wasm.d.ts"), "export interface BrowserWorkCounters {\n    first: bigint;\n    second: bigint;\n}\n");
 
   const mutationTarget = JSON.stringify(mode === "mutate-source" ? join(ROOT, "Cargo.toml") : join(wasmRoot, "acyclic_fs_wasm_bg.wasm"));
   const wasmSource = `
@@ -91,6 +94,12 @@ const admission = "expected a finite integer in the u32 range";
 export default async function init() {}
 export function openMemoryFs() {
   return {
+    async createVolume() {
+      const acquisitionWork = ${JSON.stringify(mode)} === "work-mismatch"
+        ? { first: 0n }
+        : { first: 0n, second: 0n };
+      return { acquisitionWork, free() {} };
+    },
     async createWorkspace() {
       return { async liveRebase(_base, value) {
         if ((${JSON.stringify(mode)} === "mutate-artifact" || ${JSON.stringify(mode)} === "mutate-source") && !mutated) {
@@ -129,7 +138,14 @@ function workspace() {
     throw new Error(value === 0 ? "workspace join exceeds its configured bound" : "workspace is not a fork");
   } };
 }
-module.exports = { NativeFs: { async open() { return { async createWorkspace() { return workspace(); }, cancel() {} }; } } };
+module.exports = { NativeFs: { async open() { return {
+  async createVolume() {
+    const acquisitionWork = mode === "work-mismatch" ? { first: "0" } : { first: "0", second: "0" };
+    return { acquisitionWorkJson: JSON.stringify(acquisitionWork), free() {} };
+  },
+  async createWorkspace() { return workspace(); },
+  cancel() {},
+}; } } };
 `;
   await writeFile(nativeBinding, nativeSource);
   await writeFile(join(nativeArchiveRoot, nativeName), archiveNative ?? nativeSource);
@@ -252,6 +268,16 @@ const selectedSourceLabel = "Cargo.toml";
       assert.ok(await readFile(napiType.receipt));
     } finally {
       await rm(napiType.fixture, { recursive: true, force: true });
+    }
+
+    progress("work receipt field mismatch");
+    const workMismatch = await makeFixture({ mode: "work-mismatch" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, workMismatch));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /wasm work receipt fields differ from generated Rust declaration/);
+    } finally {
+      await rm(workMismatch.fixture, { recursive: true, force: true });
     }
 
     progress("artifact mutation fixture");

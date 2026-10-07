@@ -712,6 +712,13 @@ pub fn project_into_docs(
     profiles: &BTreeMap<ProfileId, ProfileSpec>,
 ) -> Result<ProfileAvailability, ProfileError> {
     let mut lookup = BTreeMap::<(String, ProjectionKey), String>::new();
+    // A public re-export is represented by rustdoc's `use` node in the
+    // existing catalog, while the profile extractor quite correctly sees the
+    // referenced definition kind (`struct`, `enum`, ...). Keep an additional
+    // path/signature index so this representation detail cannot hide a
+    // binding-only item. The rendered signature remains part of the key, so
+    // overloads are still kept distinct.
+    let mut reexport_lookup = BTreeMap::<(String, String, String), Vec<(String, String)>>::new();
     for family in &data.families {
         for item in &family.items {
             let key = ProjectionKey {
@@ -720,6 +727,10 @@ pub fn project_into_docs(
                 signature: item.signature.clone(),
             };
             lookup.insert((family.crate_name.clone(), key.clone()), item.id.clone());
+            reexport_lookup
+                .entry((family.crate_name.clone(), item.path.clone(), item.signature.clone()))
+                .or_default()
+                .push((item.kind.clone(), item.id.clone()));
         }
     }
 
@@ -768,7 +779,14 @@ pub fn project_into_docs(
             .split_once("::")
             .map_or(item.key.path.as_str(), |(crate_name, _)| crate_name)
             .to_owned();
-        let item_id = lookup.get(&(crate_name, item.key.clone()));
+        let item_id = lookup
+            .get(&(crate_name.clone(), item.key.clone()))
+            .cloned()
+            .or_else(|| {
+                let candidates = reexport_lookup
+                    .get(&(crate_name.clone(), item.key.path.clone(), item.key.signature.clone()))?;
+                (candidates.len() == 1).then(|| candidates[0].1.clone())
+            });
         let Some(item_id) = item_id else {
             return Err(ProfileError::InvalidRustdoc(format!(
                 "profile item {} is absent from the generated docs catalog",
@@ -788,7 +806,7 @@ pub fn project_into_docs(
             capabilities: profile_capabilities(owner.kind, &profile.target),
         };
         entries
-            .entry((item_id.clone(), item.key))
+            .entry((item_id, item.key))
             .or_default()
             .insert(availability);
     }

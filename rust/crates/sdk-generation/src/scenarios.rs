@@ -5,12 +5,15 @@
 //! can use [`validate`] before compiling or executing a scenario and can bind
 //! the returned source digest to its generation receipt.
 
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ScenarioMode {
     /// Compile the Rust example with the pinned, locked toolchain.
+    #[allow(dead_code)]
     Compile,
     /// Execute against the local, self-contained fixture.
     ExecuteLocal,
@@ -19,7 +22,8 @@ pub enum ScenarioMode {
     ExecuteWithEndpoint,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ScenarioKind {
     ActorsUnary,
     StreamStreaming,
@@ -27,7 +31,8 @@ pub enum ScenarioKind {
     MachinesTypescriptConsumer,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Scenario {
     pub id: &'static str,
     pub family: &'static str,
@@ -95,6 +100,73 @@ pub struct ScenarioSource {
     pub scenario: Scenario,
     pub source_sha256: String,
     pub source_files: Vec<PathBuf>,
+}
+
+/// The source-backed portion emitted in the generation output.
+///
+/// `source_files` is intentionally kept out of this record: it contains
+/// checkout-specific absolute paths and is used only to extend the generator
+/// source closure. The repository-relative source identity is already carried
+/// by [`Scenario::source_path`] and the digest binds the record to its Rust
+/// inputs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioRecord {
+    pub id: &'static str,
+    pub family: &'static str,
+    pub package: &'static str,
+    pub example: &'static str,
+    pub source_path: &'static str,
+    pub operation: &'static str,
+    pub kind: ScenarioKind,
+    pub mode: ScenarioMode,
+    pub features: &'static [&'static str],
+    pub source_sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioCatalog {
+    pub schema: &'static str,
+    pub scenarios: Vec<ScenarioRecord>,
+}
+
+pub const CATALOG_SCHEMA: &str = "acyclic.sdk.scenarios.v1";
+
+pub fn catalog(sources: &[ScenarioSource]) -> ScenarioCatalog {
+    ScenarioCatalog {
+        schema: CATALOG_SCHEMA,
+        scenarios: sources
+            .iter()
+            .map(|source| ScenarioRecord {
+                id: source.scenario.id,
+                family: source.scenario.family,
+                package: source.scenario.package,
+                example: source.scenario.example,
+                source_path: source.scenario.source_path,
+                operation: source.scenario.operation,
+                kind: source.scenario.kind,
+                mode: source.scenario.mode,
+                features: source.scenario.features,
+                source_sha256: source.source_sha256.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// Return the repository-relative paths that must be present in the fixed
+/// generator source closure for these scenarios.
+pub fn source_paths(root: &Path, sources: &[ScenarioSource]) -> Result<Vec<PathBuf>, Error> {
+    let mut paths = std::collections::BTreeSet::new();
+    for source in sources {
+        for path in &source.source_files {
+            let relative = path.strip_prefix(root).map_err(|_| {
+                Error::Invalid(format!("scenario source escapes root: {}", path.display()))
+            })?;
+            paths.insert(relative.to_owned());
+        }
+    }
+    Ok(paths.into_iter().collect())
 }
 
 #[derive(Debug, PartialEq, Eq)]

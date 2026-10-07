@@ -147,6 +147,20 @@ fn exported_path<'a>(tokens: impl Iterator<Item = &'a Token>) -> Result<Vec<Stri
             Token::Whitespace if need_component => {
                 index += 1;
             }
+            // public-api renders receiver-qualified methods whose receiver is
+            // borrowed as `fn &crate::Type::method(...)`. The reference is a
+            // signature qualifier, not part of the exported path. Preserve
+            // the path so binding-only getters and cancellation helpers are
+            // projected with their exact rendered signature.
+            Token::Symbol(qualifier) if need_component && (qualifier == "&" || qualifier == "*") => {
+                index += 1;
+            }
+            Token::Keyword(qualifier) if need_component && qualifier == "mut" => {
+                index += 1;
+            }
+            Token::Lifetime(_) if need_component => {
+                index += 1;
+            }
             Token::Identifier(name)
             | Token::Generic(name)
             | Token::Function(name)
@@ -404,6 +418,21 @@ mod tests {
         assert_eq!(
             exported_path(array_receiver.iter()).expect("array receiver path"),
             ["[u8; 32]", "from"]
+        );
+
+        let borrowed_receiver = [
+            Token::Kind("fn".into()),
+            Token::Whitespace,
+            Token::Symbol("&".into()),
+            Token::Identifier("crate_name".into()),
+            Token::Symbol("::".into()),
+            Token::Type("Cancellation".into()),
+            Token::Symbol("::".into()),
+            Token::Function("type_name".into()),
+        ];
+        assert_eq!(
+            exported_path(borrowed_receiver.iter()).expect("borrowed receiver path"),
+            ["crate_name", "Cancellation", "type_name"]
         );
     }
     #[test]

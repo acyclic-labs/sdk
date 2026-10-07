@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package>
+  <metadata minClientVersion="5.0">
+    <id>Acyclic.Actors</id>
+    <version>0.2.0</version>
+    <authors>Rust Foundation Actors</authors>
+    <owners>Rust Foundation Actors</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <license type="expression">Apache-2.0</license>
+    <description>Generated C# binding for the Rust-owned Actors UniFFI facade.</description>
+    <tags>rust actors uniffi csharp</tags>
+    <repository type="git" url="https://github.com/NordSecurity/uniffi-bindgen-cs" commit="e10ce410eb3a10cc19c7928b93ea8d84e038c034" />
+    <dependencies>
+      <group targetFramework="net8.0" />
+    </dependencies>
+  </metadata>
+</package>

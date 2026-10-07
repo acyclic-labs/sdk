@@ -1,0 +1,22 @@
+Kani code-generation-only check
+Toolchain:
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+RUSTUP_TOOLCHAIN=nightly-2026-08-21
+
+Command:
+cd /mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/kani-exact-u32-f64-latest265-20261007
+RUSTC_WRAPPER= CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true
+CARGO_TARGET_DIR=/tmp/kani-exact-u32-f64-latest265
+/tmp/kani68/bin/cargo-kani --manifest-path Cargo.toml
+  --package kani-exact-u32-f64-latest265-20261007
+  --bin kani_exact_u32_f64 --only-codegen -Z unstable-options
+
+Result:
+Finished dev profile [unoptimized + debuginfo] target(s) in 6m 34s
+The command exited 0 according to the PTY tool result.
+No CBMC verification was requested or performed. The shell marker was malformed by
+PowerShell interpolation and emitted CODEGEN_TERMINAL_EXIT= with no value; the PTY
+tool itself reported exit_code 0. A subsequent process inventory must confirm no
+additional solver was launched.
+

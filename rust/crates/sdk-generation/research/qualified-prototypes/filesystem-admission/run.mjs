@@ -360,12 +360,58 @@ const classify = (error, runtime) => {
 };
 const values = [...EDGE_VALUES, ...REJECT_VALUES];
 
+let generatedWorkCounterFields;
+const installedWorkCounterFields = async () => {
+  if (generatedWorkCounterFields !== undefined) return generatedWorkCounterFields;
+  const declarationPath = join(packageRoot, "generated", "wasm", "acyclic_fs_wasm.d.ts");
+  let declaration;
+  try {
+    declaration = await readFile(declarationPath, "utf8");
+  } catch (error) {
+    // The regression fixtures intentionally contain only executable stubs.
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+  const body = declaration.match(/export interface BrowserWorkCounters \{([\s\S]*?)\n\}/)?.[1];
+  const fields = body === undefined
+    ? []
+    : [...body.matchAll(/^\s+([A-Za-z][A-Za-z0-9]*):\s*bigint;\s*$/gm)].map(match => match[1]);
+  if (fields.length === 0 || new Set(fields).size !== fields.length) {
+    throw new Error("generated BrowserWorkCounters declaration has no unique bigint fields");
+  }
+  generatedWorkCounterFields = fields;
+  return fields;
+};
+const validateWorkReceipt = (value, expectedFields, label) => {
+  if (expectedFields === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} work receipt is not an object`);
+  }
+  const actualFields = Object.keys(value).sort(compareCodepoints);
+  const expected = [...expectedFields].sort(compareCodepoints);
+  if (JSON.stringify(actualFields) !== JSON.stringify(expected)) {
+    throw new Error(`${label} work receipt fields differ from generated Rust declaration: expected ${expected.join(",")}, got ${actualFields.join(",")}`);
+  }
+  for (const field of expectedFields) {
+    const fieldValue = value[field];
+    if (typeof fieldValue !== "bigint" && !(typeof fieldValue === "string" && /^\d+$/.test(fieldValue))) {
+      throw new Error(`${label} work receipt field ${field} is not an exact bigint/decimal value`);
+    }
+  }
+};
+const portableVolumeOptions = async lifecycle => {
+  const contractsPath = join(packageRoot, "dist", "contracts.js");
+  const contracts = await import(pathToFileURL(contractsPath).href);
+  return contracts.portableVolumeOptions(lifecycle);
+};
+
 async function qualifyWasm() {
   const jsPath = join(packageRoot, "generated", "wasm", "acyclic_fs_wasm.js");
   const wasmPath = join(packageRoot, "generated", "wasm", "acyclic_fs_wasm_bg.wasm");
   const module = await import(pathToFileURL(jsPath).href);
   await module.default({ module_or_path: await readFile(wasmPath) });
   const result = [];
+  let workFields;
   for (const [label, value] of values) {
     const fs = module.openMemoryFs({
       maximumObjectBytes: 1024 * 1024,
@@ -386,6 +432,26 @@ async function qualifyWasm() {
     }
     result.push({ label, value: describe(value), outcome });
   }
+  if (typeof module.openMemoryFs === "function") {
+    const fs = module.openMemoryFs({
+      maximumObjectBytes: 1024 * 1024,
+      maximumMemoryBytes: 64 * 1024 * 1024,
+      objectCache: { maximumEntries: 8, maximumBytes: 1024, maximumInFlight: 2, maximumWaitersPerObject: 2 },
+    });
+    try {
+      if (typeof fs.createVolume === "function") {
+        const volume = await fs.createVolume(await portableVolumeOptions("ephemeral"));
+        try {
+          workFields = await installedWorkCounterFields();
+          validateWorkReceipt(volume.acquisitionWork, workFields, "wasm");
+        } finally {
+          volume.free?.();
+        }
+      }
+    } finally {
+      fs.close?.();
+    }
+  }
   return {
     runtime: "wasm",
     artifacts: {
@@ -393,6 +459,7 @@ async function qualifyWasm() {
       wasm: { path: "generated/wasm/acyclic_fs_wasm_bg.wasm", sha256: await digest(wasmPath) },
     },
     results: result,
+    work_fields: workFields,
   };
 }
 
@@ -407,6 +474,7 @@ async function qualifyNative() {
       maximumWaitersPerObject: 2,
     });
     const result = [];
+    let workFields;
     try {
       for (const [label, value] of values) {
         const workspace = await fs.createWorkspace(`admission-${label}`);
@@ -419,6 +487,16 @@ async function qualifyNative() {
         }
         result.push({ label, value: describe(value), outcome });
       }
+      if (typeof fs.createVolume === "function") {
+        const volume = await fs.createVolume(await portableVolumeOptions("ephemeral"));
+        try {
+          workFields = await installedWorkCounterFields();
+          const work = JSON.parse(volume.acquisitionWorkJson);
+          validateWorkReceipt(work, workFields, "napi");
+        } finally {
+          volume.free?.();
+        }
+      }
     } finally {
       fs.cancel();
     }
@@ -426,6 +504,7 @@ async function qualifyNative() {
       runtime: "napi",
       artifacts: { binding: { path: basename(nativeBinding), sha256: await digest(nativeBinding) } },
       results: result,
+      work_fields: workFields,
     };
   } finally {
     await rm(temporary, { recursive: true, force: true });
@@ -537,6 +616,13 @@ const packageArchiveFiles = {
 };
 const nativeArchiveBinding = await validateNativeArchiveBinding();
 const runtimes = [await qualifyWasm(), await qualifyNative()];
+const workSurfaces = runtimes.filter(runtime => runtime.work_fields !== undefined);
+if (workSurfaces.length > 1) {
+  const firstFields = JSON.stringify(workSurfaces[0].work_fields);
+  if (workSurfaces.some(runtime => JSON.stringify(runtime.work_fields) !== firstFields)) {
+    throw new Error("WASM and N-API work receipt fields differ from one generated Rust declaration");
+  }
+}
 const artifactsAfter = await captureQualificationArtifacts();
 assertStableQualificationArtifacts(artifactsBefore, artifactsAfter);
 const failures = [];

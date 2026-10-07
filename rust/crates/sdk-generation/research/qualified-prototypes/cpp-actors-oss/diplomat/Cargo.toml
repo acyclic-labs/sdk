@@ -1,0 +1,16 @@
+[package]
+name = "cpp-actors-diplomat-oss"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+acyclic-actors = { path = "../../../../../actors", version = "0.2.0" }
+diplomat = "=0.16.1"
+diplomat-runtime = "=0.16.0"

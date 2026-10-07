@@ -499,8 +499,6 @@ fn validate_receipt(
             serde_json::from_slice(&bytes).map_err(|_| Error::ReceiptMalformed {
                 path: receipt.to_owned(),
             })?;
-        eprintln!("DEBUG expected src_rev={} inv={} gen_src={} artifact={} hash={} bytes={}", source_revision, source_inventory.sha256, generator.source_sha256, artifact.path.display(), artifact.sha256, artifact.bytes);
-        eprintln!("DEBUG actual src_rev={:?} inv={:?} toolchain={:?} receipt_artifact={:?}", document.source_revision, document.source_inventory_sha256, document.toolchain.as_ref().and_then(|t| t.uniffi_source_sha256.as_deref()), document.artifacts.as_ref().and_then(|a| a.get(receipt_artifact_key(language))).map(|x| (&x.path,&x.sha256,&x.bytes)));
         // Bind the claimed runtime scope, not merely a PASS substring in a log.
         if document.status.as_deref() != Some("PASS")
             || qualification.operations.is_empty()

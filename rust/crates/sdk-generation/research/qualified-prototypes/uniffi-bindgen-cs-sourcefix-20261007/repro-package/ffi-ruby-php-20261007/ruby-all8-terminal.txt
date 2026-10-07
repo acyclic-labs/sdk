@@ -1,0 +1,11 @@
+$ GEM_HOME=/tmp/acyclic-ruby-gems GEM_PATH=/tmp/acyclic-ruby-gems ruby /tmp/ruby-all8-20261007.rb
+connect
+create
+update
+inspect
+inspect-request
+add
+remove
+resume
+checkpoint
+RUBY_GENERATED_ALL8_PASS

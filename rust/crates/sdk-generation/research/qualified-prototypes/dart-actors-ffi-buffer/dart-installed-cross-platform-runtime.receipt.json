@@ -1,0 +1,75 @@
+{
+  "artifact": "actors-uniffi-dart-installed-cross-platform-runtime-qualification",
+  "capturedAt": "2026-10-07",
+  "sourceBoundPackage": {
+    "producerSourceAuthorityRevision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "producerSourceArchive": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/producer-source-snapshot-031.zip",
+    "producerSourceArchiveSha256": "02F0BAC812CECF3105E9967C72674C74FC01C21855ECB4AAEE91E1B4513989D7",
+    "generatorPatchSha256": "BAC0010C222B7178ED0F086BF1B566D4C01D411AAAC9055F928C42B8AFD28204",
+    "generatedDartSha256": "0F7EB32058AAF94B6365780F0A050CCCC1218290BF4FB2965E243E9818B82FA6",
+    "cleanArchive": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/actors-uniffi-dart-clean-package-031-20261007.zip",
+    "archiveSha256BeforeQualification": "915559A0548C6F3886CA13F66AB2794FCFE00DF6CE07C40DBAA9963B82D6D145",
+    "archiveSha256AfterQualification": "915559A0548C6F3886CA13F66AB2794FCFE00DF6CE07C40DBAA9963B82D6D145",
+    "archiveBytes": 5994862,
+    "archiveContents": 11
+  },
+  "fixture": {
+    "taskOwnedRoot": "Q:/sdk/work/dart-actors-fixture-tasklocal-20261007",
+    "canonicalFixtureSource": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/typescript/packages/actors/test/grpc-conformance-fixture.mjs",
+    "caSha256": "d551575bbac55676efdc6903088f5d1a6cc5ec1cfd50762ea0664e9fe0e31038",
+    "normalOptions": {
+      "wslEndpoint": "https://localhost:45735",
+      "macEndpoint": "https://localhost:59760",
+      "windowsClient": "Windows Dart client reached the WSL fixture endpoint"
+    },
+    "pendingOptions": {
+      "wslEndpoint": "https://localhost:34975",
+      "macEndpoint": "https://localhost:59766"
+    }
+  },
+  "platforms": {
+    "windows-x64": {
+      "status": "qualified-installed-remote",
+      "nativeSha256": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402",
+      "all8Log": "Q:/sdk/work/dart-windows-all8.out",
+      "cancellation": "previous installed-package run reported BindingErrorExceptionCancelled and fixture RECEIVED then ABORTED; source receipt Q:/sdk/work/dart-cancel-server.log"
+    },
+    "wsl-linux-x64": {
+      "status": "qualified-installed-remote",
+      "nativeSha256": "03d2494b9e7df06deebdd6cd74030a5da8055c2ff7c27eeab86ae54754e268203",
+      "all8Log": "Q:/sdk/work/dart-linux-all8.out",
+      "cancelLog": "Q:/sdk/work/dart-linux-cancel.out",
+      "assertions": [
+        "all eight operations reached TLS fixture",
+        "u64 0, 2^63, 2^64-1",
+        "typed semantic error",
+        "nullable checkpointUnixMillis",
+        "BindingErrorExceptionCancelled",
+        "InspectActor entered active=1 then aborted active=0"
+      ],
+      "cancelMarker": "Q:/sdk/work/dart-linux-cancel-marker.out"
+    },
+    "ssh-ivar-macos-arm64": {
+      "status": "qualified-installed-remote",
+      "host": "ivar",
+      "nativeSha256": "10e2144bd7bee9a0f636224ac44897d97ee736c2e881dea15a1997da3b89fdc7",
+      "all8Log": "Q:/sdk/work/dart-macos-all8.out",
+      "cancelLog": "Q:/sdk/work/dart-macos-cancel.out",
+      "assertions": [
+        "all eight operations reached TLS fixture",
+        "u64 0, 2^63, 2^64-1",
+        "typed semantic error",
+        "nullable checkpointUnixMillis",
+        "BindingErrorExceptionCancelled",
+        "InspectActor entered active=1 then aborted active=0"
+      ],
+      "cancelMarker": "Q:/sdk/work/dart-macos-cancel-marker.out"
+    }
+  },
+  "sdk": {
+    "version": "3.7.0-209.1.beta",
+    "reason": "pubspec constraint starts at 3.7.0-0 and this exact pinned archive is the reproducible BigInt environment used for the Windows, WSL Linux, and ivar macOS runs",
+    "linuxArchiveSha256": "3b8eee768198b0dec627afbfea7db0c0004d2c55d1ca999c7061590ebaade7cf",
+    "macArchiveSha256": "6b7b192988803409fb7bbccdd9a6ab3e785beeb9fd86ead1c7b67065836acb18"
+  }
+}

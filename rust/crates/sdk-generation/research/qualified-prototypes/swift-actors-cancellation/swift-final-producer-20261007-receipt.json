@@ -1,0 +1,30 @@
+{
+  "schema": "acyclic.swift-final-producer-verification/v1",
+  "date": "2026-10-07",
+  "producer_workspace": "Q:\\sdk\\work\\sdkgen-main-actual03bb",
+  "producer_lock": "producer-source-final-20261007.lock.json",
+  "producer_fingerprint": "E9DC7271C3A051368AB6BDC23582E142DDCD25AF07A9EA22C0FB1E3F15B4AD4C",
+  "producer_dll_sha256": "CC1CCF87020FE7345D82279D370E3BE22701B27ACE421C802AD8C3B832399BEF",
+  "compile": {
+    "cargo_check_features_bindgen": "PASS",
+    "release_cdylib": "PASS",
+    "start_proto_alias": "PRESENT"
+  },
+  "generated": {
+    "swift_sha256": "4F55C84E0A2CF3586F5F94CFEEA18AD9259DE96CD30610CDB9EEF3E04800EB43",
+    "uniffi_swift_sha256": "F08BDB43E3EE8D78CF0404FEE5909D61933C004039954758A24A8AE79611DDE8",
+    "header_sha256": "E4F3AF42A00C9D2E73668EFD2C3874DF4C9D569BACDDCFC09EF6F1F093001C0C",
+    "modulemap_sha256": "5F7D09F8908EC3C7C8AD568B9DE1C91B60C39B69B04D5FC7A7904E0BD98604F5"
+  },
+  "strong_type_checks": {
+    "actor_id_opaque_validated_constructor": "FAIL_EMITTED_TYPEALIAS_STRING",
+    "positive_u64_rejects_zero": "FAIL_EMITTED_TYPEALIAS_UINT64",
+    "code_sha256_validated": "FAIL_EMITTED_TYPEALIAS_DATA",
+    "immutable_records": "FAIL_EMITTED_PUBLIC_VAR",
+    "full_u64": "PASS",
+    "exhaustive_oneof_decode": "PASS",
+    "current_head_false_rejected_at_swift_constructor": "FAIL_BOOL_PAYLOAD_UNVALIDATED"
+  },
+  "qualification": "BLOCKED_ON_PRODUCER_TYPE_SURFACE",
+  "evidence": "swift-final-type-verification-20261007.md"
+}

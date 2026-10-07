@@ -1,0 +1,16 @@
+[package]
+name = "kani-exact-u32-f64-latest265-20261007"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-fs = { path = "../../../../../../../../rust-sdk-docs-source/sdk/work/filesystem-main-port-latest265/rust/crates/filesystem", default-features = false }
+
+[[bin]]
+name = "kani_exact_u32_f64"
+path = "src/bin/kani_exact_u32_f64.rs"
+
+

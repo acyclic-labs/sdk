@@ -16,7 +16,7 @@ goal can be called. A row closes only with reproducible current-main evidence.
 | Actors authority | Main contains generated Actors proto/tonic sources plus grpc/http adapters. The Rust domain/contract source used in the C foundation worktree is not present on this main snapshot. | Existing generated/runtime surface; Rust semantic authority migration remains open. |
 | Rust documentation | PR258 supplies Cargo-bound package/search metadata, versioned immutable bundles, public API projection and the safe-version proof. | Complete Rustdoc profile coverage and executable language snippets remain open. |
 | SDK generation | Main has docs/rust-source-generation.md as an architecture record. It does not contain the sdk-generation crate or a completed all-owner generation bundle. | Open. |
-| TypeScript | PR263 moves Machines primitive transport/page-size admission into Rust. Inference has a Rust-owned shared contract. PR264 merges Rust-derived Machines unions and policy projections, removing56 authored TypeScript lines. | Broad family contract/behavior replacement remains open. |
+| TypeScript | PR263 moves Machines primitive transport/page-size admission into Rust. Inference has a Rust-owned shared contract. PR264 merges Rust-derived Machines unions and policy projections, removing 56 authored TypeScript lines. | Broad family contract/behavior replacement remains open. |
 | Website data handoff | Main documents versioned release/preview data and catalog concepts. No website/Svelte consumer tree is present in this repository snapshot. | The Rust-generated data contract is in scope; website presentation and deployment are outside this goal. |
 | CI policy | PR262 supplies cheap ordinary qualification policy and cache reuse. PR259/264 ordinary runs pass without downstream language matrices. | Release/manual downstream coverage still requires the final generated pipeline. |
 
@@ -26,28 +26,13 @@ C foundation research worktree; they are not main-tree completion evidence.
 
 ## Evidence outside current main
 
-- The primary foundation worktree and Q:/sdk/work/sdkgen-main-actual03bb contain
-  newer semantic/domain work. Historical all-owner generation fixtures passed,
-  but the actual-main cutover has not produced its final complete source-bound
-  bundle and drift pass. Actors still has an independently authored schema
-  declaration awaiting the maintained generator's nested/presence cutover.
-- Stream PR259 exact head 1a3ec948 passed source-bound installed qualification,
-  independent review and CI. Strict latest-main ancestry requires integrated
-  ed2f7c5e metadata/package refresh before merge. This is not current-main
-  completion evidence yet.
-- The external Inference receipt at
-  Q:/sdk/work/inference-installed-bac48c3-linux-nativepath-20261007 is a real
-  installed-package qualification for source
-  bac48c3432038bed318103f5ebeeed62d3fe6e6c. The 71-input closure comparison
-  shows unchanged package inputs through the 9bc docs/workflow restack, but it
-  does not retag the artifact or qualify the current main revision.
-- Native UniFFI, N-API, and browser prototypes demonstrate maintained OSS
-  mechanisms and focused behavior. They are not current-main installable SDK
-  qualifications unless their receipt names this source revision and package.
-- Kani and focused Rust receipts prove bounded pure-domain properties. They do
-  not prove generated SDK packages, website data completeness, transport
-  ingress, or foreign-language runtime behavior.
-
+- Actors checkpoint `edcc1292ac2363d2ca62d24c7e9033279b32c087` is signed and verified remotely. Its semantic Rust domain now derives message and oneof shadows through the maintained Protify extension. Package/file/service registration contains no separately authored raw fields. The candidate still needs latest-main integration, exact installed package qualification, descriptor handshake verification, and independent review before merge.
+- Stream PR259 points to signed `92c267c08b4cd2cac7b1347b05547f3c1dab768b`, including main `af6f814ccb97c3d49f93689e70b19d97d7840377`. Invalid absence admission, Rust-owned follow recovery, and all-target native test lint fixes are included. Final exact-revision installed package qualification and required cheap CI are pending; historical packages do not qualify this source by retagging.
+- Filesystem signed candidate `f775b8465d836cf69b358f9fa9ebd8edbfa819db` is saved remotely on `codex/filesystem-rust-admission-final`. Numeric admission and finite payload types are present. Root review found a handwritten hosted payload-kind list, an unchecked generic string cast, and a possible hosted counter coverage regression. These must be resolved before admission. No final installed qualification is claimed.
+- Foundation checkpoint `66e3bba580562cbe7c2498ae7dfd374646591925` is verified remotely. Full Rustdoc owner/private binding profile execution, immutable versions, snippet execution, clean regeneration and drift remain required.
+- Historical Python, JVM, Go, Swift, C#, Dart and C++ receipts demonstrate maintained generator/runtime mechanisms at their recorded source revisions. They do not qualify the new production semantic producer. C++ currently qualifies only an opaque conformance bridge; a full caller-configurable typed SDK remains open. Ruby async support and PHP metadata consumption remain proven generator gaps under investigation.
+- The source-bound Kani ingress proof remains one live process, with no overall terminal result. Existing cursor and bounded domain proofs do not prove generated SDK packages, documentation completeness, transport behavior, or all foreign-language runtimes. Exact filesystem float admission still requires its direct production proof.
+- Release assembly fixtures include placeholder archives for unrelated packages. The hash-only TypeScript archive receipt helper does not validate archive package identity. Its receipt is not whole-release runtime qualification evidence; maintained archive validation remains a concrete pipeline gap.
 ## Open completion milestones
 
 ### M1: Rust-owned generation on main

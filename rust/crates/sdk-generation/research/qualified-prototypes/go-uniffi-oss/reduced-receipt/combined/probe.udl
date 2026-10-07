@@ -1,0 +1,6 @@
+[Trait, WithForeign]
+interface Foreign {
+    [Async]
+    string name();
+};
+namespace probe { Foreign make_foreign(); };

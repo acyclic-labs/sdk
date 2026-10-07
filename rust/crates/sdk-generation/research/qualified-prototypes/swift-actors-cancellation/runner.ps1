@@ -1,6 +1,8 @@
 param(
     [string]$UniFFISource = 'Q:\sdk\work\uniffi-swift-oss-prototype\source',
     [string]$ProducerSource = '',
+    [string]$ProducerWorkspace = '',
+    [string]$ProducerLockPath = '',
     [string]$FixtureOptions = 'Q:\sdk\work\root-pending-actors-fixture-options.json',
     [string]$WorkRoot = 'Q:\sdk\work\swift-actors-cancellation-repro-20261007',
     [switch]$BuildOnly,
@@ -14,11 +16,20 @@ if ([string]::IsNullOrWhiteSpace($ProducerSource)) {
     $ProducerSource = Join-Path $repoRoot 'rust\crates\actors-uniffi'
 }
 $ProducerSource = (Resolve-Path -LiteralPath $ProducerSource).Path
-$producerLockPath = Join-Path $artifact 'producer-source.lock.json'
+if ([string]::IsNullOrWhiteSpace($ProducerWorkspace)) {
+    $ProducerWorkspace = $repoRoot
+}
+$ProducerWorkspace = (Resolve-Path -LiteralPath $ProducerWorkspace).Path
+if ([string]::IsNullOrWhiteSpace($ProducerLockPath)) {
+    $ProducerLockPath = Join-Path $artifact 'producer-source.lock.json'
+} elseif (!(Split-Path -IsAbsolute $ProducerLockPath)) {
+    $ProducerLockPath = Join-Path $artifact $ProducerLockPath
+}
+$producerLockPath = (Resolve-Path -LiteralPath $ProducerLockPath).Path
 if (!(Test-Path -LiteralPath $producerLockPath)) { throw "Missing producer source lock: $producerLockPath" }
 $producerLock = Get-Content -LiteralPath $producerLockPath -Raw | ConvertFrom-Json
 $expectedProducerFingerprint = $producerLock.fingerprint
-$expectedProducerRoot = (Resolve-Path (Join-Path $repoRoot ($producerLock.producerRoot -replace '/', '\'))).Path
+$expectedProducerRoot = (Resolve-Path (Join-Path $ProducerWorkspace ($producerLock.producerRoot -replace '/', '\'))).Path
 if ($ProducerSource.TrimEnd('\') -ne $expectedProducerRoot.TrimEnd('\')) {
     throw "ProducerSource must resolve to the locked final producer: expected $expectedProducerRoot, got $ProducerSource"
 }
@@ -40,14 +51,14 @@ $producerFiles = @(
     Get-ChildItem -LiteralPath $ProducerSource -File |
         Where-Object { $_.Name -in @('Cargo.toml', 'Cargo.lock', 'uniffi.toml') }
     Get-ChildItem -LiteralPath (Join-Path $ProducerSource 'src') -Recurse -File -Filter '*.rs'
-    Get-ChildItem -LiteralPath (Join-Path $repoRoot 'rust\crates\actors') -Recurse -File |
+    Get-ChildItem -LiteralPath (Join-Path $ProducerWorkspace 'rust\crates\actors') -Recurse -File |
         Where-Object { $_.Extension -in @('.rs', '.toml') }
 )
 if ($producerFiles.Count -eq 0) { throw "No maintained producer source files found under $ProducerSource" }
 $producerLines = $producerFiles |
     Sort-Object FullName |
     ForEach-Object {
-        $relative = $_.FullName.Substring($repoRoot.Length + 1).Replace('\', '/')
+        $relative = $_.FullName.Substring($ProducerWorkspace.Length + 1).Replace('\', '/')
         $hash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToUpperInvariant()
         "$relative`t$hash"
     }

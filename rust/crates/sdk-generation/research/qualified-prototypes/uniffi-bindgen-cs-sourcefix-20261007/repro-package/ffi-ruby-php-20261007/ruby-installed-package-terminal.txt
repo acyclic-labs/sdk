@@ -1,0 +1,5 @@
+$ GEM_HOME=/tmp/acyclic-ruby-installed-20261007 GEM_PATH=/tmp/acyclic-ruby-installed-20261007:/tmp/acyclic-ruby-gems gem install --local --no-document acyclic_actors_uniffi-0.2.0.sourcefix20261007-universal-darwin-24.gem
+Successfully installed acyclic_actors_uniffi-0.2.0.sourcefix20261007-universal-darwin-24
+1 gem installed
+$ GEM_HOME=/tmp/acyclic-ruby-installed-20261007 GEM_PATH=/tmp/acyclic-ruby-installed-20261007:/tmp/acyclic-ruby-gems ruby /tmp/ruby-installed-all8-20261007.rb
+RUBY_INSTALLED_PACKAGE_ALL8_PASS

@@ -130,6 +130,19 @@ fn write_fixture_private_packages(root: &Path) {
     .unwrap();
 }
 
+fn write_fixture_scenario_sources(root: &Path) {
+    for relative in [
+        "rust/crates/actors/examples/transport-conformance.rs",
+        "rust/crates/stream/examples/http-conformance.rs",
+        "rust/crates/filesystem/examples/embedded_workspace.rs",
+        "rust/crates/machines/examples/machines-typescript-consumer.rs",
+    ] {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, "fn main() {}\n").unwrap();
+    }
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -221,7 +234,11 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         fixture_workspace_manifest(&source_root),
     )
     .unwrap();
-    fs::write(root.join("rust/crates/actors/Cargo.toml"), "[package]\n").unwrap();
+    fs::write(
+        root.join("rust/crates/actors/Cargo.toml"),
+        "[package]\nname = \"acyclic-actors\"\n",
+    )
+    .unwrap();
     fs::write(root.join("rust/crates/actors/README.md"), "Actors\n").unwrap();
     fs::write(root.join("rust/crates/sdk-docs/Cargo.toml"), "[package]\n").unwrap();
     fs::write(
@@ -263,6 +280,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     .unwrap();
     write_fixture_owner_packages(&root);
     write_fixture_private_packages(&root);
+    write_fixture_scenario_sources(&root);
     copy_compiled_generator_sources(&root);
     fs::copy(source_root.join("Cargo.lock"), root.join("Cargo.lock")).unwrap();
     let actors_lib_path = root.join("rust/crates/actors/src/lib.rs");
@@ -679,6 +697,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     write_fixture_owner_packages(&root);
     fs::write(root.join("rust/crates/workers/README.md"), "Workers\n").unwrap();
     write_fixture_private_packages(&root);
+    write_fixture_scenario_sources(&root);
     copy_compiled_generator_sources(&root);
     let lock = Command::new("cargo")
         .args([
@@ -755,6 +774,17 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         output
             .join("generated/acyclic_actors/acyclic-actors-v1.bin")
             .is_file()
+    );
+    let scenarios: serde_json::Value =
+        serde_json::from_slice(&fs::read(output.join("sdk-docs-scenarios.v1.json")).unwrap())
+            .unwrap();
+    assert_eq!(scenarios["schema"], "acyclic.sdk.scenarios.v1");
+    assert!(
+        scenarios["scenarios"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|scenario| scenario["id"] == "machines/typescript-consumer")
     );
     let generated_source = output.join("generated/acyclic_actors/rust/acyclic.actors.v1.rs");
     let generated_source_bytes = fs::read(&generated_source).unwrap();

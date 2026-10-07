@@ -93,16 +93,23 @@ this is typed-error categorization rather than full typed-error parity.
   for each maintained Rust type. Hand-authoring that list in this prototype
   would recreate the mirror surface this audit is intended to detect.
 * **Diplomat 0.16.1** has a maintained C++ backend and supports opaque types,
-  constructors, accessors, slices, and fallible methods. The Actors domain is
-  not currently a Diplomat bridge, and no generated C++ output was produced in
-  this qualification. Adding Diplomat feature annotations to the production
-  Actors domain requires foundation-port coordination so the same annotated
-  Rust source can remain authoritative for every SDK generator.
+  constructors, accessors, slices, and fallible methods. The isolated
+  `diplomat/` prototype now generates and links C++ against the real Actors
+  semantic dependency without adding production annotations. Adding Diplomat
+  feature annotations to the production Actors domain still requires
+  foundation-port coordination so the same annotated Rust source can remain
+  authoritative for every SDK generator.
 
 The practical next step is a foundation-port-owned metadata pipeline that
 derives C++/Diplomat declarations from the existing semantic Rust types and
 their accessors. This prototype should then consume that generated output and
 re-run the installed package matrix. Until that exists, the honest status is
 “qualified opaque conformance bridge”, not “strongly typed full C++ SDK”.
+
+The isolated Diplomat result is a typed create/invoke/output/error proof, not a
+full eight-operation transport SDK. Its precise remaining gaps are the six
+other request families, authenticated async transport, and cancellation/server
+abort mapping. Transport `client::Error` variants need a foundation-owned
+policy before they can be exposed as a complete Diplomat error hierarchy.
 
 No production Actors annotations or domain cutover were made by this audit.

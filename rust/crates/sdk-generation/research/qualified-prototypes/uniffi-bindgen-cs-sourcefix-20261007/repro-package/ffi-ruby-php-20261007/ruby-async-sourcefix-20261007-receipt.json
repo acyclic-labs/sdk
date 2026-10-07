@@ -1,0 +1,83 @@
+{
+  "schema": "uniffi-ruby-maintained-async-sourcefix-receipt/v1",
+  "generatedAt": "2026-10-07",
+  "scope": "external maintained-generator prototype; no production API change; publish=false",
+  "generator": {
+    "repository": "mozilla/uniffi-rs",
+    "version": "0.31.0",
+    "sourceAuthority": "C:/Users/varun/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/uniffi_bindgen-0.31.0",
+    "cargoSourceChecksum": "4ed0150801958d4825da56a41c71f000a457ac3a4613fa9647df78ac4b6b6881",
+    "sourcePatch": "ruby-generator-source.patch",
+    "sourcePatchSha256": "CBDF2A090DA2995AD6BD37042F6D1EF0FDC44047ECC26379AE0048880DBC18BC",
+    "sourcePatchScope": "Ruby templates and gen_ruby only: async scheduler, handle map, metadata-driven future declarations/calls, and callback/struct FFI types",
+    "generatorBinary": "../../../../../../actors-uniffi/target/debug/actors-uniffi-bindgen.exe",
+    "generatorBinarySha256": "E46814AEF975CE51750E42F41C0DD32C48DC8B94455FEE7FD654CFF124F9763F",
+    "build": {
+      "toolchain": "rustc 1.98.1",
+      "command": "cargo build --manifest-path rust/crates/actors-uniffi/Cargo.toml --features bindgen --bin actors-uniffi-bindgen --config patch.crates-io.uniffi_bindgen.path=C:/Users/varun/AppData/Local/Temp/uniffi-ruby-sourcefix-20261007-go-generator-v2 --offline",
+      "result": "PASS: maintained generator rebuilt from patched 0.31.0 source",
+      "patchApplyCheck": "PASS: git apply --check against clean uniffi_bindgen-0.31.0 source"
+    }
+  },
+  "rustSource": {
+    "repository": "sdk",
+    "revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "cargoAuthority": {
+      "manifest": "rust/crates/actors-uniffi/Cargo.toml",
+      "package": "acyclic-actors-uniffi",
+      "version": "0.2.0",
+      "manifestSha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
+      "currentObservedLockSha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890"
+    },
+    "macosArm64Native": {
+      "path": "../../go-uniffi-oss/context-adapter-20261007/go-module/native/darwin-arm64/libacyclic_actors_uniffi.dylib",
+      "sha256": "35C3BC984C8A8B3DCD101CFAA84570E2606E4F08F2EB0B17CBF54DCB84DB7A04",
+      "provenance": "current recorded macOS arm64 Rust-native producer; preserved Go receipt identity"
+    }
+  },
+  "generated": {
+    "input": "../../go-uniffi-oss/context-adapter-20261007/go-module/native/windows-amd64/acyclic_actors_uniffi.dll",
+    "rubyFile": "patched-generated/acyclic_actors_uniffi.rb",
+    "rubyFileSha256": "8B55C6E1C5126DD3BB4AA7EAEA2C1A22D9D75519F4A746343609578F41C17F13",
+    "rubySyntax": "PASS: ruby -c returned Syntax OK",
+    "metadataDriven": "PASS: all eight operations use generated async metadata and shared future poll/complete/cancel/free helpers; no per-operation wrappers or semantic registry"
+  },
+  "runtime": {
+    "host": "ivar macOS arm64",
+    "ruby": "2.6.10p210 arm64e-darwin24",
+    "ffi": "1.17.2",
+    "fixture": "task-owned local macOS Node TLS/HTTP2 fixture; certificate sha256=6CCBB2CF9D92433ED139EDA65A7DFCD91CDFA636FE704AB74587DC3E329AC5AF",
+    "allEight": "PASS: RUBY_GENERATED_ALL8_PASS; authenticated connect, create, update, inspect, inspect-request, add, remove, resume, checkpoint, invoke",
+    "allEightProbeSha256": "A4E21A99EDDC46DAD39332CACB36E4B498042B5E6B998354F4192792D3B0E674",
+    "allEightTerminalSha256": "48B017EA21E656DAA7B56B7919661DD308CC1C617DDCF8293B36A5FD14E6D790",
+    "pendingCancellation": "PASS: RUBY_PENDING_CANCEL_PASS=Timeout::Error:ruby pending cancellation; native async ensure called cancel/free while InspectActor was pending",
+    "pendingCancellationProbeSha256": "9A387DCC66736C6BAA32781E4F17C1B8C0B88F38DCE7BB25C4E82B800A7B9A35",
+    "pendingCancellationTerminalSha256": "03F182A2A9F70836079801F650504FC822C9E8F3B678DD2B1BFB9AEE56D38456",
+    "serverCleanup": "PASS: RUBY_PENDING_CANCEL_CLEANUP_PASS after release marker; pending fixture closed cleanly",
+    "typedErrors": "PASS: wrong bearer produced AcyclicActorsUniffi::BindingError::Service(grpc_code=16); error class is generated from throws metadata",
+    "typedErrorProbeSha256": "D7C5C38B06F6306A18B3BE3C4A9D32B5B72B71DF4024752B911BD95B05CA2A8C",
+    "typedErrorTerminalSha256": "E0A9902EBF80FE2E0D4D32CB4A8ECF31B7535496F0B1129E7C49647D3DC9C3C2",
+    "strongTypeNegatives": "PASS_RUNTIME: ActorId integer raised TypeError; u64 value 2**64 raised RangeError",
+    "fullU64": "PASS_RUNTIME: all-eight subscription cursor carried 9007199254740993 without narrowing"
+  },
+  "rubyPackage": {
+    "gem": "acyclic_actors_uniffi-0.2.0.sourcefix20261007-universal-darwin-24.gem",
+    "gemSha256": "1ED9CC8CCBD80337873B9AF423173144ED162842D9130363B33D5DA4A60C9093",
+    "gemVersion": "0.2.0.sourcefix20261007",
+    "install": "PASS: task-owned GEM_HOME=/tmp/acyclic-ruby-installed-20261007 gem install --local --no-document",
+    "installedAllEight": "PASS: RUBY_INSTALLED_PACKAGE_ALL8_PASS",
+    "installedProbeSha256": "41558C977D02947CC5B2C8266EA038815998CB2FFC8EDD546429B6F502BC11AC",
+    "installedTerminalSha256": "F29D0F107D0710585EA53041C8F2A02626CB4CB932D0B289E305F3B33ED93CD4"
+  },
+  "historicalFailure": {
+    "receipt": "receipt.json",
+    "preserved": true,
+    "reason": "official 0.31.0 Ruby backend emitted integer future handles but attempted synchronous consume before issuing the request"
+  },
+  "artifacts": {
+    "sourcePatch": "ruby-generator-source.patch",
+    "generatedRuby": "patched-generated/acyclic_actors_uniffi.rb",
+    "package": "acyclic_actors_uniffi-0.2.0.sourcefix20261007-universal-darwin-24.gem",
+    "publish": false
+  }
+}
