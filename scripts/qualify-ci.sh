@@ -293,9 +293,11 @@ case "$lane" in
     finish napi release
     bun run test
     bun scripts/check-typescript-tarballs.mjs
-    # Native Rust hosts can assign different private wasm-bindgen closure names
-    # and indices to equivalent builds. Verify the fresh WASM against the
-    # committed package API and runtime before staging the exact release bytes.
+    # WASM builds are path-independent but not host-independent: panic
+    # locations keep the host's path separators and private wasm-bindgen
+    # closure names carry host-derived crate hashes. Verify the fresh WASM
+    # against the committed package API and runtime, then stage the committed
+    # release bytes.
     git restore --worktree -- \
       typescript/packages/filesystem/generated/wasm \
       typescript/packages/stream/generated/wasm
