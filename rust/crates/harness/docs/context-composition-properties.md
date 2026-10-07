@@ -20,7 +20,7 @@ bindings. Reuse may cover only equal ordered message identities under compatible
 bindings; a changed projection must be admitted and cannot be replaced by stale
 content for a cache hit. No provider cache or model-family heuristic is added.
 
-The standalone `tests/context_admission_model.py` exhausts 26 reachable states
+The `context::admission_model` unit test exhausts 26 reachable states
 for two payloads and one operation. It models claim-before-dispatch, a crash
 after claim, projection changes, retained-storage loss, and durable completion.
 Negative controls using fresh projections on replay or ignoring missing storage

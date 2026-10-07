@@ -13,7 +13,7 @@ reconstruct those declarations.
 | TypeScript static types | ts-rs 12.0.1 | Seven Rust tests; generated positive and negative TS consumers for nominal identity, digest, bigint and tagged union | Installed native/browser Actors clients and complete operation coverage |
 | Rust documentation input | rustdoc-types 0.60.0, Rustdoc 1.98.1, format 60 | Real public/re-export/private-path fixtures; docs and spans joined by item identity | Complete input provenance, source coverage and immutable bundles |
 | API signature formatting | public-api 0.52.2 | Integrated checked format adapter; real generic methods, repeated aliases, enum fields and associated items; custom formatter removed | Full SDK source coverage |
-| Shared language bindings | UniFFI 0.31.0 | Installed Windows Python wheel calling canonical Rust Stream memory behavior, typed errors, finite reads and cancellation; Swift generated-source type checks | Actual remote backend, installed target packages and complete capability coverage |
+| Shared language bindings | UniFFI 0.31.0 | Installed Windows UniFFI wheel calling canonical Rust Stream memory behavior, typed errors, finite reads and cancellation; Swift generated-source type checks | Actual remote backend, installed target packages and complete capability coverage |
 | Browser gRPC | tonic-web-wasm-client 0.9.2, tonic 0.14.6 | Generic Actors client completed all eight unary operations against a local gRPC-Web service in headless Chrome | Production Rust-source package and public gRPC-Web ingress |
 
 Cloudflare Forge and OpenAPI Generator operate downstream of API contracts.

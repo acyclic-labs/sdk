@@ -1025,3 +1025,105 @@ mod tests {
         Ok(())
     }
 }
+
+/// Bounded request-admission model; no unbounded correctness claim.
+///
+/// Two distinct payloads, one request, exhaustive reachable finite state space.
+/// State: current projection, retained admission, storage intact, dispatch
+/// count, durable completion. Linearizable journal CAS and immutable
+/// authenticated storage are assumptions. Admission claims the attempt before
+/// provider dispatch; a crash at that boundary may lose dispatch, never
+/// authorize redispatch. Correspondence: `executor::run_model_step`
+/// ModelStarted/load_json/append_if_tail/Model admission.
+#[cfg(test)]
+mod admission_model {
+    use std::collections::{BTreeSet, VecDeque};
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    struct State {
+        projection: u8,
+        admitted: Option<u8>,
+        intact: bool,
+        dispatches: u8,
+        completed: bool,
+    }
+
+    fn successors(state: State) -> Vec<State> {
+        let mut next = vec![State {
+            projection: 1 - state.projection,
+            ..state
+        }]; // future projection
+        match state.admitted {
+            None => {
+                let claimed = State {
+                    admitted: Some(state.projection),
+                    intact: true,
+                    ..state
+                };
+                next.push(claimed); // crash after claim
+                next.push(State {
+                    dispatches: 1,
+                    ..claimed
+                }); // claim then dispatch
+            }
+            Some(_) => {
+                next.push(State {
+                    intact: false,
+                    ..state
+                }); // storage fault
+                if state.dispatches > 0 && state.intact {
+                    next.push(State {
+                        completed: true,
+                        ..state
+                    }); // durable observation
+                }
+            }
+        }
+        next
+    }
+
+    fn check(replay: fn(State) -> Option<u8>) -> Result<usize, String> {
+        let initial = State {
+            projection: 0,
+            admitted: None,
+            intact: true,
+            dispatches: 0,
+            completed: false,
+        };
+        let mut pending = VecDeque::from([initial]);
+        let mut seen = BTreeSet::from([initial]);
+        while let Some(state) = pending.pop_front() {
+            if state.dispatches > 1 {
+                return Err("redispatch".to_owned());
+            }
+            if state.admitted.is_some() {
+                let value = replay(state);
+                if value != state.admitted.filter(|_| state.intact) {
+                    return Err("replay returned other than the retained admission".to_owned());
+                }
+                if state.completed && value.is_none() && state.intact {
+                    return Err("completion without retained admission".to_owned());
+                }
+            }
+            for next in successors(state) {
+                if seen.insert(next) {
+                    pending.push_back(next);
+                }
+            }
+        }
+        Ok(seen.len())
+    }
+
+    #[test]
+    fn retained_replay_holds_over_every_reachable_state() {
+        let retained: fn(State) -> Option<u8> = |state| state.admitted.filter(|_| state.intact);
+        assert_eq!(check(retained), Ok(26));
+        // Negative controls: replaying the current projection, or ignoring
+        // missing storage, must be rejected.
+        let fresh: fn(State) -> Option<u8> =
+            |state| Some(state.projection).filter(|_| state.intact);
+        let unchecked: fn(State) -> Option<u8> = |state| state.admitted;
+        assert!(check(fresh).is_err());
+        assert!(check(unchecked).is_err());
+    }
+}

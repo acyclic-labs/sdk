@@ -6,7 +6,7 @@
 // this run so release workflows keep finding it under this run's identity.
 //
 //   plan-qualification.mjs fingerprints   -> keys, lanes
-//   plan-qualification.mjs select         -> matrix, reused, trusted
+//   plan-qualification.mjs select         -> matrix, reused
 //   plan-qualification.mjs record         -> recorded
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -113,7 +113,6 @@ export function chooseLanes(lanes, {
   fullQualification = false,
   pullRequest = false,
   coreOnly = false,
-  trusted,
   marker,
   retained,
 }) {
@@ -127,8 +126,7 @@ export function chooseLanes(lanes, {
       matrix.push(lane);
       continue;
     }
-    const trustedForLane = mainPush && !pullRequestCoreLanes.has(lane.lane) ? null : trusted;
-    let source = trustedForLane ?? marker(lane.lane);
+    let source = marker(lane.lane);
     let artifact = "";
     if (source && lane.artifact) {
       artifact = retained(source.run_id, lane.artifact);
@@ -162,39 +160,6 @@ function fingerprints() {
   const keys = laneKeys(lanes, entries, scope);
   output("keys", keys);
   output("lanes", lanes.map(lane => lane.lane));
-}
-
-// A squash merge of an up-to-date pull request lands the exact tree that the
-// pull request head already qualified. Reuse that run for every lane.
-function qualifiedPullRequestRun() {
-  const repository = process.env.GITHUB_REPOSITORY;
-  const sha = git("rev-parse", "HEAD").trim();
-  const tree = git("rev-parse", "HEAD^{tree}").trim();
-  let pulls;
-  try {
-    pulls = gh(`repos/${repository}/commits/${sha}/pulls`);
-  } catch (error) {
-    console.error(`pull request lookup failed: ${error.message}`);
-    return null;
-  }
-  for (const pull of pulls) {
-    if (pull.merge_commit_sha !== sha || pull.base?.ref !== "main") continue;
-    const head = pull.head.sha;
-    const headTree = gh(`repos/${repository}/git/commits/${head}`).tree.sha;
-    if (headTree !== tree) {
-      console.error(`#${pull.number} head ${head} tree ${headTree} differs from ${tree}`);
-      continue;
-    }
-    const runs = gh(
-      `repos/${repository}/actions/workflows/qualification.yml/runs?head_sha=${head}&event=pull_request&status=success&per_page=20`,
-    ).workflow_runs.filter(run => run.head_sha === head && run.conclusion === "success");
-    runs.sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt);
-    if (runs.length > 0) {
-      console.error(`reusing #${pull.number} run ${runs[0].id} attempt ${runs[0].run_attempt}`);
-      return { run_id: runs[0].id, run_attempt: runs[0].run_attempt };
-    }
-  }
-  return null;
 }
 
 // Artifacts are named <artifact>-<run id>-<attempt that uploaded them>.
@@ -238,40 +203,29 @@ function select() {
   const pullRequest = event === qualificationEventKinds.pullRequest;
   const mainPush = event === qualificationEventKinds.mainPush;
   const fullQualification = requiresFullQualification(event);
-  const trusted = !force && mainPush ? qualifiedPullRequestRun() : null;
   const { matrix, reused } = chooseLanes(readLanes(), {
     force,
     mainPush,
     fullQualification,
     pullRequest,
     coreOnly: !fullQualification,
-    trusted,
     marker: recordedMarker,
     retained: retainedArtifact,
   });
   for (const [lane, source] of Object.entries(reused)) {
     console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
   }
-  // On pull requests, early-start lanes run in their own job that is queued at
-  // workflow start and executes only when the plan requires it.
-  const early = event === qualificationEventKinds.pullRequest
-    ? matrix.filter(lane => lane.early_start)
-    : [];
-  output("matrix", matrix.filter(lane => !early.includes(lane)));
-  output("windows", early.some(lane => lane.lane === "windows") ? "true" : "false");
+  output("matrix", matrix);
   output("reused", reused);
-  output("trusted", trusted ? "true" : "false");
 }
 
-// Writes a marker for every lane that qualified in this run, and on main for
-// every lane proven by the merged pull request, so later runs observing the
-// same inputs reuse it.
+// Writes a marker for every lane that qualified in this run, so later runs
+// observing the same inputs reuse it.
 function record() {
   const repository = process.env.GITHUB_REPOSITORY;
   const runId = Number(process.env.GITHUB_RUN_ID);
   const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
   const reused = JSON.parse(process.env.REUSED || "{}");
-  const trusted = process.env.TRUSTED === "true";
   const names = new Set(readLanes().map(lane => lane.lane));
   const jobs = gh(`repos/${repository}/actions/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100`).jobs;
   const recorded = [];
@@ -280,15 +234,6 @@ function record() {
     if (!names.has(job.name) || job.conclusion !== "success" || reused[job.name]) continue;
     writeFileSync(`.qualification/${job.name}.json`, JSON.stringify({ run_id: runId, run_attempt: runAttempt }));
     recorded.push(job.name);
-  }
-  if (trusted) {
-    for (const [lane, source] of Object.entries(reused)) {
-      writeFileSync(
-        `.qualification/${lane}.json`,
-        JSON.stringify({ run_id: source.run_id, run_attempt: source.run_attempt }),
-      );
-      recorded.push(lane);
-    }
   }
   output("recorded", recorded);
 }

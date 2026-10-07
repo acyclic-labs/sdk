@@ -2697,7 +2697,7 @@ mod tests {
     const AUTHORIZATION_HEADER: &str = "authorization";
     use crate::{Fs, MemoryAuthorityBackend, MemoryObjectBackend};
     use futures::TryStreamExt;
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use http::{Extensions, HeaderMap, HeaderValue, Method, Uri};
     use s3s::auth::Credentials;
     use s3s::dto::{
@@ -2905,6 +2905,20 @@ mod tests {
                 ),
             )
             .body(axum::body::Body::empty())?)
+    }
+
+    #[test]
+    fn sha256_and_hmac_match_known_answers() -> Result<(), Box<dyn std::error::Error>> {
+        // FIPS 180-2 "abc" and RFC 4231 test case 2 pin the digest crates.
+        assert_eq!(
+            hex::encode(Sha256::digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            hex::encode(hmac(b"Jefe", b"what do ya want for nothing?")?),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        Ok(())
     }
 
     #[tokio::test]

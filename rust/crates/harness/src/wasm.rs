@@ -48,7 +48,6 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
 struct WasmLimitsInput {
@@ -77,7 +76,7 @@ struct WasmPublicSelectedModelContext {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi, large_number_types_as_bigints)]
+#[tsify(large_number_types_as_bigints)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskRunLimitsInput {
     #[tsify(type = "bigint | null")]
@@ -114,7 +113,6 @@ struct WasmTaskChildrenPageInput {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskIdentityInput {
     #[tsify(type = "string")]
@@ -132,7 +130,6 @@ struct WasmTaskIdentityInput {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskDependencyDefinition {
     #[tsify(type = "string")]
@@ -144,7 +141,6 @@ struct WasmTaskDependencyDefinition {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmToolDependencyDefinition {
     #[tsify(type = "string")]
@@ -154,7 +150,6 @@ struct WasmToolDependencyDefinition {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmExtensionDependencyDefinition {
     #[tsify(type = "string")]
@@ -164,7 +159,6 @@ struct WasmExtensionDependencyDefinition {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskDependencyComponents {
     model: bool,
@@ -181,7 +175,6 @@ struct WasmTaskDependencyComponents {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskDependencyInput {
     #[tsify(type = "readonly WasmTaskDependencyDefinition[]")]
@@ -196,7 +189,6 @@ struct WasmTaskDependencyInput {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmTaskAdmissionInput {
     #[tsify(type = "string")]
@@ -234,7 +226,10 @@ struct WasmTaskAdmissionInput {
 /// TypeScript-owned wire union.
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
+#[allow(
+    dead_code,
+    reason = "declaration-only: the derive emits the TypeScript wire type"
+)]
 struct WasmModelWire {
     provider: String,
     name: String,
@@ -245,7 +240,6 @@ struct WasmModelWire {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelRole {
     System,
     User,
@@ -255,7 +249,6 @@ enum WasmModelRole {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmFileProjectionPolicy {
     Reference,
     BoundedFull,
@@ -264,7 +257,6 @@ enum WasmFileProjectionPolicy {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelContentPart {
     Text {
         text: String,
@@ -292,7 +284,6 @@ enum WasmModelContentPart {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(untagged)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelContent {
     Text(String),
     Part(WasmModelContentPart),
@@ -301,7 +292,10 @@ enum WasmModelContent {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
+#[allow(
+    dead_code,
+    reason = "declaration-only: the derive emits the TypeScript wire type"
+)]
 struct WasmModelMessageWire {
     role: WasmModelRole,
     content: WasmModelContent,
@@ -315,7 +309,6 @@ struct WasmModelMessageWire {
     reason = "the struct exists to emit the generated TypeScript input type"
 )]
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct WasmModelMessageInput {
     #[tsify(type = "WasmModelRole")]
@@ -326,7 +319,10 @@ struct WasmModelMessageInput {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
+#[allow(
+    dead_code,
+    reason = "declaration-only: the derive emits the TypeScript wire type"
+)]
 struct WasmModelToolDefinitionWire {
     name: String,
     revision: String,
@@ -339,7 +335,10 @@ struct WasmModelToolDefinitionWire {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
+#[allow(
+    dead_code,
+    reason = "declaration-only: the derive emits the TypeScript wire type"
+)]
 struct WasmModelRequestWire {
     model: WasmModelWire,
     messages: Vec<WasmModelMessageWire>,
@@ -349,7 +348,6 @@ struct WasmModelRequestWire {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 enum WasmModelEvent {
     Content {
         delta: String,
@@ -372,7 +370,10 @@ enum WasmModelEvent {
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
+#[allow(
+    dead_code,
+    reason = "declaration-only: the derive emits the TypeScript wire type"
+)]
 struct WasmModelAttemptWire {
     #[tsify(type = "string")]
     operation_id: OperationId,
@@ -383,7 +384,6 @@ struct WasmModelAttemptWire {
 }
 
 #[derive(Deserialize, Tsify)]
-#[tsify(from_wasm_abi)]
 #[serde(deny_unknown_fields)]
 struct WasmBatchAdmissionInput {
     #[tsify(type = "string")]
@@ -2608,7 +2608,6 @@ pub fn validate_selected_model_context(selected: JsValue, limits: JsValue) -> Re
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, Tsify)]
 #[serde(deny_unknown_fields)]
-#[tsify(from_wasm_abi, into_wasm_abi)]
 struct WasmModelEventAdmissionState {
     #[tsify(type = "number")]
     count: usize,
@@ -2619,7 +2618,6 @@ struct WasmModelEventAdmissionState {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
-#[tsify(into_wasm_abi)]
 struct WasmModelEventAdmission {
     event: WasmModelEvent,
     state: WasmModelEventAdmissionState,
