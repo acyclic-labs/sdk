@@ -155,6 +155,10 @@ where
         })
     }
 
+    pub(crate) fn owner_scope(&self) -> Scope {
+        self.owner_scope.clone()
+    }
+
     /// Stages the exact JSON request before admission; a staged orphan is reclaimable.
     pub async fn stage_request(
         &self,
@@ -215,6 +219,37 @@ where
         ticket: InteractionTicket,
     ) -> Result<ApplyResult> {
         self.execute(operation_id, scope, Action::OpenInteraction { ticket })
+            .await
+    }
+
+    /// Admits through the same conversation reducer under this exact task lease.
+    /// The caller binds this host to the task owner's Stream provider.
+    pub(crate) async fn open_owned(
+        &self,
+        operation_id: OperationId,
+        scope: Scope,
+        ticket: InteractionTicket,
+        owner: &crate::durable_host::TaskJournalOwner<P>,
+    ) -> Result<ApplyResult> {
+        let mut aggregate = self.aggregate().await?;
+        let expected_revision = match aggregate.reducer().operation_revision(operation_id) {
+            Some(revision) => revision
+                .checked_sub(1)
+                .ok_or_else(|| Error::Invalid("committed interaction revision is zero".into()))?,
+            None => aggregate.reducer().revision(),
+        };
+        aggregate
+            .execute_task_interaction(
+                Command {
+                    operation_id,
+                    idempotency_key: IdempotencyKey::new(format!("interaction:{operation_id}"))?,
+                    expected_revision,
+                    scope,
+                    causal_parent: None,
+                    action: Action::OpenInteraction { ticket },
+                },
+                owner,
+            )
             .await
     }
 

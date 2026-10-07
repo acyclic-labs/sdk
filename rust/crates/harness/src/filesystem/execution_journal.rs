@@ -366,6 +366,42 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         })
     }
 
+    /// Binds approval/question tickets to an existing conversation owner on the
+    /// same Stream and Filesystem providers. This does not grant response rights.
+    /// Task-bound request publication also requires retained interaction:route
+    /// and atomically compares the current task lease with the conversation tail.
+    pub fn with_interaction_owner(
+        mut self,
+        verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        scope: Scope,
+        private_volume: VolumeRef,
+    ) -> Result<Self>
+    where
+        P: StreamProvider + Send + Sync,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        if let Some((owner, _)) = &self.owner {
+            owner.require_interaction_grant()?;
+        } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
+            return Err(Error::Unauthorized(
+                "task interaction binding requires an admitted journal owner".into(),
+            ));
+        }
+        self.interactions = Some(FilesystemInteractionHost::new(
+            self.stream.clone(),
+            self.host.clone(),
+            verifier.audience().clone(),
+            verifier,
+            schemas,
+            scope,
+            private_volume,
+            self.maximum_payload_bytes,
+        )?);
+        Ok(self)
+    }
+
     /// Routes turn-input attachment admission through an explicitly bound provider set.
     #[must_use]
     pub fn with_input_verifier(mut self, verifier: Arc<dyn ContentResidencyVerifier>) -> Self {
@@ -899,7 +935,14 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             interaction.validate()?;
+            if let Some((owner, _)) = &self.owner {
+                owner.require_interaction_grant()?;
+                owner.verify(false).await?;
+            }
             if let Some(original) = self.interactions()?.read_request(id).await? {
+                if let Some((owner, _)) = &self.owner {
+                    owner.verify(false).await?;
+                }
                 return if original == interaction {
                     Ok(())
                 } else {
@@ -910,15 +953,25 @@ where
                 .interactions()?
                 .stage_request(id, &interaction, None)
                 .await?;
-            match self
-                .interactions()?
-                .open(
-                    interaction_operation(id, "open"),
-                    self.scope.clone(),
-                    ticket,
-                )
-                .await
-            {
+            let owner_scope = self.interactions()?.owner_scope();
+            let publication = if let Some((owner, _)) = &self.owner {
+                self.interactions()?
+                    .open_owned(
+                        interaction_operation(id, "open"),
+                        owner_scope,
+                        ticket,
+                        owner,
+                    )
+                    .await
+            } else {
+                self.interactions()?
+                    .open(interaction_operation(id, "open"), owner_scope, ticket)
+                    .await
+            };
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(false).await?;
+            }
+            let result = match publication {
                 Ok(_) => Ok(()),
                 Err(Error::Conflict(_)) | Err(Error::Indeterminate(_)) => {
                     match self.interactions()?.read_request(id).await? {
@@ -928,7 +981,11 @@ where
                     }
                 }
                 Err(error) => Err(error),
+            };
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(false).await?;
             }
+            result
         })
     }
 
@@ -937,11 +994,19 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
         Box::pin(async move {
-            Ok(self
+            if let Some((owner, _)) = &self.owner {
+                owner.require_interaction_grant()?;
+                owner.verify(true).await?;
+            }
+            let outcome = self
                 .interactions()?
                 .read(id)
                 .await?
-                .and_then(|(_, resolution)| resolution.map(|value| value.outcome)))
+                .and_then(|(_, resolution)| resolution.map(|value| value.outcome));
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(true).await?;
+            }
+            Ok(outcome)
         })
     }
 }

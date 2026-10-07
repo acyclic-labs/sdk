@@ -144,6 +144,15 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
+    pub(crate) fn require_interaction_grant(&self) -> Result<()> {
+        if !self.input_grants.contains(capability::INTERACTION_ROUTE) {
+            return Err(Error::Unauthorized(
+                "task scope lacks interaction:route".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
         (self.task_id, self.fence.clone())
     }
@@ -300,6 +309,24 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
         }
         Ok(())
+    }
+
+    pub(crate) async fn append_interaction(
+        &self,
+        path: acyclic_stream::StreamPath,
+        expected_tail: u64,
+        key: &StreamKey,
+        bytes: Bytes,
+    ) -> Result<bool> {
+        self.require_interaction_grant()?;
+        self.append(
+            path,
+            expected_tail,
+            key,
+            bytes,
+            crate::distributed::JournalWrite::Fresh,
+        )
+        .await
     }
 
     pub(crate) async fn append_execution(
@@ -2827,6 +2854,7 @@ mod tests {
                 "operation:cancel",
                 "task:spawn:test.model@1",
                 "model:generate",
+                "interaction:route",
             ]),
         );
         let scope = RuntimeScope::new(owner_scope.capabilities().clone(), Limits::default())?;
@@ -3216,6 +3244,117 @@ mod tests {
                 .await
                 .is_err()
         );
+        #[cfg(feature = "filesystem")]
+        let (
+            approval_journal,
+            conversation_issuer,
+            approval_id,
+            approval_request,
+            approval_pending,
+        ) = {
+            use crate::executor::ExecutionJournal;
+            let conversation = Authority {
+                kind: AggregateKind::Conversation,
+                id: "owned-approval".into(),
+            };
+            let conversation_issuer =
+                AuthorityIssuer::new("owned-approval", [54; 32], conversation.clone());
+            let conversation_scope = conversation_issuer.root_for_agent(
+                AgentId::from_bytes([1; 16]),
+                "owner",
+                Capabilities::new([
+                    "conversation:bind".to_owned(),
+                    "interaction:open".to_owned(),
+                    volume.capability(crate::conversation::VolumeOperation::Read)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                ]),
+            );
+            let mut aggregate = crate::store::StreamAggregate::open(
+                &stream,
+                conversation.clone(),
+                conversation_issuer.verifier(),
+                crate::core::SchemaRegistry::new(),
+            )
+            .await?;
+            aggregate
+                .execute(crate::core::Command {
+                    operation_id: OperationId::from_bytes([90; 16]),
+                    idempotency_key: IdempotencyKey::new("owned-approval-bind")?,
+                    expected_revision: 0,
+                    scope: conversation_scope.clone(),
+                    causal_parent: None,
+                    action: crate::core::Action::BindConversation {
+                        agent: AgentId::from_bytes([1; 16]),
+                    },
+                })
+                .await?;
+            let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+                host.journal_owner(task_id, fence.clone()).await?,
+                attempt,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?
+            .with_interaction_owner(
+                conversation_issuer.verifier(),
+                crate::core::SchemaRegistry::new(),
+                conversation_scope,
+                volume.clone(),
+            )?;
+            let unbound = crate::filesystem::FilesystemExecutionJournal::new(
+                stream.clone(),
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?;
+            let response_scope = conversation_issuer.root_for_agent(
+                AgentId::from_bytes([1; 16]),
+                "owner",
+                Capabilities::new([
+                    "interaction:open".to_owned(),
+                    volume.capability(crate::conversation::VolumeOperation::Read)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                ]),
+            );
+            assert!(
+                matches!(
+                    unbound.with_interaction_owner(
+                        conversation_issuer.verifier(),
+                        crate::core::SchemaRegistry::new(),
+                        response_scope,
+                        volume.clone(),
+                    ),
+                    Err(Error::Unauthorized(_))
+                ),
+                "a task storage owner is not a retained task lease"
+            );
+            let id = crate::InteractionId::from_bytes([91; 16]);
+            let request = Interaction::approval("approve exact action", attempt, [5; 32])?;
+            journal.open_interaction(id, request.clone()).await?;
+            journal.open_interaction(id, request.clone()).await?;
+            assert_eq!(journal.interaction_outcome(id).await?, None);
+            assert_eq!(stream.stream(conversation.stream_path()?)?.tail().await?, 2);
+            assert!(matches!(
+                journal
+                    .open_interaction(id, Interaction::approval("changed", attempt, [6; 32])?)
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            let pending = original_owner
+                .prepare_append(
+                    &acyclic_stream::StreamPath::new(conversation.stream_path()?)?,
+                    2,
+                    &StreamKey::new(Bytes::from_static(b"approval-before-replacement"))?,
+                    &Bytes::from_static(b"must not publish"),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?;
+            (journal, conversation_issuer, id, request, pending)
+        };
         let mut stale = fence.clone();
         stale.reservation_id.push_str("-stale");
         assert!(
@@ -3260,6 +3399,74 @@ mod tests {
                 )
                 .await?;
             replacement
+        };
+        #[cfg(feature = "filesystem")]
+        let (replacement_approval, cancellation_approval_pending) = {
+            use crate::executor::ExecutionJournal;
+            assert!(matches!(
+                stream.commit(approval_pending).await?,
+                acyclic_stream::CommitOutcome::Conflict(_)
+            ));
+            assert!(
+                approval_journal
+                    .open_interaction(approval_id, approval_request.clone())
+                    .await
+                    .is_err()
+            );
+            assert!(
+                approval_journal
+                    .interaction_outcome(approval_id)
+                    .await
+                    .is_err()
+            );
+            let conversation_scope = conversation_issuer.root_for_agent(
+                AgentId::from_bytes([1; 16]),
+                "owner",
+                Capabilities::new([
+                    "interaction:open".to_owned(),
+                    volume.capability(crate::conversation::VolumeOperation::Read)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                ]),
+            );
+            let binding = host.journal_owner(task_id, fence.clone()).await?;
+            let pending = binding
+                .prepare_append(
+                    &acyclic_stream::StreamPath::new(
+                        conversation_issuer.verifier().audience().stream_path()?,
+                    )?,
+                    2,
+                    &StreamKey::new(Bytes::from_static(b"approval-before-cancellation"))?,
+                    &Bytes::from_static(b"must not publish"),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?;
+            let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
+                binding,
+                attempt,
+                filesystem.clone(),
+                volume.clone(),
+                issuer.verifier(),
+                content_scope.clone(),
+                65_536,
+            )?
+            .with_interaction_owner(
+                conversation_issuer.verifier(),
+                crate::core::SchemaRegistry::new(),
+                conversation_scope,
+                volume.clone(),
+            )?;
+            journal
+                .open_interaction(approval_id, approval_request.clone())
+                .await?;
+            assert_eq!(journal.interaction_outcome(approval_id).await?, None);
+            assert_eq!(
+                stream
+                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                    .tail()
+                    .await?,
+                2
+            );
+            (journal, pending)
         };
         // An admitted attempt whose execution-journal claim was not yet written
         // can continue under a new owner without spending another unit.
@@ -3572,6 +3779,33 @@ mod tests {
                     .verify(false)
                     .await
                     .is_err()
+            );
+        }
+        #[cfg(feature = "filesystem")]
+        {
+            use crate::executor::ExecutionJournal;
+            assert!(matches!(
+                stream.commit(cancellation_approval_pending).await?,
+                acyclic_stream::CommitOutcome::Conflict(_)
+            ));
+            assert!(
+                replacement_approval
+                    .open_interaction(approval_id, approval_request)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                replacement_approval
+                    .interaction_outcome(approval_id)
+                    .await?,
+                None
+            );
+            assert_eq!(
+                stream
+                    .stream(conversation_issuer.verifier().audience().stream_path()?)?
+                    .tail()
+                    .await?,
+                2
             );
         }
         assert!(
