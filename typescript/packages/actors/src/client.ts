@@ -177,6 +177,16 @@ function defaultBinding(): ActorsRustBinding {
 function nativeBinding(): ActorsRustBinding {
   return {
     async connect(endpoint, token, signal, caCertificate) {
+      // The staged metadata identifies the exact native artifacts present in
+      // this package. Select WASM before evaluating the generated loader when
+      // the package was installed on another supported platform; the loader's
+      // generic missing-binding error otherwise hides its requested paths.
+      // @ts-ignore generated native metadata is intentionally untracked
+      const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as { default?: NativeTargetMetadata } & NativeTargetMetadata;
+      const metadata = metadataModule.default ?? metadataModule;
+      if (!hasNativeArtifactForRuntime(metadata)) {
+        return wasmBinding().connect(endpoint, token, signal, caCertificate);
+      }
       let module: NativeActorsModule;
       try {
         // The native build script stages this generated loader and its exact
@@ -243,6 +253,20 @@ interface NativeActorsModule {
     connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
     connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
   }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+}
+
+interface NativeTargetMetadata {
+  readonly artifacts?: readonly { readonly path?: string }[];
+}
+
+function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): boolean {
+  const artifacts = metadata.artifacts ?? [];
+  const names = artifacts.map(artifact => artifact.path?.split(/[\\/]/).pop() ?? "");
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  if (process.platform === "darwin") {
+    return names.some(name => name === "index.darwin-universal.node" || name === `index.darwin-${arch}.node`);
+  }
+  return names.some(name => name.startsWith(`index.${process.platform}-${arch}-`) && name.endsWith(".node"));
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
