@@ -518,7 +518,24 @@ pub struct DurableWorkflowHost {
 
 impl DurableWorkflowHost {
     /// Opens a workflow by replaying and validating every atomic transition.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.workflow.open",
+            level = "info",
+            skip_all,
+            fields(rev = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn open(
+        registry: MachineRegistry,
+        initial: MachineCheckpoint,
+        journal: Arc<dyn WorkflowJournal>,
+    ) -> Result<Self> {
+        crate::obs::outcome(Self::open_untraced(registry, initial, journal).await)
+    }
+
+    async fn open_untraced(
         registry: MachineRegistry,
         initial: MachineCheckpoint,
         journal: Arc<dyn WorkflowJournal>,
@@ -578,6 +595,7 @@ impl DurableWorkflowHost {
                 terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
             }
         }
+        crate::obs::obs_record!("rev" = checkpoint.revision);
         Ok(Self {
             registry,
             checkpoint,
@@ -631,7 +649,32 @@ impl DurableWorkflowHost {
     /// Validates a transition before its checkpoint and outbox are committed.
     /// This is used by typed task/tool wrappers to enforce result schemas at
     /// the durable boundary, including on idempotent replay.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.workflow.step",
+            level = "info",
+            skip_all,
+            fields(rev = self.checkpoint.revision, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub async fn step_checked<F>(
+        &mut self,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        input: Value,
+        check: F,
+    ) -> Result<MachineTransition>
+    where
+        F: FnOnce(&MachineTransition) -> Result<()>,
+    {
+        crate::obs::outcome(
+            self.step_checked_untraced(operation_id, idempotency_key, input, check)
+                .await,
+        )
+    }
+
+    async fn step_checked_untraced<F>(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,

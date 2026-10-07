@@ -520,6 +520,13 @@ impl Error {
             Self::Indeterminate(_) => ErrorCode::Indeterminate,
         }
     }
+
+    /// Stable classification for tracing's `error.kind`; never the message,
+    /// which can embed paths.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        self.code().as_str_name()
+    }
 }
 
 /// A Stream failure below the harness is a durable-storage failure.

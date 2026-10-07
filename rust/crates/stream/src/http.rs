@@ -10,6 +10,7 @@ use reqwest::{
 };
 use serde_json::Value;
 use std::{collections::VecDeque, net::IpAddr, time::Duration};
+use tracing::field::Empty;
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -84,7 +85,20 @@ impl HttpStream {
             maximum,
         })
     }
-    async fn request(&self, route: &str, bytes: Vec<u8>) -> Result<Value, StreamError> {
+    #[tracing::instrument(
+        name = "acyclic.stream.http.call",
+        skip_all,
+        fields(route = route, http.status = Empty, bytes = Empty, outcome = Empty, error.kind = Empty)
+    )]
+    async fn request(&self, route: &'static str, bytes: Vec<u8>) -> Result<Value, StreamError> {
+        obs::finish(self.request_inner(route, bytes).await)
+    }
+
+    async fn request_inner(
+        &self,
+        route: &'static str,
+        bytes: Vec<u8>,
+    ) -> Result<Value, StreamError> {
         let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
             .endpoint
@@ -100,6 +114,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
+        obs::record("http.status", response.status().as_u16());
         if response
             .content_length()
             .is_some_and(|length| length > self.maximum as u64)
@@ -117,6 +132,7 @@ impl HttpStream {
             }
             body.extend_from_slice(&chunk);
         }
+        obs::record("bytes", body.len());
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value

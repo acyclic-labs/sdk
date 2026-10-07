@@ -5,16 +5,16 @@
   "minItems": 1,
   "items": {
     "type": "object",
-    "required": ["lane", "runner", "workers", "artifact", "artifact_path", "inputs", "source_bound", "early_start"],
+    "required": ["lane", "runner", "workers", "artifact", "artifact_path", "inputs", "source_bound", "scope"],
     "properties": {
       "lane": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
       "runner": { "type": "string", "minLength": 1 },
       "workers": { "type": "integer", "minimum": 1 },
       "artifact": { "type": "string", "pattern": "^([a-z0-9]+(-[a-z0-9]+)*)?$" },
       "artifact_path": { "type": "string" },
-      "inputs": { "enum": ["rust", "product", "repository", "policy"] },
+      "inputs": { "enum": ["rust", "typescript", "product", "repository", "policy"] },
       "source_bound": { "type": "boolean" },
-      "early_start": { "type": "boolean" }
+      "scope": { "enum": ["core", "full", "both"] }
     },
     "additionalProperties": false
   }

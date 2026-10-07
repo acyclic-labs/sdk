@@ -632,6 +632,19 @@ impl Scheduler {
     }
 
     /// Applies one committed scheduler event.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.scheduler.apply",
+            level = "debug",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
+    pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
+        crate::obs::outcome(self.apply_event(event))
+    }
+
     #[allow(
         clippy::cognitive_complexity,
         reason = "one arm per scheduler event variant; splitting would obscure the dispatch, \
@@ -643,7 +656,7 @@ impl Scheduler {
                   would scatter one event's application across many functions without \
                   clarifying any of them"
     )]
-    pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
+    fn apply_event(&mut self, event: SchedulerEvent) -> Result<()> {
         let primary = event.operation_id();
         let declared_parent = match &event {
             SchedulerEvent::Declared { spec } => {
@@ -1773,7 +1786,20 @@ impl TaskInbox {
     }
 
     /// Applies one committed item, deduplicating exact message identities.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.scheduler.inbox_apply",
+            level = "debug",
+            skip_all,
+            fields(items = self.items.len() as u64, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
+        )
+    )]
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
+        crate::obs::outcome(self.apply_item(item))
+    }
+
+    fn apply_item(&mut self, item: InboxItem) -> Result<()> {
         if item.task_id != self.task_id || item.message_id.trim().is_empty() {
             return Err(Error::Invalid(
                 "inbox item has the wrong task or an empty message identity".into(),

@@ -110,7 +110,7 @@ node scripts/build-stream-native.mjs check
 $release = Start-Background release @"
 `$env:CARGO_TARGET_DIR = '$ReleaseTargetDir'
 node scripts/build-product.mjs
-node plugin/scripts/package.mjs --binary '$(Join-Path $ReleaseTargetDir 'release\acyclic.exe')' --out '$PluginOutput'
+node plugin/scripts/package.mjs --binary '$(Join-Path $ReleaseTargetDir 'dist\acyclic.exe')' --out '$PluginOutput'
 node plugin/scripts/validate-package.mjs '$PluginOutput'
 "@
 $napi = Start-Background napi `

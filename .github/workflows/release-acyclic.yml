@@ -127,12 +127,12 @@ jobs:
           exit "$status"
       - name: Verify release architecture and runtime ABI
         shell: bash
-        run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/release/${{ matrix.executable }}'
+        run: node scripts/verify-release-binary.mjs '${{ matrix.target }}' 'target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}'
       - name: Stage normalized executable
         shell: bash
         run: |
           mkdir -p "release/${{ matrix.target }}"
-          cp "target/${{ matrix.rust_target }}/release/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
+          cp "target/${{ matrix.rust_target }}/dist/${{ matrix.executable }}" "release/${{ matrix.target }}/${{ matrix.executable }}"
           case "${{ matrix.target }}" in
             linux-x64-gnu|darwin-arm64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify" "release/${{ matrix.target }}/native-mount-qualify" ;;
             win32-x64) cp "target-qualifier/${{ matrix.rust_target }}/release/native-mount-qualify.exe" "release/${{ matrix.target }}/native-mount-qualify.exe" ;;

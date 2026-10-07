@@ -26,6 +26,20 @@ pub(crate) enum ControlCommand {
     Discard,
 }
 
+impl ControlCommand {
+    /// The command's wire name.
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Ping => "ping",
+            Self::Doctor => "doctor",
+            Self::Hook => "hook",
+            Self::Git => "git",
+            Self::Agents => "agents",
+            Self::Discard => "discard",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct ControlRequest {
     pub(crate) version: u32,
@@ -815,6 +829,13 @@ pub(crate) async fn dispatch_control_request(
     control.dispatch_request(request).await
 }
 
+#[tracing::instrument(
+    target = "acyclic_plugin",
+    name = "acyclic.plugin.request",
+    level = "info",
+    skip_all,
+    fields(command = envelope.request.command.name(), outcome = tracing::field::Empty)
+)]
 pub(crate) async fn dispatch_control_envelope(
     control: &Arc<impl ConcurrentControlRequestDispatcher>,
     ledger: &Arc<ControlLedger>,
