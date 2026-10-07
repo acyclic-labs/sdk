@@ -210,8 +210,9 @@ const modules = readdirSync(sourceRoot, { withFileTypes: true })
   .sort();
 if (!modules.length) throw new Error("generated Actors TypeScript declarations are empty");
 
+const barrelRelative = "generated/typescript/actors/types.ts";
 assertSource(sourceBarrel);
-const sourceBarrelBytes = readFileSync(sourceBarrel);
+const sourceBarrelBytes = requireAttestedArtifact(barrelRelative);
 const sourceBarrelText = sourceBarrelBytes.toString("utf8");
 const expectedSourceBarrel = [
   "// Generated from Rust-owned Actors semantic declarations.",
@@ -225,21 +226,8 @@ if (sourceBarrelText !== expectedSourceBarrel) {
 const expected = new Map();
 for (const module of modules) {
   const relative = `generated/typescript/actors/${module}.ts`;
-  const source = join(sourceRoot, `${module}.ts`);
-  assertSource(source);
-  const bytes = readFileSync(source);
-  const actual = digestBytes(bytes);
-  const recorded = artifactByPath.get(relative);
-  if (!recorded || recorded.sha256 !== actual.sha256 || recorded.bytes !== actual.bytes) {
-    throw new Error(`generation manifest does not attest ${relative}`);
-  }
+  const bytes = requireAttestedArtifact(relative);
   expected.set(`${module}.ts`, bytes);
-}
-const barrelRelative = "generated/typescript/actors/types.ts";
-const barrelDigest = digestBytes(sourceBarrelBytes);
-const recordedBarrel = artifactByPath.get(barrelRelative);
-if (!recordedBarrel || recordedBarrel.sha256 !== barrelDigest.sha256 || recordedBarrel.bytes !== barrelDigest.bytes) {
-  throw new Error(`generation manifest does not attest ${barrelRelative}`);
 }
 
 const packageBarrel = [

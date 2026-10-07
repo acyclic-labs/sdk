@@ -85,6 +85,35 @@ pub const fn part_number(value: u32) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validates one uploaded part after its ordering predecessor.
+///
+/// Completion historically checks the ETag and size before the part-number
+/// bound, while list responses check that bound first. The flag preserves
+/// those established validation orders while sharing the exact predicates.
+pub(crate) fn validate_uploaded_part(
+    part: &wire::UploadedPart,
+    previous: u32,
+    number_before_fields: bool,
+) -> Result<(), Error> {
+    if part.part_number <= previous {
+        return Err(InvalidArgument.into());
+    }
+    if number_before_fields {
+        part_number(part.part_number)?;
+    }
+    if part.etag.is_empty()
+        || part.etag.len() > 8192
+        || part.etag.contains(['\r', '\n', '\0'])
+        || part.size > 5 * 1024 * 1024 * 1024
+    {
+        return Err(InvalidArgument.into());
+    }
+    if !number_before_fields {
+        part_number(part.part_number)?;
+    }
+    Ok(())
+}
+
 /// Validates a canonical binary request before any transport or provider side effect.
 /// Upload routes accept their generated header message, with the decoded body length separate.
 #[allow(clippy::too_many_lines)]
@@ -294,15 +323,7 @@ pub fn complete_multipart_digest(
     }
     let mut previous = 0;
     for part in &value.parts {
-        if part.part_number <= previous
-            || part.etag.is_empty()
-            || part.etag.len() > 8192
-            || part.etag.contains(['\r', '\n', '\0'])
-            || part.size > 5 * 1024 * 1024 * 1024
-        {
-            return Err(InvalidArgument.into());
-        }
-        part_number(part.part_number)?;
+        validate_uploaded_part(part, previous, false)?;
         previous = part.part_number;
     }
     let mut value = value.clone();
@@ -600,6 +621,29 @@ mod tests {
         assert!(part_number(wire::ObjectsLimit::MaxMultipartParts as u32).is_ok());
         assert!(part_number(0).is_err());
         assert!(part_number(wire::ObjectsLimit::MaxMultipartParts as u32 + 1).is_err());
+    }
+    #[test]
+    fn uploaded_part_validation_keeps_inclusive_boundaries() {
+        let valid = wire::UploadedPart {
+            part_number: wire::ObjectsLimit::MaxMultipartParts as u32,
+            etag: "receipt".into(),
+            size: 5 * 1024 * 1024 * 1024,
+        };
+        assert!(validate_uploaded_part(&valid, 0, false).is_ok());
+        assert!(validate_uploaded_part(&valid, 0, true).is_ok());
+
+        let mut invalid_number = valid.clone();
+        invalid_number.part_number += 1;
+        assert!(validate_uploaded_part(&invalid_number, 0, false).is_err());
+        assert!(validate_uploaded_part(&invalid_number, 0, true).is_err());
+
+        let mut invalid_size = valid.clone();
+        invalid_size.size += 1;
+        assert!(validate_uploaded_part(&invalid_size, 0, false).is_err());
+
+        let mut invalid_etag = valid;
+        invalid_etag.etag.push('\0');
+        assert!(validate_uploaded_part(&invalid_etag, 0, false).is_err());
     }
     #[test]
     fn ranges_clip_suffixes_and_ends_without_wrapping() -> Result<(), Error> {

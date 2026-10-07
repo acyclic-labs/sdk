@@ -146,15 +146,7 @@ pub fn parts(
     let limit = request::page_size(query.page_size)?;
     let mut previous = query.after_part_number;
     for part in &response.parts {
-        if part.part_number <= previous
-            || part.part_number > wire::ObjectsLimit::MaxMultipartParts as u32
-            || part.etag.is_empty()
-            || part.etag.len() > 8192
-            || part.etag.contains(['\r', '\n', '\0'])
-            || part.size > 5 * 1024 * 1024 * 1024
-        {
-            return Err(invalid());
-        }
+        request::validate_uploaded_part(part, previous, true).map_err(|_| invalid())?;
         previous = part.part_number;
     }
     if response.parts.len() > limit

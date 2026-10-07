@@ -1,4 +1,4 @@
-//! Private native file primitives shared by durable local providers.
+#![doc = include_str!("../README.md")]
 
 use bytes::Bytes;
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]

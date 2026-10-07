@@ -229,6 +229,10 @@ impl UploadId {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    fn from_validated(value: String) -> Self {
+        Self(value)
+    }
 }
 
 impl AsRef<str> for UploadId {
@@ -470,6 +474,313 @@ impl From<PutObjectHeader> for wire::PutObjectHeader {
             metadata: value.metadata.map(Into::into),
             preconditions: value.preconditions.map(Into::into),
             mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A typed request that starts independently staged multipart work.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateMultipartRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    metadata: Option<ObjectMetadata>,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl CreateMultipartRequest {
+    /// Creates a multipart request for one validated bucket and object key.
+    pub fn new(bucket: BucketName, object_key: ObjectKey) -> Self {
+        Self {
+            bucket,
+            object_key,
+            metadata: None,
+            mutation: None,
+        }
+    }
+
+    /// Adds validated representation metadata to the staged upload.
+    pub fn with_metadata(mut self, metadata: ObjectMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+
+    /// Adds a caller retry identity to the staged upload.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns optional validated representation metadata.
+    pub fn metadata(&self) -> Option<&ObjectMetadata> {
+        self.metadata.as_ref()
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::CreateMultipartRequest> for CreateMultipartRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::CreateMultipartRequest) -> Result<Self, Self::Error> {
+        request::create_multipart_digest(&value)?;
+        let wire::CreateMultipartRequest {
+            bucket,
+            object_key,
+            metadata,
+            mutation,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            metadata: metadata.map(ObjectMetadata::from_validated),
+            mutation: mutation.map(|value| IdempotencyKey::from_validated(value.idempotency_key)),
+        })
+    }
+}
+
+impl From<CreateMultipartRequest> for wire::CreateMultipartRequest {
+    fn from(value: CreateMultipartRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            metadata: value.metadata.map(Into::into),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A typed header for publishing one staged multipart part.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UploadPartHeader {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    upload_id: UploadId,
+    part_number: PartNumber,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl UploadPartHeader {
+    /// Creates a part header for one validated staged upload.
+    pub fn new(
+        bucket: BucketName,
+        object_key: ObjectKey,
+        upload_id: UploadId,
+        part_number: PartNumber,
+    ) -> Self {
+        Self {
+            bucket,
+            object_key,
+            upload_id,
+            part_number,
+            mutation: None,
+        }
+    }
+
+    /// Adds a caller retry identity to the part publication.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the validated staged upload identifier.
+    pub fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+
+    /// Returns the validated multipart part number.
+    pub const fn part_number(&self) -> PartNumber {
+        self.part_number
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::UploadPartHeader> for UploadPartHeader {
+    type Error = Error;
+
+    fn try_from(value: wire::UploadPartHeader) -> Result<Self, Self::Error> {
+        request::upload_part_stream_digest(&value)?;
+        let wire::UploadPartHeader {
+            bucket,
+            object_key,
+            upload_id,
+            part_number,
+            mutation,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            upload_id: UploadId::from_validated(upload_id),
+            part_number: PartNumber::new(part_number)?,
+            mutation: mutation.map(|value| IdempotencyKey::from_validated(value.idempotency_key)),
+        })
+    }
+}
+
+impl From<UploadPartHeader> for wire::UploadPartHeader {
+    fn from(value: UploadPartHeader) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            upload_id: value.upload_id.into_string(),
+            part_number: value.part_number.get(),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A typed request that aborts staged multipart work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AbortMultipartRequest {
+    bucket: BucketName,
+    object_key: ObjectKey,
+    upload_id: UploadId,
+    mutation: Option<IdempotencyKey>,
+}
+
+impl AbortMultipartRequest {
+    /// Creates an abort request for one validated staged upload.
+    pub fn new(bucket: BucketName, object_key: ObjectKey, upload_id: UploadId) -> Self {
+        Self {
+            bucket,
+            object_key,
+            upload_id,
+            mutation: None,
+        }
+    }
+
+    /// Adds a caller retry identity to the abort request.
+    pub fn with_idempotency_key(mut self, key: IdempotencyKey) -> Self {
+        self.mutation = Some(key);
+        self
+    }
+
+    /// Returns the validated bucket name.
+    pub fn bucket(&self) -> &BucketName {
+        &self.bucket
+    }
+
+    /// Returns the validated object key.
+    pub fn object_key(&self) -> &ObjectKey {
+        &self.object_key
+    }
+
+    /// Returns the validated staged upload identifier.
+    pub fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+
+    /// Returns the optional caller retry identity.
+    pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
+        self.mutation.as_ref()
+    }
+}
+
+impl TryFrom<wire::AbortMultipartRequest> for AbortMultipartRequest {
+    type Error = Error;
+
+    fn try_from(value: wire::AbortMultipartRequest) -> Result<Self, Self::Error> {
+        request::abort_multipart_digest(&value)?;
+        let wire::AbortMultipartRequest {
+            bucket,
+            object_key,
+            upload_id,
+            mutation,
+        } = value;
+        let bucket = bucket
+            .ok_or(wire::ErrorCode::InvalidArgument)
+            .map(|value| BucketName::from_validated(value.name))?;
+        Ok(Self {
+            bucket,
+            object_key: ObjectKey::from_validated(object_key),
+            upload_id: UploadId::from_validated(upload_id),
+            mutation: mutation.map(|value| IdempotencyKey::from_validated(value.idempotency_key)),
+        })
+    }
+}
+
+impl From<AbortMultipartRequest> for wire::AbortMultipartRequest {
+    fn from(value: AbortMultipartRequest) -> Self {
+        Self {
+            bucket: Some(value.bucket.into()),
+            object_key: value.object_key.into_string(),
+            upload_id: value.upload_id.into_string(),
+            mutation: value.mutation.map(Into::into),
+        }
+    }
+}
+
+/// A validated identifier returned when multipart staging begins.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultipartUpload {
+    upload_id: UploadId,
+}
+
+impl MultipartUpload {
+    /// Validates and owns one staged upload identifier.
+    pub fn new(upload_id: UploadId) -> Self {
+        Self { upload_id }
+    }
+
+    /// Validates a multipart creation response through the response contract.
+    pub fn try_from_wire(value: wire::MultipartUpload) -> Result<Self, Error> {
+        use prost::Message;
+        response::validate_binary("multipart/create", &[], &value.encode_to_vec(), 0)?;
+        Ok(Self {
+            upload_id: UploadId::from_validated(value.upload_id),
+        })
+    }
+
+    /// Returns the validated staged upload identifier.
+    pub fn upload_id(&self) -> &UploadId {
+        &self.upload_id
+    }
+}
+
+impl TryFrom<wire::MultipartUpload> for MultipartUpload {
+    type Error = Error;
+
+    fn try_from(value: wire::MultipartUpload) -> Result<Self, Self::Error> {
+        Self::try_from_wire(value)
+    }
+}
+
+impl From<MultipartUpload> for wire::MultipartUpload {
+    fn from(value: MultipartUpload) -> Self {
+        Self {
+            upload_id: value.upload_id.into_string(),
         }
     }
 }
@@ -1515,6 +1826,78 @@ mod tests {
             object_key: "artifact".into(),
             if_match: "etag\0bad".into(),
             if_none_match: String::new(),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn typed_multipart_requests_and_response_round_trip_presence() {
+        let bucket = BucketName::try_from("customer.inputs").unwrap();
+        let object_key = ObjectKey::try_from("artifact").unwrap();
+        let upload_id = UploadId::try_from("upload-1").unwrap();
+        let retry = IdempotencyKey::try_from("multipart-1").unwrap();
+        let metadata = ObjectMetadata::try_from(wire::ObjectMetadata {
+            content_type: "application/octet-stream".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+        let create = CreateMultipartRequest::new(bucket.clone(), object_key.clone())
+            .with_metadata(metadata)
+            .with_idempotency_key(retry.clone());
+        let create_wire = wire::CreateMultipartRequest::from(create.clone());
+        assert_eq!(CreateMultipartRequest::try_from(create_wire), Ok(create));
+
+        let header = UploadPartHeader::new(
+            bucket.clone(),
+            object_key.clone(),
+            upload_id.clone(),
+            PartNumber::try_from(1).unwrap(),
+        )
+        .with_idempotency_key(retry.clone());
+        let header_wire = wire::UploadPartHeader::from(header.clone());
+        assert_eq!(UploadPartHeader::try_from(header_wire), Ok(header));
+
+        let abort = AbortMultipartRequest::new(bucket, object_key, upload_id.clone())
+            .with_idempotency_key(retry);
+        let abort_wire = wire::AbortMultipartRequest::from(abort.clone());
+        assert_eq!(AbortMultipartRequest::try_from(abort_wire), Ok(abort));
+
+        let upload = MultipartUpload::new(upload_id);
+        let upload_wire = wire::MultipartUpload::from(upload.clone());
+        assert_eq!(MultipartUpload::try_from(upload_wire), Ok(upload));
+    }
+
+    #[test]
+    fn typed_multipart_requests_reject_invalid_wire_values() {
+        assert!(CreateMultipartRequest::try_from(wire::CreateMultipartRequest {
+            bucket: None,
+            object_key: "artifact".into(),
+            metadata: None,
+            mutation: None,
+        })
+        .is_err());
+        assert!(UploadPartHeader::try_from(wire::UploadPartHeader {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            object_key: "artifact".into(),
+            upload_id: "upload-1".into(),
+            part_number: 0,
+            mutation: None,
+        })
+        .is_err());
+        assert!(AbortMultipartRequest::try_from(wire::AbortMultipartRequest {
+            bucket: Some(wire::BucketRef {
+                name: "customer.inputs".into(),
+            }),
+            object_key: "artifact".into(),
+            upload_id: String::new(),
+            mutation: None,
+        })
+        .is_err());
+        assert!(MultipartUpload::try_from(wire::MultipartUpload {
+            upload_id: String::new(),
         })
         .is_err());
     }

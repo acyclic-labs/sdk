@@ -86,43 +86,43 @@ jobs:
           path: .qualification/gate.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['gate'] }}
       - name: Find linux marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/linux.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux'] }}
       - name: Find web marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/web.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['web'] }}
       - name: Find linux-arm64 marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/linux-arm64.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64'] }}
       - name: Find linux-musl marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/linux-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-musl'] }}
       - name: Find linux-arm64-musl marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/linux-arm64-musl.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['linux-arm64-musl'] }}
       - name: Find windows marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/windows.json
           key: ${{ fromJSON(steps.fingerprints.outputs.keys)['windows'] }}
       - name: Find macos marker
-        if: env.FORCE != 'true'
+        if: env.FORCE != 'true' && github.event_name != 'pull_request' && github.event_name != 'push' && github.event_name != 'workflow_call'
         uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: .qualification/macos.json
