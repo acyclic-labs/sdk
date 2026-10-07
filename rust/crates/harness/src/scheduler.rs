@@ -627,7 +627,15 @@ impl Scheduler {
                 require_phase(operation, OperationPhase::Running)?;
                 require_fence(operation, &fence)?;
                 operation.reservation = None;
-                operation.phase = OperationPhase::WaitingForChildren;
+                // A waiting parent holds no work, so a pending cancellation
+                // closes it, as it would on lease release.
+                if operation.cancellation_requested {
+                    operation.phase = OperationPhase::Terminal;
+                    operation.outcome = Some(Outcome::Cancelled);
+                    self.completion_order.push(operation_id);
+                } else {
+                    operation.phase = OperationPhase::WaitingForChildren;
+                }
             }
             SchedulerEvent::LeaseReleased {
                 operation_id,
@@ -661,34 +669,8 @@ impl Scheduler {
                     return Err(Error::NotFound(format!("operation {operation_id}")));
                 }
                 for target in frontier {
-                    let mut terminalized = false;
-                    {
-                        let operation = self.mutable(target)?;
-                        if operation.phase == OperationPhase::Terminal {
-                            continue;
-                        }
-                        if matches!(
-                            operation.phase,
-                            OperationPhase::WaitingForDependencies
-                                | OperationPhase::WaitingForCapacity
-                                | OperationPhase::Admitted
-                                | OperationPhase::WaitingForChildren
-                        ) {
-                            operation.reservation = None;
-                            operation.phase = OperationPhase::Terminal;
-                            operation.outcome = Some(Outcome::Cancelled);
-                            terminalized = true;
-                        } else {
-                            operation.cancellation_requested = true;
-                        }
-                        operation.revision = next_revision(operation.revision)?;
-                    }
-                    if terminalized {
-                        self.completion_order.push(target);
-                    }
+                    self.cancel(target)?;
                 }
-                // Like a duplicate completion, cancelling a terminal operation
-                // commits nothing to it, so its revision stays put.
                 return Ok(());
             }
             SchedulerEvent::Completed {
@@ -812,28 +794,7 @@ impl Scheduler {
                     }
                 }
                 for child_id in &cancel {
-                    let mut terminalized = false;
-                    let child = self.mutable(*child_id)?;
-                    if child.phase == OperationPhase::Terminal {
-                        continue;
-                    }
-                    if matches!(
-                        child.phase,
-                        OperationPhase::WaitingForDependencies
-                            | OperationPhase::WaitingForCapacity
-                            | OperationPhase::Admitted
-                    ) {
-                        child.reservation = None;
-                        child.phase = OperationPhase::Terminal;
-                        child.outcome = Some(Outcome::Cancelled);
-                        terminalized = true;
-                    } else {
-                        child.cancellation_requested = true;
-                    }
-                    child.revision = next_revision(child.revision)?;
-                    if terminalized {
-                        self.completion_order.push(*child_id);
-                    }
+                    self.cancel(*child_id)?;
                 }
                 let parent = self.mutable(operation_id)?;
                 parent.phase = match &outcome {
@@ -1066,6 +1027,31 @@ impl Scheduler {
             })
             .map(|operation| operation.spec.operation_id)
             .collect()
+    }
+
+    /// Closes an operation that holds no running work and asks a running one
+    /// to stop. Like a duplicate completion, cancelling a terminal operation
+    /// commits nothing to it, revision included.
+    fn cancel(&mut self, id: OperationId) -> Result<()> {
+        let operation = self.mutable(id)?;
+        let close = match operation.phase {
+            OperationPhase::Terminal => return Ok(()),
+            OperationPhase::Running | OperationPhase::Reconciling => false,
+            OperationPhase::WaitingForDependencies
+            | OperationPhase::WaitingForCapacity
+            | OperationPhase::Admitted
+            | OperationPhase::WaitingForChildren => true,
+        };
+        operation.revision = next_revision(operation.revision)?;
+        if close {
+            operation.reservation = None;
+            operation.phase = OperationPhase::Terminal;
+            operation.outcome = Some(Outcome::Cancelled);
+            self.completion_order.push(id);
+        } else {
+            operation.cancellation_requested = true;
+        }
+        Ok(())
     }
 
     fn mutable(&mut self, id: OperationId) -> Result<&mut OperationState> {
@@ -1678,6 +1664,11 @@ mod tests {
                     }
                 }
                 for operation in scheduler.operations.values() {
+                    // No worker holds such a parent to observe the request.
+                    prop_assert!(
+                        !operation.cancellation_requested
+                            || operation.phase != OperationPhase::WaitingForChildren
+                    );
                     prop_assert_eq!(
                         operation.outcome.is_some(),
                         matches!(
