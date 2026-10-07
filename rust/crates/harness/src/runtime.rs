@@ -3473,14 +3473,10 @@ impl TaskContext {
                 "durable context build requires a recorded effect".into(),
             ));
         }
-        let context = self.harness.context.run(input).await?;
-        if context.messages.len() > self.scope.limits().context_messages {
-            return Err(Error::Invalid("model context count exceeds limit".into()));
-        }
-        for message in &context.messages {
-            message.content.validate_limits(self.scope.limits())?;
-        }
-        Ok(context)
+        self.harness
+            .context
+            .run_bounded(input, self.scope.limits())
+            .await
     }
 
     async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {

@@ -64,6 +64,7 @@ pub struct Navigation {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageEntry {
+    pub package_name: String,
     pub crate_name: String,
     pub family_slug: String,
     pub version: String,
@@ -173,8 +174,10 @@ pub struct DocsData {
     pub source: SourceInfo,
     pub navigation: Navigation,
     #[serde(default)]
+    #[schemars(required)]
     pub packages: PackageCatalog,
     #[serde(default)]
+    #[schemars(required)]
     pub search: SearchIndex,
     pub families: Vec<Family>,
 }
@@ -207,9 +210,20 @@ pub struct BuildInput {
     pub source_sha256: Option<String>,
     pub repository_root: PathBuf,
     pub rustdoc_files: Vec<PathBuf>,
+    /// Cargo metadata for each rustdoc file. Package identity and package
+    /// version come from this Rust/Cargo input, never from the bundle label.
+    pub package_metadata: Vec<PackageMetadata>,
     /// Generated Rust sources whose external Rustdoc spans may be projected.
     pub generated_sources: Vec<GeneratedSource>,
     pub mark_latest: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageMetadata {
+    pub rustdoc_file: PathBuf,
+    pub package_name: String,
+    pub crate_name: String,
+    pub version: String,
 }
 
 #[derive(Debug)]
@@ -265,6 +279,13 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "at least one rustdoc JSON file is required".into(),
         ));
     }
+    if input.package_metadata.len() != input.rustdoc_files.len() {
+        return Err(Error::Invalid(format!(
+            "package metadata count {} does not match rustdoc input count {}",
+            input.package_metadata.len(),
+            input.rustdoc_files.len()
+        )));
+    }
     if input.mark_latest && input.channel != Channel::Release {
         return Err(Error::Invalid("only a release can be marked latest".into()));
     }
@@ -295,10 +316,18 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "rustdoc JSON input contains the same file more than once".into(),
         ));
     }
-    let mut families = Vec::new();
+    let mut family_packages = Vec::new();
     let mut format_versions = std::collections::BTreeSet::new();
     let mut input_digest = Sha256::new();
     for path in &rustdoc_files {
+        let metadata = package_metadata_for_path(&input.package_metadata, path)?;
+        validate_package_metadata(metadata)?;
+        input_digest.update(metadata.package_name.as_bytes());
+        input_digest.update([0]);
+        input_digest.update(metadata.crate_name.as_bytes());
+        input_digest.update([0]);
+        input_digest.update(metadata.version.as_bytes());
+        input_digest.update([0]);
         let bytes = fs::read(path)?;
         if let Some(name) = path.file_name() {
             input_digest.update(name.to_string_lossy().as_bytes());
@@ -320,18 +349,18 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             )));
         }
         match krate.crate_version.as_deref() {
-            Some(crate_version) if crate_version != input.version => {
+            Some(crate_version) if crate_version != metadata.version => {
                 return Err(Error::Invalid(format!(
-                    "{} reports crate version {crate_version}, but the build is {}",
+                    "{} reports crate version {crate_version}, but Cargo metadata reports {}",
                     path.display(),
-                    input.version
+                    metadata.version
                 )));
             }
-            None if input.channel == Channel::Release => {
+            None => {
                 return Err(Error::Invalid(format!(
-                    "{} does not declare crate version for release {}",
+                    "{} does not declare crate version for Cargo package {}",
                     path.display(),
-                    input.version
+                    metadata.package_name
                 )));
             }
             _ => {}
@@ -343,13 +372,22 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             )));
         }
         format_versions.insert(krate.format_version);
-        families.push(build_family(
+        let family = build_family(
             &repository_root,
             &generated_sources,
             path,
             &bytes,
             &krate,
-        )?);
+        )?;
+        if family.crate_name != metadata.crate_name {
+            return Err(Error::Invalid(format!(
+                "{} has Rust crate {}, but Cargo metadata names {}",
+                path.display(),
+                family.crate_name,
+                metadata.crate_name
+            )));
+        }
+        family_packages.push((family, metadata.clone()));
     }
     let final_generated_sources =
         attest_generated_sources(&repository_root, &input.generated_sources)?;
@@ -358,7 +396,11 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             "generated source changed while projecting rustdoc".into(),
         ));
     }
-    families.sort_by(|a, b| a.slug.cmp(&b.slug));
+    family_packages.sort_by(|(left, _), (right, _)| left.slug.cmp(&right.slug));
+    let families = family_packages
+        .iter()
+        .map(|(family, _)| family.clone())
+        .collect::<Vec<_>>();
     if families.windows(2).any(|pair| pair[0].slug == pair[1].slug) {
         return Err(Error::Invalid(
             "duplicate crate family in rustdoc input".into(),
@@ -367,7 +409,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
     let navigation = Navigation {
         entries: navigation_entries(&families),
     };
-    let packages = package_catalog(&families, &input.version);
+    let packages = package_catalog(&family_packages);
     let search = search_index(&families);
     let data = DocsData {
         schema: DATA_SCHEMA_VERSION.into(),
@@ -448,7 +490,7 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     reject_reparse_ancestors(&version_dir)?;
     fs::create_dir_all(&version_dir)?;
     atomic_write(&data_path, &data_bytes, true)?;
-    let schema = schemars::schema_for!(DocsData);
+    let schema = schema_json()?;
     atomic_write(
         &version_dir.join("sdk-docs-data.v2.schema.json"),
         &serde_json::to_vec_pretty(&schema)?,
@@ -662,6 +704,9 @@ fn validate_version_entry(
             data_path.display()
         )));
     }
+    if schema == DATA_SCHEMA_VERSION {
+        validate_v2_document_shape(&data_bytes, &entry.version)?;
+    }
     let data: DocsData = serde_json::from_slice(&data_bytes).map_err(|error| {
         Error::Invalid(format!(
             "version index entry {} data file is not valid DocsData: {error}",
@@ -694,6 +739,34 @@ fn validate_version_entry(
     }
     validate_source_info(&data.source, &data.channel)?;
     validate_navigation(&data)?;
+    Ok(())
+}
+
+fn validate_v2_document_shape(data_bytes: &[u8], version: &str) -> Result<(), Error> {
+    let value: serde_json::Value = serde_json::from_slice(data_bytes).map_err(|error| {
+        Error::Invalid(format!(
+            "version index entry {version} v2 data file is not valid DocsData JSON: {error}"
+        ))
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        Error::Invalid(format!(
+            "version index entry {version} v2 data file must be a JSON object"
+        ))
+    })?;
+    for key in ["schema", "schemaVersion"] {
+        if object.get(key).and_then(serde_json::Value::as_str) != Some(DATA_SCHEMA_VERSION) {
+            return Err(Error::Invalid(format!(
+                "version index entry {version} v2 data file must set {key} to {DATA_SCHEMA_VERSION}"
+            )));
+        }
+    }
+    for key in ["packages", "search"] {
+        if !object.contains_key(key) {
+            return Err(Error::Invalid(format!(
+                "version index entry {version} v2 data file requires {key}"
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -914,16 +987,21 @@ fn navigation_entries(families: &[Family]) -> Vec<NavigationEntry> {
     entries
 }
 
-fn package_catalog(families: &[Family], version: &str) -> PackageCatalog {
+fn package_catalog(families: &[(Family, PackageMetadata)]) -> PackageCatalog {
     let mut entries = families
         .iter()
-        .map(|family| PackageEntry {
-            crate_name: family.crate_name.clone(),
+        .map(|(family, metadata)| PackageEntry {
+            package_name: metadata.package_name.clone(),
+            crate_name: metadata.crate_name.clone(),
             family_slug: family.slug.clone(),
-            version: version.to_owned(),
+            version: metadata.version.clone(),
         })
         .collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.crate_name.cmp(&right.crate_name));
+    entries.sort_by(|left, right| {
+        left.package_name
+            .cmp(&right.package_name)
+            .then(left.crate_name.cmp(&right.crate_name))
+    });
     PackageCatalog { entries }
 }
 
@@ -965,11 +1043,32 @@ fn search_index(families: &[Family]) -> SearchIndex {
 }
 
 fn validate_generated_catalog(data: &DocsData) -> Result<(), Error> {
-    let expected_packages = package_catalog(&data.families, &data.version);
-    if data.packages != expected_packages {
+    if data.packages.entries.len() != data.families.len()
+        || data.packages.entries.iter().any(|entry| {
+            entry.package_name.trim().is_empty()
+                || entry.crate_name.trim().is_empty()
+                || entry.family_slug.trim().is_empty()
+                || entry.version.trim().is_empty()
+                || Version::parse(&entry.version).is_err()
+        })
+    {
         return Err(Error::Invalid(
-            "package catalog must exactly match the sorted Rustdoc families".into(),
+            "package catalog must contain one complete Cargo-backed entry per family".into(),
         ));
+    }
+    let mut package_names = HashSet::new();
+    let mut family_slugs = HashSet::new();
+    for entry in &data.packages.entries {
+        if !package_names.insert(entry.package_name.as_str())
+            || !family_slugs.insert(entry.family_slug.as_str())
+            || !data.families.iter().any(|family| {
+                family.slug == entry.family_slug && family.crate_name == entry.crate_name
+            })
+        {
+            return Err(Error::Invalid(
+                "package catalog contains duplicate or unbound Cargo identity".into(),
+            ));
+        }
     }
     let expected_search = search_index(&data.families);
     if data.search != expected_search {
@@ -977,6 +1076,46 @@ fn validate_generated_catalog(data: &DocsData) -> Result<(), Error> {
             "search index must exactly match the generated Rust-owned data".into(),
         ));
     }
+    Ok(())
+}
+
+
+fn package_metadata_for_path<'a>(
+    metadata: &'a [PackageMetadata],
+    path: &Path,
+) -> Result<&'a PackageMetadata, Error> {
+    let matches = metadata
+        .iter()
+        .filter(|entry| normalize_path(&entry.rustdoc_file) == normalize_path(path))
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [entry] => Ok(entry),
+        [] => Err(Error::Invalid(format!(
+            "rustdoc input {} has no Cargo package metadata",
+            path.display()
+        ))),
+        _ => Err(Error::Invalid(format!(
+            "rustdoc input {} has duplicate Cargo package metadata",
+            path.display()
+        ))),
+    }
+}
+
+fn validate_package_metadata(metadata: &PackageMetadata) -> Result<(), Error> {
+    if metadata.package_name.trim().is_empty()
+        || metadata.crate_name.trim().is_empty()
+        || metadata.version.trim().is_empty()
+    {
+        return Err(Error::Invalid(
+            "Cargo package metadata requires package name, crate name, and version".into(),
+        ));
+    }
+    Version::parse(&metadata.version).map_err(|error| {
+        Error::Invalid(format!(
+            "Cargo package {} has invalid version {}: {error}",
+            metadata.package_name, metadata.version
+        ))
+    })?;
     Ok(())
 }
 
@@ -1768,7 +1907,22 @@ fn titleize(value: &str) -> String {
 
 /// Return the schema generated directly from the output structs.
 pub fn schema_json() -> Result<serde_json::Value, Error> {
-    Ok(serde_json::to_value(schemars::schema_for!(DocsData))?)
+    let mut schema = serde_json::to_value(schemars::schema_for!(DocsData))?;
+    let object = schema
+        .as_object_mut()
+        .ok_or_else(|| Error::Invalid("DocsData schema must be a JSON object".into()))?;
+    let required = object
+        .entry("required")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    let required = required
+        .as_array_mut()
+        .ok_or_else(|| Error::Invalid("DocsData schema required must be an array".into()))?;
+    for field in ["packages", "search"] {
+        if !required.iter().any(|value| value == field) {
+            required.push(serde_json::Value::String(field.into()));
+        }
+    }
+    Ok(schema)
 }
 
 #[cfg(test)]
@@ -1782,6 +1936,11 @@ mod tests {
         let second = schema_json().expect("schema should serialize");
         assert_eq!(first, second);
         assert_eq!(first["title"], "DocsData");
+        let required = first["required"]
+            .as_array()
+            .expect("DocsData JSON schema should declare required fields");
+        assert!(required.iter().any(|field| field == "packages"));
+        assert!(required.iter().any(|field| field == "search"));
     }
     #[test]
     fn slug_and_title_are_deterministic() {
@@ -1914,7 +2073,7 @@ mod tests {
 
         for logical_path in [
             "generated/actors/CON.txt",
-            "generated/actors/unicode-λ.rs",
+            "generated/actors/unicode-ÃƒÅ½Ã‚Â».rs",
             "generated/actors/bad<name.rs",
             "generated/actors/bad>name.rs",
             "generated/actors/bad\"name.rs",
@@ -2356,6 +2515,12 @@ mod tests {
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
             rustdoc_files: vec![rustdoc_path.clone()],
+            package_metadata: vec![PackageMetadata {
+                rustdoc_file: rustdoc_path.clone(),
+                package_name: "demo".into(),
+                crate_name: "demo".into(),
+                version: "1.0.0".into(),
+            }],
             generated_sources: Vec::new(),
             mark_latest: false,
         };
@@ -2477,7 +2642,15 @@ mod tests {
                     crate_name: "legacy".into(),
                 }],
             },
-            packages: package_catalog(std::slice::from_ref(&family), "1.0.0"),
+            packages: package_catalog(&[(
+                family.clone(),
+                PackageMetadata {
+                    rustdoc_file: PathBuf::new(),
+                    package_name: "legacy-package".into(),
+                    crate_name: "legacy".into(),
+                    version: "1.0.0".into(),
+                },
+            )]),
             search: search_index(std::slice::from_ref(&family)),
             families: vec![family],
         };
@@ -2534,6 +2707,25 @@ mod tests {
             search: SearchIndex { entries: Vec::new() },
             families: Vec::new(),
         };
+        let old_index_bytes = fs::read(output.join("sdk-docs-versions.v1.json"))
+            .expect("old index should remain readable");
+        let same_version = DocsData {
+            version: "1.0.0".into(),
+            source: SourceInfo {
+                revision: "d".repeat(40),
+                ..new_data.source.clone()
+            },
+            ..new_data.clone()
+        };
+        let error = write_bundle(&same_version, &output, true)
+            .expect_err("v1 to v2 publication at one version must be immutable");
+        assert!(error.to_string().contains("refusing to rewrite release 1.0.0"));
+        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
+        assert_eq!(
+            fs::read(output.join("sdk-docs-versions.v1.json"))
+                .expect("old index should remain"),
+            old_index_bytes
+        );
         write_bundle(&new_data, &output, true).expect("v2 publication should preserve v1 history");
 
         assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
@@ -2726,6 +2918,51 @@ mod tests {
         };
         write_bundle(&data, &output, true).expect("initial release should write");
         let data_path = output.join("releases/1.0.0/sdk-docs-data.v2.json");
+        let valid = fs::read(&data_path).expect("valid bundle should be readable");
+        let mut missing_packages: serde_json::Value =
+            serde_json::from_slice(&valid).expect("valid bundle should be JSON");
+        missing_packages
+            .as_object_mut()
+            .expect("v2 bundle should be an object")
+            .remove("packages");
+        let missing_packages_bytes = serde_json::to_vec_pretty(&missing_packages)
+            .expect("missing-package bundle should serialize");
+        fs::write(&data_path, &missing_packages_bytes)
+            .expect("missing-package bundle should be writable");
+        let index_path = output.join("sdk-docs-versions.v1.json");
+        let mut index: VersionIndex =
+            serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
+                .expect("index should parse");
+        let missing_digest = sha256_hex(&missing_packages_bytes);
+        for entry in &mut index.releases {
+            entry.data_sha256 = missing_digest.clone();
+        }
+        if let Some(latest) = &mut index.latest {
+            latest.data_sha256 = missing_digest;
+        }
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&index).expect("index should serialize"),
+        )
+        .expect("index should be writable");
+        let before_missing = fs::read(&index_path).expect("index should remain readable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("v2 bundle without packages must block publication");
+        assert!(error.to_string().contains("requires packages"));
+        assert_eq!(before_missing, fs::read(&index_path).expect("index should be unchanged"));
+        fs::write(&data_path, &valid).expect("valid bundle should be restored");
+        let valid_digest = sha256_hex(&valid);
+        for entry in &mut index.releases {
+            entry.data_sha256 = valid_digest.clone();
+        }
+        if let Some(latest) = &mut index.latest {
+            latest.data_sha256 = valid_digest;
+        }
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&index).expect("index should serialize"),
+        )
+        .expect("index should be restored");
         let invalid = b"not DocsData";
         fs::write(&data_path, invalid).expect("invalid bundle should be writable");
         let index_path = output.join("sdk-docs-versions.v1.json");
@@ -3030,7 +3267,13 @@ mod tests {
             source_state: "captured-snapshot".into(),
             source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
             repository_root: root.clone(),
-            rustdoc_files: vec![rustdoc_path],
+            rustdoc_files: vec![rustdoc_path.clone()],
+            package_metadata: vec![PackageMetadata {
+                rustdoc_file: rustdoc_path.clone(),
+                package_name: "demo".into(),
+                crate_name: "demo".into(),
+                version: "1.0.0".into(),
+            }],
             generated_sources: Vec::new(),
             mark_latest: false,
         };
@@ -3040,11 +3283,32 @@ mod tests {
         assert_eq!(
             first.packages.entries,
             vec![PackageEntry {
+                package_name: "demo".into(),
                 crate_name: "demo".into(),
                 family_slug: "demo".into(),
                 version: "1.0.0".into(),
             }]
         );
+        let mut preview_input = input.clone();
+        preview_input.version = "feature-preview".into();
+        preview_input.channel = Channel::Preview;
+        preview_input.source_state = "working-tree".into();
+        preview_input.source_sha256 = None;
+        let preview = build_data(&preview_input).expect("preview fixture should build");
+        assert_eq!(preview.version, "feature-preview");
+        assert_eq!(preview.packages.entries[0].version, "1.0.0");
+        let mut mismatched_metadata = input.clone();
+        mismatched_metadata.package_metadata[0].crate_name = "different-crate".into();
+        let error = build_data(&mismatched_metadata)
+            .expect_err("Cargo crate identity mismatch must fail");
+        assert!(error.to_string().contains("Cargo metadata names different-crate"));
+        let mut missing_metadata = input.clone();
+        missing_metadata.package_metadata[0].version.clear();
+        let error = build_data(&missing_metadata)
+            .expect_err("missing Cargo package version must fail");
+        assert!(error
+            .to_string()
+            .contains("requires package name, crate name, and version"));
         assert!(first
             .search
             .entries
@@ -3232,7 +3496,8 @@ mod tests {
         )
         .expect("missing-version fixture should write");
         let mut missing_version_input = input.clone();
-        missing_version_input.rustdoc_files = vec![missing_version_path];
+        missing_version_input.rustdoc_files = vec![missing_version_path.clone()];
+        missing_version_input.package_metadata[0].rustdoc_file = missing_version_path;
         let error = build_data(&missing_version_input)
             .expect_err("release rustdoc without crate version must fail");
         assert!(error.to_string().contains("does not declare crate version"));
@@ -3340,7 +3605,8 @@ mod tests {
         )
         .expect("mismatched fixture should write");
         let mut mismatched_input = input;
-        mismatched_input.rustdoc_files = vec![mismatched_path];
+        mismatched_input.rustdoc_files = vec![mismatched_path.clone()];
+        mismatched_input.package_metadata[0].rustdoc_file = mismatched_path;
         let error = build_data(&mismatched_input).expect_err("crate version mismatch must fail");
         assert!(error.to_string().contains("reports crate version 9.9.9"));
         fs::remove_dir_all(root).expect("fixture directory should be removable");

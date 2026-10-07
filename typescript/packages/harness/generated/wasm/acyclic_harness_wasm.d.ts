@@ -218,9 +218,87 @@ export interface WasmTurnPreparation {
 
 
 /**
+ * A declared representation; summary creation remains an admitted model operation.
+ */
+export type ContextRepresentation = "full" | "summary" | "reference";
+
+/**
+ * A pinned input; a file reference conveys no read authority.
+ */
+export type ContextSourceValue = { kind: "file"; file: WasmFileRefWire } | { kind: "attribute"; attribute: ContextAttribute };
+
+/**
+ * An authoritative attribute state, shared by prompt rebuilds and updates.
+ */
+export interface ContextAttribute {
+    /**
+     * Registered, namespaced application type (roles are ordinary attributes).
+     */
+    type_name: string;
+    /**
+     * Exact type/renderer definition revision.
+     */
+    type_revision: string;
+    /**
+     * Schema of this attribute type.
+     */
+    schema: WasmModelJsonSchema;
+    /**
+     * Exact authoritative state revision.
+     */
+    state_revision: string;
+    /**
+     * State satisfying the registered schema.
+     */
+    value: WasmModelJsonValue;
+}
+
+/**
+ * Explicit bounded selection from a pinned source.
+ */
+export type ContextExtent = { kind: "whole" } | { kind: "span"; start: number; end: number };
+
+/**
+ * Host-approved selection and representation. Model suggestions need host policy approval.
+ */
+export interface ContextSelection {
+    /**
+     * Pinned authoritative input.
+     */
+    source: ContextSourceValue;
+    /**
+     * Exact selected extent.
+     */
+    extent: ContextExtent;
+    /**
+     * Requested representation.
+     */
+    representation: ContextRepresentation;
+}
+
+/**
+ * Mutable context assembled for one model step.
+ */
+export interface Context {
+    /**
+     * Ordered model-visible messages.
+     */
+    messages: WasmModelMessageWire[];
+    /**
+     * Stage-owned, namespaced version-pinned metadata files.
+     */
+    metadata: Record<string, WasmFileRefWire>;
+}
+
+/**
  * Ordered authority-resolution level from the runtime root to one invocation.
  */
 export type AuthorityLevel = "runtime" | "agent" | "conversation" | "session" | "turn" | "task" | "invocation";
+
+/**
+ * Placement of source messages relative to existing context.
+ */
+export type ContextPlacement = "prepend" | "append";
 
 /**
  * Public model-message input used by the runtime validator.  The content
@@ -231,6 +309,11 @@ export interface WasmModelMessageInput {
     role: WasmModelRole;
     content: WasmModelContentInput;
 }
+
+/**
+ * Rendering mode for the same immutable source state.
+ */
+export type ContextRenderMode = "prompt" | "update";
 
 /**
  * Stable wire identity used during compatibility handshakes.
@@ -620,6 +703,12 @@ export function admitModelEvent(event: WasmModelEventInput, limits: WasmModelLim
 export function admitTask(value: WasmTaskAdmissionInput): WasmTaskAdmissionWire;
 
 /**
+ * Applies a host renderer's output using the same native placement and bounds.
+ * Hosts supply authorized reads; this call performs no I/O or model admission.
+ */
+export function applyContextProjection(context: Context, messages: readonly WasmModelMessageInput[], mode: ContextRenderMode, placement: ContextPlacement, limits: WasmModelLimitsInput): Context;
+
+/**
  * Derives the same immutable per-slot operation as Rust durable admission.
  */
 export function batchMemberOperationId(group: string, batch: string, index: number): string;
@@ -735,6 +824,11 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
  * from their interaction tickets without a second hashing convention.
  */
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
+
+/**
+ * Validates a host-approved pinned selection without granting read authority.
+ */
+export function validateContextSelection(selection: ContextSelection, limits: WasmModelLimitsInput): void;
 
 /**
  * Pure v2 contract admission shared by native and JavaScript hosts. The
@@ -878,6 +972,7 @@ export interface InitOutput {
     readonly admitBatchRequest: (a: any) => [number, number, number];
     readonly admitModelEvent: (a: any, b: any, c: any) => [number, number, number];
     readonly admitTask: (a: any) => [number, number, number];
+    readonly applyContextProjection: (a: any, b: any, c: any, d: any, e: any) => [number, number, number];
     readonly batchMemberOperationId: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly decodeAggregateKind: (a: number) => [number, number, number];
     readonly decodeApplyResponse: (a: number, b: number) => [number, number, number];
@@ -898,6 +993,7 @@ export interface InitOutput {
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
     readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly validateContextSelection: (a: any, b: any) => [number, number];
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
