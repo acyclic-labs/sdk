@@ -108,5 +108,19 @@ node research/qualified-prototypes/filesystem-admission/run.mjs \
 This mode is used for the omission and mutation regression checks; it does not
 load or execute either runtime.
 
+Run the regression harness from the repository root with:
+
+```text
+node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/test.mjs
+```
+
+The harness invokes the real runner against the authoritative 372-file source
+selector. It checks wrong commits, omitted selector entries, a selected-source
+mutation, a fresh Git-state mismatch, a package archive/install mismatch, an
+unknown error that merely contains the canonical admission phrase, and
+mutations of source or package bytes during qualification. Runtime cases use
+temporary package fixtures only to exercise those failure paths; they still run
+the complete edge and reject matrix before a receipt could be written.
+
 This is a qualification input and receipt format. It intentionally contains no
 generated WASM, native binary, or duplicated numeric validation logic.

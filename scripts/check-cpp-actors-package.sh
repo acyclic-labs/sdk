@@ -24,7 +24,9 @@ let input=""; process.stdin.on("data", c => input += c).on("end", () => {
   if (!p) throw new Error("acyclic-actors package metadata missing");
   process.stdout.write(p.version);
 });')"
-cxx_version="$(printf '%s' "$metadata" | node -e '
+cxx_metadata="$(cargo metadata --locked --no-deps --format-version 1 \
+  --manifest-path "$prototype/Cargo.toml")"
+cxx_version="$(printf '%s' "$cxx_metadata" | node -e '
 let input=""; process.stdin.on("data", c => input += c).on("end", () => {
   const m = JSON.parse(input);
   const p = m.packages.find(p => p.name === "cpp-actors-oss-qualification");

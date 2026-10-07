@@ -131,8 +131,8 @@
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
-      "sha256": "57F778967C80A3109CA96A14009C7007235FE913645EE4824E7652A0A418857A",
-      "bytes": 3642
+      "sha256": "EC64FA73AE12A916A0F331D19A532365D16AC6E6E8362B204684851944ED983F",
+      "bytes": 4685
     },
     "fixture": {
       "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",

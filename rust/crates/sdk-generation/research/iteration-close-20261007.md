@@ -59,8 +59,11 @@ this loop.
   types and Rust future cancellation. All-operation installed evidence is
   cohort-specific; constructor probes and older receipts cannot qualify a newly
   generated package.
-- Package-model validation rejects unsupported generator families; its five
-  focused tests and formatting pass. Production integration remains gated on
+- Package-model validation rejects unsupported generator families and claims
+  not present in the executed receipt's status, operations, and checks. Its six
+  focused tests pass; the emitter consumes scope instead of inventing it.
+  Source is verified remotely at 75c3ced84ae03b155e532acc5cf01d434ead0926.
+  Production integration remains gated on
   actual executed qualification claims and producer-specific provenance: the
   earlier Python record used the Kotlin patch digest and is not qualified.
 - The corrected C# package has assembly identity Acyclic.Actors, Version=0.2.0.0.
