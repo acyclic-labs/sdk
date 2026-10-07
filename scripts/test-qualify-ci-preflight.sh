@@ -64,7 +64,7 @@ chmod +x "$work/bin"/*
 make_case() {
   local name="$1"
   local case_dir="$work/$name"
-  mkdir -p "$case_dir/temp" "$case_dir/artifacts" "$case_dir/tools/gitleaks-8.30.1"
+  mkdir -p "$case_dir/temp" "$case_dir/artifacts" "$case_dir/tools" "$case_dir/gitleaks-archive"
   : >"$case_dir/git.log"
   : >"$case_dir/curl.log"
   : >"$case_dir/sha256.log"
@@ -73,12 +73,14 @@ make_case() {
   cat >"$case_dir/event.json" <<'EOF'
 {"release":{"tag_name":"v1.2.3"}}
 EOF
-  cat >"$case_dir/tools/gitleaks-8.30.1/gitleaks" <<'EOF'
+  cat >"$case_dir/gitleaks-archive/gitleaks" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_GITLEAKS_LOG"
 EOF
-  chmod +x "$case_dir/tools/gitleaks-8.30.1/gitleaks"
+  chmod +x "$case_dir/gitleaks-archive/gitleaks"
+  tar --create --gzip --file "$case_dir/tools/gitleaks_8.30.1_linux_x64.tar.gz" \
+    --directory "$case_dir/gitleaks-archive" gitleaks
 }
 
 run_release() {
