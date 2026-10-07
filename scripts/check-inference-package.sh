@@ -2,7 +2,16 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if command -v wslpath >/dev/null 2>&1; then
+bun_platform="$(bun -e 'process.stdout.write(process.platform)' 2>/dev/null || true)"
+if [[ "$bun_platform" != "linux" && "$bun_platform" != "darwin" && "$bun_platform" != "win32" ]]; then
+  echo "unsupported Bun platform: ${bun_platform:-unknown}" >&2
+  exit 1
+fi
+bun_is_windows=false
+if [[ "$bun_platform" == "win32" ]]; then
+  bun_is_windows=true
+fi
+if [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work="$(mktemp -d "$(wslpath -u "$windows_temp")/sdk-inference-package.XXXXXXXX")"
 else
@@ -33,10 +42,10 @@ fi
 typescript_archive="$work/acyclic-inference.tgz"
 bun_archive="$typescript_archive"
 bun_archive_url="$typescript_archive"
-if command -v cygpath >/dev/null 2>&1; then
+if [[ "$bun_is_windows" == true ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$typescript_archive")"
   bun_archive_url="$(cygpath -m "$typescript_archive")"
-elif command -v wslpath >/dev/null 2>&1; then
+elif [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$typescript_archive")"
   bun_archive_url="$(wslpath -m "$typescript_archive")"
 fi
@@ -95,7 +104,7 @@ source_manifest="$root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
 contract_source="$root/rust/crates/inference-contract"
-if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+if [[ "$bun_is_windows" == true ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
   source_manifest="$(wslpath -w "$source_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"
