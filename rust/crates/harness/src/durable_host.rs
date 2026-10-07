@@ -596,6 +596,18 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         fence: crate::scheduler::LeaseFence,
         revision: u64,
     ) -> Result<()> {
+        self.suspend_workflow_command(task, fence, revision, None)
+            .await
+    }
+
+    /// Retains the exact passive command in the existing suspension slot.
+    pub async fn suspend_workflow_command(
+        &self,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        revision: u64,
+        waiting_command: Option<OperationId>,
+    ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh().await?;
@@ -613,6 +625,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     operation_id,
                     fence,
                     workflow_revision: revision,
+                    waiting_command,
                 },
             )
             .await?;
@@ -623,15 +636,89 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             operation_id,
         )?;
         if current.phase != crate::scheduler::OperationPhase::Suspended
-            || current
-                .workflow
-                .as_ref()
-                .is_none_or(|slot| slot.revision != revision)
+            || current.workflow.as_ref().is_none_or(|slot| {
+                slot.revision != revision || slot.waiting_command != waiting_command
+            })
         {
             return Err(Error::Conflict(
                 "workflow suspension receipt is no longer current".into(),
             ));
         }
+        Ok(())
+    }
+
+    /// Authenticated read of a passive slot; never claims execution ownership.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn workflow_suspension(
+        &self,
+        task: TaskId,
+    ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        let operation = coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            OperationId::from_bytes(task.into_bytes()),
+        )?;
+        if operation.phase != crate::scheduler::OperationPhase::Suspended
+            || operation.cancellation_requested
+        {
+            return Ok(None);
+        }
+        Ok(operation.workflow)
+    }
+
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn workflow_stream(&self) -> StreamClient<P> {
+        self.stream.clone()
+    }
+
+    /// Readiness requires the exact timer already retained by owned dispatch.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn timer_ready(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline: u64,
+    ) -> Result<bool> {
+        let (_, retained) = self.timer_state(task, operation, deadline).await?;
+        Ok(retained && self.clock.now_unix_millis() >= deadline)
+    }
+
+    /// Uses the existing owner-authenticated wake publication, with stable input.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn wake_command(
+        &self,
+        task: TaskId,
+        revision: u64,
+        waiting: OperationId,
+    ) -> Result<()> {
+        let operation = OperationId::from_bytes(task.into_bytes());
+        let key = format!("task-command-wake:{task}:{revision}:{waiting}");
+        let input = self.payloads.stage(operation, &key, b"null").await?;
+        let admission = self.admission(operation).await?;
+        admission.limits.validate_file(&input)?;
+        if !read_granted(&admission.grants, &input)? {
+            return Err(Error::Unauthorized(
+                "task cannot read its command wake".into(),
+            ));
+        }
+        self.read_json(&input).await?;
+        self.coordinator
+            .lock()
+            .await
+            .resume_command(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                operation,
+                revision,
+                input,
+                IdempotencyKey::new(key)?,
+                waiting,
+            )
+            .await?;
         Ok(())
     }
 

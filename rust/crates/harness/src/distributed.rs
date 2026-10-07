@@ -668,6 +668,63 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         input: FileRef,
         idempotency_key: IdempotencyKey,
     ) -> Result<CoordinatorApply> {
+        self.resume_workflow_guarded(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            workflow_revision,
+            input,
+            idempotency_key,
+            None,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "exact owner, suspension and selected passive command"
+    )]
+    #[cfg(any(feature = "filesystem", test))]
+    pub(crate) async fn resume_command(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        workflow_revision: u64,
+        input: FileRef,
+        idempotency_key: IdempotencyKey,
+        waiting_command: OperationId,
+    ) -> Result<CoordinatorApply> {
+        self.resume_workflow_guarded(
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            workflow_revision,
+            input,
+            idempotency_key,
+            Some(waiting_command),
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one authenticated wake publication path"
+    )]
+    async fn resume_workflow_guarded(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        workflow_revision: u64,
+        input: FileRef,
+        idempotency_key: IdempotencyKey,
+        waiting_command: Option<OperationId>,
+    ) -> Result<CoordinatorApply> {
         verifier.verify_audience(owner)?;
         verifier.verify(scope)?;
         if !scope.capabilities().contains("operation:wake") {
@@ -677,7 +734,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         self.refresh().await?;
         self.observe_operation(owner, scope, verifier, operation_id)?;
-        self.apply_internal(
+        self.apply_internal_guarded(
             operation_id,
             idempotency_key,
             SchedulerEvent::WorkflowResumed {
@@ -685,6 +742,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 workflow_revision,
                 input,
             },
+            None,
+            waiting_command,
         )
         .await
     }
@@ -774,7 +833,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let event = SchedulerEvent::Declared {
             spec: Box::new(spec),
         };
-        self.apply_internal_with_parent(operation_id, idempotency_key, event, parent_fence)
+        self.apply_internal_guarded(operation_id, idempotency_key, event, parent_fence, None)
             .await
     }
 
@@ -979,19 +1038,21 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
     ) -> Result<CoordinatorApply> {
-        self.apply_internal_with_parent(operation_id, idempotency_key, event, None)
+        self.apply_internal_guarded(operation_id, idempotency_key, event, None, None)
             .await
     }
 
-    async fn apply_internal_with_parent(
+    async fn apply_internal_guarded(
         &mut self,
         operation_id: OperationId,
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
         parent_fence: Option<LeaseFence>,
+        waiting_command: Option<OperationId>,
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.require_parent_owner(&event, parent_fence.as_ref())?;
+        self.require_command_wait(&event, waiting_command)?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
         let key = idempotency_key.as_str();
         if scheduler_event_operation(&event) != operation_id {
@@ -1028,9 +1089,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         );
         // Stream retains failed CAS requests too. A refreshed coordinator tail
         // needs a new physical retry identity; the encoded logical intent and
-        // scheduler declaration still prevent another child or budget charge.
+        // declaration/wake intent still prevents another logical publication.
         let stream_key = if parent_fence.is_some() {
             stream_key(&format!("{key}:owned-parent:{}", self.revision))?
+        } else if waiting_command.is_some() {
+            stream_key(&format!("{key}:owned-wait:{}", self.revision))?
         } else {
             stream_key(key)?
         };
@@ -1067,6 +1130,43 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await?;
         self.require_parent_owner(&event, parent_fence.as_ref())?;
         Ok(applied)
+    }
+
+    fn require_command_wait(
+        &self,
+        event: &SchedulerEvent,
+        waiting: Option<OperationId>,
+    ) -> Result<()> {
+        let Some(waiting) = waiting else {
+            return Ok(());
+        };
+        let SchedulerEvent::WorkflowResumed {
+            operation_id,
+            workflow_revision,
+            ..
+        } = event
+        else {
+            return Err(Error::Invalid(
+                "command wait guard only applies to wake".into(),
+            ));
+        };
+        let operation = self
+            .scheduler
+            .operation(*operation_id)
+            .ok_or_else(|| Error::NotFound("waiting task".into()))?;
+        if operation.phase != crate::scheduler::OperationPhase::Suspended
+            || operation.cancellation_requested
+            || operation.workflow.as_ref().is_none_or(|slot| {
+                slot.revision != *workflow_revision
+                    || slot.waiting_command != Some(waiting)
+                    || slot.input.is_some()
+            })
+        {
+            return Err(Error::Conflict(
+                "selected command wait is no longer current".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn require_parent_owner(
@@ -1791,6 +1891,201 @@ mod tests {
     }
 
     struct DenyContentVerifier;
+
+    #[tokio::test]
+    async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Result<()> {
+        for cancel in [false, true] {
+            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let gate = Arc::new(PausedChildVerifier {
+                armed: std::sync::atomic::AtomicBool::new(false),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+            });
+            let mut first = DistributedCoordinator::open(&client, gate.clone()).await?;
+            let task = OperationId::from_bytes([51; 16]);
+            let selected = OperationId::from_bytes([52; 16]);
+            declare(&mut first, spec(task, 0)?, "wake-task").await?;
+            let worker = Worker {
+                id: "wake-worker".into(),
+                available: ResourceSnapshot::default(),
+                labels: BTreeMap::new(),
+            };
+            let lease = first
+                .pull(&worker)
+                .await?
+                .ok_or_else(|| Error::NotFound("wake lease".into()))?;
+            let fence = LeaseFence::from(&lease.reservation);
+            first
+                .apply(
+                    task,
+                    IdempotencyKey::new("wake-start")?,
+                    SchedulerEvent::Started {
+                        operation_id: task,
+                        fence: fence.clone(),
+                    },
+                )
+                .await?;
+            first
+                .apply(
+                    task,
+                    IdempotencyKey::new("wake-suspend")?,
+                    SchedulerEvent::WorkflowSuspended {
+                        operation_id: task,
+                        fence,
+                        workflow_revision: 1,
+                        waiting_command: Some(selected),
+                    },
+                )
+                .await?;
+            let mut second =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let owner = Authority {
+                kind: AggregateKind::Task,
+                id: "owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("selected-wake-test", [9; 32], owner.clone());
+            let signed = issuer.root(
+                "wake",
+                Capabilities::new(["operation:wake", "operation:observe"]),
+            );
+            let verifier = issuer.verifier();
+            let input = state_ref()?;
+            assert!(
+                first
+                    .resume_command(
+                        &owner,
+                        &signed,
+                        &verifier,
+                        task,
+                        1,
+                        input.clone(),
+                        IdempotencyKey::new("wrong-selected-wake")?,
+                        OperationId::from_bytes([53; 16])
+                    )
+                    .await
+                    .is_err()
+            );
+            gate.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let disturbance = async {
+                gate.entered.notified().await;
+                let result = if cancel {
+                    second
+                        .apply(
+                            task,
+                            IdempotencyKey::new("cancel-wake")?,
+                            SchedulerEvent::CancellationRequested {
+                                operation_id: task,
+                                recursive: false,
+                            },
+                        )
+                        .await
+                } else {
+                    declare(
+                        &mut second,
+                        spec(OperationId::from_bytes([54; 16]), 0)?,
+                        "wake-unrelated-tail",
+                    )
+                    .await
+                };
+                gate.release.notify_one();
+                result
+            };
+            let (attempt, disturbance) = tokio::join!(
+                first.resume_command(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    task,
+                    1,
+                    input.clone(),
+                    IdempotencyKey::new("selected-wake")?,
+                    selected
+                ),
+                disturbance
+            );
+            disturbance?;
+            assert!(matches!(attempt, Err(Error::Conflict(_))));
+            let retry = first
+                .resume_command(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    task,
+                    1,
+                    input.clone(),
+                    IdempotencyKey::new("selected-wake")?,
+                    selected,
+                )
+                .await;
+            if cancel {
+                assert!(retry.is_err());
+            } else {
+                assert_eq!(retry?, CoordinatorApply::Applied);
+                // Releasing a replacement lease for a different command at the
+                // same checkpoint must not accept a stale readiness decision.
+                let lease = first
+                    .pull(&worker)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("replacement wake lease".into()))?;
+                assert_eq!(lease.operation.operation_id, task);
+                let fence = LeaseFence::from(&lease.reservation);
+                first
+                    .apply(
+                        task,
+                        IdempotencyKey::new("second-wait-start")?,
+                        SchedulerEvent::Started {
+                            operation_id: task,
+                            fence: fence.clone(),
+                        },
+                    )
+                    .await?;
+                let next = OperationId::from_bytes([55; 16]);
+                first
+                    .apply(
+                        task,
+                        IdempotencyKey::new("second-wait-suspend")?,
+                        SchedulerEvent::WorkflowSuspended {
+                            operation_id: task,
+                            fence,
+                            workflow_revision: 1,
+                            waiting_command: Some(next),
+                        },
+                    )
+                    .await?;
+                assert!(
+                    first
+                        .resume_command(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            task,
+                            1,
+                            input.clone(),
+                            IdempotencyKey::new("selected-wake")?,
+                            selected
+                        )
+                        .await
+                        .is_err()
+                );
+                assert_eq!(
+                    first
+                        .resume_command(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            task,
+                            1,
+                            input,
+                            IdempotencyKey::new("second-selected-wake")?,
+                            next
+                        )
+                        .await?,
+                    CoordinatorApply::Applied
+                );
+            }
+        }
+        Ok(())
+    }
 
     impl ContentResidencyVerifier for DenyContentVerifier {
         fn verify<'a>(

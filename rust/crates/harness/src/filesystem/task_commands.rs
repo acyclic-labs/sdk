@@ -244,6 +244,64 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Checks only a retained passive wait. Never dispatches or reconciles a
+    /// provider while the task has no execution reservation.
+    pub(super) async fn wait_ready(
+        &self,
+        context: &TaskContext,
+        command: &WorkflowCommand,
+        payload: Value,
+    ) -> Result<bool> {
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("wait has no admitted task".into()))?;
+        match command.kind.as_str() {
+            TIMER_TASK_COMMAND_KIND => {
+                if !context.scope().grants().contains("timer:wait") {
+                    return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
+                }
+                let input: TimerTaskCommand = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                self.runtime
+                    .task_host()
+                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
+                    .await
+            }
+            MAIL_RECEIVE_TASK_COMMAND_KIND => {
+                let input: MailReceiveTaskCommand = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let items = self.runtime.task_host().inbox(task, input.after, 1).await?;
+                if let Some(item) = items.first() {
+                    context.read_file(&item.payload).await?;
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            }
+            TASK_OBSERVE_COMMAND_KIND => {
+                let input: TaskObserveCommand = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let child = TaskId::from_bytes(
+                    child_operation(task, input.admission_operation).into_bytes(),
+                );
+                if self
+                    .runtime
+                    .task_host()
+                    .observe_admission(child)
+                    .await?
+                    .parent
+                    != Some(task)
+                {
+                    return Err(Error::Unauthorized("wait is not for a direct child".into()));
+                }
+                Ok(
+                    matches!(self.runtime.task_host().outcome(child).await?, Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
+                )
+            }
+            _ => Ok(false),
+        }
+    }
+
     async fn task_command(
         &self,
         task: TaskId,

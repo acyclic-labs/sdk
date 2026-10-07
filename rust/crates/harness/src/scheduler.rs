@@ -228,6 +228,10 @@ pub struct OperationState {
 pub struct WorkflowSuspension {
     /// Exact committed workflow revision at which execution suspended.
     pub revision: u64,
+    /// Exact outbox command whose passive wait released the reservation.
+    /// Absent for a machine awaiting external input or a legacy suspension.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_command: Option<OperationId>,
     /// Immutable wake input, retained through admission and worker recovery.
     /// Absent while awaiting a wake; a workflow step consumes it by advancing
     /// beyond this suspension revision, without a separate consumption ledger.
@@ -322,6 +326,9 @@ pub enum SchedulerEvent {
         fence: LeaseFence,
         /// Committed workflow revision, not a sandbox checkpoint reference.
         workflow_revision: u64,
+        /// Selected passive wait in that committed workflow outbox.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_command: Option<OperationId>,
     },
     /// Owner-authorized input made one exact suspended workflow ready again.
     WorkflowResumed {
@@ -915,6 +922,7 @@ impl Scheduler {
                 operation_id,
                 fence,
                 workflow_revision,
+                waiting_command,
             } => {
                 let operation = self.mutable(operation_id)?;
                 require_execution_owner(operation, &fence, false)?;
@@ -931,6 +939,7 @@ impl Scheduler {
                 }
                 operation.workflow = Some(WorkflowSuspension {
                     revision: workflow_revision,
+                    waiting_command,
                     input: None,
                 });
                 operation.reservation = None;
@@ -953,10 +962,10 @@ impl Scheduler {
                         "workflow resume slot is not available".into(),
                     ));
                 }
-                operation.workflow = Some(WorkflowSuspension {
-                    revision: workflow_revision,
-                    input: Some(input),
-                });
+                // The selected command remains pinned until checkpoint advance.
+                if let Some(slot) = &mut operation.workflow {
+                    slot.input = Some(input);
+                }
                 operation.phase = OperationPhase::WaitingForCapacity;
             }
             SchedulerEvent::ReconciliationResumed {
@@ -1920,7 +1929,8 @@ mod tests {
                 .apply(SchedulerEvent::WorkflowSuspended {
                     operation_id: id(91),
                     fence: stale,
-                    workflow_revision: 1
+                    workflow_revision: 1,
+                    waiting_command: None,
                 })
                 .is_err()
         );
@@ -1929,7 +1939,8 @@ mod tests {
                 .apply(SchedulerEvent::WorkflowSuspended {
                     operation_id: id(91),
                     fence: first.clone(),
-                    workflow_revision: 0
+                    workflow_revision: 0,
+                    waiting_command: None,
                 })
                 .is_err()
         );
@@ -1937,6 +1948,7 @@ mod tests {
             operation_id: id(91),
             fence: first.clone(),
             workflow_revision: 1,
+            waiting_command: None,
         })?;
         let suspended = scheduler
             .operation(id(91))
@@ -1947,6 +1959,7 @@ mod tests {
             suspended.workflow,
             Some(WorkflowSuspension {
                 revision: 1,
+                waiting_command: None,
                 input: None
             })
         );
@@ -2003,7 +2016,8 @@ mod tests {
                 .apply(SchedulerEvent::WorkflowSuspended {
                     operation_id: id(91),
                     fence: first,
-                    workflow_revision: 2
+                    workflow_revision: 2,
+                    waiting_command: None,
                 })
                 .is_err()
         );
@@ -2014,6 +2028,7 @@ mod tests {
             operation_id: id(91),
             fence: second.clone(),
             workflow_revision: 1,
+            waiting_command: None,
         })?;
         assert!(
             polled
@@ -2025,6 +2040,7 @@ mod tests {
             operation_id: id(91),
             fence: second,
             workflow_revision: 2,
+            waiting_command: None,
         })?;
         assert!(
             scheduler
@@ -2236,6 +2252,7 @@ mod tests {
                 placement: "worker".into(),
             },
             workflow_revision: 1,
+            waiting_command: None,
         })?;
         suspended_loser.apply(SchedulerEvent::Orchestrated {
             operation_id: id(1),

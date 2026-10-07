@@ -52,6 +52,12 @@ pub enum TaskCommandProgress {
     Indeterminate,
 }
 
+enum CommandDispatch {
+    Ready(Value),
+    Pending(OperationId),
+    Indeterminate,
+}
+
 /// A bounded worker turn retains no suspended future or second queue.
 pub enum TaskWorkerOutcome {
     /// Checkpoint retained and reservation released until an authorized wake.
@@ -284,6 +290,73 @@ where
             .await
     }
 
+    /// Polls one durable passive wait and fills its existing authenticated wake
+    /// slot when ready. Callers drive bounded task discovery; this keeps no
+    /// watcher, sleep future, execution reservation or second queue.
+    pub async fn poll_task_wake(&self, task: TaskId) -> Result<bool> {
+        use crate::workflow::WorkflowJournal as _;
+        let Some(slot) = self.host.workflow_suspension(task).await? else {
+            return Ok(false);
+        };
+        let Some(waiting) = slot.waiting_command else {
+            return Ok(false);
+        };
+        let admission = self.host.observe_admission(task).await?;
+        let journal = FilesystemWorkflowJournal::new(
+            self.host.workflow_stream(),
+            self.filesystem.clone(),
+            &admission.operation_id.to_string(),
+            self.volume.clone(),
+            self.verifier.clone(),
+            self.signed.clone(),
+            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+        )?;
+        let retained = journal
+            .admission()
+            .await?
+            .ok_or_else(|| Error::Storage("suspended workflow admission is absent".into()))?;
+        if retained.operation_id != admission.operation_id
+            || retained.request_digest != crate::contract::canonical_json_digest(&admission)?
+            || retained.initial.machine != admission.machine
+        {
+            return Err(Error::Unauthorized(
+                "wake workflow differs from admitted task".into(),
+            ));
+        }
+        let record = journal.observe_transition(slot.revision).await?;
+        if record.next.revision != slot.revision
+            || record.next.machine != admission.machine
+            || !matches!(record.transition.status, MachineStatus::Suspended)
+        {
+            return Err(Error::Conflict(
+                "wake checkpoint differs from suspension".into(),
+            ));
+        }
+        let command = record
+            .transition
+            .commands
+            .iter()
+            .find(|command| command.operation_id == waiting)
+            .ok_or_else(|| Error::Conflict("suspended command is absent from outbox".into()))?;
+        let context = self
+            .harness
+            .durable_context(task, admission.operation_id)
+            .await?;
+        let payload = serde_json::from_slice(&context.read_file(&command.payload).await?)
+            .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?;
+        if !self
+            .commands()
+            .wait_ready(&context, command, payload)
+            .await?
+        {
+            return Ok(false);
+        }
+        // The authenticated publication rechecks the exact revision and phase
+        // after every asynchronous readiness read, including cancellation races.
+        self.host.wake_command(task, slot.revision, waiting).await?;
+        Ok(true)
+    }
+
     /// Drives an already-claimed lease through the registered machine. The first
     /// trigger is null; wake values and ordered command results are subsequent
     /// machine inputs. Commands use `{"commands":[{"operation_id":...,"value":...}]}`.
@@ -331,12 +404,14 @@ where
                         .dispatch_commands(task, &context, &fence, &transition.commands, commands)
                         .await?
                     {
-                        TaskCommandProgress::Ready(value) => command_input = Some(value),
-                        TaskCommandProgress::Pending => {
-                            self.host.suspend_workflow(task, fence, revision).await?;
+                        CommandDispatch::Ready(value) => command_input = Some(value),
+                        CommandDispatch::Pending(command) => {
+                            self.host
+                                .suspend_workflow_command(task, fence, revision, Some(command))
+                                .await?;
                             return Ok(TaskWorkerOutcome::Suspended { task, revision });
                         }
-                        TaskCommandProgress::Indeterminate => {
+                        CommandDispatch::Indeterminate => {
                             self.host
                                 .settle_task(task, fence, Outcome::Indeterminate { operation_id })
                                 .await?;
@@ -400,7 +475,7 @@ where
         fence: &LeaseFence,
         outbox: &[WorkflowCommand],
         commands: &dyn TaskCommandHost,
-    ) -> Result<TaskCommandProgress> {
+    ) -> Result<CommandDispatch> {
         use crate::conversation::ContentResidencyVerifier as _;
         let reader = FilesystemContentVerifier::new(
             self.filesystem.clone(),
@@ -432,14 +507,18 @@ where
                         as u64
                         > context.scope().limits().file_bytes
                     {
-                        return Ok(TaskCommandProgress::Indeterminate);
+                        return Ok(CommandDispatch::Indeterminate);
                     }
                 }
-                Ok(progress) => return Ok(progress),
-                Err(_) => return Ok(TaskCommandProgress::Indeterminate),
+                Ok(TaskCommandProgress::Pending) => {
+                    return Ok(CommandDispatch::Pending(command.operation_id));
+                }
+                Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
+                    return Ok(CommandDispatch::Indeterminate);
+                }
             }
         }
-        Ok(TaskCommandProgress::Ready(json!({"commands":results})))
+        Ok(CommandDispatch::Ready(json!({"commands":results})))
     }
 
     /// Constructs stock execution with mandatory shared accounting, retained

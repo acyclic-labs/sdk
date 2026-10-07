@@ -217,6 +217,19 @@ where
         Ok(records)
     }
 
+    /// Reads one committed transition for passive observation. Command bodies
+    /// are verified individually by the task reader before readiness checks.
+    pub(crate) async fn observe_transition(&self, revision: u64) -> Result<WorkflowRecord> {
+        let after = revision
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("zero observation revision".into()))?;
+        self.replay_records(after, 1, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
+    }
+
     async fn verified_history(
         &self,
         admission: &WorkflowAdmission,

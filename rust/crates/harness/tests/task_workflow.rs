@@ -205,12 +205,22 @@ async fn worker_mail_receive_releases_capacity_until_committed_item() -> Result<
 
 #[tokio::test]
 async fn worker_mail_receive_requires_retained_read_grant() -> Result<()> {
-    worker_restart_with_mail_read(WorkerCommand::MailReceive, false).await
+    worker_restart_with_options(WorkerCommand::MailReceive, false, false).await
 }
 
 #[tokio::test]
 async fn worker_child_admission_and_observation_share_one_slot_after_reopen() -> Result<()> {
     worker_restart(WorkerCommand::Child).await
+}
+
+#[tokio::test]
+async fn passive_wakes_distinguish_successive_commands_at_one_checkpoint() -> Result<()> {
+    worker_restart(WorkerCommand::TimerThenMail).await
+}
+
+#[tokio::test]
+async fn cancelled_timer_is_not_woken_after_reopen() -> Result<()> {
+    worker_restart_with_options(WorkerCommand::Timer, true, true).await
 }
 
 struct CompletedChildMachine(TaskMachine);
@@ -248,6 +258,7 @@ enum WorkerCommand {
     Model,
     Tool,
     Timer,
+    TimerThenMail,
     MailSend,
     MailReceive,
     Child,
@@ -270,12 +281,22 @@ impl ResumableMachine for CommandMachine {
     }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
         if input.is_null() {
-            if self.command == WorkerCommand::Child {
+            if matches!(
+                self.command,
+                WorkerCommand::Child | WorkerCommand::TimerThenMail
+            ) {
                 let commands =
-                    [
-                        ("admit", TASK_ADMIT_COMMAND_KIND, 26u8),
-                        ("observe", TASK_OBSERVE_COMMAND_KIND, 27),
-                    ]
+                    if self.command == WorkerCommand::Child {
+                        [
+                            ("admit", TASK_ADMIT_COMMAND_KIND, 26u8),
+                            ("observe", TASK_OBSERVE_COMMAND_KIND, 27),
+                        ]
+                    } else {
+                        [
+                            ("timer", TIMER_TASK_COMMAND_KIND, 26u8),
+                            ("mail", MAIL_RECEIVE_TASK_COMMAND_KIND, 27),
+                        ]
+                    }
                     .into_iter()
                     .map(|(field, kind, identity)| {
                         Ok(WorkflowCommand {
@@ -320,7 +341,10 @@ impl ResumableMachine for CommandMachine {
                 input
                     .get("commands")
                     .and_then(|values| {
-                        values.get(usize::from(self.command == WorkerCommand::Child))
+                        values.get(usize::from(matches!(
+                            self.command,
+                            WorkerCommand::Child | WorkerCommand::TimerThenMail
+                        )))
                     })
                     .and_then(|value| value.get("value"))
                     .cloned()
@@ -332,7 +356,10 @@ impl ResumableMachine for CommandMachine {
             };
             if self.command == WorkerCommand::Child {
                 assert_eq!(value, json!(7));
-            } else if self.command == WorkerCommand::MailReceive {
+            } else if matches!(
+                self.command,
+                WorkerCommand::MailReceive | WorkerCommand::TimerThenMail
+            ) {
                 assert_eq!(value.get("sequence"), Some(&json!(1)));
                 assert!(value.get("payload").is_some());
             } else if matches!(self.command, WorkerCommand::Timer | WorkerCommand::MailSend) {
@@ -356,22 +383,24 @@ impl ResumableMachine for CommandMachine {
     reason = "parallel restart assertions for suspended and uncertain ownership"
 )]
 async fn worker_restart(command: WorkerCommand) -> Result<()> {
-    worker_restart_with_mail_read(command, true).await
+    worker_restart_with_options(command, true, false).await
 }
 
 #[allow(
     clippy::cognitive_complexity,
     reason = "restart ownership and authority boundary cases"
 )]
-async fn worker_restart_with_mail_read(
+async fn worker_restart_with_options(
     command: WorkerCommand,
     allow_mail_read: bool,
+    cancel_wait: bool,
 ) -> Result<()> {
     let with_child = command == WorkerCommand::Child;
     let with_command = command != WorkerCommand::Wait;
     let with_mail_send = command == WorkerCommand::MailSend;
     let with_mail_receive = command == WorkerCommand::MailReceive;
-    let with_timer = command == WorkerCommand::Timer;
+    let with_two_waits = command == WorkerCommand::TimerThenMail;
+    let with_timer = matches!(command, WorkerCommand::Timer | WorkerCommand::TimerThenMail);
     let uncertain = matches!(command, WorkerCommand::Model | WorkerCommand::Tool);
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let with_tool = command == WorkerCommand::Tool;
@@ -551,6 +580,15 @@ async fn worker_restart_with_mail_read(
                 })
                 .map_err(|error| Error::Invalid(error.to_string()))?;
                 json!({"admit":payloads.stage(operation, "child-admit", &admit).await?, "observe":payloads.stage(operation, "child-observe", &observe).await?})
+            } else if with_two_waits {
+                let timer = serde_json::to_vec(&TimerTaskCommand {
+                    deadline_unix_ms: 200,
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                let mail = serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                json!({"timer":payloads.stage(operation, "two-waits-timer", &timer).await?,
+                    "mail":payloads.stage(operation, "two-waits-mail", &mail).await?})
             } else if with_command {
                 let payload = if with_mail_send {
                     serde_json::to_value(MailSendTaskCommand {
@@ -597,7 +635,18 @@ async fn worker_restart_with_mail_read(
             .await?
             .with_payload_store(payloads.clone());
         if reopened && !uncertain && !with_mail_send {
+            assert!(!runtime.poll_task_wake(task).await?);
             clock.0.store(200, Ordering::SeqCst);
+            if cancel_wait {
+                runtime.task_host().cancel(task).await?;
+                assert!(!runtime.poll_task_wake(task).await?);
+                assert_eq!(
+                    runtime.task_host().outcome(task).await?,
+                    Some(Outcome::Cancelled)
+                );
+                assert!(coordinator.pull(&worker).await?.is_none());
+                return Ok(());
+            }
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -667,15 +716,64 @@ async fn worker_restart_with_mail_read(
                     .await
                     .is_err()
             );
-            runtime
-                .task_host()
-                .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
-                .await?;
-            // Exact publication retries do not deliver another wake.
-            runtime
-                .task_host()
-                .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
-                .await?;
+            if with_timer || with_mail_receive || with_child {
+                assert!(runtime.poll_task_wake(task).await?);
+                assert!(!runtime.poll_task_wake(task).await?);
+                if with_two_waits {
+                    let first_wake = coordinator
+                        .pull(&worker)
+                        .await?
+                        .ok_or_else(|| Error::NotFound("first passive wake lease".into()))?;
+                    assert!(matches!(
+                        runtime.run_task(first_wake, &runtime.commands(), 2).await?,
+                        TaskWorkerOutcome::Suspended { revision: 1, .. }
+                    ));
+                    let next_wait = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                    assert_eq!(
+                        next_wait
+                            .scheduler()
+                            .operation(operation)
+                            .and_then(|state| state.workflow.as_ref())
+                            .and_then(|slot| slot.waiting_command),
+                        Some(OperationId::from_bytes([27; 16]))
+                    );
+                    assert!(!runtime.poll_task_wake(task).await?);
+                    let file = payloads.stage(operation, "second-wait-mail", b"7").await?;
+                    runtime
+                        .task_host()
+                        .send(task, task, OperationId::from_bytes([30; 16]), file)
+                        .await?;
+                    assert!(runtime.poll_task_wake(task).await?);
+                    assert!(!runtime.poll_task_wake(task).await?);
+                }
+                let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                let woken = wake_projection
+                    .scheduler()
+                    .operation(operation)
+                    .ok_or_else(|| Error::NotFound("woken task".into()))?;
+                assert!(woken.reservation.is_none());
+                assert_eq!(
+                    woken.phase,
+                    acyclic_harness::scheduler::OperationPhase::WaitingForCapacity
+                );
+                assert!(
+                    woken
+                        .workflow
+                        .as_ref()
+                        .and_then(|slot| slot.waiting_command)
+                        .is_some()
+                );
+            } else {
+                runtime
+                    .task_host()
+                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
+                    .await?;
+                // Exact publication retries do not deliver another wake.
+                runtime
+                    .task_host()
+                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
+                    .await?;
+            }
         }
         let lease = if reopened && (uncertain || with_mail_send) {
             let retained = coordinator
