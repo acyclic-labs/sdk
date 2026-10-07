@@ -60,15 +60,16 @@ the Actors proto/descriptor, domain, and TypeScript stages. Other workspace
 families still use their maintained legacy generators: the root Buf and
 per-family scripts remain in the migration path, and Workers plus the other
 domain contracts still have authored Rust/proto inputs outside this launcher.
-The root commands below are thin bundle consumers. They verify or stage the
-exact bundle supplied by this launcher and then reuse the existing workspace
-pipeline; they do not create another generation authority. The `generate`
-variant runs the legacy root generation first, then stages the Rust bundle, so
-the bundle is the final checked-in Rust-owned output for this migration step:
+The existing root contract pipeline invokes the Rust Actors renderer through
+`scripts/stage-actors-contract.mjs` before Buf generates its clients. The root
+commands remain:
 
 ```text
-bun run build:with-rust-actors -- <bundle>  # stages with write, then runs build
-bun run check:with-rust-actors -- <bundle>  # verifies with check, then runs check
-bun run generate:with-rust-actors -- <bundle>  # runs root generation, then stages
-bun run check:generated:with-rust-actors -- <bundle>  # verifies staging and generated outputs
+bun run generate
+bun run check:generated
 ```
+
+These root commands do not consume the documentation bundle. The standalone
+Rust generation commands above produce and verify that bundle. Consolidating
+the remaining root generation stages under that Rust entrypoint is part of
+the contract migration.

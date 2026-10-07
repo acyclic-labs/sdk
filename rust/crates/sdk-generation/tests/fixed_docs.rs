@@ -406,14 +406,11 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
             .success()
     );
     fs::write(&guide_path, guide).unwrap();
-    let restored_guide_drift = run(binary, "drift", &root, Some(&rustdoc), &first, "preview");
-    eprintln!(
-        "restored guide drift: status={}, stdout={}, stderr={}",
-        restored_guide_drift.status,
-        String::from_utf8_lossy(&restored_guide_drift.stdout),
-        String::from_utf8_lossy(&restored_guide_drift.stderr)
+    assert!(
+        run(binary, "drift", &root, Some(&rustdoc), &first, "preview")
+            .status
+            .success()
     );
-    assert!(restored_guide_drift.status.success());
     let data_path = first.join("preview/0.2.0/sdk-docs-data.v2.json");
     let data_bytes = fs::read(&data_path).unwrap();
     fs::write(&data_path, b"tampered generated data\n").unwrap();
@@ -517,9 +514,11 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     fs::create_dir_all(root.join("rust/crates/actors/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/actors/examples")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/actors/tests")).unwrap();
     fs::create_dir_all(root.join("rust/crates/workers/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-docs/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-generation/src")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/sdk-generation/examples")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-generation/tests")).unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
     fs::write(
@@ -582,6 +581,23 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     }
     write_fixture_owner_packages(&root);
     copy_compiled_generator_sources(&root);
+    fs::copy(
+        source_root.join("rust/crates/workers/README.md"),
+        root.join("rust/crates/workers/README.md"),
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("rust/crates/workers/src/generated")).unwrap();
+    for name in [
+        "acyclic.workers.v1.rs",
+        "acyclic.workers.v1.tonic.rs",
+        "acyclic-workers-v1.bin",
+    ] {
+        fs::copy(
+            source_root.join("rust/crates/workers/src/generated").join(name),
+            root.join("rust/crates/workers/src/generated").join(name),
+        )
+        .unwrap();
+    }
     let lock = Command::new("cargo")
         .args([
             "+1.98.1",
@@ -681,15 +697,15 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     );
     assert!(
         output
-            .join("generated/acyclic_actors/rust/fixture.generated.rs")
+            .join("generated/acyclic_actors/rust/acyclic.actors.v1.rs")
             .is_file()
     );
     assert!(
         output
-            .join("generated/acyclic_actors/rust/fixture.generated.bin")
+            .join("generated/acyclic_actors/acyclic-actors-v1.bin")
             .is_file()
     );
-    let generated_source = output.join("generated/acyclic_actors/rust/fixture.generated.rs");
+    let generated_source = output.join("generated/acyclic_actors/rust/acyclic.actors.v1.rs");
     let generated_source_bytes = fs::read(&generated_source).unwrap();
     let mut generated_source_hash = Sha256::new();
     generated_source_hash.update(&generated_source_bytes);
@@ -698,7 +714,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|artifact| artifact["path"] == "generated/acyclic_actors/rust/fixture.generated.rs")
+        .find(|artifact| artifact["path"] == "generated/acyclic_actors/rust/acyclic.actors.v1.rs")
         .unwrap();
     assert_eq!(generated_source_artifact["sha256"], generated_source_sha256);
     assert_eq!(

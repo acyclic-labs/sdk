@@ -558,7 +558,12 @@ fn package_metadata_for_rustdoc(
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_GENERATED_ROOT);
     let proto_root = stage.join("proto");
-    acyclic_actors::contract::render_proto_files(&proto_root).map_err(io::Error::other)?;
+    acyclic_actors::contract::render_proto_files(&proto_root).map_err(|error| {
+        io::Error::other(format!(
+            "render Actors contract files under {}: {error}",
+            proto_root.display()
+        ))
+    })?;
     let descriptor = stage.join("acyclic-actors-v1.bin");
     fs::write(&descriptor, acyclic_actors::FILE_DESCRIPTOR_SET)?;
     if !descriptor.is_file() {
@@ -571,7 +576,12 @@ fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
 
 fn generate_actors_typescript_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_TYPESCRIPT_ROOT);
-    acyclic_actors::domain::export_typescript(&stage).map_err(io::Error::other)?;
+    acyclic_actors::domain::export_typescript(&stage).map_err(|error| {
+        io::Error::other(format!(
+            "export Actors TypeScript under {}: {error}",
+            stage.display()
+        ))
+    })?;
     let actors = stage.join("actors");
     if !actors.is_dir() {
         return Err(io::Error::other(
@@ -763,7 +773,8 @@ fn collect_sources(
     markdown_dependencies: &[PathBuf],
     owner_roots: &[PathBuf],
 ) -> io::Result<Vec<FileHash>> {
-    let root_metadata = fs::symlink_metadata(root)?;
+    let root_metadata = fs::symlink_metadata(root)
+        .map_err(|error| io::Error::other(format!("inspect source root {}: {error}", root.display())))?;
     if root_metadata.file_type().is_symlink() || is_reparse_point(&root_metadata) {
         return Err(io::Error::other(
             "checkout root symlink or reparse point is not allowed",
@@ -777,7 +788,9 @@ fn collect_sources(
         .chain(owner_roots.iter().cloned());
     for declaration in declarations {
         let declaration_path = root.join(&declaration);
-        let declaration_metadata = fs::symlink_metadata(&declaration_path)?;
+        let declaration_metadata = fs::symlink_metadata(&declaration_path).map_err(|error| {
+            io::Error::other(format!("inspect source declaration {}: {error}", declaration_path.display()))
+        })?;
         if declaration_metadata.file_type().is_symlink() || is_reparse_point(&declaration_metadata)
         {
             return Err(io::Error::other(format!(
@@ -820,7 +833,9 @@ fn collect_sources(
         } else {
             root.join(dependency)
         };
-        let metadata = fs::symlink_metadata(&dependency_path)?;
+        let metadata = fs::symlink_metadata(&dependency_path).map_err(|error| {
+            io::Error::other(format!("inspect source dependency {}: {error}", dependency_path.display()))
+        })?;
         if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
             return Err(io::Error::other(format!(
                 "source symlink is not allowed: {}",
@@ -1613,7 +1628,8 @@ fn git_revision(root: &Path) -> io::Result<String> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
-        .output()?;
+        .output()
+        .map_err(|error| io::Error::other(format!("failed to run git rev-parse HEAD: {error}")))?;
     if !output.status.success() {
         return Err(io::Error::other("git rev-parse HEAD failed"));
     }
@@ -1638,7 +1654,8 @@ fn require_clean_release(root: &Path, channel: &str) -> io::Result<()> {
     let output = Command::new("git")
         .args(["status", "--porcelain=v1", "--untracked-files=all"])
         .current_dir(root)
-        .output()?;
+        .output()
+        .map_err(|error| io::Error::other(format!("failed to run git status: {error}")))?;
     if !output.status.success() {
         return Err(io::Error::other("git status failed"));
     }
@@ -2169,19 +2186,31 @@ fn generate(config: &Config) -> io::Result<()> {
     if fs::read_dir(&config.output)?.next().transpose()?.is_some() {
         return Err(io::Error::other("generation output must be new or empty"));
     }
-    let revision = git_revision(&config.root)?;
-    require_clean_release(&config.root, &config.channel)?;
-    verify_compiled_generator_source(&config.root)?;
-    let metadata = cargo_metadata(&config.root)?;
-    let owners = load_rustdoc_owners(&config.root, &metadata)?;
-    validate_owner_versions(config, &owners)?;
-    let external_generators = external_generator_records(&config.root)?;
+    let revision = git_revision(&config.root)
+        .map_err(|error| io::Error::other(format!("read source revision: {error}")))?;
+    require_clean_release(&config.root, &config.channel)
+        .map_err(|error| io::Error::other(format!("check release cleanliness: {error}")))?;
+    verify_compiled_generator_source(&config.root)
+        .map_err(|error| io::Error::other(format!("verify compiled generator source: {error}")))?;
+    let metadata = cargo_metadata(&config.root)
+        .map_err(|error| io::Error::other(format!("read Cargo metadata: {error}")))?;
+    let owners = load_rustdoc_owners(&config.root, &metadata)
+        .map_err(|error| io::Error::other(format!("load Rustdoc owners: {error}")))?;
+    validate_owner_versions(config, &owners)
+        .map_err(|error| io::Error::other(format!("validate owner versions: {error}")))?;
+    let external_generators = external_generator_records(&config.root)
+        .map_err(|error| io::Error::other(format!("read external generators: {error}")))?;
     let owner_roots = owner_package_roots(&owners);
-    let source_extras_before = baseline_source_extras(&config.root)?;
-    let source_before_stage = collect_sources(&config.root, &source_extras_before, &owner_roots)?;
-    generate_actors_contract_artifacts(config)?;
-    generate_actors_typescript_artifacts(config)?;
-    let rustdoc_input = resolve_rustdoc(config, &owners)?;
+    let source_extras_before = baseline_source_extras(&config.root)
+        .map_err(|error| io::Error::other(format!("collect baseline source extras: {error}")))?;
+    let source_before_stage = collect_sources(&config.root, &source_extras_before, &owner_roots)
+        .map_err(|error| io::Error::other(format!("collect source closure before staging: {error}")))?;
+    generate_actors_contract_artifacts(config)
+        .map_err(|error| io::Error::other(format!("generate Actors contract artifacts: {error}")))?;
+    generate_actors_typescript_artifacts(config)
+        .map_err(|error| io::Error::other(format!("generate Actors TypeScript artifacts: {error}")))?;
+    let rustdoc_input = resolve_rustdoc(config, &owners)
+        .map_err(|error| io::Error::other(format!("resolve Rustdoc inputs: {error}")))?;
     let source_extras_after = baseline_source_extras(&config.root)?;
     if collect_sources(&config.root, &source_extras_after, &owner_roots)? != source_before_stage {
         return Err(io::Error::other(
@@ -2383,16 +2412,29 @@ fn parse(args: &[String]) -> io::Result<Config> {
 }
 
 fn normalize(mut config: Config) -> io::Result<Config> {
-    reject_reparse_ancestors(&config.root, true)?;
-    config.root = canonical(&config.root)?;
+    reject_reparse_ancestors(&config.root, true)
+        .map_err(|error| io::Error::other(format!("validate root {}: {error}", config.root.display())))?;
+    config.root = canonical(&config.root)
+        .map_err(|error| io::Error::other(format!("canonicalize root: {error}")))?;
     if let Some(rustdoc_json) = &config.rustdoc_json {
-        reject_reparse_ancestors(rustdoc_json, true)?;
-        config.rustdoc_json = Some(canonical(rustdoc_json)?);
+        reject_reparse_ancestors(rustdoc_json, true).map_err(|error| {
+            io::Error::other(format!("validate rustdoc JSON {}: {error}", rustdoc_json.display()))
+        })?;
+        config.rustdoc_json = Some(
+            canonical(rustdoc_json)
+                .map_err(|error| io::Error::other(format!("canonicalize rustdoc JSON: {error}")))?,
+        );
     }
-    reject_reparse_ancestors(&config.output, false)?;
-    fs::create_dir_all(&config.output)?;
-    reject_reparse_ancestors(&config.output, true)?;
-    config.output = canonical(&config.output)?;
+    reject_reparse_ancestors(&config.output, false).map_err(|error| {
+        io::Error::other(format!("validate output {}: {error}", config.output.display()))
+    })?;
+    fs::create_dir_all(&config.output)
+        .map_err(|error| io::Error::other(format!("create output {}: {error}", config.output.display())))?;
+    reject_reparse_ancestors(&config.output, true).map_err(|error| {
+        io::Error::other(format!("validate output {}: {error}", config.output.display()))
+    })?;
+    config.output = canonical(&config.output)
+        .map_err(|error| io::Error::other(format!("canonicalize output: {error}")))?;
     Ok(config)
 }
 
