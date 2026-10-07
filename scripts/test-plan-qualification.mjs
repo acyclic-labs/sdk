@@ -189,7 +189,7 @@ test("the workflow keeps full qualification off routine pull requests", () => {
 
 test("the fast gate covers the Rust workspace and standalone docs crate", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8");
-  assert.match(script, /^ +nextest --workspace --locked --lib$/m);
+  assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
-  assert.match(script, /cargo clippy --workspace --lib --locked -- -D warnings/);
+  assert.match(script, /cargo clippy --workspace --all-targets --all-features --locked -- -D warnings\n +node --test/);
 });

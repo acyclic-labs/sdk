@@ -135,7 +135,9 @@ case "$lane" in
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
     if [[ "$full_qualification" != true ]]; then
-      nextest --workspace --locked --lib
+      # The same suite the full native lanes run, without coverage; the
+      # ignored live-mount and fork/join suites stay there.
+      nextest --workspace --all-features --locked
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"
       printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
       exit 0
@@ -349,7 +351,7 @@ case "$lane" in
   policy)
     bash scripts/test-qualify-ci-preflight.sh
     if [[ "$full_qualification" != true ]]; then
-      cargo clippy --workspace --lib --locked -- -D warnings
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
       cargo fmt --all -- --check
       exit 0
