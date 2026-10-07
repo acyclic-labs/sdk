@@ -3,7 +3,8 @@
 #![allow(
     clippy::cognitive_complexity,
     clippy::too_many_lines,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    reason = "one end-to-end scenario walks every fork level and indexes its own fixed fixtures"
 )]
 
 use acyclic_fs::{ConflictSide, Fs, JoinOutcome};

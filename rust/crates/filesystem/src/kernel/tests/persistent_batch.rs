@@ -255,7 +255,6 @@ fn allocation_and_page_io_error_translation_is_total() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn machine_admission_cycles_and_corrupt_cleanup_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let key = name(1)?;

@@ -170,7 +170,6 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std::error::Error>> {
     let chunk = ObjectId {
         kind: ObjectKind::BlobChunk,
@@ -756,7 +755,6 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

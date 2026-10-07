@@ -1736,7 +1736,6 @@ async fn list_generation_directory<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     .map(|receipt| receipt.value)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn list_generation_directory_measured<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
@@ -3372,7 +3371,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ChangeSet<A, O> {
 
     /// Resolves changed paths with one cumulative work budget and explicit
     /// cancellation token. Partial traversal is never reported as exact.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded resolution of changed paths shares a single cumulative work budget"
+    )]
     pub async fn changed_paths_bounded(
         &self,
         maximum_entries: u32,
@@ -5231,7 +5233,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         .map(|receipt| receipt.value)
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bounded reverse lookup resolves every requested identity under a single work budget"
+    )]
     async fn namespace_records_for_file_ids_bounded(
         &self,
         file_ids: impl IntoIterator<Item = FileId>,

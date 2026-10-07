@@ -95,7 +95,6 @@ impl ObjectsV2Memory {
             .map_err(error)?,
         })
     }
-    #[allow(clippy::too_many_lines)]
     pub async fn invoke(
         &self,
         route: String,

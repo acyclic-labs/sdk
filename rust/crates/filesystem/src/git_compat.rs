@@ -287,7 +287,10 @@ impl GitCommit {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is one field of the recorded commit"
+    )]
     fn new_with_capture_proof(
         tree: GitTreeRef,
         workspace_tree: GitTreeRef,
@@ -1168,7 +1171,10 @@ pub enum GitFilesystemAction {
 /// Typed result returned by a compatibility filesystem executor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(clippy::large_enum_variant)] // Keep the public result shape direct; this is not a hot path.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keeps the public result shape direct; this is not a hot path"
+)]
 pub enum GitFilesystemResult {
     /// An eligible compatibility snapshot was captured.
     Captured {
@@ -1262,7 +1268,10 @@ pub struct GitStatus {
 /// Stable machine-readable command result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(clippy::large_enum_variant)] // CLI responses favor a direct typed shape over allocation.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "CLI responses favor a direct typed shape over allocation"
+)]
 pub enum GitCommandOutput {
     /// No state or filesystem change was required.
     NoOp,
@@ -2731,7 +2740,10 @@ fn action_operation_id(
     Ok(OperationId::from_bytes(operation))
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive dispatch over every supported Git command"
+)]
 fn execute_command(
     state: &mut GitCompatState,
     command: GitCommand,
@@ -3280,7 +3292,10 @@ fn record_captured_commit_state<E: std::error::Error + 'static>(
     Ok(GitCommandOutput::Committed(commit))
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one exhaustive match settles every pending mutation kind against its filesystem result"
+)]
 fn complete_pending<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     mutation: GitPendingMutation,
@@ -3783,7 +3798,10 @@ fn expand_pathspecs(paths: &[String], tracked_paths: &BTreeSet<String>) -> Vec<S
     expanded.into_iter().collect()
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
+)]
 #[allow(
     clippy::cognitive_complexity,
     reason = "the argv compatibility matrix is intentionally exhaustive and centralized"
@@ -5294,7 +5312,10 @@ where
 /// Equal Merkle subtrees are skipped. A `.gitignore` change deliberately
 /// falls back to an exact capture because eligibility may have changed for an
 /// otherwise unchanged path.
-#[allow(clippy::too_many_lines)] // Eligibility and the single atomic path application form one operation.
+#[allow(
+    clippy::too_many_lines,
+    reason = "eligibility and the single atomic path application form one operation"
+)]
 pub async fn capture_git_compatible_generation_incremental<A, O>(
     workspace: &Workspace<A, O>,
     previous_live: &Generation<A, O>,
@@ -5698,7 +5719,6 @@ impl GitCompatStore for MemoryGitCompatStore {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
     use crate::kernel::{FileMetadata, MetadataField};

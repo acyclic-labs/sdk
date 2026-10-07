@@ -502,7 +502,6 @@ fn tree_mutation_preserves_exact_names_and_file_identity() -> Result<(), Box<dyn
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn link_count_adjustment_is_bounded_exact_and_rename_neutral()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -687,7 +686,6 @@ fn deleting_a_record_with_remaining_links_is_rejected() -> Result<(), Box<dyn st
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generation_merge_covers_union_directory_and_field_resolution_limits()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -986,7 +984,6 @@ fn directory_merge_and_link_recount_fail_at_each_distinct_change_frontier()
     Ok(())
 }
 
-#[allow(clippy::expect_used)]
 #[test]
 fn metadata_timestamps_reconcile_and_authored_fields_conflict() {
     let base = timed(10, 0o644);
@@ -1015,7 +1012,6 @@ fn metadata_timestamps_reconcile_and_authored_fields_conflict() {
     assert!(merge_metadata_fields(base, ours, theirs).is_none());
 }
 
-#[allow(clippy::expect_used)]
 #[test]
 fn one_file_added_on_both_sides_keeps_the_later_times() {
     let merged = merge_added_metadata_fields(timed(30, 0o644), timed(20, 0o644))

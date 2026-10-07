@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! Emits the Rust-owned hosted enum mapping tables consumed by the
 //! TypeScript hosted adapter generator.
 

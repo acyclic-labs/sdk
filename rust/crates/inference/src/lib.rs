@@ -2,7 +2,14 @@
 #![doc = include_str!("../README.md")]
 
 /// Generated customer protobuf contract shared by host and WebAssembly.
-#[allow(missing_docs, unused_qualifications, clippy::all, clippy::pedantic)]
+#[allow(
+    missing_docs,
+    unused_qualifications,
+    clippy::all,
+    clippy::pedantic,
+    clippy::allow_attributes_without_reason,
+    reason = "generated prost bindings"
+)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/inference.customer.v1.rs"));
 }

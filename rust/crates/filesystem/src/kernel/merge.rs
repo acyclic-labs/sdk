@@ -164,7 +164,10 @@ pub type MergeGenerationResult =
 ///
 /// Rejects malformed or foreign roots, zero/truncated frontiers, cancellation,
 /// storage corruption, sparse application, checkpoint, or work-budget failures.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one sparse bounded three-way merge and its two-parent checkpoint"
+)]
 pub async fn merge_generation_async<S: AsyncObjectStore>(
     store: &S,
     request: MergeGenerationRequest,
@@ -536,7 +539,11 @@ fn is_extent_regular(record: Option<FileRecord>) -> bool {
     )
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the three merge sides, change bound, decode limits, budget, and cancellation are independent inputs of one record merge"
+)]
 async fn merge_regular_record_async<S: AsyncObjectStore>(
     store: &S,
     base: FileRecord,
@@ -889,7 +896,10 @@ pub(crate) struct FileFold {
     theirs: FileId,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the three merge sides, both bounds, decode limits, budget, and cancellation are independent inputs of one directory merge"
+)]
 #[cfg(test)]
 pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     store: &S,
@@ -919,7 +929,11 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     .await
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the three merge sides, both bounds, resolutions, decode limits, budget, and cancellation are independent inputs of one directory merge"
+)]
 async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     store: &S,
     directory_id: FileId,
@@ -1247,7 +1261,10 @@ pub(crate) fn merge_file_fields(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the three merge sides, decode limits, budget, cancellation, and shared work counters are independent inputs"
+)]
 async fn merge_file_fields_async<S: AsyncObjectStore>(
     store: &S,
     base: FileRecord,
@@ -1343,7 +1360,10 @@ async fn merge_records_async<S: AsyncObjectStore>(
 /// (see [`merge_metadata_fields`] and [`merge_added_metadata_fields`]); the
 /// merged record is stored unless it already equals one input. `None` is a
 /// real conflict.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the three metadata references, decode limits, budget, cancellation, and shared work counters are independent inputs"
+)]
 async fn merge_metadata_async<S: AsyncObjectStore>(
     store: &S,
     base: Option<ObjectId>,
@@ -1406,7 +1426,10 @@ struct FoldState<'a> {
 /// against an empty directory, which may fold further), and theirs' record,
 /// left without a name, is dropped. Then folds the files both sides added
 /// under one name, including those found inside folded directories.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "folds update the shared resolutions and fold state under the conflict bound, decode limits, budget, and cancellation"
+)]
 async fn fold_additions<S: AsyncObjectStore>(
     store: &S,
     mut folds: Vec<(FileId, FileId)>,
@@ -1479,7 +1502,10 @@ async fn fold_additions<S: AsyncObjectStore>(
 /// both records hold the same kind and content, each under this one name
 /// only, with authored metadata that agrees. Theirs' identity then leaves
 /// the table. Anything else is a real conflict at that binding.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "folds update the shared resolutions, conflicts, and truncation flag under the conflict bound, decode limits, budget, and cancellation"
+)]
 async fn fold_files<S: AsyncObjectStore>(
     store: &S,
     folds: Vec<FileFold>,
@@ -1597,7 +1623,6 @@ async fn read_metadata<S: AsyncObjectStore>(
 
 /// Metadata for one identity both sides added independently: authored fields
 /// must agree, timestamps take the later value. `None` is a real conflict.
-#[allow(clippy::too_many_arguments)]
 async fn converge_metadata_async<S: AsyncObjectStore>(
     store: &S,
     ours: ObjectId,

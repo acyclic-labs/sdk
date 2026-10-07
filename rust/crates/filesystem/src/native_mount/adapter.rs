@@ -4038,7 +4038,7 @@ mod tests {
     use std::os::unix::ffi::OsStringExt;
 
     #[cfg(target_os = "macos")]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "declares the NFS transport's C test hooks")]
     unsafe extern "C" {
         fn nfs4_test_exclusive_replay_identity() -> std::ffi::c_int;
         fn nfs4_test_namedattr_exclusive_replay_identity() -> std::ffi::c_int;
@@ -4048,7 +4048,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
     fn exclusive_replay_is_bound_to_the_opened_file_handle() {
         // SAFETY: the test hook has no arguments and owns all callback state.
         assert_eq!(unsafe { nfs4_test_exclusive_replay_identity() }, 0);
@@ -4056,7 +4056,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
     fn named_attribute_exclusive_replay_is_bound_to_owner_and_name() {
         assert_eq!(
             // SAFETY: the test hook has no arguments and owns all callback state.
@@ -4067,7 +4067,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
     fn readdir_continuations_are_bound_to_the_namespace_revision() {
         // SAFETY: the test hook has no arguments and mutates no shared state.
         assert_eq!(unsafe { nfs4_test_readdir_cookie_verifier() }, 0);
@@ -4075,7 +4075,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, reason = "calls the NFS transport's C test hook")]
     fn nfs_sync_acknowledgement_requires_successful_callback() {
         // SAFETY: the test hook owns its callback state.
         assert_eq!(unsafe { nfs4_test_sync_acknowledgement() }, 0);

@@ -222,7 +222,10 @@ pub enum PendingLazyRemoveKind {
 ///
 /// The deterministic treap keeps attach and fork O(1), mutations O(log n),
 /// and exact lookups O(log n) without rewriting the complete observed set.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing the Node payload would change this public enum's pattern-matching API"
+)]
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlay {
     /// Shared empty index root.
@@ -252,7 +255,10 @@ enum Removal {
 }
 
 /// One fact introduced by a lazy overlay delta.
-#[allow(clippy::large_enum_variant)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing the Observe payload would change this public enum's pattern-matching API"
+)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum LazyOverlayChange {
     /// First exact observation of one demanded path.
@@ -1299,7 +1305,6 @@ where
     /// Previously observed records remain pinned to the snapshot's source epoch;
     /// unresolved paths are observed from the injected live source when first
     /// demanded. The owning workspace is never moved or rewritten.
-    #[allow(clippy::too_many_lines)]
     pub async fn exactify_snapshot(
         &self,
         snapshot: LazySnapshotRef,
@@ -2256,7 +2261,6 @@ where
 
     /// Promotes exactly one demanded source node into authored copy-on-write state.
     /// Directories remain shallow and regular files are fetched in bounded ranges.
-    #[allow(clippy::too_many_lines)]
     pub async fn promote(
         &self,
         path: &str,
@@ -2272,7 +2276,10 @@ where
         .await
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "populates every source node kind in one transaction so the pinned source fact is checked once"
+    )]
     async fn populate_source_node_measured(
         &self,
         transaction: &mut crate::Transaction<A, O>,
@@ -2552,7 +2559,10 @@ where
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the pending batch, its byte accounting, work, budget, and cancellation are all mutated by one flush"
+    )]
     async fn flush_exactify_source_batch(
         &self,
         transaction: &mut crate::Transaction<A, O>,
@@ -2600,7 +2610,6 @@ where
         .map(|receipt| receipt.value)
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn promote_with_permit_measured(
         &self,
         path: &str,
@@ -2627,7 +2636,10 @@ where
         .await
     }
 
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "carries the resolved lookup, byte bound, idempotency key, permit, work, budget, and cancellation of one promotion"
+    )]
     async fn promote_resolved_with_permit_measured(
         &self,
         requested: &str,
@@ -2678,7 +2690,6 @@ where
 
     /// Applies one already-resolved source fact to an unpublished candidate.
     /// Callers choose the publication boundary; the source semantics stay here.
-    #[allow(clippy::too_many_arguments)]
     async fn apply_resolved_promotion_measured(
         &self,
         transaction: &mut crate::Transaction<A, O>,
@@ -2939,7 +2950,10 @@ where
 
     /// A mounted replacement must not inherit entries from an unrelated
     /// source directory at the same path.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "compares one mounted directory against its source with the shared checkout, work counters, budget, and cancellation"
+    )]
     async fn mounted_directory_replaces_source(
         &self,
         path: &str,
@@ -3016,7 +3030,10 @@ where
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "forwards the page request plus the optional mounted checkout and mask to list_directory_at"
+    )]
     async fn list_directory_measured(
         &self,
         path: &str,
@@ -3045,7 +3062,7 @@ where
     #[allow(
         clippy::too_many_lines,
         clippy::too_many_arguments,
-        clippy::cognitive_complexity
+        reason = "one page merges overlay, source, and mounted entries in name order under a single budget"
     )]
     async fn list_directory_at(
         &self,
@@ -3547,7 +3564,6 @@ where
     }
 
     /// Exactifies under the supplied operation-window or reservation permit.
-    #[allow(clippy::too_many_lines)]
     pub async fn exactify_with_permit(
         &self,
         budget: WorkBudget,
@@ -3613,7 +3629,11 @@ where
             .await
     }
 
-    #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+    #[allow(
+        clippy::too_many_lines,
+        clippy::cognitive_complexity,
+        reason = "exactifies the selected subtree as one ordered traversal that batches mutations under one permit"
+    )]
     async fn exactify_selected_with_permit(
         &self,
         root: &str,
@@ -4324,7 +4344,10 @@ where
             .await
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one removal records the overlay tombstone for every source and authored node kind"
+    )]
     async fn remove_recording(
         &self,
         path: &str,
@@ -5129,7 +5152,6 @@ fn account_nested_with_live_memory(
     Ok(combined)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn queue_exactify_mutation(
     pending: &mut Vec<AuthoredMutation>,
     mutation: AuthoredMutation,
@@ -5371,7 +5393,6 @@ fn exactify_batch_key(snapshot_id: LazySnapshotId, root: &str, index: u64) -> Id
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, clippy::panic)]
 mod tests {
 
     use super::*;

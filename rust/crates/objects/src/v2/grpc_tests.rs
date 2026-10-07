@@ -249,7 +249,6 @@ impl wire::multipart_service_server::MultipartService for Fixture {
     }
 }
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // One ordered lifecycle covers every RPC against the same TLS authority.
 async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semantic_errors()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
@@ -313,7 +312,10 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
 }
 
 #[tokio::test]
-#[allow(clippy::too_many_lines)] // TLS admission failures and all RPCs share one authority.
+#[allow(
+    clippy::too_many_lines,
+    reason = "TLS admission failures and all RPCs share one authority"
+)]
 async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use futures::StreamExt;

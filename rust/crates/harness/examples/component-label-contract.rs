@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 use acyclic_harness::{
     COMPONENT_LABEL_FORBIDDEN_EXACT, COMPONENT_LABEL_FORBIDDEN_SEPARATORS,

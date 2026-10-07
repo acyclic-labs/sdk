@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, reason = "contract example binary, not public API")]
 
 fn main() {
     match acyclic_inference_wasm::run_terminal_metadata_native() {

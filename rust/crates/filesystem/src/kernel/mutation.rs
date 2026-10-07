@@ -517,9 +517,10 @@ impl MutationPlan {
     }
 }
 
-// `PathUse` is private and is constructed only after `Mutation::paths`
-// returns `Some`; retaining that proof here avoids cloning every path.
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    reason = "PathUse is private and is constructed only after Mutation::paths returns Some; relying on that avoids cloning every path"
+)]
 #[allow(
     clippy::indexing_slicing,
     reason = "PathUse is private and is only ever constructed in MutationPlan::compile as `operation: u32::try_from(index)` for `index` in `operations.iter().enumerate()`; operations and ordered_paths are stored together in MutationPlan and neither is mutated afterward, so path_use.operation as usize is always < operations.len()"

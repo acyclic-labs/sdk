@@ -175,7 +175,14 @@ if [[ "$*" == 'component list --installed' ]]; then
   printf '%s\n' 'llvm-tools-x86_64-unknown-linux-gnu (installed)'
 fi
 EOF
-chmod +x "$gate/bin/rustup"
+# The pinned nextest is already installed, so the gate must not download it.
+cat >"$gate/bin/cargo-nextest" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s
+' 'cargo-nextest 0.9.146 (fake)'
+EOF
+chmod +x "$gate/bin/rustup" "$gate/bin/cargo-nextest"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
@@ -186,7 +193,7 @@ chmod +x "$gate/bin/rustup"
 mapfile -t cargo_calls <"$gate/cargo.log"
 [[ "${#cargo_calls[@]}" -eq 2 ]]
 [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${cargo_calls[1]}" == 'test --workspace --locked --lib' ]]
+[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --locked --lib' ]]
 
 full="$work/full"
 mkdir -p "$full/temp" "$full/artifacts" "$full/tools/cargo/bin" "$full/bin"

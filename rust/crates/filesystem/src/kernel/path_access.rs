@@ -885,7 +885,10 @@ struct ObserveContext<'a, S> {
     capture_terminal: bool,
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded traversal observes every descendant kind with exact dependency accounting"
+)]
 async fn observe_descendants<S: AsyncObjectStore>(
     context: ObserveContext<'_, S>,
     mut current: FileRecord,
@@ -1152,7 +1155,10 @@ pub fn lookup_path_refs<S: crate::ImmediateObjectStore>(
     ))
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "scalar and batch lookups share one bounded resolution loop"
+)]
 async fn lookup_path_queries_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,

@@ -1,4 +1,11 @@
-#![cfg_attr(test, allow(clippy::too_many_lines, clippy::indexing_slicing))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::too_many_lines,
+        clippy::indexing_slicing,
+        reason = "adapter tests run ordered scenarios over fixtures they built"
+    )
+)]
 #![doc = include_str!("../../docs/filesystem.md")]
 
 use crate::contract::capability;

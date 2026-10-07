@@ -272,7 +272,6 @@ fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

@@ -3120,7 +3120,6 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
 /// Siblings forked from one head, each adding its own file, join back one
 /// after the other. The second join is a real three-way merge (its base is
 /// the pre-first-join head) and must apply: nothing in it conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -3173,7 +3172,6 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
 /// and add a file to it. Directories merge by path, as in Git: the second join
 /// folds its directory into the first's instead of conflicting on the name,
 /// including a nested directory both created.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_directories_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -3231,7 +3229,6 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
 /// Two siblings each create the same file (under different identities, as two
 /// captures of one host file do). Files merge by path like directories: the
 /// same content folds into one file, and only different content conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<dyn Error>> {
     let fs = Fs::memory();
@@ -3318,7 +3315,6 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
 /// The mount bumps a directory's modification time whenever a child is
 /// added, so two siblings adding files to one directory always diverge on its
 /// metadata. That must reconcile; only authored metadata (the mode) conflicts.
-#[allow(clippy::expect_used, clippy::panic)]
 #[tokio::test]
 async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 -> Result<(), Box<dyn Error>> {

@@ -87,9 +87,11 @@ import type {
   WorkspaceStat,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
+import { observeInterceptors, resolveObserver } from "./observe.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
+export { performanceObserver } from "./observe.js";
 
 /** Local client failures plus the gRPC status names a hosted service can report. */
 export type HostedFsErrorCode =
@@ -146,7 +148,7 @@ export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEn
   };
   const rpcClient = createClient(FilesystemService, createGrpcWebTransport({
     baseUrl: endpoint.href.replace(/\/$/, ""),
-    interceptors: [authorize, boundRequest],
+    interceptors: observeInterceptors([authorize, boundRequest], resolveObserver(options.observer), "fs"),
     fetch: boundedFetch(send, maximumResponseBytes),
   }));
   const handshake = await call(rpcClient.handshake({

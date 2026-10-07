@@ -500,7 +500,6 @@ where
     /// driver and fails if the workspace head advances before admission. The
     /// supplied work budget also caps each later capture or sync on the handle;
     /// those operations do not inherit the kernel-callback deadline or budget.
-    #[allow(clippy::too_many_lines)]
     pub async fn prepare_native_working_set(
         &self,
         subdirectory: &str,

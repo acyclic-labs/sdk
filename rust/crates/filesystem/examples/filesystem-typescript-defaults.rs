@@ -1,4 +1,5 @@
-#![allow(missing_docs)]
+//! Emits the Rust-owned filesystem defaults consumed by the TypeScript
+//! defaults generator.
 
 use acyclic_fs::cache::ObjectCacheOptions;
 use acyclic_fs::model::VolumeLimits;

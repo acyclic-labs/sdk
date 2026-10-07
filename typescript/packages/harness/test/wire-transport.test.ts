@@ -26,6 +26,8 @@ import {
   JsonlWireTransport,
   WebSocketWireTransport,
   WireOperationHandle,
+  observeWireTransport,
+  type OperationEvent,
   TerminalAdmissionError,
   WireError,
   type JsonlChannel,
@@ -438,12 +440,15 @@ test("embedded status rejects an error correlated to another operation", async (
     },
     async cancel() { return create(CancelResponseSchema); },
   }, negotiation);
-  const connection = await transport.connect(resume);
+  expect(observeWireTransport(transport)).toBe(transport);
+  const events: OperationEvent[] = [];
+  const connection = await observeWireTransport(transport, { onOperation: event => events.push(event) }).connect(resume);
   await expect(connection.observe(create(ObserveRequestSchema, {
     owner: { kind: 5, id: "owner" },
     operationId,
     scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
   }))).rejects.toBeInstanceOf(WireError);
+  expect(events.map(({ op, ok, code }) => `${op}:${ok}:${typeof code}`)).toEqual(["wire.connect:true:undefined", "wire.observe:false:number"]);
 });
 
 test("framed control serializes observe and cancel for the same operation", async () => {

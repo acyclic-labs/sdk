@@ -956,7 +956,6 @@ fn overlapping_same_file_clone_uses_preoperation_snapshot() -> Result<(), Box<dy
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn semantic_capabilities_and_create_identity_reject_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -1273,7 +1272,6 @@ fn directory_rename_below_itself_is_rejected_without_publication()
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn namespace_and_identity_preconditions_fail_with_exact_terminal_errors()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1724,7 +1722,6 @@ fn empty_generation_batch_and_precancellation_reject_before_work()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generated_generation_histories_match_independent_namespace_and_identity_model()
 -> Result<(), Box<dyn std::error::Error>> {
     let names = std::iter::once("a".to_owned())
@@ -1968,7 +1965,6 @@ fn generated_generation_histories_match_independent_namespace_and_identity_model
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generated_multi_operation_transactions_observe_the_candidate_in_order()
 -> Result<(), Box<dyn std::error::Error>> {
     let names = ["a", "x", "y", "alias", "z", "large"]
@@ -2170,7 +2166,6 @@ fn generated_multi_operation_transactions_observe_the_candidate_in_order()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generation_nested_work_and_allocation_boundaries_are_total()
 -> Result<(), Box<dyn std::error::Error>> {
     let prior = WorkCounters {
@@ -2339,7 +2334,6 @@ fn defensive_transaction_state(
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn defensive_transaction_invariants_fail_closed_before_backend_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let file_id = FileId::from_bytes([91; 16]);
@@ -2484,7 +2478,6 @@ fn defensive_transaction_invariants_fail_closed_before_backend_mutation()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn transaction_construction_rejects_every_contradictory_sparse_seed()
 -> Result<(), Box<dyn std::error::Error>> {
     let metadata = ObjectId {

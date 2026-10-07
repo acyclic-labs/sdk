@@ -4151,7 +4151,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .then(|| GenerationId::new(lineage.source_object.digest)))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one live rebase replays every candidate change against the advanced head under a single fence"
+    )]
     pub(crate) async fn live_rebase_workspace(
         &self,
         request: WorkspaceRebaseRequest<'_, A, O>,
@@ -4310,7 +4313,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one join validates, merges, and publishes both workspace heads under a single fence"
+    )]
     pub(crate) async fn apply_workspace_join(
         &self,
         request: WorkspaceJoinRequest<'_, A, O>,
@@ -7379,7 +7385,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// byte-ordered pages and therefore cannot discover folded siblings from
     /// its sparse endpoint lookups alone; this boundary owns that policy while
     /// retaining a zero-work fast path for the default sensitive profile.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "admits every namespace destination in one ordered pass so earlier operations' bindings are visible to later ones"
+    )]
     async fn admit_mutation_names(
         &mut self,
         operations: &mut [Mutation],
@@ -8126,7 +8135,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive match lowers every authored mutation kind to kernel operations"
+    )]
     async fn compile_authored_mutation(
         &self,
         authored: AuthoredMutation,
@@ -8551,7 +8563,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the shared operation list, metadata cache, work counters, budget, and cancellation through each record compiled"
+    )]
     async fn compile_record(
         &self,
         operations: &mut Vec<Mutation>,
@@ -8597,7 +8612,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
 
     /// Compiles the creation of one regular file with identity `file_id`
     /// and exact initial `bytes`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "threads the shared operation list, metadata cache, work counters, budget, and cancellation through each file compiled"
+    )]
     async fn compile_create_file(
         &self,
         path: NamespacePath,
@@ -10535,7 +10553,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
     /// # Errors
     ///
     /// Returns the same measured failures as [`Self::mutate`].
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the POSIX copy_file_range shape: two identities, two offsets, a length, plus budget and cancellation"
+    )]
     pub async fn clone_file_range_by_id(
         &mut self,
         source_file_id: FileId,
@@ -13729,7 +13750,10 @@ fn generation_from_record(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the two file-table roots, change bound, config, prior work, budget, and cancellation are independent inputs"
+)]
 async fn diff_generation_file_tables<O: AsyncObjectStore>(
     objects: &O,
     before: ObjectId,

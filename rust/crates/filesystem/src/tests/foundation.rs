@@ -1,7 +1,6 @@
 use super::*;
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn every_identity_round_trips_and_authority_hash_inputs_are_bound()
 -> Result<(), Box<dyn std::error::Error>> {
     assert_ne!(AuthorityId::new().into_bytes(), [0; 16]);

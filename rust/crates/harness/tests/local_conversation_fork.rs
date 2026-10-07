@@ -1,6 +1,9 @@
 //! Durable-local conversation, attachment, fork, and parent merge across restart.
 #![cfg(feature = "filesystem-local")]
-#![allow(clippy::too_many_lines)]
+#![allow(
+    clippy::too_many_lines,
+    reason = "one ordered scenario keeps each step next to the state it checks"
+)]
 
 use acyclic_fs::{Fs, LocalOptions};
 use acyclic_harness::conversation::{

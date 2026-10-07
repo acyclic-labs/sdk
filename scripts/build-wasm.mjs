@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -121,13 +122,24 @@ const metadata = capture(cargo, ["metadata", "--locked", "--no-deps", "--format-
 if (!metadata) throw new Error("cargo metadata failed");
 const targetRoot = JSON.parse(metadata).target_directory;
 
+const cargoHome = resolve(process.env.CARGO_HOME ?? join(homedir(), ".cargo"));
+
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
   const { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];
   const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
+  // Panic locations embed source paths, including registry sources and
+  // build-script output. Remap the checkout, Cargo home and target directory
+  // so the committed bytes do not depend on where they were built. The flags
+  // apply to the WASM target only, leaving host builds and their caches alone.
+  const rustflags = [
+    "--remap-path-prefix", `${root}=.`,
+    "--remap-path-prefix", `${target}=/cargo/build-dir`,
+    "--remap-path-prefix", `${cargoHome}=/cargo/home`,
+  ];
   run(cargo, [
     "build", ...selection, "--target", "wasm32-unknown-unknown", "--profile", "wasm-release", "--locked",
-    "--target-dir", target,
+    "--target-dir", target, "--config", `target.wasm32-unknown-unknown.rustflags = ${JSON.stringify(rustflags)}`,
   ]);
   mkdirSync(output, { recursive: true });
   run(wasmBindgen, [

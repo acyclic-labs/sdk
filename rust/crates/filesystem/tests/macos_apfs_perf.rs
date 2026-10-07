@@ -1,10 +1,6 @@
-#![cfg_attr(
-    not(all(target_os = "macos", feature = "native-mount")),
-    allow(missing_docs)
-)]
-#![cfg(all(target_os = "macos", feature = "native-mount"))]
-
 //! Local-only APFS native working-set preparation and capture benchmark.
+
+#![cfg(all(target_os = "macos", feature = "native-mount"))]
 
 use std::sync::Arc;
 use std::time::Instant;

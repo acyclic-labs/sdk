@@ -123,7 +123,10 @@ impl Drop for ProbeDirectory {
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "queries the file's allocation through Win32 file information calls"
+)]
 fn file_allocation_bytes(file: &std::fs::File) -> Result<u64, NativeStorageAccelerationError> {
     use std::mem::size_of;
     use std::os::windows::io::AsRawHandle;
@@ -150,7 +153,7 @@ fn file_allocation_bytes(file: &std::fs::File) -> Result<u64, NativeStorageAccel
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "marks the file sparse with DeviceIoControl")]
 fn mark_sparse(file: &std::fs::File) -> windows::core::Result<()> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
@@ -255,7 +258,7 @@ fn sparse_probe(
 }
 
 #[cfg(windows)]
-#[allow(unsafe_code)]
+#[allow(unsafe_code, reason = "probes block cloning with DeviceIoControl")]
 fn block_clone_probe(
     directory: &Path,
     allocation_unit_bytes: u64,

@@ -13,10 +13,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.boxed(".acyclic.harness.v2.ClientFrame.command");
-    config.enum_attribute(
-        ".acyclic.harness.v2.ClientFrame.frame",
-        "#[allow(clippy::large_enum_variant)]",
-    );
     config.file_descriptor_set_path(
         std::path::PathBuf::from(std::env::var("OUT_DIR")?).join("harness_descriptor.bin"),
     );

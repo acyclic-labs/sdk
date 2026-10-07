@@ -1,6 +1,7 @@
 import { rootCertificates } from "node:tls";
 import { createClient, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport } from "@connectrpc/connect-node";
+import { observeInterceptors, resolveObserver, type AcyclicObserver } from "./observe.js";
 import { WorkersService } from "../generated/proto/workers/v1/workers_pb.js";
 
 export interface WorkersGrpcOptions {
@@ -8,6 +9,7 @@ export interface WorkersGrpcOptions {
   readonly token: string;
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
+  readonly observer?: AcyclicObserver;
 }
 
 /** Complete Workers v1 gRPC client for Node and Bun over authenticated HTTP/2. */
@@ -22,5 +24,5 @@ export function createWorkersGrpcClient(options: WorkersGrpcOptions) {
     request.header.set("authorization", `Bearer ${options.token}`);
     return next(request);
   };
-  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: [authenticate], readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
+  return createClient(WorkersService, createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "workers"), readMaxBytes: maximum, writeMaxBytes: maximum, ...(options.caCertificate === undefined ? {} : { nodeOptions: { ca: [...rootCertificates, options.caCertificate] } }) }));
 }

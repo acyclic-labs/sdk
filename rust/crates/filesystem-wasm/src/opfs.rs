@@ -494,7 +494,11 @@ fn is_not_found(error: &JsValue) -> bool {
         .dyn_ref::<web_sys::DomException>()
         .is_some_and(|error| error.name() == "NotFoundError")
 }
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the checks above bound length to a non-negative integer no larger than u32::MAX"
+)]
 fn exact_file_size(length: f64) -> Option<u64> {
     if !length.is_finite() || length < 0.0 || length.fract() != 0.0 || length > f64::from(u32::MAX)
     {

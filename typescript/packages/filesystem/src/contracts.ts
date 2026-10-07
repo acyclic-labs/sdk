@@ -1,5 +1,6 @@
 import type * as NativeBinding from "../generated/native/binding.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
+import type { AcyclicObserver } from "./observe.js";
 import {
   DEFAULT_OBJECT_CACHE_OPTIONS as GENERATED_OBJECT_CACHE_OPTIONS,
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
@@ -87,6 +88,7 @@ export interface HostedFsOptions {
   readonly bearerToken: string;
   readonly maximumResponseBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
+  readonly observer?: AcyclicObserver;
 }
 
 export interface HostedFsCapabilities extends EngineCapabilities {
@@ -859,12 +861,16 @@ export interface BrowserFsOptions {
   readonly maximumObjectBytes: number;
   readonly objectAcceleration: "indexeddb" | "opfs";
   readonly objectCache: ObjectCacheOptions;
+  /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
+  readonly observer?: AcyclicObserver;
 }
 
 export interface MemoryFsOptions {
   readonly maximumObjectBytes: number;
   readonly maximumMemoryBytes: number;
   readonly objectCache: ObjectCacheOptions;
+  /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
+  readonly observer?: AcyclicObserver;
 }
 
 export interface NativeFsOptions {

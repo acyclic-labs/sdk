@@ -518,7 +518,6 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn read_blob_chunk<R: AsyncBlobSource>(
     source: &mut R,
     allocation: usize,
@@ -582,7 +581,10 @@ fn charge_source_work(
     Ok(combined)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the batch store, index, chunk, and every byte bound are updated by one accepted chunk"
+)]
 async fn accept_owned_blob_chunk<S: AsyncObjectStore>(
     batching: &mut BlobBatchStore<'_, S>,
     index: &mut BlobIndexBuilder,

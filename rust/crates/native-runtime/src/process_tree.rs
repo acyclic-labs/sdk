@@ -1,4 +1,7 @@
-#![allow(unsafe_code)]
+#![allow(
+    unsafe_code,
+    reason = "process containment uses platform process-group and Job Object calls"
+)]
 
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Output};
@@ -117,8 +120,8 @@ impl ProcessTree {
         let result = (|| {
             let mut status = None;
             loop {
-                drain_pipe(&mut stdout, &mut output[0], &mut remaining)?;
-                drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
+                let progressed = drain_pipe(&mut stdout, &mut output[0], &mut remaining)?
+                    | drain_pipe(&mut stderr, &mut output[1], &mut remaining)?;
                 if status.is_none() {
                     status = self.try_wait()?;
                     if status.is_some() {
@@ -142,7 +145,9 @@ impl ProcessTree {
                         "process output deadline exceeded; effects may have occurred",
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(1));
+                if !progressed {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
             }
         })();
         // Cleanup errors take precedence: a capture timeout alone does not
@@ -203,15 +208,17 @@ impl ProcessTree {
     }
 }
 
+/// Reads one chunk; returns whether the pipe produced data or reached EOF,
+/// so the caller sleeps only when both pipes are idle.
 fn drain_pipe<T: Read + platform::Pipe>(
     pipe: &mut Option<T>,
     output: &mut Vec<u8>,
     remaining: &mut usize,
-) -> io::Result<()> {
+) -> io::Result<bool> {
     let Some(reader) = pipe.as_mut() else {
-        return Ok(());
+        return Ok(false);
     };
-    let mut buffer = [0; 8192];
+    let mut buffer = [0; 64 * 1024];
     match platform::read_pipe(reader, &mut buffer)? {
         Some(0) => {
             pipe.take();
@@ -226,12 +233,12 @@ fn drain_pipe<T: Read + platform::Pipe>(
             let bytes = buffer
                 .get(..read)
                 .ok_or_else(|| io::Error::other("pipe returned an invalid length"))?;
-            output.try_reserve_exact(read).map_err(io::Error::other)?;
+            output.try_reserve(read).map_err(io::Error::other)?;
             output.extend_from_slice(bytes);
         }
-        None => {}
+        None => return Ok(false),
     }
-    Ok(())
+    Ok(true)
 }
 
 impl Drop for ProcessTree {
@@ -435,7 +442,6 @@ mod platform {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use super::ProcessTree;
     use std::fs;
@@ -446,6 +452,7 @@ mod tests {
 
     const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
     const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
+    const BULK_BYTES: usize = 4 << 20;
 
     pub(super) fn command(mode: &str, root: &std::path::Path) -> Command {
         let mut command = Command::new(std::env::current_exe().expect("test executable"));
@@ -473,7 +480,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::zombie_processes)] // exit-parent deliberately tests parent-before-descendant exit.
+    #[allow(
+        clippy::zombie_processes,
+        reason = "exit-parent deliberately tests parent-before-descendant exit"
+    )]
     fn process_tree_helper() {
         let Ok(mode) = std::env::var(MODE) else {
             return;
@@ -525,6 +535,13 @@ mod tests {
                     .expect("closed stdin");
                 assert!(input.is_empty());
                 // Avoid test-harness stdout in the exact shared-budget fixture.
+                std::process::exit(0);
+            }
+            "bulk" => {
+                let chunk = [b'b'; 64 * 1024];
+                for _ in 0..BULK_BYTES / chunk.len() {
+                    std::io::stdout().write_all(&chunk).expect("bulk stdout");
+                }
                 std::process::exit(0);
             }
             "exit-code" => std::process::exit(7),
@@ -679,6 +696,32 @@ mod tests {
             thread::sleep(Duration::from_secs(1));
             assert!(!temporary.path().join("escaped").exists());
         }
+    }
+
+    #[test]
+    fn bulk_output_is_collected_fully_within_its_exact_bound() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let output = ProcessTree::spawn(&mut command("bulk", temporary.path()))
+            .expect("spawn bulk writer")
+            .wait_with_output(Duration::from_secs(60), 2 * BULK_BYTES)
+            .expect("collect bulk output");
+        assert!(output.status.success());
+        // The test harness prints a short header before the helper runs.
+        let header = output.stdout.len() - BULK_BYTES;
+        assert!(
+            output
+                .stdout
+                .get(header..)
+                .expect("bulk bytes")
+                .iter()
+                .all(|byte| *byte == b'b')
+        );
+        assert!(output.stderr.is_empty());
+        let error = ProcessTree::spawn(&mut command("bulk", temporary.path()))
+            .expect("spawn bulk writer")
+            .wait_with_output(Duration::from_secs(60), output.stdout.len() - 1)
+            .expect_err("bulk output exceeds bound");
+        assert_eq!(error.kind(), std::io::ErrorKind::FileTooLarge);
     }
 
     #[test]
@@ -952,7 +995,6 @@ mod platform {
     }
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn denied_job_cleanup_retains_child_and_reports_failure() {
         use windows_sys::Win32::Foundation::DuplicateHandle;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
@@ -1007,7 +1049,6 @@ mod platform {
     }
 
     #[test]
-    #[allow(clippy::expect_used)]
     fn denied_admission_still_observes_unassigned_child_exit() {
         use windows_sys::Win32::Foundation::DuplicateHandle;
         use windows_sys::Win32::System::Threading::GetCurrentProcess;

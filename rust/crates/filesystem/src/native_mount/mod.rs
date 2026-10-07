@@ -152,7 +152,10 @@ fn create_metadata(mode: u32, kind: u32, uid: u32, gid: u32) -> FileMetadata {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the error by value"
+)]
 fn errno(error: MountSourceError) -> i32 {
     match error {
         MountSourceError::NotFound => libc::ENOENT,
@@ -165,7 +168,10 @@ fn errno(error: MountSourceError) -> i32 {
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "used as a map_err adapter, which hands over the error by value"
+)]
 fn source_error(error: MountSourceError) -> NativeMountError {
     NativeMountError::Driver(error.to_string())
 }
@@ -1095,7 +1101,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ///
     /// Returns stale identity, sparse-tree, storage, cancellation, allocation,
     /// or bounded-work failures. Detached identities are rejected.
-    #[allow(clippy::too_many_arguments)]
     fn clone_range_by_id(
         &self,
         source_file_id: FileId,
@@ -1698,7 +1703,10 @@ fn detach_platform_destination_after_crash(destination: &Path) -> Result<(), Nat
 }
 
 #[cfg(target_os = "windows")]
-#[allow(clippy::unnecessary_wraps)]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "keeps the fallible signature of the platforms that must detach a mount"
+)]
 fn detach_platform_destination_after_crash(_destination: &Path) -> Result<(), NativeMountError> {
     // ProjFS binds the virtualization context to its provider process. Process
     // termination detaches that context, while the authenticated local cache
@@ -2776,7 +2784,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     async fn capture_host_hard_links_preserves_shared_file_identity()
     -> Result<(), Box<dyn std::error::Error>> {
         let limits = VolumeLimits::default();
@@ -3070,7 +3077,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     -> Result<(), Box<dyn std::error::Error>> {
         let limits = VolumeLimits::default();
@@ -3906,7 +3912,6 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
     async fn posix_fifo_and_socket_materialize_and_capture_exactly()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::FileTypeExt;
