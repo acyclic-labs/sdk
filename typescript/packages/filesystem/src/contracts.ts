@@ -183,11 +183,7 @@ export interface FsWorkspace {
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<FsJoinPlan>;
 }
 
-export type WorkspaceDeleteStatus =
-  | "deleted"
-  | "already-deleted"
-  | "conflict"
-  | "idempotency-conflict";
+export type WorkspaceDeleteStatus = WasmBinding.WorkspaceDeleteStatus;
 
 /** One exact immutable complete filesystem state. */
 export interface FsGeneration {
