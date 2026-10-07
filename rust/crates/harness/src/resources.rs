@@ -3,8 +3,6 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Deserializer, Serialize};
 
-const MAX_REFERENCE_KEY_BYTES: usize = 4_096;
-
 /// Stable identity of a replaceable resource provider.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ProviderRef {
@@ -35,7 +33,7 @@ impl ProviderRef {
     /// Validates a value received through an untrusted serialization boundary.
     pub fn validate(&self) -> Result<()> {
         for part in [&self.namespace, &self.family, &self.version] {
-            if part.is_empty() || part.len() > 128 || part.chars().any(char::is_control) {
+            if part.is_empty() || part.chars().any(char::is_control) {
                 return Err(Error::Invalid("provider identity is invalid".into()));
             }
         }
@@ -145,14 +143,14 @@ impl ResourceRef {
     /// Validates a value received through an untrusted serialization boundary.
     pub fn validate(&self) -> Result<()> {
         self.provider.validate()?;
-        if self.key.is_empty() || self.key.len() > MAX_REFERENCE_KEY_BYTES {
-            return Err(Error::Invalid(
-                "resource key is empty or exceeds its bound".into(),
-            ));
+        if self.key.is_empty() {
+            return Err(Error::Invalid("resource key is empty".into()));
         }
-        if self.version.as_ref().is_some_and(|value| {
-            value.is_empty() || value.len() > 256 || value.chars().any(char::is_control)
-        }) {
+        if self
+            .version
+            .as_ref()
+            .is_some_and(|value| value.is_empty() || value.chars().any(char::is_control))
+        {
             return Err(Error::Invalid("resource version is invalid".into()));
         }
         Ok(())

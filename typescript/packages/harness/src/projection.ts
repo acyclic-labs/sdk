@@ -130,7 +130,7 @@ export async function selectModelContext(
   const maxManifestBytes = options.maxManifestBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_MANIFEST_BYTES;
   const maxAttachments = options.maxAttachments ?? HARNESS_PROJECTION_DEFAULT_MAX_ATTACHMENTS;
   const maxMessages = options.maxMessages ?? HARNESS_PROJECTION_DEFAULT_MAX_MESSAGES;
-  const maxProjectedAttachments = options.maxProjectedAttachments ?? HARNESS_PROJECTION_MAX_PROJECTED_ATTACHMENTS;
+  const maxProjectedAttachments = options.maxProjectedAttachments ?? maxAttachments;
   const maxRenderBytes = options.maxRenderBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RENDER_BYTES;
   if (!Number.isSafeInteger(maxManifestBytes) || maxManifestBytes < 0
     || !Number.isSafeInteger(maxAttachments) || maxAttachments < 0

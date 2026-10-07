@@ -51,8 +51,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     this.#fetcher = options.fetcher ?? fetch;
     this.#resolveFile = options.resolveFile;
     this.#verifyFile = options.verifyFile;
-    this.#maxResolvedBytes = options.maxResolvedBytes ?? 1_048_576;
-    this.#maxEventBytes = options.maxEventBytes ?? 1_048_576;
+    this.#maxResolvedBytes = options.maxResolvedBytes ?? Number.MAX_SAFE_INTEGER;
+    this.#maxEventBytes = options.maxEventBytes ?? Number.MAX_SAFE_INTEGER;
     if (!Number.isSafeInteger(this.#maxResolvedBytes) || this.#maxResolvedBytes < 0
       || !Number.isSafeInteger(this.#maxEventBytes) || this.#maxEventBytes <= 0) {
       throw new TypeError("OpenAI-compatible projection and event limits must be safe integers");

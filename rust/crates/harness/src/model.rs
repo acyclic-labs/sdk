@@ -119,7 +119,7 @@ impl ModelContent {
             Self::Part(part) => std::slice::from_ref(part),
             Self::Parts(parts) => parts.as_slice(),
         };
-        if parts.len() > limits.attachments + 1 {
+        if parts.len() > limits.attachments.saturating_add(1) {
             return Err(Error::Invalid(
                 "model content exceeds attachment limit".into(),
             ));
@@ -176,7 +176,7 @@ impl ModelContent {
                 };
             }
             Self::Part(part) => std::slice::from_ref(part),
-            Self::Parts(parts) if !parts.is_empty() && parts.len() <= 1_024 => parts.as_slice(),
+            Self::Parts(parts) if !parts.is_empty() => parts.as_slice(),
             _ => return Err(Error::Invalid("user input part count is invalid".into())),
         };
         for part in parts {
@@ -260,8 +260,8 @@ pub enum FileProjectionPolicy {
     Native,
 }
 
-/// Hard aggregate ceiling for the canonical serialized model input, independent of output bounds.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest byte count representable by a model request manifest.
+pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -310,9 +310,9 @@ impl ModelRequest {
         if self.messages.is_empty() || self.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
-        if self.max_output_tokens.is_none_or(|bound| bound == 0) {
+        if self.max_output_tokens == Some(0) {
             return Err(Error::Invalid(
-                "model output token bound is required".into(),
+                "model output token bound must be positive".into(),
             ));
         }
         let mut tools = BTreeMap::new();
@@ -393,13 +393,8 @@ impl PreparedModelRequest {
     /// Reconstructs exact retained canonical bytes; unknown/defaulted fields or
     /// alternative encodings cannot silently change an admitted request.
     pub fn decode(bytes: &[u8], limits: crate::conversation::Limits) -> Result<Self> {
-        if bytes.len() as u64 > MAX_MODEL_REQUEST_BYTES {
-            return Err(Error::Invalid(
-                "retained model request exceeds aggregate byte limit".into(),
-            ));
-        }
-        let request =
-            serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        let request = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
         let prepared = Self::prepare(request, limits)?;
         if prepared.bytes() != bytes {
             return Err(Error::Invalid(
@@ -414,11 +409,6 @@ impl PreparedModelRequest {
     pub fn prepare(request: ModelRequest, limits: crate::conversation::Limits) -> Result<Self> {
         request.validate(limits)?;
         let bytes = crate::contract::canonical_json_bytes(&request)?;
-        if bytes.len() as u64 > MAX_MODEL_REQUEST_BYTES {
-            return Err(Error::Invalid(
-                "model request exceeds aggregate byte limit".into(),
-            ));
-        }
         let manifest = ModelRequestManifest {
             version: 1,
             request_digest: *blake3::hash(&bytes).as_bytes(),
@@ -523,9 +513,6 @@ impl ModelPrefix {
     /// Exact bytes staged once and shared by children through pinned references.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
         let bytes = crate::contract::canonical_json_bytes(self)?;
-        if bytes.len() as u64 > MAX_MODEL_REQUEST_BYTES {
-            return Err(Error::Invalid("model prefix exceeds byte limit".into()));
-        }
         Ok(bytes)
     }
 }
@@ -574,7 +561,7 @@ impl PreparedModelRequest {
             total_bytes = total_bytes
                 .checked_add(reference.descriptor().byte_length())
                 .ok_or_else(|| Error::Invalid("model prefix byte count overflow".into()))?;
-            if total_bytes > MAX_MODEL_REQUEST_BYTES || visited.len() > limits.context_messages {
+            if visited.len() > limits.context_messages {
                 return Err(Error::Invalid(
                     "model prefix traversal exceeds limit".into(),
                 ));
@@ -582,7 +569,7 @@ impl PreparedModelRequest {
             verifier.verify(&reference).await?;
             let bytes = verifier.read(&reference).await?;
             reference.descriptor().verify(&bytes)?;
-            let segment: ModelPrefix = serde_json::from_slice(&bytes)
+            let segment: ModelPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?;
             if segment.version != 1
                 || segment.binding_digest != binding
@@ -776,7 +763,7 @@ mod tests {
             include_bytes!("../fixtures/model-prefix.json")
         );
         assert_eq!(
-            serde_json::from_slice::<ModelRequest>(prepared.bytes())
+            crate::contract::json_from_slice::<ModelRequest>(prepared.bytes())
                 .map_err(|e| Error::Invalid(e.to_string()))?,
             original
         );
@@ -1027,7 +1014,14 @@ mod tests {
         candidates.push(changed);
         let mut changed = valid.clone();
         changed.max_output_tokens = None;
-        candidates.push(changed);
+        let unconstrained = PreparedModelRequest::prepare(changed, Limits::default())?;
+        assert!(unconstrained.request().max_output_tokens.is_none());
+        assert_eq!(
+            PreparedModelRequest::decode(unconstrained.bytes(), Limits::default())?
+                .request()
+                .max_output_tokens,
+            None
+        );
         let mut changed = valid.clone();
         changed.max_output_tokens = Some(0);
         candidates.push(changed);
@@ -1045,10 +1039,9 @@ mod tests {
             assert!(PreparedModelRequest::prepare(candidate, Limits::default()).is_err());
         }
         let mut oversized = base;
-        let maximum = usize::try_from(MAX_MODEL_REQUEST_BYTES)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let maximum = 64 * 1024 * 1024 + 1;
         oversized.model.options = json!({"large": "x".repeat(maximum)});
-        assert!(PreparedModelRequest::prepare(oversized, Limits::default()).is_err());
+        assert!(PreparedModelRequest::prepare(oversized, Limits::default()).is_ok());
         Ok(())
     }
 }

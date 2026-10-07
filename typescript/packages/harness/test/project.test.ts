@@ -95,7 +95,8 @@ test("project fork and merge publication remain bound to the parent controller",
     },
   };
   const controller = new ParentProjectController(contracts, binding);
-  expect(() => providerOperationId([])).toThrow("1–64");
+  expect(() => providerOperationId([])).toThrow("nonzero identity bytes");
+  expect(providerOperationId(Array(65).fill(1))).toHaveLength(65);
   expect(await controller.forkProject(generation(1), child, "fork-1")).toEqual(generation(2));
   const plan = await controller.prepareProjectMerge(child);
   expect(Object.keys(plan)).toEqual(["child", "source", "target", "commonAncestor"]);

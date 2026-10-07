@@ -178,7 +178,7 @@ export class WebSocketWireTransport implements WireTransport {
     readonly negotiation: HandshakeRequest,
     readonly factory: WebSocketFactory = (url, protocols) => new WebSocket(url, protocols),
     /** Ceiling, in UTF-8 bytes, for each server message. */
-    readonly maximumMessageBytes = 8 * 1024 * 1024,
+    readonly maximumMessageBytes = Number.MAX_SAFE_INTEGER,
   ) {
     assertMessageBound(maximumMessageBytes);
   }
@@ -228,7 +228,7 @@ export class HttpSseWireTransport implements WireTransport {
     readonly negotiation: HandshakeRequest,
     readonly fetcher: HttpFetcher = fetch,
     /** Ceiling for each JSON response body and each buffered server-sent event. */
-    readonly maximumMessageBytes = 8 * 1024 * 1024,
+    readonly maximumMessageBytes = Number.MAX_SAFE_INTEGER,
   ) {
     let endpoint: URL;
     try { endpoint = new URL(withSlash(baseUrl)); }

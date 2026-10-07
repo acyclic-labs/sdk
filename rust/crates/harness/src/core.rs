@@ -986,8 +986,7 @@ impl ExtensionRecord {
 }
 
 pub(crate) fn validate_extension_name(name: &str) -> Result<()> {
-    if name.len() > 256
-        || !name.contains('.')
+    if !name.contains('.')
         || name.starts_with("acyclic.")
         || name.split('.').any(str::is_empty)
         || !name
@@ -1361,7 +1360,7 @@ impl SchemaRegistry {
             return Err(Error::Invalid("extension content must be JSON".into()));
         }
         content.descriptor().verify(bytes)?;
-        let value: Value = serde_json::from_slice(bytes)
+        let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None)?;
         crate::contract::validate_json_schema_value(&binding.schema, &value, "extension payload")?;
@@ -1395,7 +1394,7 @@ impl SchemaRegistry {
     ) -> Result<()> {
         let record = self.configuration_record(extension, content)?;
         record.content.descriptor().verify(bytes)?;
-        let value: Value = serde_json::from_slice(bytes).map_err(|error| {
+        let value: Value = crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Invalid(format!("extension configuration is not JSON: {error}"))
         })?;
         let binding = self.pinned_binding(&extension.name, extension.version, None)?;
@@ -3520,7 +3519,7 @@ resolve_interaction interaction_resolved interaction:resolve";
                     .is_err()
             );
         }
-        assert!(validate_extension_name(&format!("example.{}", "x".repeat(256))).is_err());
+        assert!(validate_extension_name(&format!("example.{}", "x".repeat(256))).is_ok());
         validate_extension_name("example.state")?;
         Ok(())
     }

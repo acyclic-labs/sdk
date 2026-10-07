@@ -6,12 +6,11 @@ import {
 } from "./index.js";
 import {
   GetObjectRequestSchema, HeadBucketRequestSchema, PutObjectHeaderSchema,
-  ErrorCode, ObjectsV2Error, type Bucket, type ObjectsV2Provider,
+  ErrorCode, ObjectsLimit, ObjectsV2Error, type Bucket, type ObjectsV2Provider,
 } from "@acyclic-labs/objects/v2";
 
 const encoder = new TextEncoder();
-const maximumObjectBytes = 5 * 1_024 ** 3;
-const maximumObjectKeyBytes = 1_024;
+const maximumObjectKeyBytes = ObjectsLimit.MAX_KEY_BYTES;
 
 export interface ObjectContentOptions {
   readonly objects: ObjectsV2Provider;
@@ -70,7 +69,7 @@ export class ObjectContentStore {
       || volume.provider.version !== expectedProvider.version
       || volume.id !== bucket.bucket?.name
       || !bucket.bucket?.name || !Number.isSafeInteger(maximumBytes)
-      || maximumBytes <= 0 || maximumBytes > maximumObjectBytes) {
+      || maximumBytes <= 0) {
       throw new TypeError("Objects content binding is invalid");
     }
     const resolved = await objects.headBucket(create(HeadBucketRequestSchema, { bucket: bucket.bucket }));

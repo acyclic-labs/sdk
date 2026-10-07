@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 /// Maximum UTF-8 byte length for names crossing a component boundary.
-pub const COMPONENT_LABEL_MAX_BYTES: usize = 255;
+pub const COMPONENT_LABEL_MAX_BYTES: usize = crate::conversation::MAX_PORTABLE_COUNT;
 
 /// Exact labels and separators rejected by every component registry.
 pub const COMPONENT_LABEL_FORBIDDEN_EXACT: [&str; 2] = [".", ".."];
@@ -66,8 +66,19 @@ pub(crate) fn next_revision(revision: u64) -> Result<u64> {
 pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
     let mut bytes = Vec::new();
-    write_canonical_json(&value, &mut bytes, 0)?;
+    write_canonical_json(&value, &mut bytes)?;
     Ok(bytes)
+}
+
+/// Decodes a complete JSON value without an unrelated nesting policy ceiling.
+pub(crate) fn json_from_slice<T: serde::de::DeserializeOwned>(
+    bytes: &[u8],
+) -> serde_json::Result<T> {
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    decoder.disable_recursion_limit();
+    let value = T::deserialize(&mut decoder)?;
+    decoder.end()?;
+    Ok(value)
 }
 
 /// Digest of the exact canonical JSON bytes used at durable identity boundaries.
@@ -122,16 +133,7 @@ pub(crate) fn compile_json_schema(
     Ok(validator)
 }
 
-fn write_canonical_json(
-    value: &serde_json::Value,
-    bytes: &mut Vec<u8>,
-    depth: usize,
-) -> Result<()> {
-    if depth > 128 {
-        return Err(Error::Invalid(
-            "canonical JSON nesting exceeds the limit".into(),
-        ));
-    }
+fn write_canonical_json(value: &serde_json::Value, bytes: &mut Vec<u8>) -> Result<()> {
     match value {
         serde_json::Value::Null => bytes.extend_from_slice(b"null"),
         serde_json::Value::Bool(true) => bytes.extend_from_slice(b"true"),
@@ -148,7 +150,7 @@ fn write_canonical_json(
                 if index > 0 {
                     bytes.push(b',');
                 }
-                write_canonical_json(item, bytes, depth + 1)?;
+                write_canonical_json(item, bytes)?;
             }
             bytes.push(b']');
         }
@@ -166,7 +168,7 @@ fn write_canonical_json(
                         .as_bytes(),
                 );
                 bytes.push(b':');
-                write_canonical_json(&fields[key], bytes, depth + 1)?;
+                write_canonical_json(&fields[key], bytes)?;
             }
             bytes.push(b'}');
         }
@@ -177,7 +179,7 @@ fn write_canonical_json(
 /// Returns whether a component label satisfies the shared Rust spelling rule.
 pub fn is_valid_component_label(value: &str) -> bool {
     !(value.is_empty()
-        || value.len() > COMPONENT_LABEL_MAX_BYTES
+        || value.len() as u64 > COMPONENT_LABEL_MAX_BYTES as u64
         || value
             .chars()
             .any(|character| character.is_whitespace() || character.is_control())
@@ -272,7 +274,7 @@ impl IdempotencyKey {
     /// Creates a bounded non-empty caller retry identity.
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
-        if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        if value.is_empty() || value.chars().any(char::is_control) {
             return Err(Error::Invalid("idempotency key is invalid".into()));
         }
         Ok(Self(value))
@@ -544,6 +546,11 @@ mod tests {
             canonical_json_bytes(&value)?,
             br#"{"a":18446744073709551615,"z":{"earlier":1,"later":2}}"#
         );
+        let nested = format!("{}0{}", "[".repeat(129), "]".repeat(129));
+        let value: serde_json::Value = json_from_slice(nested.as_bytes())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(canonical_json_bytes(&value)?, nested.as_bytes());
+        assert!(json_from_slice::<serde_json::Value>(b"{} {}").is_err());
         Ok(())
     }
 
@@ -613,10 +620,8 @@ mod tests {
                 "{value:?}"
             );
         }
-        assert!(validate_component_label(&"a".repeat(COMPONENT_LABEL_MAX_BYTES), "label").is_ok());
-        assert!(
-            validate_component_label(&"a".repeat(COMPONENT_LABEL_MAX_BYTES + 1), "label").is_err()
-        );
-        assert!(validate_component_label(&"é".repeat(128), "label").is_err());
+        assert!(validate_component_label(&"a".repeat(255), "label").is_ok());
+        assert!(validate_component_label(&"a".repeat(256), "label").is_ok());
+        assert!(validate_component_label(&"é".repeat(128), "label").is_ok());
     }
 }
