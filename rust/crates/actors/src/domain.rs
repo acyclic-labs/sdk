@@ -1305,8 +1305,59 @@ impl InvokeActorResponse {
     pub fn headers(&self) -> &[Header] { &self.headers }
 }
 
-/// Export all public Actors request and response declarations and their
-/// recursively discovered semantic dependencies.
+// The semantic export registry is shared by ts-rs and the SDK facade generator.
+// Keeping the names beside the Rust types means the public readonly barrel uses
+// the same executable declarations as `export_typescript`, rather than a
+// second TypeScript-only symbol list.
+macro_rules! typescript_roots {
+    ($callback:ident) => {
+        $callback!(
+            (ActorId, "ActorId"),
+            (ActorLimits, "ActorLimits"),
+            (ActorObservation, "ActorObservation"),
+            (ActorState, "ActorState"),
+            (AddSubscriptionRequest, "AddSubscriptionRequest"),
+            (AddSubscriptionResponse, "AddSubscriptionResponse"),
+            (Binding, "Binding"),
+            (CheckpointActorRequest, "CheckpointActorRequest"),
+            (CheckpointActorResponse, "CheckpointActorResponse"),
+            (CodeSha256, "CodeSha256"),
+            (subscription_start::CurrentHeadMarker, "CurrentHeadMarker"),
+            (CreateActorRequest, "CreateActorRequest"),
+            (CreateActorResponse, "CreateActorResponse"),
+            (ErrorCode, "ErrorCode"),
+            (InspectActorRequest, "InspectActorRequest"),
+            (InspectActorResponse, "InspectActorResponse"),
+            (InvokeActorRequest, "InvokeActorRequest"),
+            (InvokeActorResponse, "InvokeActorResponse"),
+            (PositiveU64, "PositiveU64"),
+            (RemoveSubscriptionRequest, "RemoveSubscriptionRequest"),
+            (RemoveSubscriptionResponse, "RemoveSubscriptionResponse"),
+            (ResumeSubscriptionRequest, "ResumeSubscriptionRequest"),
+            (ResumeSubscriptionResponse, "ResumeSubscriptionResponse"),
+            (ServiceError, "ServiceError"),
+            (SubscriptionObservation, "SubscriptionObservation"),
+            (SubscriptionSpec, "SubscriptionSpec"),
+            (SubscriptionStart, "SubscriptionStart"),
+            (SubscriptionState, "SubscriptionState"),
+            (UpdateActorRequest, "UpdateActorRequest"),
+            (UpdateActorResponse, "UpdateActorResponse"),
+        )
+    };
+}
+
+/// Names emitted by the executable Rust semantic export registry.
+pub fn typescript_export_names() -> &'static [&'static str] {
+    macro_rules! names {
+        ($(($root:ty, $name:literal)),+ $(,)?) => {
+            &[$($name),+]
+        };
+    }
+    typescript_roots!(names)
+}
+
+/// Export all public Actors declarations and their recursively discovered
+/// semantic dependencies. The same registry supplies SDK facade names.
 ///
 /// The output directory is supplied by the SDK generator so generation never
 /// writes into the Rust source tree. `ts-rs` keeps dependency traversal and
@@ -1317,33 +1368,11 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
         .with_import_extension(Some("js"));
 
     macro_rules! export_roots {
-        ($($root:ty),+ $(,)?) => {
+        ($(($root:ty, $name:literal)),+ $(,)?) => {
             $(<$root as TS>::export_all(&config)?;)+
         };
     }
-
-    export_roots!(
-        subscription_start::CurrentHeadMarker,
-        PositiveU64,
-        ErrorCode,
-        ServiceError,
-        CreateActorRequest,
-        UpdateActorRequest,
-        InspectActorRequest,
-        AddSubscriptionRequest,
-        RemoveSubscriptionRequest,
-        ResumeSubscriptionRequest,
-        CheckpointActorRequest,
-        InvokeActorRequest,
-        CreateActorResponse,
-        UpdateActorResponse,
-        InspectActorResponse,
-        AddSubscriptionResponse,
-        RemoveSubscriptionResponse,
-        ResumeSubscriptionResponse,
-        CheckpointActorResponse,
-        InvokeActorResponse,
-    );
+    typescript_roots!(export_roots);
     Ok(())
 }
 

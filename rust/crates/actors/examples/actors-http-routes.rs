@@ -213,39 +213,7 @@ export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker>
 }
 
 fn render_readonly_semantic() -> String {
-    const TYPES: &[&str] = &[
-        "ActorId",
-        "ActorLimits",
-        "ActorObservation",
-        "ActorState",
-        "AddSubscriptionRequest",
-        "AddSubscriptionResponse",
-        "Binding",
-        "CheckpointActorRequest",
-        "CheckpointActorResponse",
-        "CodeSha256",
-        "CurrentHeadMarker",
-        "CreateActorRequest",
-        "CreateActorResponse",
-        "ErrorCode",
-        "InspectActorRequest",
-        "InspectActorResponse",
-        "InvokeActorRequest",
-        "InvokeActorResponse",
-        "PositiveU64",
-        "RemoveSubscriptionRequest",
-        "RemoveSubscriptionResponse",
-        "ResumeSubscriptionRequest",
-        "ResumeSubscriptionResponse",
-        "ServiceError",
-        "SubscriptionObservation",
-        "SubscriptionSpec",
-        "SubscriptionStart",
-        "SubscriptionState",
-        "UpdateActorRequest",
-        "UpdateActorResponse",
-    ];
-    let aliases = TYPES
+    let aliases = acyclic_actors::domain::typescript_export_names()
         .iter()
         .map(|name| format!("export type {name} = ReadonlySemantic<Semantic.{name}>;"))
         .collect::<Vec<_>>()
