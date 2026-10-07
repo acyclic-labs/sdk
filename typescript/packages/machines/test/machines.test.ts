@@ -317,6 +317,19 @@ describe("Machines simulation", () => {
     await expect(machines.list({ pageSize: 257, maximum: 257 }).next()).rejects.toThrow("machine page limit must be 1..=256");
   });
 
+  test("leaves page-size policy to custom provider implementations", async () => {
+    class RecordingProvider extends SimulatedMachines {
+      requestedLimit: number | undefined;
+      override listMachines(after: ReturnType<typeof machineId> | null, limit: number) {
+        this.requestedLimit = limit;
+        return Promise.resolve({ machines: [], next: after });
+      }
+    }
+    const provider = new RecordingProvider();
+    await new Machines(provider).list({ pageSize: 0, maximum: 1 }).next();
+    expect(provider.requestedLimit).toBe(0);
+  });
+
   test("managed transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
     for (const token of [" ", "a\nb", "a\rb", "a\0b", "x".repeat(8193)]) {
       expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
