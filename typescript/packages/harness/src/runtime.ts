@@ -425,11 +425,11 @@ export async function policyIdentity(name: string, version: string, digest: Uint
   return admitPolicyIdentity({ name, version, digest: Object.freeze([...digest]) });
 }
 
-async function admitPolicyIdentity(identity: MachineIdentityWire): Promise<ComponentIdentity> {
+async function admitPolicyIdentity(identity: MachineIdentityWire, detached = false): Promise<ComponentIdentity> {
   // Detach the caller-owned identity before WASM initialization can yield.
   // Providers may reuse and mutate the object while the shared Rust runtime
   // is being acquired; admission must validate this exact observation.
-  const snapshot = structuredClone(identity);
+  const snapshot = detached ? identity : structuredClone(identity);
   let admitted: MachineIdentityWire;
   try {
     admitted = (await NativeContracts.create()).validate("machine_identity", snapshot);
@@ -2714,8 +2714,15 @@ function policyApprovals(decision: EffectivePolicyDecision, identity: PolicyIden
   if (identity === null) throw new TypeError("approval policy has no pinned identity");
   return [{ prompt: decision.prompt, policy: identity }];
 }
-async function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire | null, ancestors = new Set<object>()): Promise<PolicyIdentity | null> {
+async function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentityWire | null): Promise<PolicyIdentity | null> {
   if (identity === null) return null;
+  // Snapshot the complete composition before the first recursive admission can
+  // yield. This preserves child identities when a provider mutates them while
+  // the parent leaf is being admitted by Rust.
+  return validatePolicyIdentitySnapshot(structuredClone(identity), new Set<object>());
+}
+async function validatePolicyIdentitySnapshot(identity: PolicyIdentity | MachineIdentityWire,
+  ancestors: Set<object>): Promise<PolicyIdentity> {
   if (ancestors.has(identity)) throw new TypeError("policy identity contains a cycle");
   ancestors.add(identity);
   try {
@@ -2724,16 +2731,15 @@ async function validatePolicyIdentity(identity: PolicyIdentity | MachineIdentity
         || identity.composition.length !== 2) throw new TypeError("policy composition is invalid");
       const [parent, child] = identity.composition;
       if (!parent || !child) throw new TypeError("policy composition is incomplete");
-      const checkedParent = await validatePolicyIdentity(parent, ancestors);
-      const checkedChild = await validatePolicyIdentity(child, ancestors);
-      if (checkedParent === null || checkedChild === null) throw new TypeError("policy composition is incomplete");
+      const checkedParent = await validatePolicyIdentitySnapshot(parent, ancestors);
+      const checkedChild = await validatePolicyIdentitySnapshot(child, ancestors);
       return Object.freeze({ composition: Object.freeze([checkedParent, checkedChild] as const) });
     }
     if (Object.keys(identity).sort().join("\0") !== "digest\0name\0version") {
       throw new TypeError("policy identity has unexpected fields");
     }
     if (!Array.isArray(identity.digest)) throw new TypeError("policy implementation digest must be an array");
-    return await admitPolicyIdentity(identity);
+    return await admitPolicyIdentity(identity, true);
   } finally {
     ancestors.delete(identity);
   }

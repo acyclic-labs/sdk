@@ -1632,6 +1632,37 @@ describe("typed agent runtime", () => {
     await expect(executionRuntime.validateExecutionPlacement(placement)).resolves.toBeUndefined();
   });
 
+  test("snapshots nested policy identities before parent admission can yield", async () => {
+    let childCalls = 0;
+    const childPolicy = {
+      identity: () => {
+        const identity = {
+          name: "mutable-child",
+          version: "1",
+          digest: Array.from({ length: 32 }, () => 7),
+        } as unknown as ComponentIdentity & { name: string };
+        queueMicrotask(() => { identity.name = `mutated-child-${++childCalls}`; });
+        return identity;
+      },
+      evaluate: async () => ({ kind: "allow" as const }),
+    };
+    const tool = await defineTool<number, number>({
+      name: "nested-admission-snapshot",
+      revision: "1",
+      description: "nested admission snapshot",
+      inputSchema: { type: "number" },
+      outputSchema: { type: "number" },
+      parseInput: parseNumber,
+      parseOutput: parseNumber,
+    }, (_context, value) => value);
+    const runtime = await Harness.builder(contracts).policy({
+      identity: () => approvalPolicyIdentity,
+      evaluate: async () => ({ kind: "allow" as const }),
+    }).tool(tool).grant("tool:call:nested-admission-snapshot").build();
+    const scoped = await runtime.scoped(ExecutionScope.create().policy(childPolicy));
+    expect(await scoped.call(scoped.tool(tool), 9)).toBe(9);
+  });
+
   test("policy implementation drift during evaluation cannot dispatch a tool", async () => {
     let current = approvalPolicyIdentity;
     let executed = false;
