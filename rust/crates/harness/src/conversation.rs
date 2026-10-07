@@ -20,7 +20,7 @@ pub type ContentFuture<'a, T> = BoxFuture<'a, T>;
 pub type ContentMount = (ContentGrant, Arc<dyn ContentResidencyVerifier>);
 
 /// Maximum normalized UTF-8 path length admitted by the Harness protocol.
-pub const MAX_PATH_BYTES: usize = 4_096;
+pub const MAX_PATH_BYTES: usize = MAX_PORTABLE_COUNT;
 /// Maximum UTF-8 bytes in a protocol label or display name.
 pub const MAX_LABEL_BYTES: usize = crate::COMPONENT_LABEL_MAX_BYTES;
 /// Largest integer that can be represented exactly by a JavaScript number.
@@ -49,20 +49,25 @@ pub(crate) fn is_exact_js_integer(number: &serde_json::Number) -> bool {
 }
 /// Maximum file byte length accepted by the limits validator.
 pub const MAX_LIMIT_FILE_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum rendered byte length implied by the file byte ceiling.
+/// Maximum rendered byte length representable by the numeric wire format.
 pub const MAX_LIMIT_RENDER_BYTES: u64 = MAX_EXACT_JS_INTEGER;
-/// Maximum number of attachments in one message.
-pub const MAX_LIMIT_ATTACHMENTS: usize = 65_536;
-/// Maximum model steps, events, and context messages under the wire contract.
-pub const MAX_LIMIT_MODEL_STEPS: usize = 1_000_000;
-/// Maximum streamed model events per step.
-pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = 1_000_000;
-/// Maximum tool calls per step before the event bound is applied.
-pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = 1_000_000;
-/// Maximum canonical messages selected into one model request.
-pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = 1_000_000;
-/// Maximum number of messages returned by one reducer conversation page.
-pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = 1_024;
+/// Largest count representable by both this platform and the numeric wire format.
+pub const MAX_PORTABLE_COUNT: usize =
+    usize::MAX >> usize::BITS.saturating_sub(f64::MANTISSA_DIGITS);
+/// Representable attachment count; admission selects the actual budget.
+pub const MAX_LIMIT_ATTACHMENTS: usize = MAX_PORTABLE_COUNT;
+/// Representable model step count; admission selects the actual budget.
+pub const MAX_LIMIT_MODEL_STEPS: usize = MAX_PORTABLE_COUNT;
+/// Representable event count; admission selects the actual budget.
+pub const MAX_LIMIT_MODEL_EVENTS_PER_STEP: usize = MAX_PORTABLE_COUNT;
+/// Representable tool call count; admission selects the actual budget.
+pub const MAX_LIMIT_TOOL_CALLS_PER_STEP: usize = MAX_PORTABLE_COUNT;
+/// Representable message count; admission selects the actual budget.
+pub const MAX_LIMIT_CONTEXT_MESSAGES: usize = MAX_PORTABLE_COUNT;
+/// Representable conversation page allowance; the caller chooses its budget.
+pub const MAX_CONVERSATION_PAGE_MESSAGES: usize = u32::MAX as usize;
+/// Default conversation read batch, replaceable by the caller.
+pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 
 /// Admission and rendering bounds. Each value may narrow the protocol ceiling;
 /// provider adapters may impose a still lower physical limit.
@@ -90,39 +95,39 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            file_bytes: 64 * 1024 * 1024,
-            path_bytes: MAX_PATH_BYTES,
-            attachments: MAX_LIMIT_ATTACHMENTS,
-            render_bytes: 128 * 1024,
-            model_steps: 64,
-            model_events_per_step: 4_096,
-            tool_calls_per_step: 64,
-            context_messages: 256,
+            file_bytes: MAX_LIMIT_FILE_BYTES,
+            // Defaults must also fit the 32-bit WASM runtime. Native callers
+            // can explicitly select the wider platform-representable counts.
+            path_bytes: u32::MAX as usize,
+            attachments: u32::MAX as usize,
+            render_bytes: MAX_LIMIT_RENDER_BYTES,
+            model_steps: u32::MAX as usize,
+            model_events_per_step: u32::MAX as usize,
+            tool_calls_per_step: u32::MAX as usize,
+            context_messages: u32::MAX as usize,
         }
     }
 }
 
 impl Limits {
-    /// Prevents zero bounds or configuration that widens the wire protocol.
+    /// Checks each independent budget against its numeric wire representation.
     pub fn validate(&self) -> Result<()> {
         if self.file_bytes == 0
             || self.file_bytes > MAX_LIMIT_FILE_BYTES
             || self.path_bytes == 0
-            || self.path_bytes > MAX_PATH_BYTES
+            || self.path_bytes as u64 > MAX_PATH_BYTES as u64
             || self.attachments == 0
-            || self.attachments > MAX_LIMIT_ATTACHMENTS
+            || self.attachments as u64 > MAX_LIMIT_ATTACHMENTS as u64
             || self.render_bytes == 0
             || self.render_bytes > MAX_LIMIT_RENDER_BYTES
-            || self.render_bytes > self.file_bytes
             || self.model_steps == 0
-            || self.model_steps > MAX_LIMIT_MODEL_STEPS
+            || self.model_steps as u64 > MAX_LIMIT_MODEL_STEPS as u64
             || self.model_events_per_step == 0
-            || self.model_events_per_step > MAX_LIMIT_MODEL_EVENTS_PER_STEP
+            || self.model_events_per_step as u64 > MAX_LIMIT_MODEL_EVENTS_PER_STEP as u64
             || self.tool_calls_per_step == 0
-            || self.tool_calls_per_step > MAX_LIMIT_TOOL_CALLS_PER_STEP
-            || self.tool_calls_per_step > self.model_events_per_step
+            || self.tool_calls_per_step as u64 > MAX_LIMIT_TOOL_CALLS_PER_STEP as u64
             || self.context_messages == 0
-            || self.context_messages > MAX_LIMIT_CONTEXT_MESSAGES
+            || self.context_messages as u64 > MAX_LIMIT_CONTEXT_MESSAGES as u64
         {
             return Err(Error::Invalid("harness limits are invalid".into()));
         }
@@ -620,8 +625,7 @@ impl FileDescriptor {
         let Some((kind, subtype)) = self.media_type.split_once('/') else {
             return Err(Error::Invalid("media type is invalid".into()));
         };
-        if self.media_type.len() > 127
-            || kind.is_empty()
+        if kind.is_empty()
             || subtype.is_empty()
             || self.media_type.chars().any(|character| {
                 !character.is_ascii_alphanumeric()
@@ -791,7 +795,7 @@ impl TaskOutcomeRecord {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Succeeded { result } => result.validate(),
-            Self::Failed { message } if message.is_empty() || message.len() > 4_096 => {
+            Self::Failed { message } if message.is_empty() => {
                 Err(Error::Invalid("task failure description is invalid".into()))
             }
             _ => Ok(()),
@@ -842,14 +846,14 @@ pub struct PrivateDirectoryPage {
 }
 
 /// Maximum number of entries admitted in one private-directory page.
-pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = 4_096;
+pub const MAX_PRIVATE_DIRECTORY_PAGE: usize = u32::MAX as usize;
 
 impl PrivateDirectoryPage {
     /// Rejects malformed, duplicate, or out-of-order names independently of
     /// the concrete Filesystem page implementation.
     pub fn validate(&self) -> Result<()> {
         self.generation.validate()?;
-        if self.entries.len() > MAX_PRIVATE_DIRECTORY_PAGE {
+        if self.entries.len() as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page exceeds protocol limit".into(),
             ));
@@ -1191,7 +1195,7 @@ impl Attachment {
 /// Unlike generic canonical JSON, this preserves the typed serde field order
 /// required by manifest admission across Rust and WASM producers.
 pub fn encode_attachment_manifest(items: &[Attachment]) -> Result<Vec<u8>> {
-    if items.len() > MAX_LIMIT_ATTACHMENTS {
+    if items.len() as u64 > MAX_LIMIT_ATTACHMENTS as u64 {
         return Err(Error::Invalid("attachment count exceeds limit".into()));
     }
     for item in items {
@@ -1229,7 +1233,7 @@ pub fn decode_complete_attachment_manifest(
         ));
     }
     reference.descriptor().verify(bytes)?;
-    let items: Vec<Attachment> = serde_json::from_slice(bytes)
+    let items: Vec<Attachment> = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("attachment manifest is invalid: {error}")))?;
     if encode_attachment_manifest(&items)? != bytes {
         return Err(Error::Invalid(
@@ -1325,27 +1329,18 @@ impl<'de> Deserialize<'de> for ReferencedAttachments {
 }
 
 impl ReferencedAttachments {
-    /// Rejects unbounded inline records and malformed manifest metadata.
+    /// Rejects malformed attachment records and manifest metadata.
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Inline { items } => {
-                if items.len() > 128 {
-                    return Err(Error::Invalid(
-                        "inline attachment count exceeds limit".into(),
-                    ));
-                }
                 for item in items {
                     item.validate()?;
                 }
             }
-            Self::Manifest {
-                manifest,
-                item_count,
-            } => {
+            Self::Manifest { manifest, .. } => {
                 manifest.validate()?;
-                if *item_count as usize > MAX_LIMIT_ATTACHMENTS
-                    || manifest.descriptor().media_type()
-                        != "application/vnd.acyclic.harness.attachments+json"
+                if manifest.descriptor().media_type()
+                    != "application/vnd.acyclic.harness.attachments+json"
                 {
                     return Err(Error::Invalid(
                         "attachment manifest metadata is invalid".into(),
@@ -1558,7 +1553,7 @@ fn validate_label(value: &str, limit: usize) -> Result<()> {
 /// Backslashes, traversal segments, control characters, and oversized paths are rejected.
 pub fn validate_content_path(path: &str) -> Result<()> {
     if path.is_empty()
-        || path.len() > MAX_PATH_BYTES
+        || path.len() as u64 > MAX_PATH_BYTES as u64
         || path.starts_with('/')
         || path.contains('\\')
         || path.chars().any(char::is_control)
@@ -1736,17 +1731,29 @@ mod tests {
 
     #[test]
     fn configured_limits_reject_oversized_references() -> Result<()> {
+        Limits::default().validate_file(&file(AgentId::new(), &"x".repeat(4_097))?)?;
         let file = file(AgentId::new(), "message.txt")?;
         let mut limits = Limits {
             file_bytes: 4,
-            render_bytes: 4,
             ..Limits::default()
         };
+        limits.validate()?;
         assert!(limits.validate_file(&file).is_err());
         limits.file_bytes = 5;
         limits.validate_file(&file)?;
+        limits.model_events_per_step = 1;
+        limits.validate()?;
         limits.attachments = 0;
         assert!(limits.validate().is_err());
+        Limits {
+            attachments: 65_537,
+            model_steps: 1_000_001,
+            model_events_per_step: 1_000_001,
+            tool_calls_per_step: 1_000_001,
+            context_messages: 1_000_001,
+            ..Limits::default()
+        }
+        .validate()?;
         Ok(())
     }
 

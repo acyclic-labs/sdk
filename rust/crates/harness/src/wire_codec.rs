@@ -64,7 +64,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
     let scope = envelope
         .scope
         .ok_or_else(|| Error::Storage("event scope is missing".into()))?;
-    let payload: EventPayload = serde_json::from_slice(&envelope.canonical_payload_json)
+    let payload: EventPayload = crate::contract::json_from_slice(&envelope.canonical_payload_json)
         .map_err(|error| Error::Storage(error.to_string()))?;
     if envelope.event_type != payload.tag() {
         return Err(Error::Storage(
@@ -103,8 +103,8 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
 /// Decodes one canonical event payload and checks its generated discriminator.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
-    let payload: EventPayload =
-        serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
+    let payload: EventPayload = crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(error.to_string()))?;
     if event_type_name != payload.tag() {
         return Err(Error::Storage(
             "event type disagrees with its payload".into(),
@@ -131,7 +131,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     let operation = envelope
         .operation
         .ok_or_else(|| Error::Invalid("command operation is missing".into()))?;
-    let action: Action = serde_json::from_slice(&envelope.canonical_action_json)
+    let action: Action = crate::contract::json_from_slice(&envelope.canonical_action_json)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     if canonical_json_bytes(&action)? != envelope.canonical_action_json {
         return Err(Error::Invalid(

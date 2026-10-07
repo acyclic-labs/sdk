@@ -38,6 +38,19 @@ test("generated skill parser and immutable projection share Rust validation and 
   expect(() => contracts.projectDiscoveredContext({ ...snapshot, skills: [{ ...skill, name: "Invalid" }] }, base, "prepend", DEFAULT_LIMITS)).toThrow();
   expect(() => contracts.parseSkillMetadata(new TextEncoder().encode("---\nname: inspect\ndescription: &x hidden\nmetadata: *x\n---\n"), source)).toThrow();
   expect(() => contracts.parseSkillMetadata(prefix, { ...source, path: ".system/private" })).toThrow();
+  const name = "a".repeat(128);
+  const description = "d".repeat(2048);
+  const payload = "x".repeat(70000);
+  const items = Array(3000).fill("0").join(",");
+  const admitted = contracts.parseSkillMetadata(new TextEncoder().encode(
+    `---\nname: ${name}\ndescription: ${description}\npayload: ${payload}\nitems: [${items}]\nnested: ${"[".repeat(32)}0${"]".repeat(32)}\n---\n`,
+  ), source);
+  expect(admitted.name).toBe(name);
+  expect(admitted.description).toBe(description);
+  expect(admitted.fields.payload).toBe(payload);
+  expect(admitted.fields.items).toHaveLength(3000);
+  expect(() => contracts.projectDiscoveredContext({ instructions: [], skills: [admitted] },
+    base, "prepend", DEFAULT_LIMITS)).not.toThrow();
 });
 
 test("generated context selections and updates use native schemas, placement and bounds", () => {
@@ -161,7 +174,7 @@ test("the actual task provider receives the admitted serialized input", async ()
       calls += 1;
       expect(contracts.decodeModelJson(request.serializedInput)).toEqual({
         model: { provider: "mock", name: "exact", revision: "pinned", options: {} }, messages: [{ role: "user", content: prompt }],
-        tools: [], max_output_tokens: 4_096,
+        tools: [], max_output_tokens: null,
       });
       expect(request.messages).toEqual([{ role: "user", content: prompt }]);
       yield { kind: "completed" as const, metadata: {} };
@@ -208,7 +221,7 @@ test("WASM direct-parent prefixes preserve exact provider bytes across depth thr
         const runtime = Harness.builder(contracts).inheritedModelPrefix({ core, scope, head, files })
           .model(root.model, { async *generate(request) {
             calls++;
-            const expected = prepareModelRequest({ model: root.model, tools, maxOutputTokens: 4096,
+            const expected = prepareModelRequest({ model: root.model, tools,
               messages: [...parentWire.messages, { role: "user", content: prompt }] }, DEFAULT_LIMITS);
             expect(request.serializedInput).toEqual(expected);
             if (child === "primary") primary = request.serializedInput.slice();
@@ -297,7 +310,8 @@ test("inherited dispatch captures fresh pinned local files after builder constru
       : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }]; } };
     const provider = { async *generate(request: import("../src/model.js").ModelRequest & { serializedInput: Uint8Array }) {
       calls++;
-      expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [], maxOutputTokens: 4096,
+      expect(request.maxOutputTokens).toBeUndefined();
+      expect(request.serializedInput).toEqual(prepareModelRequest({ model, tools: [],
         messages: [{ role: "user", content: "parent" }, ...(prefixOnly ? []
           : [{ role: "user" as const, content: { kind: "file" as const, file: fresh, policy: "reference" as const } }])] }, DEFAULT_LIMITS));
       yield { kind: "completed" as const, metadata: {} };

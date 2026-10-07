@@ -833,6 +833,8 @@ mod tests {
         fn replay<'a>(
             &'a self,
             _: crate::OperationId,
+            _: u64,
+            _: u32,
         ) -> BoxFuture<'a, Result<Vec<crate::executor::ExecutionRecord>>> {
             async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
         }

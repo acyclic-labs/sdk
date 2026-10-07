@@ -17,20 +17,20 @@ use uuid::Uuid;
 
 /// Default maximum bytes read when resolving a file for the provider-neutral
 /// projection helper.  Adapters may narrow this bound for their provider.
-pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = 1_024 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
 /// Default maximum bytes read for an attachment manifest in the projection
 /// helper.  The owning provider may choose a lower bound.
-pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = 1_024 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
 /// Default maximum number of attachments resolved from one selected message.
-pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = 256;
+pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = u32::MAX as usize;
 /// Default maximum number of selected messages in one provider request.
-pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = 256;
+pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = u32::MAX as usize;
 /// Default maximum bytes rendered into one provider request.
-pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = 128 * 1_024;
+pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = crate::conversation::MAX_LIMIT_RENDER_BYTES;
 /// Protocol ceiling for attachments materialized into one model projection.
-pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = 1_022;
-/// Maximum JSON artifact bytes accepted by the projection parser.
-pub const MAX_PROJECTION_JSON_BYTES: u64 = 16 * 1_024 * 1_024;
+pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
+/// Largest JSON byte allowance representable by the JavaScript contract.
+pub const MAX_PROJECTION_JSON_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
 
 #[derive(Debug, Deserialize)]
 struct ProjectedToolInvocation {
@@ -212,15 +212,15 @@ pub async fn select_model_context<R: AttachmentListResolver + ?Sized>(
         maximum_messages,
         maximum_attachments,
         maximum_render_bytes,
-        MAX_PROJECTION_PROJECTED_ATTACHMENTS,
+        maximum_attachments,
     )
     .await
 }
 
 /// Selects a bounded ordered subset with an explicit provider attachment
-/// ceiling.  The public native convenience keeps the protocol ceiling of
-/// 1,022; remote adapters may choose a lower bound without reimplementing the
-/// projection reducer.
+/// allowance. The native convenience uses the caller-selected attachment
+/// allowance; adapters may explicitly select a narrower projection without
+/// reimplementing the projection reducer.
 #[allow(
     clippy::too_many_lines,
     reason = "projection enforces one bounded ordered selection"
@@ -237,7 +237,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     selection.validate(conversation)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
-        || maximum_projected_attachments > MAX_PROJECTION_PROJECTED_ATTACHMENTS
+        || maximum_projected_attachments as u64 > MAX_PROJECTION_PROJECTED_ATTACHMENTS as u64
         || selection.message_ids.len() > maximum_messages
     {
         return Err(Error::Invalid(
@@ -505,11 +505,6 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
     file: &FileRef,
     maximum_bytes: u64,
 ) -> Result<T> {
-    if file.descriptor().byte_length() > MAX_PROJECTION_JSON_BYTES {
-        return Err(Error::Invalid(
-            "tool artifact exceeds JSON byte limit".into(),
-        ));
-    }
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
     {
@@ -518,18 +513,13 @@ async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Si
         ));
     }
     let bytes = resolver.read(file).await?;
-    if bytes.len() as u64 > MAX_PROJECTION_JSON_BYTES {
-        return Err(Error::Invalid(
-            "resolved tool artifact exceeds JSON byte limit".into(),
-        ));
-    }
     if bytes.len() as u64 > maximum_bytes {
         return Err(Error::Invalid(
             "resolved tool artifact exceeds rendering limit".into(),
         ));
     }
     file.descriptor().verify(&bytes)?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes)
+    let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     validate_model_json_numbers(&value)?;
     serde_json::from_value(value)
@@ -773,23 +763,17 @@ mod tests {
             FileDescriptor::from_bytes(b"{}", "application/json")?,
             "tool.json",
         )?;
-        let oversized_len = usize::try_from(MAX_PROJECTION_JSON_BYTES + 1)
-            .map_err(|_| Error::Invalid("test artifact size exceeds platform capacity".into()))?;
+        let oversized_len = 1_025;
         let resolver = ArtifactResolver {
             bytes: vec![0; oversized_len],
         };
-        let result = read_json_artifact::<serde_json::Value, _>(
-            &resolver,
-            &reference,
-            MAX_PROJECTION_JSON_BYTES,
-        )
-        .await;
+        let result = read_json_artifact::<serde_json::Value, _>(&resolver, &reference, 1_024).await;
         let Err(error) = result else {
             return Err(Error::Invalid(
                 "oversized resolved bytes were accepted".into(),
             ));
         };
-        assert!(error.to_string().contains("JSON byte limit"));
+        assert!(error.to_string().contains("rendering limit"));
         Ok(())
     }
 }

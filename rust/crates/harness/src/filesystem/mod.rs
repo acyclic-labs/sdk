@@ -56,6 +56,19 @@ mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 mod memory;
 pub use memory::{LocalHarness, MemoryHarnessStorage};
+mod task_commands;
+mod task_runtime;
+pub use task_commands::{
+    FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
+    MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
+    TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
+    TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskObserveCommand, TimerTaskCommand,
+    ToolTaskCommand,
+};
+pub use task_runtime::{
+    FilesystemTaskExecution, FilesystemTaskRuntime, TaskCommandHost, TaskCommandProgress,
+    TaskWakeCursor, TaskWakePage, TaskWorkerAttempt, TaskWorkerOutcome, TaskWorkerTick,
+};
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
 pub struct FilesystemSchedulerPayloadStore<A, O> {
@@ -94,8 +107,8 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
 
 impl<A, O> SchedulerPayloadStore for FilesystemSchedulerPayloadStore<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn stage<'a>(
         &'a self,
@@ -158,8 +171,8 @@ impl<A, O> FilesystemContentVerifier<A, O> {
 
 impl<A, O> ContentResidencyVerifier for FilesystemContentVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn read_private_prefix<'a>(
         &'a self,
@@ -198,7 +211,7 @@ where
         Box::pin(async move {
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 4_096)
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -309,8 +322,8 @@ where
 
 impl<A, O> FilesystemContentVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     /// Lazily lists another agent's private directory under this reader's
     /// signed, owner-delegated subtree grant. Pagination pins one generation.
@@ -413,8 +426,8 @@ struct FilesystemForkPublicationGuard<A, O> {
 
 impl<A, O> ForkPublicationGuard for FilesystemForkPublicationGuard<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn release<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -455,8 +468,8 @@ impl<A, O> FilesystemForkVerifier<A, O> {
 
 impl<A, O> ForkSeedVerifier for FilesystemForkVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn provider(&self) -> &ProviderRef {
         &self.host.provider
@@ -625,8 +638,8 @@ where
                         .host
                         .read_pinned(file, self.maximum_inherited_bytes)
                         .await?;
-                    let inherited: InheritedConversationPrefix = serde_json::from_slice(&bytes)
-                        .map_err(|_| {
+                    let inherited: InheritedConversationPrefix =
+                        crate::contract::json_from_slice(&bytes).map_err(|_| {
                             Error::Invalid("inherited conversation is malformed".into())
                         })?;
                     if inherited.canonical_bytes()?.as_slice() != bytes.as_ref()
@@ -709,7 +722,7 @@ where
                     .host
                     .generation(&child_workspace, &private_head)
                     .await?;
-                let changes = initial.diff_to(&head, 65_536).await.map_err(map_error)?;
+                let changes = initial.diff_to(&head, u32::MAX).await.map_err(map_error)?;
                 let expected = seed
                     .inherited_context
                     .iter()
@@ -740,7 +753,7 @@ where
                     }
                 }
                 let mut observed = BTreeSet::new();
-                for change in changes.changed_paths(65_536).await.map_err(map_error)? {
+                for change in changes.changed_paths(u32::MAX).await.map_err(map_error)? {
                     let components = change
                         .path
                         .components()
@@ -909,8 +922,8 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
 
 impl<A, O> ProjectMergeVerifier for FilesystemProjectMergeVerifier<A, O>
 where
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn verify<'a>(&'a self, receipt: &'a ProjectMergeReceipt) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -1989,7 +2002,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &workspace,
                     Some(&generation),
                     &format!("/{metadata_path}"),
-                    64 * 1024,
+                    receipt_bytes.len() as u64,
                 )
                 .await
                 .map_err(|_| Error::Conflict("upload metadata index is missing".into()))?;
@@ -2189,12 +2202,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &workspace,
                 Some(generation),
                 &format!("/{}", content_metadata_path(provisional.path())),
-                64 * 1024,
+                u64::MAX,
             )
             .await;
         let (descriptor, display_name) = match metadata {
             Ok(metadata) => {
-                let staged: FileRef = serde_json::from_slice(&metadata)
+                let staged: FileRef = crate::contract::json_from_slice(&metadata)
                     .map_err(|_| Error::Storage("private file metadata is corrupt".into()))?;
                 if staged.volume() != volume
                     || staged.path() != path

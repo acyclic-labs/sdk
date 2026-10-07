@@ -118,8 +118,8 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
   readonly #maximumBytes: number;
 
   constructor(options: IndexedDbClientStoreOptions) {
-    this.#maximumCommands = positiveBound(options.maximumCommands ?? 1_024, "maximumCommands");
-    this.#maximumBytes = positiveBound(options.maximumBytes ?? 16 * 1024 * 1024, "maximumBytes");
+    this.#maximumCommands = positiveBound(options.maximumCommands ?? Number.MAX_SAFE_INTEGER, "maximumCommands");
+    this.#maximumBytes = positiveBound(options.maximumBytes ?? Number.MAX_SAFE_INTEGER, "maximumBytes");
     const factory = options.indexedDB ?? globalThis.indexedDB;
     if (factory === undefined) throw new Error("IndexedDB is not available");
     if (options.databaseName.trim() === "") throw new TypeError("databaseName is required");

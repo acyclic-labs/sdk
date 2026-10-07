@@ -43,7 +43,7 @@ import {
   type VolumeRef,
   type ConversationMessageId,
 } from "../src/index.js";
-import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
+import { HARNESS_CHILD_PAGE_DEFAULT } from "../src/child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
 
 const contracts = await NativeContracts.create();
@@ -52,7 +52,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
   const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
   const child = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
   const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
-  expect(contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM, page)).toEqual(page);
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_024, page)).toEqual(page);
   let revisionReads = 0;
   const changingRevisionPage = {
     get revision() {
@@ -66,7 +66,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
   expect(revisionReads).toBe(1);
   expect(() => contracts.validateTaskChildrenPage(parent, 6n, null, 1, page)).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, "a", 1, page)).toThrow();
-  expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, HARNESS_CHILD_PAGE_MAXIMUM + 1, page)).toThrow();
+  expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_000_001, page)).toEqual(page);
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 0, page)).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
     ...page, entries: [{ slot: "a", taskId: child }, { slot: "b", taskId: child }],
@@ -75,7 +75,7 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
     ...page, nextAfter: "b",
   })).toThrow();
   expect(() => contracts.validateTaskChildrenPage(parent, 7n, null, 1, {
-    ...page, entries: [{ slot: "x".repeat(HARNESS_CHILD_SLOT_MAX_BYTES + 1), taskId: child }],
+    ...page, entries: [{ slot: "\u007f", taskId: child }],
   })).toThrow();
 
   let observedMaximum = 0;
@@ -105,9 +105,8 @@ test("Rust owns child page bounds, slot ordering, and the generated facade defau
 
 test("private-directory pages keep their Rust-owned bounds distinct from child pages", () => {
   expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBe(256);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(4096);
+  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).toBe(0xffff_ffff);
   expect(HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT).toBeLessThanOrEqual(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM);
-  expect(HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM).not.toBe(HARNESS_CHILD_PAGE_MAXIMUM);
 });
 
 test("Rust and TypeScript share strict v2 task admission and execution placement fixtures", async () => {
@@ -194,6 +193,10 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(projected.canonical).toEqual(batch);
   expect(projected.policy).toEqual({ kind: "collect-all" });
   expect(projected.members).toHaveLength(2);
+  expect(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 65_536))
+    .not.toBe(contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0));
+  expect(() => contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0x1_0000_0000))
+    .toThrow("batch index is out of range");
   expect(projected.members.map(member => member.operation_id)).toEqual([
     contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 0),
     contracts.batchMemberOperationId(batch.group_id, batch.batch_id, 1),
@@ -1802,9 +1805,10 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
-    const provider = { async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+    const budgets: (number | undefined)[] = [];
+    const provider = { async *generate(request: { model: unknown; maxOutputTokens?: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
-    const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
+    const runtime = Harness.builder(contracts).model(rootIdentity, provider).modelOutputTokens(8_192).build();
     rootIdentity.options.mode = "mutated";
     await runtime.run("root");
     expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
@@ -1813,6 +1817,11 @@ describe("typed agent runtime", () => {
     childIdentity.options.mode = "mutated";
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
+    expect(budgets).toEqual([8_192, 8_192]);
+    await Harness.builder(contracts).model(testModel, provider).build().run("without a budget");
+    expect(budgets).toEqual([8_192, 8_192, undefined]);
+    expect(() => Harness.builder(contracts).modelOutputTokens(0)).toThrow("positive u32");
+    expect(() => Harness.builder(contracts).modelOutputTokens(2 ** 32)).toThrow("positive u32");
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
   });
 
@@ -1834,6 +1843,14 @@ describe("typed agent runtime", () => {
     expect(observed).toHaveLength(2);
     expect(observed[0]?.role).toBe("assistant");
     expect(observed[1]?.content).toEqual([{ kind: "text", text: "follow-up" }]);
+    await runtime.runSelectedContext({
+      selection: { conversationRevision: 257n, messageIds: Array.from({ length: 257 }, (_, index) =>
+        fixtureMessageId(`${(index + 1).toString(16).padStart(8, "0")}-0000-0000-0000-000000000000`)) },
+      messages: Array.from({ length: 257 }, (_, index) => ({ role: "user" as const,
+        content: index === 0 ? "x".repeat(128 * 1024 + 1) : "retained history" })),
+    });
+    expect(observed).toHaveLength(257);
+    expect(observed[0]?.content).toHaveLength(128 * 1024 + 1);
     await expect(runtime.run({ prompt: "conflicting prompt", selectedContext: {
       selection: { conversationRevision: 1n, messageIds: [fixtureMessageId("02020202-0202-0202-0202-020202020202")] },
       messages: [{ role: "user", content: "recorded prompt" }],
@@ -1858,7 +1875,7 @@ describe("typed agent runtime", () => {
 
   test("stream event limits stop an unbounded provider before further dispatch", async () => {
     let produced = 0;
-    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2, tool_calls_per_step: 1 }).model(testModel, {
+    const runtime = Harness.builder(contracts).limits({ model_events_per_step: 2 }).model(testModel, {
       async *generate() {
         while (true) { produced++; yield { kind: "content" as const, delta: "." }; }
       },
@@ -1877,7 +1894,7 @@ describe("typed agent runtime", () => {
         return reads === 1 ? "ok" : "x".repeat(3);
       },
     };
-    const runtime = Harness.builder(contracts).limits({ file_bytes: 2, render_bytes: 2 }).model(testModel, {
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 2 }).model(testModel, {
       async *generate() {
         yield event;
         yield { kind: "completed" as const, metadata: {} };

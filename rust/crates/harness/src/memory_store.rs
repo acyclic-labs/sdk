@@ -273,7 +273,7 @@ impl MemoryStore {
         after: Option<&str>,
         maximum: usize,
     ) -> Result<MemoryStorePage> {
-        if maximum == 0 || maximum > MAX_PRIVATE_DIRECTORY_PAGE {
+        if maximum == 0 || maximum as u64 > MAX_PRIVATE_DIRECTORY_PAGE as u64 {
             return Err(Error::Invalid(
                 "private directory page limit is invalid".into(),
             ));

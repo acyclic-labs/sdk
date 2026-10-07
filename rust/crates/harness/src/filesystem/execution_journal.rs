@@ -6,11 +6,17 @@ use crate::contract::next_revision;
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
-        ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeRef,
+        ContentGrant, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
+        VolumeRef,
     },
     core::{AuthorityVerifier, SchemaRegistry, Scope},
-    executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
+    durable_host::TaskJournalOwner,
+    executor::{
+        EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
+        ModelEventAdmission, decode_json, validate_execution_page,
+    },
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
+    model::ModelEvent,
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
     tool::ToolApprovalVerifier,
@@ -21,10 +27,137 @@ use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
+use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
-const MAX_RECORDS: u64 = 1_000_000;
+#[derive(Default)]
+struct ExecutionSummary {
+    tail: u64,
+    retries: BTreeMap<[u8; 32], (u64, [u8; 32])>,
+    // None is a completed dispatch. Its event/call bodies are no longer needed.
+    models: BTreeMap<u32, Option<ModelEventAdmission>>,
+    tools: BTreeMap<(u32, [u8; 32]), bool>,
+}
+
+impl ExecutionSummary {
+    fn require_next(&self, event: &ExecutionEvent) -> Result<()> {
+        let valid = match event {
+            ExecutionEvent::Started { request_digest } => {
+                self.tail == 0 && *request_digest != [0; 32]
+            }
+            ExecutionEvent::ModelStarted {
+                step,
+                request_digest,
+                ..
+            } => self.tail > 0 && *request_digest != [0; 32] && !self.models.contains_key(step),
+            ExecutionEvent::Model { step, .. } => {
+                self.models.get(step).is_some_and(Option::is_some)
+            }
+            ExecutionEvent::ToolStarted { step, call_id, .. } => {
+                self.tail > 0
+                    && !call_id.is_empty()
+                    && !self
+                        .tools
+                        .contains_key(&(*step, *blake3::hash(call_id.as_bytes()).as_bytes()))
+            }
+            ExecutionEvent::ToolCompleted { step, call_id, .. }
+            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
+                self.tools
+                    .get(&(*step, *blake3::hash(call_id.as_bytes()).as_bytes()))
+                    == Some(&false)
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "execution observation lacks its dispatch or reuses a start".into(),
+            ))
+        }
+    }
+
+    fn validate_next(
+        &self,
+        event: &ExecutionEvent,
+        model: Option<&ModelEvent>,
+        limits: Limits,
+    ) -> Result<()> {
+        self.require_next(event)?;
+        if let ExecutionEvent::Model { step, .. } = event {
+            self.models
+                .get(step)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?
+                .validate_next(
+                    model.ok_or_else(|| Error::Storage("model observation is missing".into()))?,
+                    limits,
+                )?;
+        }
+        Ok(())
+    }
+
+    fn accept(
+        &mut self,
+        record: &ExecutionRecord,
+        model: Option<&ModelEvent>,
+        limits: Limits,
+    ) -> Result<()> {
+        let key = *blake3::hash(record.idempotency_key.as_bytes()).as_bytes();
+        if record.sequence != self.tail + 1
+            || record.idempotency_key.is_empty()
+            || self.retries.contains_key(&key)
+        {
+            return Err(Error::Conflict(
+                "execution journal sequence or retry identity is invalid".into(),
+            ));
+        }
+        self.validate_next(&record.event, model, limits)?;
+        let digest = crate::contract::canonical_json_digest(&record.event)?;
+        match &record.event {
+            ExecutionEvent::ModelStarted { step, .. } => {
+                self.models
+                    .insert(*step, Some(ModelEventAdmission::default()));
+            }
+            ExecutionEvent::Model { step, .. } => {
+                let state = self
+                    .models
+                    .get_mut(step)
+                    .ok_or_else(|| Error::Storage("model dispatch is missing".into()))?;
+                let admission = state
+                    .as_mut()
+                    .ok_or_else(|| Error::Conflict("model dispatch is already settled".into()))?;
+                admission.observe(
+                    model.ok_or_else(|| Error::Storage("model observation is missing".into()))?,
+                    limits,
+                )?;
+                if admission.completed() {
+                    *state = None;
+                }
+            }
+            ExecutionEvent::ToolStarted { step, call_id, .. } => {
+                self.tools
+                    .insert((*step, *blake3::hash(call_id.as_bytes()).as_bytes()), false);
+            }
+            ExecutionEvent::ToolCompleted { step, call_id, .. }
+            | ExecutionEvent::ToolFailed { step, call_id, .. } => {
+                self.tools
+                    .insert((*step, *blake3::hash(call_id.as_bytes()).as_bytes()), true);
+            }
+            ExecutionEvent::Started { .. } => {}
+        }
+        self.retries.insert(key, (record.sequence, digest));
+        self.tail = record.sequence;
+        Ok(())
+    }
+
+    fn quiescent(&self) -> bool {
+        self.models.values().all(Option::is_none) && self.tools.values().all(|settled| *settled)
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,6 +165,33 @@ struct Observation {
     operation_id: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
+}
+
+impl Observation {
+    fn encode(
+        operation_id: OperationId,
+        claim_id: &str,
+        event: &ExecutionEvent,
+    ) -> Result<(StreamKey, String, Bytes)> {
+        let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
+        let retry_digest = digest.to_hex().to_string();
+        let bytes = serde_json::to_vec(&Self {
+            operation_id,
+            retry_digest: retry_digest.clone(),
+            event: event.clone(),
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+            return Err(Error::Invalid(
+                "execution journal observation exceeds Stream limit".into(),
+            ));
+        }
+        Ok((
+            StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?,
+            retry_digest,
+            Bytes::from(bytes),
+        ))
+    }
 }
 
 /// Durable, ref-only journal for one exact agent-private volume.
@@ -44,10 +204,174 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     schemas: SchemaRegistry,
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
-    interactions: FilesystemInteractionHost<P, A, O>,
+    interactions: Option<FilesystemInteractionHost<P, A, O>>,
+    owner: Option<(TaskJournalOwner<P>, OperationId)>,
+    verified: tokio::sync::Mutex<ExecutionSummary>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
+    /// Binds one execution to the task's exact lease and coordinator provider.
+    /// Fresh model starts require their matching retained shared-budget claim.
+    pub fn for_task(
+        owner: TaskJournalOwner<P>,
+        operation_id: OperationId,
+        host: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef,
+        verifier: AuthorityVerifier,
+        scope: Scope,
+        maximum_payload_bytes: u64,
+    ) -> Result<Self>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        owner.validate_storage(&verifier, maximum_payload_bytes)?;
+        let mut journal = Self::new(
+            owner.stream(),
+            host,
+            volume,
+            verifier,
+            scope,
+            maximum_payload_bytes,
+        )?;
+        journal.owner = Some((owner, operation_id));
+        Ok(journal)
+    }
+
+    fn require_operation(&self, operation: OperationId) -> Result<()> {
+        if self
+            .owner
+            .as_ref()
+            .is_some_and(|(_, bound)| *bound != operation)
+        {
+            return Err(Error::Unauthorized(
+                "journal belongs to another task execution".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn refresh_summary(
+        &self,
+        operation: OperationId,
+        summary: &mut ExecutionSummary,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let (owner, _) = self.owner.as_ref().ok_or_else(|| {
+            Error::Unsupported("quiescence requires a task-owned execution journal".into())
+        })?;
+        loop {
+            let page = Box::pin(self.replay_verified(
+                operation,
+                summary.tail,
+                EXECUTION_REPLAY_PAGE_RECORDS,
+            ))
+            .await?;
+            if page.is_empty() {
+                return Ok(());
+            }
+            for (record, model) in page {
+                summary.accept(&record, model.as_ref(), owner.input_limits())?;
+            }
+        }
+    }
+
+    /// Releases a passive workflow command only after this task-bound journal
+    /// proves every started model and tool dispatch settled. Publication compares
+    /// the same journal tail and current task lease atomically.
+    pub async fn suspend_workflow_command_if_quiescent(
+        &self,
+        revision: u64,
+        command: OperationId,
+    ) -> Result<()>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        let (owner, operation) = self.owner.as_ref().ok_or_else(|| {
+            Error::Unsupported("quiescence requires a task-owned execution journal".into())
+        })?;
+        let mut summary = self.verified.lock().await;
+        Box::pin(self.refresh_summary(*operation, &mut summary)).await?;
+        if !summary.quiescent() {
+            return Err(Error::Indeterminate(*operation));
+        }
+        owner
+            .suspend_quiescent_execution(*operation, summary.tail, revision, command)
+            .await
+    }
+
+    async fn append_owned(
+        &self,
+        operation_id: OperationId,
+        expected_tail: Option<u64>,
+        claim_id: &str,
+        event: ExecutionEvent,
+    ) -> Result<bool>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        self.require_operation(operation_id)?;
+        if claim_id.is_empty() {
+            return Err(Error::Invalid(
+                "execution journal compare-and-append is invalid".into(),
+            ));
+        }
+        let (owner, _) = self
+            .owner
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("task journal owner required".into()))?;
+        let model = self.verify_event_refs(&event).await?;
+        let limits = owner.input_limits();
+        let (key, retry_digest, bytes) = Observation::encode(operation_id, claim_id, &event)?;
+        let retry_key = *blake3::hash(retry_digest.as_bytes()).as_bytes();
+        let event_digest = crate::contract::canonical_json_digest(&event)?;
+        let mut summary = self.verified.lock().await;
+        // Rebuild once on cold open, then read only the newly committed suffix.
+        // No payload bodies are retained in this rebuildable index.
+        loop {
+            Box::pin(self.refresh_summary(operation_id, &mut summary)).await?;
+            owner.verify_execution(operation_id, &event).await?;
+            if let Some((sequence, previous)) = summary.retries.get(&retry_key) {
+                if *previous != event_digest {
+                    return Err(Error::Conflict(
+                        "execution journal retry identity reused".into(),
+                    ));
+                }
+                return Ok(expected_tail.is_none_or(|tail| tail + 1 == *sequence));
+            }
+            if expected_tail.is_some_and(|tail| tail != summary.tail) {
+                return Ok(false);
+            }
+            summary.validate_next(&event, model.as_ref(), limits)?;
+            if owner
+                .append_execution(operation_id, summary.tail, &key, bytes.clone(), &event)
+                .await?
+            {
+                let sequence = summary.tail + 1;
+                summary.accept(
+                    &ExecutionRecord {
+                        operation_id,
+                        sequence,
+                        idempotency_key: retry_digest,
+                        event,
+                    },
+                    model.as_ref(),
+                    limits,
+                )?;
+                return Ok(true);
+            }
+        }
+    }
+
     /// Binds an exact private volume and authenticated read/write grant.
     pub fn new(
         stream: StreamClient<P>,
@@ -58,9 +382,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum_payload_bytes: u64,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         Self::new_with_schemas(
             stream,
@@ -84,9 +408,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         maximum_payload_bytes: u64,
     ) -> Result<Self>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         if volume.class() != VolumeClass::AgentPrivate
             || volume.provider() != &host.provider
@@ -98,16 +422,24 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
         ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
-        let interactions = FilesystemInteractionHost::new(
-            stream.clone(),
-            Arc::clone(&host),
-            verifier.audience().clone(),
-            verifier.clone(),
-            schemas.clone(),
-            scope.clone(),
-            volume.clone(),
-            maximum_payload_bytes,
-        )?;
+        let interactions = match verifier.audience().kind {
+            crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
+                stream.clone(),
+                Arc::clone(&host),
+                verifier.audience().clone(),
+                verifier.clone(),
+                schemas.clone(),
+                scope.clone(),
+                volume.clone(),
+                maximum_payload_bytes,
+            )?),
+            crate::core::AggregateKind::Task => None,
+            _ => {
+                return Err(Error::Invalid(
+                    "execution journal requires a task or conversation authority".into(),
+                ));
+            }
+        };
         Ok(Self {
             stream,
             host,
@@ -118,7 +450,45 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
             input_verifier: None,
             interactions,
+            owner: None,
+            verified: tokio::sync::Mutex::new(ExecutionSummary::default()),
         })
+    }
+
+    /// Binds approval/question tickets to an existing conversation owner on the
+    /// same Stream and Filesystem providers. This does not grant response rights.
+    /// Task-bound request publication also requires retained interaction:route
+    /// and atomically compares the current task lease with the conversation tail.
+    pub fn with_interaction_owner(
+        mut self,
+        verifier: AuthorityVerifier,
+        schemas: SchemaRegistry,
+        scope: Scope,
+        private_volume: VolumeRef,
+    ) -> Result<Self>
+    where
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        if let Some((owner, _)) = &self.owner {
+            owner.require_interaction_grant()?;
+        } else if self.verifier.audience().kind == crate::core::AggregateKind::Task {
+            return Err(Error::Unauthorized(
+                "task interaction binding requires an admitted journal owner".into(),
+            ));
+        }
+        self.interactions = Some(FilesystemInteractionHost::new(
+            self.stream.clone(),
+            self.host.clone(),
+            verifier.audience().clone(),
+            verifier,
+            schemas,
+            scope,
+            private_volume,
+            self.maximum_payload_bytes,
+        )?);
+        Ok(self)
     }
 
     /// Routes turn-input attachment admission through an explicitly bound provider set.
@@ -128,12 +498,18 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         self
     }
 
+    fn interactions(&self) -> Result<&FilesystemInteractionHost<P, A, O>> {
+        self.interactions.as_ref().ok_or_else(|| {
+            Error::Unsupported("task execution has no conversation interaction owner".into())
+        })
+    }
+
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     where
         P: StreamProvider,
     {
         self.stream
-            .stream(format!("harness/v2/execution/{operation_id}"))
+            .stream(crate::distributed::execution_path(operation_id)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
@@ -149,9 +525,9 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         responder: &Scope,
     ) -> Result<()>
     where
-        P: StreamProvider + Send + Sync,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         self.verifier.verify(responder)?;
         if !responder
@@ -165,11 +541,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 "responder lacks the exact interaction grant".into(),
             ));
         }
-        let Some((ticket, prior)) = self.interactions.read(id).await? else {
+        let Some((ticket, prior)) = self.interactions()?.read(id).await? else {
             return Err(Error::NotFound(format!("interaction {id}")));
         };
         let request = self
-            .interactions
+            .interactions()?
             .read_request(id)
             .await?
             .ok_or_else(|| Error::Storage("admitted interaction has no request".into()))?;
@@ -189,23 +565,23 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     },
                 ) => {
                     let bytes = self
-                        .interactions
+                        .interactions()?
                         .read_decision_detail(id)
                         .await?
                         .ok_or_else(|| {
                             Error::Storage("admitted approval detail is missing".into())
                         })?;
-                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                    let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     original == response
                 }
                 (InteractionOutcome::Answered { .. }, _) => {
                     let bytes = self
-                        .interactions
+                        .interactions()?
                         .read_answer(id)
                         .await?
                         .ok_or_else(|| Error::Storage("admitted answer is missing".into()))?;
-                    let original: InteractionResponse = serde_json::from_slice(&bytes)
+                    let original: InteractionResponse = crate::contract::json_from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     original == response
                 }
@@ -227,7 +603,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             interaction_operation(id, &format!("resolve-{expected_version}"));
         let detail = if matches!(&response, InteractionResponse::Approval { .. }) {
             Some(
-                self.interactions
+                self.interactions()?
                     .stage_answer(id, expected_version, resolution_operation, &response)
                     .await?,
             )
@@ -241,13 +617,13 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             } => InteractionOutcome::Declined,
             other => InteractionOutcome::Answered {
                 answer: Box::new(
-                    self.interactions
+                    self.interactions()?
                         .stage_answer(id, expected_version, resolution_operation, &other)
                         .await?,
                 ),
             },
         };
-        self.interactions
+        self.interactions()?
             .resolve(
                 resolution_operation,
                 responder.clone(),
@@ -262,10 +638,72 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map(|_| ())
     }
 
-    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<()>
+    async fn replay_verified(
+        &self,
+        operation_id: OperationId,
+        after: u64,
+        maximum: u32,
+    ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>>
     where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
+    {
+        self.require_operation(operation_id)?;
+        validate_execution_page(after, maximum)?;
+        let mut result = Vec::new();
+        let mut keys = HashSet::new();
+        let mut entries = match self
+            .path(operation_id)?
+            .read(after, maximum.min(EXECUTION_REPLAY_PAGE_RECORDS))
+            .await
+        {
+            Ok(entries) => entries,
+            Err(StreamError::NotFound) => return Ok(result),
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        while let Some(record) = entries.try_next().await? {
+            if result.len() >= maximum as usize || record.sequence != after + result.len() as u64 {
+                return Err(Error::Storage(
+                    "execution journal sequence or bound is invalid".into(),
+                ));
+            }
+            let observation: Observation = crate::contract::json_from_slice(&record.value)
+                .map_err(|error| {
+                    Error::Storage(format!("execution journal record is invalid: {error}"))
+                })?;
+            if observation.operation_id != operation_id
+                || !keys.insert(observation.retry_digest.clone())
+            {
+                return Err(Error::Storage(
+                    "execution journal identity is invalid".into(),
+                ));
+            }
+            let model = self.verify_event_refs(&observation.event).await?;
+            result.push((
+                ExecutionRecord {
+                    operation_id,
+                    sequence: next_revision(record.sequence)?,
+                    idempotency_key: observation.retry_digest,
+                    event: observation.event,
+                },
+                model,
+            ));
+        }
+        if let Some((owner, _)) = &self.owner {
+            let records = result
+                .iter()
+                .map(|(record, _)| record.clone())
+                .collect::<Vec<_>>();
+            owner.verify_model_history(operation_id, &records).await?;
+        }
+        Ok(result)
+    }
+
+    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<Option<ModelEvent>>
+    where
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let refs: Vec<&FileRef> = match event {
             ExecutionEvent::ModelStarted { request, .. } => vec![request],
@@ -276,6 +714,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             } => vec![result, projection],
             ExecutionEvent::Started { .. } | ExecutionEvent::ToolFailed { .. } => Vec::new(),
         };
+        let mut model = None;
         for reference in refs {
             if reference.volume() != &self.volume {
                 return Err(Error::Unauthorized(
@@ -288,19 +727,26 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 &self.volume,
                 VolumeOperation::Read,
             )?;
-            self.host
+            let bytes = self
+                .host
                 .read_content(reference, &grant, self.maximum_payload_bytes)
                 .await?;
+            if matches!(event, ExecutionEvent::Model { .. }) {
+                if reference.descriptor().media_type() != "application/json" {
+                    return Err(Error::Storage("model observation is not JSON".into()));
+                }
+                model = Some(decode_json(&bytes)?);
+            }
         }
-        Ok(())
+        Ok(model)
     }
 }
 
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn verify<'a>(
         &'a self,
@@ -309,7 +755,7 @@ where
         digest: [u8; 32],
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some((ticket, Some(resolution))) = self.interactions.read(id).await? else {
+            let Some((ticket, Some(resolution))) = self.interactions()?.read(id).await? else {
                 return Err(Error::Unauthorized(
                     "tool installation lacks a resolved approval".into(),
                 ));
@@ -323,13 +769,14 @@ where
                     "approval does not authorize this tool definition".into(),
                 ));
             }
-            let request =
-                self.interactions.read_request(id).await?.ok_or_else(|| {
-                    Error::Storage("approved interaction request is missing".into())
-                })?;
+            let request = self
+                .interactions()?
+                .read_request(id)
+                .await?
+                .ok_or_else(|| Error::Storage("approved interaction request is missing".into()))?;
             if let Some(detail) = &resolution.detail {
                 let bytes = self
-                    .interactions
+                    .interactions()?
                     .read_decision_detail(id)
                     .await?
                     .ok_or_else(|| {
@@ -344,46 +791,23 @@ where
 
 impl<P, A, O> ExecutionJournal for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + Send + Sync,
-    A: AsyncAuthorityStore + Send + Sync + 'static,
-    O: AsyncObjectStore + Send + Sync + 'static,
+    P: StreamProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
 {
     fn replay<'a>(
         &'a self,
         operation_id: OperationId,
+        after: u64,
+        maximum: u32,
     ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
         Box::pin(async move {
-            let mut result = Vec::new();
-            let mut keys = HashSet::new();
-            let mut replay = self.path(operation_id)?.replay(0);
-            while let Some(page) = replay.next_page().await? {
-                for record in page {
-                    if record.sequence >= MAX_RECORDS {
-                        return Err(Error::Storage(
-                            "execution journal sequence or bound is invalid".into(),
-                        ));
-                    }
-                    let observation: Observation =
-                        serde_json::from_slice(&record.value).map_err(|error| {
-                            Error::Storage(format!("execution journal record is invalid: {error}"))
-                        })?;
-                    if observation.operation_id != operation_id
-                        || !keys.insert(observation.retry_digest.clone())
-                    {
-                        return Err(Error::Storage(
-                            "execution journal identity is invalid".into(),
-                        ));
-                    }
-                    self.verify_event_refs(&observation.event).await?;
-                    result.push(ExecutionRecord {
-                        operation_id,
-                        sequence: next_revision(record.sequence)?,
-                        idempotency_key: observation.retry_digest,
-                        event: observation.event,
-                    });
-                }
-            }
-            Ok(result)
+            Ok(self
+                .replay_verified(operation_id, after, maximum)
+                .await?
+                .into_iter()
+                .map(|(record, _)| record)
+                .collect())
         })
     }
 
@@ -394,29 +818,22 @@ where
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if idempotency_key.is_empty() || idempotency_key.len() > 256 {
+            if self.owner.is_some() {
+                return self
+                    .append_owned(operation_id, None, &idempotency_key, event)
+                    .await
+                    .map(|_| ());
+            }
+            if idempotency_key.is_empty() {
                 return Err(Error::Invalid(
                     "execution journal idempotency key is invalid".into(),
                 ));
             }
             self.verify_event_refs(&event).await?;
-            let digest = blake3::hash(format!("{operation_id}:{idempotency_key}").as_bytes());
-            let bytes = serde_json::to_vec(&Observation {
-                operation_id,
-                retry_digest: digest.to_hex().to_string(),
-                event,
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-            if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "execution journal observation exceeds Stream limit".into(),
-                ));
-            }
-            let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let (key, _, bytes) = Observation::encode(operation_id, &idempotency_key, &event)?;
             match self
                 .path(operation_id)?
-                .append_batch(vec![Bytes::from(bytes)], None, Some(key))
+                .append_batch(vec![bytes], None, Some(key))
                 .await
             {
                 Ok(AppendOutcome::Committed(_)) => Ok(()),
@@ -439,30 +856,21 @@ where
         event: ExecutionEvent,
     ) -> BoxFuture<'a, Result<bool>> {
         Box::pin(async move {
-            if claim_id.is_empty() || claim_id.len() > 256 || expected_tail >= MAX_RECORDS {
+            if self.owner.is_some() {
+                return self
+                    .append_owned(operation_id, Some(expected_tail), &claim_id, event)
+                    .await;
+            }
+            if claim_id.is_empty() {
                 return Err(Error::Invalid(
                     "execution journal compare-and-append is invalid".into(),
                 ));
             }
             self.verify_event_refs(&event).await?;
-            let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
-            let retry_digest = digest.to_hex().to_string();
-            let bytes = serde_json::to_vec(&Observation {
-                operation_id,
-                retry_digest: retry_digest.clone(),
-                event: event.clone(),
-            })
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-            if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
-                return Err(Error::Invalid(
-                    "execution journal observation exceeds Stream limit".into(),
-                ));
-            }
-            let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))
-                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let (key, retry_digest, bytes) = Observation::encode(operation_id, &claim_id, &event)?;
             match self
                 .path(operation_id)?
-                .append_batch(vec![Bytes::from(bytes)], Some(expected_tail), Some(key))
+                .append_batch(vec![bytes], Some(expected_tail), Some(key))
                 .await
             {
                 Ok(AppendOutcome::Committed(receipt)) if receipt.start == expected_tail => Ok(true),
@@ -474,7 +882,7 @@ where
                 )),
                 Err(_) => {
                     let records = self
-                        .replay(operation_id)
+                        .replay(operation_id, expected_tail, 1)
                         .await
                         .map_err(|_| Error::Indeterminate(operation_id))?;
                     if records.iter().any(|record| {
@@ -497,6 +905,7 @@ where
         media_type: &'static str,
     ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
+            self.require_operation(operation_id)?;
             if bytes.len() as u64 > self.maximum_payload_bytes {
                 return Err(Error::Invalid(
                     "execution journal payload exceeds limit".into(),
@@ -549,6 +958,9 @@ where
 
     fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if let Some((owner, _)) = &self.owner {
+                owner.validate_input_file(reference)?;
+            }
             if reference.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(Error::Invalid(
                     "turn input file exceeds journal limit".into(),
@@ -621,13 +1033,28 @@ where
                 ));
             }
             historical.messages.truncate(length);
+            let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
+                (
+                    crate::conversation::MAX_PORTABLE_COUNT,
+                    crate::conversation::MAX_PORTABLE_COUNT,
+                    self.maximum_payload_bytes,
+                ),
+                |(owner, _)| {
+                    let limits = owner.input_limits();
+                    (
+                        limits.context_messages,
+                        limits.attachments,
+                        limits.render_bytes,
+                    )
+                },
+            );
             let projected = select_model_context(
                 &historical,
                 committed.clone(),
                 verifier.as_ref(),
-                1_000_000,
-                65_536,
-                self.maximum_payload_bytes,
+                messages,
+                attachments,
+                render_bytes,
             )
             .await?;
             if &projected != selected {
@@ -646,36 +1073,58 @@ where
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             interaction.validate()?;
-            if let Some(original) = self.interactions.read_request(id).await? {
+            if let Some((owner, _)) = &self.owner {
+                owner.require_interaction_grant()?;
+                owner.verify(false).await?;
+            }
+            if let Some(original) = self.interactions()?.read_request(id).await? {
+                if let Some((owner, _)) = &self.owner {
+                    owner.verify(false).await?;
+                }
                 return if original == interaction {
                     Ok(())
                 } else {
                     Err(Error::Conflict("interaction identity reused".into()))
                 };
             }
-            let ticket = self
-                .interactions
-                .stage_request(id, &interaction, None)
-                .await?;
-            match self
-                .interactions
-                .open(
+            // Staging and publication must not inflate this journal future's inline state.
+            let ticket =
+                Box::pin(self.interactions()?.stage_request(id, &interaction, None)).await?;
+            let owner_scope = self.interactions()?.owner_scope();
+            let publication = if let Some((owner, _)) = &self.owner {
+                Box::pin(self.interactions()?.open_owned(
                     interaction_operation(id, "open"),
-                    self.scope.clone(),
+                    owner_scope,
                     ticket,
-                )
+                    owner,
+                ))
                 .await
-            {
+            } else {
+                Box::pin(self.interactions()?.open(
+                    interaction_operation(id, "open"),
+                    owner_scope,
+                    ticket,
+                ))
+                .await
+            };
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(false).await?;
+            }
+            let result = match publication {
                 Ok(_) => Ok(()),
                 Err(Error::Conflict(_)) | Err(Error::Indeterminate(_)) => {
-                    match self.interactions.read_request(id).await? {
+                    match self.interactions()?.read_request(id).await? {
                         Some(original) if original == interaction => Ok(()),
                         Some(_) => Err(Error::Conflict("interaction identity reused".into())),
                         None => Err(Error::Indeterminate(interaction_operation(id, "open"))),
                     }
                 }
                 Err(error) => Err(error),
+            };
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(false).await?;
             }
+            result
         })
     }
 
@@ -684,11 +1133,19 @@ where
         id: InteractionId,
     ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
         Box::pin(async move {
-            Ok(self
-                .interactions
+            if let Some((owner, _)) = &self.owner {
+                owner.require_interaction_grant()?;
+                owner.verify(true).await?;
+            }
+            let outcome = self
+                .interactions()?
                 .read(id)
                 .await?
-                .and_then(|(_, resolution)| resolution.map(|value| value.outcome)))
+                .and_then(|(_, resolution)| resolution.map(|value| value.outcome));
+            if let Some((owner, _)) = &self.owner {
+                owner.verify(true).await?;
+            }
+            Ok(outcome)
         })
     }
 }

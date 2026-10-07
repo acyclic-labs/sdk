@@ -21,6 +21,7 @@ import {
 } from "../generated/proto/protocol/v1/protocol_pb.js";
 import {
   EmbeddedWireTransport,
+  Harness,
   GrpcWireTransport,
   HttpSseWireTransport,
   JsonlWireTransport,
@@ -30,17 +31,17 @@ import {
   type OperationEvent,
   TerminalAdmissionError,
   WireError,
-  Harness,
   type JsonlChannel,
   type HttpFetcher,
 } from "../src/index.js";
 
 const resume = create(ResumeRequestSchema, {});
-const protocol = (await Harness.create({
-  authority: { kind: "task", id: "wire-tests" },
-  issuerId: "wire-tests",
-  issuerKey: new Uint8Array(32).fill(1),
-})).protocolIdentity();
+const protocolHarness = await Harness.create({
+  authority: { kind: "task", id: "wire-contract" },
+  issuerId: "wire-contract", issuerKey: new Uint8Array(32).fill(7),
+});
+const protocol = protocolHarness.protocolIdentity();
+protocolHarness.free();
 const negotiation = create(HandshakeRequestSchema, {
   protocol,
   required: { capabilities: [] },

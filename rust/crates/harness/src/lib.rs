@@ -63,6 +63,9 @@ mod wasm;
 pub mod wire_api;
 mod wire_codec;
 pub use wire_codec::encode_error;
+#[cfg(test)]
+#[path = "../tests/support/stream.rs"]
+mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
