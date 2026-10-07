@@ -9,8 +9,6 @@
 use std::{num::NonZeroU64, path::Path};
 
 use crate::wire;
-use crate::contract::{ACTORS_FILE, SubscriptionStartProto};
-use protify::*;
 use ts_rs::{Config, ExportError, TS};
 
 #[cfg(kani)]
@@ -69,62 +67,6 @@ pub enum DomainError {
     InvalidBinding,
 }
 
-impl Default for DomainError {
-    fn default() -> Self { Self::MissingMessage }
-}
-
-fn parse_subscription_state(value: i32) -> Result<SubscriptionState, DomainError> {
-    match value {
-        0 => Ok(SubscriptionState::Unspecified),
-        1 => Ok(SubscriptionState::Active),
-        2 => Ok(SubscriptionState::Paused),
-        other => Err(DomainError::UnknownSubscriptionState(other)),
-    }
-}
-
-fn encode_subscription_state(value: SubscriptionState) -> i32 {
-    value as i32
-}
-
-fn parse_actor_state(value: i32) -> Result<ActorState, DomainError> {
-    match value {
-        0 => Ok(ActorState::Unspecified),
-        1 => Ok(ActorState::Active),
-        2 => Ok(ActorState::Hibernated),
-        3 => Ok(ActorState::Paused),
-        other => Err(DomainError::UnknownActorState(other)),
-    }
-}
-
-fn encode_actor_state(value: ActorState) -> i32 {
-    value as i32
-}
-
-fn parse_error_code(value: i32) -> Result<ErrorCode, DomainError> {
-    match value {
-        0 => Ok(ErrorCode::Unspecified),
-        1 => Ok(ErrorCode::InvalidArgument),
-        2 => Ok(ErrorCode::CapabilityDenied),
-        3 => Ok(ErrorCode::CapabilityExpired),
-        4 => Ok(ErrorCode::ActorNotFound),
-        5 => Ok(ErrorCode::SubscriptionNotFound),
-        6 => Ok(ErrorCode::IdempotencyMismatch),
-        7 => Ok(ErrorCode::Conflict),
-        8 => Ok(ErrorCode::AdmissionDenied),
-        9 => Ok(ErrorCode::CheckpointFailed),
-        10 => Ok(ErrorCode::DependencyUnavailable),
-        other => Err(DomainError::UnknownErrorCode(other)),
-    }
-}
-
-fn encode_error_code(value: ErrorCode) -> i32 {
-    value as i32
-}
-
-impl From<std::convert::Infallible> for DomainError {
-    fn from(value: std::convert::Infallible) -> Self { match value {} }
-}
-
 impl ActorId {
     /// Constructs an Actor identity using the existing `is_empty` contract rule.
     pub fn new(value: String) -> Result<Self, DomainError> {
@@ -152,12 +94,6 @@ impl TryFrom<String> for ActorId {
 impl From<&ActorId> for String {
     fn from(value: &ActorId) -> Self {
         value.0.clone()
-    }
-}
-
-impl From<ActorId> for String {
-    fn from(value: ActorId) -> Self {
-        value.0
     }
 }
 
@@ -198,17 +134,23 @@ impl PositiveU64 {
 
     /// Returns the exact unsigned wire value.
     #[must_use]
-    pub fn get(self) -> u64 { self.0.get() }
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
 }
 
 impl TryFrom<u64> for PositiveU64 {
     type Error = DomainError;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> { Self::new(value) }
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
 }
 
 impl From<PositiveU64> for u64 {
-    fn from(value: PositiveU64) -> Self { value.get() }
+    fn from(value: PositiveU64) -> Self {
+        value.get()
+    }
 }
 
 /// The shared digest predicate used by the existing Actor validators.
@@ -230,37 +172,17 @@ impl From<&CodeSha256> for Vec<u8> {
     }
 }
 
-impl TryFrom<protify::Bytes> for CodeSha256 {
-    type Error = DomainError;
-
-    fn try_from(value: protify::Bytes) -> Result<Self, Self::Error> {
-        Self::new(value.to_vec())
-    }
-}
-
-impl From<CodeSha256> for protify::Bytes {
-    fn from(value: CodeSha256) -> Self {
-        value.0.to_vec().into()
-    }
-}
-
 /// The canonical wire header. The wire owner will attach `ts-rs` metadata to
 /// this type; keeping an alias here avoids a second Rust header model.
 pub type Header = wire::Header;
 
 /// Resource binding admitted by the canonical create/update validators.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct Binding {
-    #[proto(tag = 1)]
-
     name: String,
-    #[proto(tag = 2)]
     capability: String,
-    #[proto(tag = 3)]
     resource: String,
 }
 
@@ -327,18 +249,12 @@ impl From<Binding> for wire::Binding {
 }
 
 /// Positive limits admitted by the canonical create/update validators.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
-    #[proto(tag = 1, uint64)]
-
     handler_timeout_millis: PositiveU64,
-    #[proto(tag = 2, uint64)]
     memory_bytes: PositiveU64,
-    #[proto(tag = 3, uint64)]
     checkpoint_bytes: PositiveU64,
 }
 
@@ -405,7 +321,9 @@ impl From<ActorLimits> for wire::ActorLimits {
 /// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
-#[ts(type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }")]
+#[ts(
+    type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }"
+)]
 pub enum SubscriptionStart {
     /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
@@ -473,20 +391,13 @@ impl From<SubscriptionStart> for wire::SubscriptionStart {
 }
 
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
-    #[proto(tag = 1)]
-
     subscription_id: String,
-    #[proto(tag = 2)]
     stream_path: String,
-    #[proto(tag = 3, message(proxied, required))]
     start: SubscriptionStart,
-    #[proto(tag = 4)]
     placement_anchor: bool,
 }
 
@@ -527,9 +438,7 @@ impl SubscriptionSpec {
             || !matches!(
                 start,
                 SubscriptionStart::Cursor { .. }
-                    | SubscriptionStart::CurrentHead {
-                        current_head: true
-                    }
+                    | SubscriptionStart::CurrentHead { current_head: true }
             )
         {
             return Err(DomainError::InvalidSubscription);
@@ -604,82 +513,113 @@ impl From<SubscriptionSpec> for wire::SubscriptionSpec {
 
 /// Known subscription states. Unknown protobuf integers are rejected rather
 /// than normalized to `Unspecified`.
-#[proto_enum]
-#[proto(file = ACTORS_FILE)]
-#[derive(TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
 #[ts(type = "0 | 1 | 2")]
 pub enum SubscriptionState {
     /// No subscription state was specified by the service.
-    Unspecified = 0,
+    Unspecified,
     /// The subscription is active.
-    Active = 1,
+    Active,
     /// The subscription is paused.
-    Paused = 2,
+    Paused,
 }
 
+impl TryFrom<i32> for SubscriptionState {
+    type Error = DomainError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unspecified),
+            1 => Ok(Self::Active),
+            2 => Ok(Self::Paused),
+            other => Err(DomainError::UnknownSubscriptionState(other)),
+        }
+    }
+}
+
+impl From<SubscriptionState> for i32 {
+    fn from(value: SubscriptionState) -> Self {
+        match value {
+            SubscriptionState::Unspecified => 0,
+            SubscriptionState::Active => 1,
+            SubscriptionState::Paused => 2,
+        }
+    }
+}
 
 /// Known Actor states. Unknown protobuf integers remain observable errors.
-#[proto_enum]
-#[proto(file = ACTORS_FILE)]
-#[derive(TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorState.ts")]
 #[ts(type = "0 | 1 | 2 | 3")]
 pub enum ActorState {
     /// No Actor state was specified by the service.
-    Unspecified = 0,
+    Unspecified,
     /// The Actor is active.
-    Active = 1,
+    Active,
     /// The Actor is hibernated.
-    Hibernated = 2,
+    Hibernated,
     /// The Actor is paused.
-    Paused = 3,
+    Paused,
 }
 
 /// Published service error codes. Unknown numeric values stay visible through
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
-#[proto_enum]
-#[proto(file = ACTORS_FILE)]
-#[derive(TS)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
 #[ts(type = "0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10")]
 pub enum ErrorCode {
     /// No service error code was specified.
-    Unspecified = 0,
+    Unspecified,
     /// The request was invalid.
-    InvalidArgument = 1,
+    InvalidArgument,
     /// The requested capability was denied.
-    CapabilityDenied = 2,
+    CapabilityDenied,
     /// The requested capability expired.
-    CapabilityExpired = 3,
+    CapabilityExpired,
     /// The Actor could not be found.
-    ActorNotFound = 4,
+    ActorNotFound,
     /// The subscription could not be found.
-    SubscriptionNotFound = 5,
+    SubscriptionNotFound,
     /// The idempotency key did not match the original request.
-    IdempotencyMismatch = 6,
+    IdempotencyMismatch,
     /// The request conflicted with current state.
-    Conflict = 7,
+    Conflict,
     /// Admission was denied.
-    AdmissionDenied = 8,
+    AdmissionDenied,
     /// Checkpoint creation failed.
-    CheckpointFailed = 9,
+    CheckpointFailed,
     /// A required dependency was unavailable.
-    DependencyUnavailable = 10,
+    DependencyUnavailable,
 }
 
+impl TryFrom<i32> for ErrorCode {
+    type Error = DomainError;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unspecified),
+            1 => Ok(Self::InvalidArgument),
+            2 => Ok(Self::CapabilityDenied),
+            3 => Ok(Self::CapabilityExpired),
+            4 => Ok(Self::ActorNotFound),
+            5 => Ok(Self::SubscriptionNotFound),
+            6 => Ok(Self::IdempotencyMismatch),
+            7 => Ok(Self::Conflict),
+            8 => Ok(Self::AdmissionDenied),
+            9 => Ok(Self::CheckpointFailed),
+            10 => Ok(Self::DependencyUnavailable),
+            other => Err(DomainError::UnknownErrorCode(other)),
+        }
+    }
+}
 
 /// A service error with a typed known code and lossless message.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ServiceError {
-    #[proto(tag = 1, enum_(ErrorCode), from_proto = parse_error_code, into_proto = encode_error_code)]
-
     code: ErrorCode,
-    #[proto(tag = 2)]
     message: String,
 }
 
@@ -708,7 +648,7 @@ impl TryFrom<wire::Error> for ServiceError {
 
     fn try_from(value: wire::Error) -> Result<Self, Self::Error> {
         Ok(Self {
-            code: parse_error_code(value.code)?,
+            code: value.code.try_into()?,
             message: value.message,
         })
     }
@@ -723,73 +663,121 @@ impl From<ServiceError> for wire::Error {
     }
 }
 
+impl TryFrom<i32> for ActorState {
+    type Error = DomainError;
 
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Unspecified),
+            1 => Ok(Self::Active),
+            2 => Ok(Self::Hibernated),
+            3 => Ok(Self::Paused),
+            other => Err(DomainError::UnknownActorState(other)),
+        }
+    }
+}
+
+impl From<ActorState> for i32 {
+    fn from(value: ActorState) -> Self {
+        match value {
+            ActorState::Unspecified => 0,
+            ActorState::Active => 1,
+            ActorState::Hibernated => 2,
+            ActorState::Paused => 3,
+        }
+    }
+}
+
+impl From<ErrorCode> for i32 {
+    fn from(value: ErrorCode) -> Self {
+        match value {
+            ErrorCode::Unspecified => 0,
+            ErrorCode::InvalidArgument => 1,
+            ErrorCode::CapabilityDenied => 2,
+            ErrorCode::CapabilityExpired => 3,
+            ErrorCode::ActorNotFound => 4,
+            ErrorCode::SubscriptionNotFound => 5,
+            ErrorCode::IdempotencyMismatch => 6,
+            ErrorCode::Conflict => 7,
+            ErrorCode::AdmissionDenied => 8,
+            ErrorCode::CheckpointFailed => 9,
+            ErrorCode::DependencyUnavailable => 10,
+        }
+    }
+}
 
 /// Lossless semantic view of a subscription observation.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct SubscriptionObservation {
-    #[proto(tag = 1)]
-
     subscription_id: String,
-    #[proto(tag = 2)]
     stream_path: String,
-    #[proto(tag = 3, enum_(SubscriptionState), from_proto = parse_subscription_state, into_proto = encode_subscription_state)]
     state: SubscriptionState,
     #[ts(type = "bigint")]
-    #[proto(tag = 4)]
     delivered_cursor: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 5)]
     completed_cursor: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 6)]
     recoverable_cursor: u64,
-    #[proto(tag = 7)]
     placement_anchor: bool,
-    #[proto(tag = 8)]
     retry_count: u32,
-    #[proto(tag = 9)]
     failure_code: String,
     #[ts(type = "bigint | undefined")]
-    #[proto(tag = 10)]
     failed_cursor: Option<u64>,
 }
 
 impl SubscriptionObservation {
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the stream path.
     #[must_use]
-    pub fn stream_path(&self) -> &str { &self.stream_path }
+    pub fn stream_path(&self) -> &str {
+        &self.stream_path
+    }
     /// Returns the typed subscription state.
     #[must_use]
-    pub fn state(&self) -> SubscriptionState { self.state }
+    pub fn state(&self) -> SubscriptionState {
+        self.state
+    }
     /// Returns the delivered cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn delivered_cursor(&self) -> u64 { self.delivered_cursor }
+    pub fn delivered_cursor(&self) -> u64 {
+        self.delivered_cursor
+    }
     /// Returns the completed cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn completed_cursor(&self) -> u64 { self.completed_cursor }
+    pub fn completed_cursor(&self) -> u64 {
+        self.completed_cursor
+    }
     /// Returns the recoverable cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn recoverable_cursor(&self) -> u64 { self.recoverable_cursor }
+    pub fn recoverable_cursor(&self) -> u64 {
+        self.recoverable_cursor
+    }
     /// Returns whether this subscription is the placement anchor.
     #[must_use]
-    pub fn placement_anchor(&self) -> bool { self.placement_anchor }
+    pub fn placement_anchor(&self) -> bool {
+        self.placement_anchor
+    }
     /// Returns the number of recorded retries.
     #[must_use]
-    pub fn retry_count(&self) -> u32 { self.retry_count }
+    pub fn retry_count(&self) -> u32 {
+        self.retry_count
+    }
     /// Returns the lossless failure code spelling.
     #[must_use]
-    pub fn failure_code(&self) -> &str { &self.failure_code }
+    pub fn failure_code(&self) -> &str {
+        &self.failure_code
+    }
     /// Returns the optional failed cursor.
     #[must_use]
-    pub fn failed_cursor(&self) -> Option<u64> { self.failed_cursor }
+    pub fn failed_cursor(&self) -> Option<u64> {
+        self.failed_cursor
+    }
 }
 
 impl TryFrom<wire::SubscriptionObservation> for SubscriptionObservation {
@@ -799,7 +787,7 @@ impl TryFrom<wire::SubscriptionObservation> for SubscriptionObservation {
         Ok(Self {
             subscription_id: value.subscription_id,
             stream_path: value.stream_path,
-            state: parse_actor_state(value.state)?,
+            state: value.state.try_into()?,
             delivered_cursor: value.delivered_cursor,
             completed_cursor: value.completed_cursor,
             recoverable_cursor: value.recoverable_cursor,
@@ -829,59 +817,64 @@ impl From<SubscriptionObservation> for wire::SubscriptionObservation {
 }
 
 /// Lossless semantic view of a server Actor observation.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ActorObservation {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2, bytes)]
     code_sha256: CodeSha256,
-    #[proto(tag = 3)]
     home_region: String,
-    #[proto(tag = 4, enum_(ActorState), from_proto = parse_actor_state, into_proto = encode_actor_state)]
     state: ActorState,
-    #[proto(tag = 5, repeated(message(proxied)))]
     subscriptions: Vec<SubscriptionObservation>,
     #[ts(type = "bigint | undefined")]
-    #[proto(tag = 6)]
     checkpoint_unix_millis: Option<u64>,
     #[ts(type = "bigint")]
-    #[proto(tag = 7)]
     checkpoint_epoch: u64,
     #[ts(type = "bigint")]
-    #[proto(tag = 8)]
     configuration_revision: u64,
 }
 
 impl ActorObservation {
     /// Returns the validated Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the validated code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns the home region spelling.
     #[must_use]
-    pub fn home_region(&self) -> &str { &self.home_region }
+    pub fn home_region(&self) -> &str {
+        &self.home_region
+    }
     /// Returns the typed Actor state.
     #[must_use]
-    pub fn state(&self) -> ActorState { self.state }
+    pub fn state(&self) -> ActorState {
+        self.state
+    }
     /// Returns the observed subscriptions in wire order.
     #[must_use]
-    pub fn subscriptions(&self) -> &[SubscriptionObservation] { &self.subscriptions }
+    pub fn subscriptions(&self) -> &[SubscriptionObservation] {
+        &self.subscriptions
+    }
     /// Returns the optional checkpoint timestamp in Unix milliseconds.
     #[must_use]
-    pub fn checkpoint_unix_millis(&self) -> Option<u64> { self.checkpoint_unix_millis }
+    pub fn checkpoint_unix_millis(&self) -> Option<u64> {
+        self.checkpoint_unix_millis
+    }
     /// Returns the checkpoint epoch.
     #[must_use]
-    pub fn checkpoint_epoch(&self) -> u64 { self.checkpoint_epoch }
+    pub fn checkpoint_epoch(&self) -> u64 {
+        self.checkpoint_epoch
+    }
     /// Returns the configuration revision.
     #[must_use]
-    pub fn configuration_revision(&self) -> u64 { self.configuration_revision }
+    pub fn configuration_revision(&self) -> u64 {
+        self.configuration_revision
+    }
 }
 
 impl TryFrom<wire::ActorObservation> for ActorObservation {
@@ -892,7 +885,7 @@ impl TryFrom<wire::ActorObservation> for ActorObservation {
             actor_id: value.actor_id.try_into()?,
             code_sha256: value.code_sha256.to_vec().try_into()?,
             home_region: value.home_region,
-            state: parse_actor_state(value.state)?,
+            state: value.state.try_into()?,
             subscriptions: value
                 .subscriptions
                 .into_iter()
@@ -928,14 +921,11 @@ fn actor_response(
 
 macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
-	        #[proto_message(proxied, fallible = DomainError)]
-	        #[proto(file = ACTORS_FILE)]
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
         #[ts(rename_all = "camelCase")]
         #[doc = "Typed response preserving the optional server Actor observation."]
         pub struct $name {
-            #[proto(tag = 1, message(proxied))]
             actor: Option<ActorObservation>,
         }
 
@@ -976,24 +966,15 @@ actor_response_type!(ResumeSubscriptionResponse, ResumeSubscriptionResponse);
 actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 
 /// Create request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct CreateActorRequest {
-    #[proto(tag = 1, bytes)]
-
     code_sha256: CodeSha256,
-    #[proto(tag = 2)]
     home_region: String,
-    #[proto(tag = 3, repeated(message(proxied)))]
     bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied, required))]
     limits: ActorLimits,
-    #[proto(tag = 5, repeated(message(proxied)))]
     subscriptions: Vec<SubscriptionSpec>,
-    #[proto(tag = 6)]
     idempotency_key: String,
 }
 
@@ -1019,22 +1000,34 @@ impl CreateActorRequest {
 
     /// Returns the code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns the home region.
     #[must_use]
-    pub fn home_region(&self) -> &str { &self.home_region }
+    pub fn home_region(&self) -> &str {
+        &self.home_region
+    }
     /// Returns bindings in their request order.
     #[must_use]
-    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    pub fn bindings(&self) -> &[Binding] {
+        &self.bindings
+    }
     /// Returns the validated resource limits.
     #[must_use]
-    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    pub fn limits(&self) -> &ActorLimits {
+        &self.limits
+    }
     /// Returns subscriptions in their request order.
     #[must_use]
-    pub fn subscriptions(&self) -> &[SubscriptionSpec] { &self.subscriptions }
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] {
+        &self.subscriptions
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
@@ -1075,25 +1068,16 @@ impl From<CreateActorRequest> for wire::CreateActorRequest {
 }
 
 /// Update request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct UpdateActorRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2, bytes)]
     code_sha256: CodeSha256,
-    #[proto(tag = 3, repeated(message(proxied)))]
     bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied, required))]
     limits: ActorLimits,
     #[ts(type = "bigint")]
-    #[proto(tag = 5)]
     expected_configuration_revision: u64,
-    #[proto(tag = 6)]
     idempotency_key: String,
 }
 
@@ -1119,16 +1103,24 @@ impl UpdateActorRequest {
 
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns bindings in their request order.
     #[must_use]
-    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    pub fn bindings(&self) -> &[Binding] {
+        &self.bindings
+    }
     /// Returns the validated resource limits.
     #[must_use]
-    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    pub fn limits(&self) -> &ActorLimits {
+        &self.limits
+    }
     /// Returns the expected compare-and-replace revision.
     #[must_use]
     pub fn expected_configuration_revision(&self) -> u64 {
@@ -1136,7 +1128,9 @@ impl UpdateActorRequest {
     }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::UpdateActorRequest> for UpdateActorRequest {
@@ -1174,24 +1168,24 @@ impl From<UpdateActorRequest> for wire::UpdateActorRequest {
 
 /// Inspect currently has no additional wire validator; only the semantic
 /// Actor identity rule is applied by this conversion.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct InspectActorRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
 }
 
 impl InspectActorRequest {
     /// Creates an inspect request for a validated Actor identity.
     #[must_use]
-    pub fn new(actor_id: ActorId) -> Self { Self { actor_id } }
+    pub fn new(actor_id: ActorId) -> Self {
+        Self { actor_id }
+    }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
 }
 
 impl TryFrom<wire::InspectActorRequest> for InspectActorRequest {
@@ -1213,18 +1207,12 @@ impl From<InspectActorRequest> for wire::InspectActorRequest {
 }
 
 /// Add subscription request after the canonical admission validator has run.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct AddSubscriptionRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2, message(proxied, required))]
     subscription: SubscriptionSpec,
-    #[proto(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1244,13 +1232,19 @@ impl AddSubscriptionRequest {
 
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the validated subscription.
     #[must_use]
-    pub fn subscription(&self) -> &SubscriptionSpec { &self.subscription }
+    pub fn subscription(&self) -> &SubscriptionSpec {
+        &self.subscription
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::AddSubscriptionRequest> for AddSubscriptionRequest {
@@ -1280,18 +1274,12 @@ impl From<AddSubscriptionRequest> for wire::AddSubscriptionRequest {
 
 /// Removal has no canonical validator yet, so subscription and idempotency
 /// strings remain unbranded and are carried exactly as received.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct RemoveSubscriptionRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2)]
     subscription_id: String,
-    #[proto(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1307,13 +1295,19 @@ impl RemoveSubscriptionRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::RemoveSubscriptionRequest> for RemoveSubscriptionRequest {
@@ -1339,18 +1333,12 @@ impl From<RemoveSubscriptionRequest> for wire::RemoveSubscriptionRequest {
 }
 
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct ResumeSubscriptionRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2)]
     subscription_id: String,
-    #[proto(tag = 3)]
     idempotency_key: String,
 }
 
@@ -1366,13 +1354,19 @@ impl ResumeSubscriptionRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::ResumeSubscriptionRequest> for ResumeSubscriptionRequest {
@@ -1399,16 +1393,11 @@ impl From<ResumeSubscriptionRequest> for wire::ResumeSubscriptionRequest {
 
 /// Checkpoint has no canonical validator yet; only the Actor identity rule is
 /// applied and the idempotency key remains an ordinary string.
-#[proto_message(proxied, fallible = DomainError)]
-#[proto(file = ACTORS_FILE)]
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
 #[ts(rename_all = "camelCase")]
 pub struct CheckpointActorRequest {
-    #[proto(tag = 1, string)]
-
     actor_id: ActorId,
-    #[proto(tag = 2)]
     idempotency_key: String,
 }
 
@@ -1423,10 +1412,14 @@ impl CheckpointActorRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::CheckpointActorRequest> for CheckpointActorRequest {
@@ -1484,19 +1477,29 @@ impl InvokeActorRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the invocation method.
     #[must_use]
-    pub fn method(&self) -> &str { &self.method }
+    pub fn method(&self) -> &str {
+        &self.method
+    }
     /// Returns the invocation URL.
     #[must_use]
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
     /// Returns the invocation body bytes.
     #[must_use]
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
     #[must_use]
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }
 
 impl TryFrom<wire::InvokeActorRequest> for InvokeActorRequest {
@@ -1540,22 +1543,30 @@ pub struct InvokeActorResponse {
 impl InvokeActorResponse {
     /// Returns the HTTP-like status code.
     #[must_use]
-    pub fn status(&self) -> u32 { self.status }
+    pub fn status(&self) -> u32 {
+        self.status
+    }
     /// Returns the response body bytes.
     #[must_use]
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
     #[must_use]
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }
 
-impl From<wire::InvokeActorResponse> for InvokeActorResponse {
-    fn from(value: wire::InvokeActorResponse) -> Self {
-        Self {
+impl TryFrom<wire::InvokeActorResponse> for InvokeActorResponse {
+    type Error = DomainError;
+
+    fn try_from(value: wire::InvokeActorResponse) -> Result<Self, Self::Error> {
+        Ok(Self {
             status: value.status,
             body: value.body.to_vec(),
             headers: value.headers,
-        }
+        })
     }
 }
 
@@ -1864,7 +1875,9 @@ mod tests {
             SubscriptionSpec::new(
                 "events".into(),
                 "agents/a/events".into(),
-                SubscriptionStart::CurrentHead { current_head: false },
+                SubscriptionStart::CurrentHead {
+                    current_head: false
+                },
                 false,
             ),
             Err(DomainError::InvalidSubscription)

@@ -108,8 +108,7 @@ pub fn process_oneof_proc_macro(mut item: ItemEnum, macro_attrs: TokenStream2) -
 			proxy_ident: &item.ident,
 			proto_ident: &proto_enum.ident,
 			kind: ItemKind::Oneof,
-			container_attrs: ContainerAttrs::Oneof(&oneof_attrs),
-			fallible_error: oneof_attrs.fallible_error.as_ref(),
+			container_attrs: ContainerAttrs::Oneof(&oneof_attrs),			fallible_error: oneof_attrs.fallible_error.as_ref(),
 			fields: &fields_data,
 		}
 		.generate_proto_conversions();
@@ -167,5 +166,3 @@ pub fn process_oneof_proc_macro(mut item: ItemEnum, macro_attrs: TokenStream2) -
 	  #(#errors)*
 	}
 }
-
-

@@ -1,6 +1,5 @@
 //! Build the Actors descriptor and transport directly from the Rust contract.
 
-/// Build-time marker used by fallible Protify contract conversions.
 #[derive(Debug)]
 pub struct ContractError;
 

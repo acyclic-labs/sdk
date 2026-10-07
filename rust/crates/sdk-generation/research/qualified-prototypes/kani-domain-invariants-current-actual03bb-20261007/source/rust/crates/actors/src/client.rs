@@ -42,12 +42,6 @@ pub enum Error {
     Cancelled,
 }
 
-impl From<std::convert::Infallible> for Error {
-    fn from(value: std::convert::Infallible) -> Self {
-        match value {}
-    }
-}
-
 /// Alias used by connection helpers.
 pub type ConnectError = Error;
 

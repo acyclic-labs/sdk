@@ -5,6 +5,9 @@ pub struct OneofInfo {
 	pub path: Path,
 	pub tags: Vec<ParsedNum>,
 	pub default: bool,
+	/// Keep the generated oneof optional, but reject absent ingress for the
+	/// semantic field with the enclosing fallible error.
+	pub required: bool,
 }
 
 pub fn tags_to_str(tags: &[ParsedNum]) -> String {
@@ -26,12 +29,14 @@ impl OneofInfo {
 		let mut oneof_path = ItemPathEntry::default();
 		let mut tags: Vec<ParsedNum> = Vec::new();
 		let mut default = false;
+		let mut required = false;
 
 		meta.parse_nested_meta(|meta| {
 			let ident_str = meta.ident_str()?;
 
 			match ident_str.as_str() {
 				"default" => default = true,
+				"required" => required = true,
 				"proxied" => oneof_path = ItemPathEntry::Proxied,
 				"tags" => {
 					tags = meta
@@ -62,6 +67,7 @@ impl OneofInfo {
 			path: oneof_path,
 			tags,
 			default,
+			required,
 		})
 	}
 }

@@ -17,7 +17,6 @@ mod generated {
 
 #[doc = "Actors protobuf package schema handle."]
 pub use generated::ACTORS_PACKAGE;
-pub(crate) use generated::ACTORS_FILE;
 
 /// Renders the canonical Actors protobuf input for the maintained prost/tonic
 /// build. The rendered file is an intermediate artifact; these Rust
@@ -30,20 +29,13 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 
 #[allow(unused_imports)]
 pub use generated::{
-    ActorLimits, ActorLimitsProto, ActorObservation, ActorObservationProto, ActorState,
-    AddSubscriptionRequest, AddSubscriptionRequestProto, AddSubscriptionResponse,
-    AddSubscriptionResponseProto, Binding, BindingProto, CheckpointActorRequest,
-    CheckpointActorRequestProto, CheckpointActorResponse, CheckpointActorResponseProto,
-    CreateActorRequest, CreateActorRequestProto, CreateActorResponse, CreateActorResponseProto,
-    Error, ErrorCode, ErrorProto, Header, HeaderProto, InspectActorRequest,
-    InspectActorRequestProto, InspectActorResponse, InspectActorResponseProto, InvokeActorRequest,
-    InvokeActorRequestProto, InvokeActorResponse, InvokeActorResponseProto,
-    RemoveSubscriptionRequest, RemoveSubscriptionRequestProto, RemoveSubscriptionResponse,
-    RemoveSubscriptionResponseProto, ResumeSubscriptionRequest, ResumeSubscriptionRequestProto,
-    ResumeSubscriptionResponse, ResumeSubscriptionResponseProto, SubscriptionObservation,
-    SubscriptionObservationProto, SubscriptionSpec, SubscriptionSpecProto, SubscriptionStart,
-    SubscriptionStartProto, SubscriptionState, UpdateActorRequest, UpdateActorRequestProto,
-    UpdateActorResponse, UpdateActorResponseProto, subscription_start,
+    ActorLimits, ActorObservation, ActorState, AddSubscriptionRequest, AddSubscriptionResponse,
+    Binding, CheckpointActorRequest, CheckpointActorResponse, CreateActorRequest,
+    CreateActorResponse, Error, ErrorCode, Header, InspectActorRequest, InspectActorResponse,
+    InvokeActorRequest, InvokeActorResponse, RemoveSubscriptionRequest, RemoveSubscriptionResponse,
+    ResumeSubscriptionRequest, ResumeSubscriptionResponse, SubscriptionObservation,
+    SubscriptionSpec, SubscriptionStart, SubscriptionState, UpdateActorRequest,
+    UpdateActorResponse, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.
@@ -164,9 +156,9 @@ mod fallible_producer_tests {
     #[derive(Debug, Clone, PartialEq, Eq)]
     #[proto_message(proxied, fallible = IngressError)]
     pub struct Envelope {
-        #[proto(message(proxied), tag = 3)]
+        #[proto(message(proxied), tag = 1)]
         child: Option<Child>,
-        #[proto(repeated(message(proxied)), tag = 4)]
+        #[proto(repeated(message(proxied)), tag = 2)]
         children: Vec<Child>,
         #[proto(oneof(proxied, tags(1, 2)))]
         selector: Option<Selector>,
@@ -194,12 +186,8 @@ mod fallible_producer_tests {
     #[test]
     fn fallible_nested_and_presence_conversions_are_recursive() {
         let authored = Envelope {
-            child: Some(Child {
-                value: String::from("one"),
-            }),
-            children: vec![Child {
-                value: String::from("two"),
-            }],
+            child: Some(Child { value: String::from("one") }),
+            children: vec![Child { value: String::from("two") }],
             selector: Some(Selector::Cursor(0)),
         };
         let wire: EnvelopeProto = authored.clone().into();

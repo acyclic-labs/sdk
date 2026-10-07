@@ -13,7 +13,11 @@ impl ProtoField {
 	/// Generates a fallible conversion for a field whose semantic type is a
 	/// proxied message/oneof. Collections and optional presence are mapped
 	/// element-by-element so malformed nested wire values never panic.
-	pub fn fallible_from_proto(&self, base_ident: &TokenStream2) -> TokenStream2 {
+	pub fn fallible_from_proto(
+		&self,
+		base_ident: &TokenStream2,
+		error: &syn::Path,
+	) -> TokenStream2 {
 		let span = base_ident.span();
 		match self {
 			Self::Repeated(_) => quote_spanned! {span=>
@@ -22,8 +26,14 @@ impl ProtoField {
 			Self::Optional(_) => quote_spanned! {span=>
 				#base_ident.map(::core::convert::TryInto::try_into).transpose()?
 			},
+			Self::Oneof(OneofInfo { required: true, .. }) => quote_spanned! {span=>
+				#base_ident.ok_or_else(|| <#error>::default())?.try_into()?
+			},
 			Self::Oneof(_) => quote_spanned! {span=>
 				#base_ident.map(::core::convert::TryInto::try_into).transpose()?
+			},
+			Self::Single(ProtoType::Message(MessageInfo { required: true, .. })) => quote_spanned! {span=>
+				#base_ident.ok_or_else(|| <#error>::default())?.try_into()?
 			},
 			Self::Single(_) | Self::Map(_) => quote_spanned! {span=>
 				::core::convert::TryInto::try_into(#base_ident)?
@@ -208,8 +218,8 @@ impl ProtoField {
 		let span = base_ident.span();
 
 		match self {
-			Self::Oneof(OneofInfo { default, .. }) => {
-				if *default {
+			Self::Oneof(OneofInfo { default, required, .. }) => {
+				if *default || *required {
 					quote_spanned! {span=> Some(#base_ident.into()) }
 				} else {
 					quote_spanned! {span=> #base_ident.map(|v| v.into()) }
@@ -233,14 +243,14 @@ impl ProtoField {
 			}
 			// If a message is with `default`, then it would be processed here
 			Self::Single(inner) => {
-				if let ProtoType::Message(MessageInfo { boxed, default, .. }) = inner {
+				if let ProtoType::Message(MessageInfo { boxed, default, required, .. }) = inner {
 					let conversion = if *boxed {
 						quote_spanned! {span=> Box::new((*#base_ident).into()) }
 					} else {
 						quote_spanned! {span=> #base_ident.into() }
 					};
 
-					if *default {
+					if *default || *required {
 						quote_spanned! {span=> Some(#conversion) }
 					} else {
 						conversion

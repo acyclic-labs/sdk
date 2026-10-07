@@ -5,8 +5,9 @@
 //! visibility or creating a second validation rule.
 
 use super::{
-    ActorLimits, ActorState, CodeSha256, DomainError, ErrorCode, PositiveU64, SubscriptionStart,
-    SubscriptionState, valid_code_sha256, wire,
+    ActorLimits, ActorObservation, ActorState, CodeSha256, CreateActorResponse, DomainError,
+    ErrorCode, PositiveU64, SubscriptionObservation, SubscriptionStart, SubscriptionState,
+    UpdateActorRequest, UpdateActorResponse, valid_code_sha256, wire,
 };
 
 #[kani::proof]
@@ -141,6 +142,195 @@ fn subscription_start_valid_wire_round_trip_preserves_oneof_identity() {
         SubscriptionStart::try_from(current_head_wire.clone()).expect("true current head is valid");
     let current_head_round_trip: wire::SubscriptionStart = parsed_current_head.into();
     assert_eq!(current_head_round_trip, current_head_wire);
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn subscription_observation_try_from_preserves_u64_and_failed_cursor_presence() {
+    let delivered_cursor: u64 = kani::any();
+    let completed_cursor: u64 = kani::any();
+    let recoverable_cursor: u64 = kani::any();
+    let failed_cursor_value: u64 = kani::any();
+    let failed_cursor_present: bool = kani::any();
+    let failed_cursor = if failed_cursor_present {
+        Some(failed_cursor_value)
+    } else {
+        None
+    };
+    let wire_value = wire::SubscriptionObservation {
+        subscription_id: "subscription".to_owned(),
+        stream_path: "stream".to_owned(),
+        state: 1,
+        delivered_cursor,
+        completed_cursor,
+        recoverable_cursor,
+        placement_anchor: true,
+        retry_count: 2,
+        failure_code: "none".to_owned(),
+        failed_cursor,
+    };
+
+    let parsed = SubscriptionObservation::try_from(wire_value.clone())
+        .expect("known subscription state is accepted");
+    assert_eq!(parsed.delivered_cursor(), delivered_cursor);
+    assert_eq!(parsed.completed_cursor(), completed_cursor);
+    assert_eq!(parsed.recoverable_cursor(), recoverable_cursor);
+    assert_eq!(parsed.failed_cursor(), failed_cursor);
+    let round_trip: wire::SubscriptionObservation = parsed.into();
+    assert_eq!(round_trip, wire_value);
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn actor_observation_try_from_preserves_u64_presence_and_fixed_bytes() {
+    let digest: [u8; 32] = kani::any();
+    let checkpoint_unix_millis_value: u64 = kani::any();
+    let checkpoint_present: bool = kani::any();
+    let checkpoint_unix_millis = if checkpoint_present {
+        Some(checkpoint_unix_millis_value)
+    } else {
+        None
+    };
+    let checkpoint_epoch: u64 = kani::any();
+    let configuration_revision: u64 = kani::any();
+    let wire_value = wire::ActorObservation {
+        actor_id: "actor".to_owned(),
+        code_sha256: digest.to_vec().into(),
+        home_region: "region".to_owned(),
+        state: 1,
+        subscriptions: vec![],
+        checkpoint_unix_millis,
+        checkpoint_epoch,
+        configuration_revision,
+    };
+
+    match ActorObservation::try_from(wire_value.clone()) {
+        Ok(parsed) => {
+            assert_ne!(digest, [0; 32]);
+            assert_eq!(parsed.code_sha256().as_bytes(), &digest);
+            assert_eq!(parsed.checkpoint_unix_millis(), checkpoint_unix_millis);
+            assert_eq!(parsed.checkpoint_epoch(), checkpoint_epoch);
+            assert_eq!(parsed.configuration_revision(), configuration_revision);
+            let round_trip: wire::ActorObservation = parsed.into();
+            assert_eq!(round_trip, wire_value);
+        }
+        Err(DomainError::InvalidCodeSha256) => assert_eq!(digest, [0; 32]),
+        Err(_) => assert!(false),
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn actor_response_try_from_preserves_optional_actor_presence() {
+    let empty_create = wire::CreateActorResponse { actor: None };
+    let parsed_empty_create = CreateActorResponse::try_from(empty_create.clone())
+        .expect("an absent create response actor is valid");
+    assert!(parsed_empty_create.actor().is_none());
+    let empty_create_round_trip: wire::CreateActorResponse = parsed_empty_create.into();
+    assert_eq!(empty_create_round_trip, empty_create);
+
+    let actor = wire::ActorObservation {
+        actor_id: "actor".to_owned(),
+        code_sha256: vec![1; 32].into(),
+        home_region: "region".to_owned(),
+        state: 1,
+        subscriptions: vec![],
+        checkpoint_unix_millis: None,
+        checkpoint_epoch: u64::MAX,
+        configuration_revision: u64::MAX,
+    };
+    let create_with_actor = wire::CreateActorResponse {
+        actor: Some(actor.clone()),
+    };
+    let parsed_create = CreateActorResponse::try_from(create_with_actor.clone())
+        .expect("a valid create response actor is accepted");
+    assert!(parsed_create.actor().is_some());
+    let create_round_trip: wire::CreateActorResponse = parsed_create.into();
+    assert_eq!(create_round_trip, create_with_actor);
+
+    let update_with_actor = wire::UpdateActorResponse { actor: Some(actor) };
+    let parsed_update = UpdateActorResponse::try_from(update_with_actor.clone())
+        .expect("a valid update response actor is accepted");
+    assert!(parsed_update.actor().is_some());
+    let update_round_trip: wire::UpdateActorResponse = parsed_update.into();
+    assert_eq!(update_round_trip, update_with_actor);
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn update_request_try_from_preserves_expected_revision() {
+    let expected_configuration_revision: u64 = kani::any();
+    let wire_value = wire::UpdateActorRequest {
+        actor_id: "actor".to_owned(),
+        code_sha256: vec![1; 32].into(),
+        bindings: vec![wire::Binding {
+            name: "binding".to_owned(),
+            capability: "capability".to_owned(),
+            resource: "resource".to_owned(),
+        }],
+        limits: Some(wire::ActorLimits {
+            handler_timeout_millis: 1,
+            memory_bytes: 2,
+            checkpoint_bytes: 3,
+        }),
+        expected_configuration_revision,
+        idempotency_key: "idempotency".to_owned(),
+    };
+
+    let parsed = UpdateActorRequest::try_from(wire_value.clone())
+        .expect("the fixed valid update request passes canonical validation");
+    assert_eq!(
+        parsed.expected_configuration_revision(),
+        expected_configuration_revision
+    );
+    let round_trip: wire::UpdateActorRequest = parsed.into();
+    assert_eq!(round_trip, wire_value);
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn subscription_observation_try_from_rejects_unknown_state() {
+    let raw_state: i32 = kani::any();
+    let wire_value = wire::SubscriptionObservation {
+        subscription_id: "subscription".to_owned(),
+        stream_path: "stream".to_owned(),
+        state: raw_state,
+        delivered_cursor: 0,
+        completed_cursor: 0,
+        recoverable_cursor: 0,
+        placement_anchor: false,
+        retry_count: 0,
+        failure_code: "none".to_owned(),
+        failed_cursor: None,
+    };
+
+    match SubscriptionObservation::try_from(wire_value) {
+        Ok(_) => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2),
+        Err(DomainError::UnknownSubscriptionState(found)) => assert_eq!(found, raw_state),
+        Err(_) => assert!(false),
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(2)]
+fn actor_observation_try_from_rejects_unknown_state() {
+    let raw_state: i32 = kani::any();
+    let wire_value = wire::ActorObservation {
+        actor_id: "actor".to_owned(),
+        code_sha256: vec![1; 32].into(),
+        home_region: "region".to_owned(),
+        state: raw_state,
+        subscriptions: vec![],
+        checkpoint_unix_millis: None,
+        checkpoint_epoch: 0,
+        configuration_revision: 0,
+    };
+
+    match ActorObservation::try_from(wire_value) {
+        Ok(_) => assert!(raw_state == 0 || raw_state == 1 || raw_state == 2 || raw_state == 3),
+        Err(DomainError::UnknownActorState(found)) => assert_eq!(found, raw_state),
+        Err(_) => assert!(false),
+    }
 }
 
 #[kani::proof]

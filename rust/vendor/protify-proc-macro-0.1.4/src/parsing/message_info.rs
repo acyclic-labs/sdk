@@ -5,6 +5,9 @@ pub struct MessageInfo {
 	pub path: Path,
 	pub boxed: bool,
 	pub default: bool,
+	/// Keep the generated wire field optional, but reject absent ingress for
+	/// the semantic field with the enclosing fallible error.
+	pub required: bool,
 }
 
 impl MessageInfo {
@@ -18,6 +21,7 @@ impl MessageInfo {
 		let mut item_path = ItemPathEntry::default();
 		let mut boxed = false;
 		let mut default = false;
+		let mut required = false;
 
 		// Checking first in case we just get `message` without the parentheses
 		if meta.is_list() {
@@ -29,6 +33,7 @@ impl MessageInfo {
 						}
 						"boxed" => boxed = true,
 						"default" => default = true,
+						"required" => required = true,
 						_ => item_path = ItemPathEntry::Path(meta.path),
 					};
 				} else {
@@ -80,6 +85,7 @@ impl MessageInfo {
 			path,
 			boxed,
 			default,
+			required,
 		})
 	}
 }

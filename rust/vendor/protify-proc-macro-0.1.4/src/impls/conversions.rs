@@ -95,7 +95,7 @@ impl ProtoConversions<'_> {
 				} else {
 					field_data
 						.proto_field
-						.fallible_from_proto(&quote_spanned! {span=> value.#ident})
+						.fallible_from_proto(&quote_spanned! {span=> value.#ident}, error)
 				};
 				Some(quote_spanned! {span=> #ident: #conversion })
 			}
@@ -114,7 +114,7 @@ impl ProtoConversions<'_> {
 						let conversion = process_custom_expression(expr, &quote_spanned! {span=> value });
 						quote_spanned! {span=> (#conversion)? }
 					} else {
-						data.proto_field.fallible_from_proto(&quote_spanned! {span=> value })
+						data.proto_field.fallible_from_proto(&quote_spanned! {span=> value }, error)
 					};
 					Some(quote_spanned! {span=> #proto_ident::#ident(value) => ::core::result::Result::Ok(#proxy_ident::#ident(#conversion)) })
 				}
@@ -144,10 +144,7 @@ fn create_from_proto_impl(&self) -> TokenStream2 {
 			proxy_ident,
 			proto_ident,
 			kind,
-			container_attrs,
-			fields,
-			..
-		} = self;
+			container_attrs,			fields,			..		} = self;
 
 		let custom_from_proto = container_attrs.custom_from_proto_expr();
 
@@ -236,10 +233,7 @@ fn create_from_proto_impl(&self) -> TokenStream2 {
 			proxy_ident,
 			proto_ident,
 			kind,
-			container_attrs,
-			fields,
-			..
-		} = self;
+			container_attrs,			fields,			..		} = self;
 
 		let custom_into_proto = container_attrs.custom_into_proto_expr();
 
@@ -347,11 +341,4 @@ impl ItemKind {
 		matches!(self, Self::Oneof)
 	}
 }
-
-
-
-
-
-
-
 

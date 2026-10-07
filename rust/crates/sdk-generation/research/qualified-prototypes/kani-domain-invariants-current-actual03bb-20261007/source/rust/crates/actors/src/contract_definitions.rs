@@ -43,7 +43,6 @@ define_proto_file!(
 // private module allows those generated siblings; item-level `deny` attributes
 // keep authored contract items and their fields checked.
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// A named capability binding made available to an actor.
 pub struct Binding {
@@ -59,7 +58,6 @@ pub struct Binding {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Resource and execution limits associated with an actor.
 pub struct ActorLimits {
@@ -80,7 +78,7 @@ pub mod subscription_start {
 
     #[deny(missing_docs)]
     #[proto_oneof(proxied, fallible = crate::ContractError)]
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Copy)]
     /// Position from which a subscription starts.
     pub enum Start {
         #[proto(tag = 1)]
@@ -99,7 +97,6 @@ pub mod subscription_start {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Starting position used when creating a subscription.
 pub struct SubscriptionStart {
@@ -109,7 +106,6 @@ pub struct SubscriptionStart {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Configuration for one actor subscription.
 pub struct SubscriptionSpec {
@@ -140,7 +136,6 @@ pub enum SubscriptionState {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Observed state and delivery cursors for a subscription.
 pub struct SubscriptionObservation {
@@ -191,7 +186,6 @@ pub enum ActorState {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Observed actor state and subscription data.
 pub struct ActorObservation {
@@ -222,7 +216,6 @@ pub struct ActorObservation {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Request to create an actor.
 pub struct CreateActorRequest {
@@ -235,7 +228,7 @@ pub struct CreateActorRequest {
     #[proto(tag = 3, repeated(message(proxied)))]
     /// Capability bindings for the actor.
     pub bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied))]
+    #[proto(tag = 4, message)]
     /// Resource and execution limits for the actor.
     pub limits: Option<ActorLimits>,
     #[proto(tag = 5, repeated(message(proxied)))]
@@ -247,11 +240,10 @@ pub struct CreateActorRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from actor creation.
 pub struct CreateActorResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Created actor observation, when creation produced one.
     pub actor: Option<ActorObservation>,
 }
@@ -260,7 +252,6 @@ pub struct CreateActorResponse {
 /// must be compatible or explicitly migrated before activation; failure keeps
 /// the previous version active. Paused subscriptions stay paused until resumed.
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 pub struct UpdateActorRequest {
     #[proto(tag = 1)]
@@ -272,7 +263,7 @@ pub struct UpdateActorRequest {
     #[proto(tag = 3, repeated(message(proxied)))]
     /// Replacement capability bindings.
     pub bindings: Vec<Binding>,
-    #[proto(tag = 4, message(proxied))]
+    #[proto(tag = 4, message)]
     /// Replacement resource and execution limits.
     pub limits: Option<ActorLimits>,
     #[proto(tag = 5)]
@@ -284,17 +275,15 @@ pub struct UpdateActorRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from an actor update.
 pub struct UpdateActorResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Updated actor observation, when the update produced one.
     pub actor: Option<ActorObservation>,
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Request to inspect an actor.
 pub struct InspectActorRequest {
@@ -304,24 +293,22 @@ pub struct InspectActorRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from actor inspection.
 pub struct InspectActorResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Inspected actor observation, when one was found.
     pub actor: Option<ActorObservation>,
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Request to add a subscription to an actor.
 pub struct AddSubscriptionRequest {
     #[proto(tag = 1)]
     /// Actor identity receiving the subscription.
     pub actor_id: String,
-    #[proto(tag = 2, message(proxied))]
+    #[proto(tag = 2, message)]
     /// Subscription to add.
     pub subscription: Option<SubscriptionSpec>,
     #[proto(tag = 3)]
@@ -330,17 +317,15 @@ pub struct AddSubscriptionRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from adding a subscription.
 pub struct AddSubscriptionResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Actor observation after the subscription change, when one was produced.
     pub actor: Option<ActorObservation>,
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Request to remove a subscription from an actor.
 pub struct RemoveSubscriptionRequest {
@@ -356,18 +341,16 @@ pub struct RemoveSubscriptionRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from removing a subscription.
 pub struct RemoveSubscriptionResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Actor observation after the subscription change, when one was produced.
     pub actor: Option<ActorObservation>,
 }
 
 /// Resumption may replay a previously delivered record and duplicate external effects.
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 pub struct ResumeSubscriptionRequest {
     #[proto(tag = 1)]
@@ -382,17 +365,15 @@ pub struct ResumeSubscriptionRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from resuming a subscription.
 pub struct ResumeSubscriptionResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Actor observation after the subscription change, when one was produced.
     pub actor: Option<ActorObservation>,
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Request to checkpoint an actor.
 pub struct CheckpointActorRequest {
@@ -405,18 +386,16 @@ pub struct CheckpointActorRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response from checkpointing an actor.
 pub struct CheckpointActorResponse {
-    #[proto(tag = 1, message(proxied))]
+    #[proto(tag = 1, message)]
     /// Actor observation after checkpointing, when one was produced.
     pub actor: Option<ActorObservation>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, TS)]
+#[derive(Eq, TS)]
 #[deny(missing_docs)]
-
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Name/value metadata sent with an actor invocation.
 pub struct Header {
@@ -430,7 +409,6 @@ pub struct Header {
 
 /// Invocation is not an implicit Stream append or persistence guarantee.
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 pub struct InvokeActorRequest {
     #[proto(tag = 1)]
@@ -451,7 +429,6 @@ pub struct InvokeActorRequest {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Response returned from an actor invocation.
 pub struct InvokeActorResponse {
@@ -495,7 +472,6 @@ pub enum ErrorCode {
 }
 
 #[deny(missing_docs)]
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[proto_message(proxied, fallible = crate::ContractError)]
 /// Structured error returned by the actor service.
 pub struct Error {
@@ -514,58 +490,58 @@ pub enum ActorsService {
     /// Creates an actor.
     CreateActor {
         /// Request payload for actor creation.
-        request: CreateActorRequestProto,
+        request: CreateActorRequest,
         /// Response payload from actor creation.
-        response: CreateActorResponseProto,
+        response: CreateActorResponse,
     },
     /// Replaces an actor configuration.
     UpdateActor {
         /// Request payload for the actor update.
-        request: UpdateActorRequestProto,
+        request: UpdateActorRequest,
         /// Response payload from the actor update.
-        response: UpdateActorResponseProto,
+        response: UpdateActorResponse,
     },
     /// Inspects an actor.
     InspectActor {
         /// Request payload for actor inspection.
-        request: InspectActorRequestProto,
+        request: InspectActorRequest,
         /// Response payload from actor inspection.
-        response: InspectActorResponseProto,
+        response: InspectActorResponse,
     },
     /// Adds a subscription to an actor.
     AddSubscription {
         /// Request payload for adding a subscription.
-        request: AddSubscriptionRequestProto,
+        request: AddSubscriptionRequest,
         /// Response payload from adding a subscription.
-        response: AddSubscriptionResponseProto,
+        response: AddSubscriptionResponse,
     },
     /// Removes a subscription from an actor.
     RemoveSubscription {
         /// Request payload for removing a subscription.
-        request: RemoveSubscriptionRequestProto,
+        request: RemoveSubscriptionRequest,
         /// Response payload from removing a subscription.
-        response: RemoveSubscriptionResponseProto,
+        response: RemoveSubscriptionResponse,
     },
     /// Resumes a subscription.
     ResumeSubscription {
         /// Request payload for resuming a subscription.
-        request: ResumeSubscriptionRequestProto,
+        request: ResumeSubscriptionRequest,
         /// Response payload from resuming a subscription.
-        response: ResumeSubscriptionResponseProto,
+        response: ResumeSubscriptionResponse,
     },
     /// Checkpoints an actor.
     CheckpointActor {
         /// Request payload for checkpointing an actor.
-        request: CheckpointActorRequestProto,
+        request: CheckpointActorRequest,
         /// Response payload from checkpointing an actor.
-        response: CheckpointActorResponseProto,
+        response: CheckpointActorResponse,
     },
     /// Invokes an actor.
     InvokeActor {
         /// Request payload for invoking an actor.
-        request: InvokeActorRequestProto,
+        request: InvokeActorRequest,
         /// Response payload from invoking an actor.
-        response: InvokeActorResponseProto,
+        response: InvokeActorResponse,
     },
 }
 

@@ -104,9 +104,7 @@ pub fn message_proc_macro(mut item: ItemStruct, macro_attrs: TokenStream2) -> To
 			proxy_ident: &item.ident,
 			proto_ident: &proto_struct.ident,
 			kind: ItemKind::Message,
-			container_attrs: ContainerAttrs::Message(&message_attrs),
-			fallible_error: message_attrs.fallible_error.as_ref(),
-			fields: &fields_data,
+			container_attrs: ContainerAttrs::Message(&message_attrs),			fallible_error: message_attrs.fallible_error.as_ref(),			fields: &fields_data,
 		}
 		.generate_proto_conversions();
 
@@ -286,7 +284,7 @@ where
 				let prost_compatible_type = field_data.prost_compatible_type(item_kind);
 				*dst_field.type_mut()? = prost_compatible_type;
 
-				if let ProtoField::Oneof(OneofInfo { default: false, .. }) = &field_data.proto_field
+				if let ProtoField::Oneof(OneofInfo { default: false, required: false, .. }) = &field_data.proto_field
 					&& !field_data.type_info.is_option()
 					&& !field_data.has_custom_conversions()
 					&& !container_attrs.has_custom_conversions()
@@ -300,6 +298,7 @@ where
 				if item_kind.is_message()
 					&& let ProtoField::Single(ProtoType::Message(MessageInfo {
 						default: false,
+						required: false,
 						..
 					})) = field_data.proto_field
 					&& !field_data.type_info.is_option()
@@ -378,7 +377,4 @@ impl FieldsCtx {
 		})
 	}
 }
-
-
-
 
