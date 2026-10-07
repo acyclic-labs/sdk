@@ -698,6 +698,53 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         spec: OperationSpec,
         idempotency_key: IdempotencyKey,
     ) -> Result<CoordinatorApply> {
+        self.declare_operation_with_parent(owner, scope, verifier, spec, idempotency_key, None)
+            .await
+    }
+
+    /// Publishes a child only while its parent retains this uncancelled lease.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "signed owner and exact parent lease"
+    )]
+    pub async fn declare_operation_owned(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        spec: OperationSpec,
+        idempotency_key: IdempotencyKey,
+        parent_fence: LeaseFence,
+    ) -> Result<CoordinatorApply> {
+        if spec.parent.is_none() {
+            return Err(Error::Invalid(
+                "owned child declaration has no parent".into(),
+            ));
+        }
+        self.declare_operation_with_parent(
+            owner,
+            scope,
+            verifier,
+            spec,
+            idempotency_key,
+            Some(parent_fence),
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one authenticated declaration path"
+    )]
+    async fn declare_operation_with_parent(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        spec: OperationSpec,
+        idempotency_key: IdempotencyKey,
+        parent_fence: Option<LeaseFence>,
+    ) -> Result<CoordinatorApply> {
         verifier.verify_audience(owner)?;
         verifier.verify(scope)?;
         if !scope.capabilities().contains("operation:declare") {
@@ -727,7 +774,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let event = SchedulerEvent::Declared {
             spec: Box::new(spec),
         };
-        self.apply_internal(operation_id, idempotency_key, event)
+        self.apply_internal_with_parent(operation_id, idempotency_key, event, parent_fence)
             .await
     }
 
@@ -932,7 +979,19 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
     ) -> Result<CoordinatorApply> {
+        self.apply_internal_with_parent(operation_id, idempotency_key, event, None)
+            .await
+    }
+
+    async fn apply_internal_with_parent(
+        &mut self,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        event: SchedulerEvent,
+        parent_fence: Option<LeaseFence>,
+    ) -> Result<CoordinatorApply> {
         self.refresh().await?;
+        self.require_parent_owner(&event, parent_fence.as_ref())?;
         IdempotencyKey::new(idempotency_key.0.clone())?;
         let key = idempotency_key.as_str();
         if scheduler_event_operation(&event) != operation_id {
@@ -967,7 +1026,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             canonical,
             committed_at_ms,
         );
-        let stream_key = stream_key(key)?;
+        // Stream retains failed CAS requests too. A refreshed coordinator tail
+        // needs a new physical retry identity; the encoded logical intent and
+        // scheduler declaration still prevent another child or budget charge.
+        let stream_key = if parent_fence.is_some() {
+            stream_key(&format!("{key}:owned-parent:{}", self.revision))?
+        } else {
+            stream_key(key)?
+        };
         let outcome = match self
             .stream
             .append_batch(
@@ -996,8 +1062,35 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
-        self.finish_append(outcome, &event, key, &digest, revision)
-            .await
+        let applied = self
+            .finish_append(outcome, &event, key, &digest, revision)
+            .await?;
+        self.require_parent_owner(&event, parent_fence.as_ref())?;
+        Ok(applied)
+    }
+
+    fn require_parent_owner(
+        &self,
+        event: &SchedulerEvent,
+        fence: Option<&LeaseFence>,
+    ) -> Result<()> {
+        let Some(fence) = fence else {
+            return Ok(());
+        };
+        let SchedulerEvent::Declared { spec } = event else {
+            return Err(Error::Invalid(
+                "parent fence only applies to declaration".into(),
+            ));
+        };
+        let parent = spec
+            .parent
+            .as_ref()
+            .ok_or_else(|| Error::Invalid("child declaration has no parent".into()))?;
+        let operation = self
+            .scheduler
+            .operation(parent.operation_id)
+            .ok_or_else(|| Error::NotFound("admitting parent".into()))?;
+        crate::scheduler::require_execution_owner(operation, fence, false)
     }
 
     async fn finish_append(
@@ -1532,6 +1625,169 @@ mod tests {
                 Ok(b"null".to_vec())
             })
         }
+    }
+
+    struct PausedChildVerifier {
+        armed: std::sync::atomic::AtomicBool,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+
+    impl ContentResidencyVerifier for PausedChildVerifier {
+        fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                TestContentVerifier.verify(reference).await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() -> Result<()> {
+        for cancel in [false, true] {
+            let client = StreamClient::new(Arc::new(MemoryStream::default()));
+            let gate = Arc::new(PausedChildVerifier {
+                armed: std::sync::atomic::AtomicBool::new(false),
+                entered: tokio::sync::Notify::new(),
+                release: tokio::sync::Notify::new(),
+            });
+            let mut first = DistributedCoordinator::open(&client, gate.clone()).await?;
+            let parent = OperationId::from_bytes([41; 16]);
+            declare(&mut first, spec(parent, 0)?, "fenced-parent").await?;
+            let lease = first
+                .pull(&Worker {
+                    id: "parent-worker".into(),
+                    available: ResourceSnapshot::default(),
+                    labels: BTreeMap::new(),
+                })
+                .await?
+                .ok_or_else(|| Error::NotFound("parent lease".into()))?;
+            let fence = LeaseFence::from(&lease.reservation);
+            first
+                .apply(
+                    parent,
+                    IdempotencyKey::new("parent-start")?,
+                    SchedulerEvent::Started {
+                        operation_id: parent,
+                        fence: fence.clone(),
+                    },
+                )
+                .await?;
+            let mut second =
+                DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+            let owner = Authority {
+                kind: AggregateKind::Task,
+                id: "owner".into(),
+            };
+            let issuer = AuthorityIssuer::new("owned-child-test", [9; 32], owner.clone());
+            let signed = issuer.root(
+                "declare",
+                Capabilities::new(["operation:declare", "operation:observe"]),
+            );
+            let verifier = issuer.verifier();
+            let child_id = OperationId::from_bytes([42; 16]);
+            let mut child = spec(child_id, 0)?;
+            child.parent = Some(ParentLink {
+                operation_id: parent,
+                slot: "child".into(),
+            });
+            gate.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+            let disturbance = async {
+                gate.entered.notified().await;
+                let result = if cancel {
+                    second
+                        .apply(
+                            parent,
+                            IdempotencyKey::new("parent-cancel")?,
+                            SchedulerEvent::CancellationRequested {
+                                operation_id: parent,
+                                recursive: false,
+                            },
+                        )
+                        .await
+                } else {
+                    declare(
+                        &mut second,
+                        spec(OperationId::from_bytes([43; 16]), 0)?,
+                        "unrelated-tail",
+                    )
+                    .await
+                };
+                gate.release.notify_one();
+                result
+            };
+            let (attempt, disturbance) = tokio::join!(
+                first.declare_operation_owned(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    child.clone(),
+                    IdempotencyKey::new("owned-child")?,
+                    fence.clone()
+                ),
+                disturbance
+            );
+            disturbance?;
+            assert!(matches!(attempt, Err(Error::Conflict(_))));
+            assert!(first.scheduler().operation(child_id).is_none());
+            let retry = first
+                .declare_operation_owned(
+                    &owner,
+                    &signed,
+                    &verifier,
+                    child.clone(),
+                    IdempotencyKey::new("owned-child")?,
+                    fence.clone(),
+                )
+                .await;
+            if cancel {
+                assert!(retry.is_err());
+                assert!(first.scheduler().operation(child_id).is_none());
+            } else {
+                assert_eq!(retry?, CoordinatorApply::Applied);
+                assert_eq!(
+                    first
+                        .declare_operation_owned(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            child.clone(),
+                            IdempotencyKey::new("owned-child")?,
+                            fence.clone()
+                        )
+                        .await?,
+                    CoordinatorApply::Replayed
+                );
+                assert_eq!(first.scheduler().children(parent).count(), 1);
+                first
+                    .apply(
+                        parent,
+                        IdempotencyKey::new("parent-cancel-after")?,
+                        SchedulerEvent::CancellationRequested {
+                            operation_id: parent,
+                            recursive: false,
+                        },
+                    )
+                    .await?;
+                assert!(
+                    first
+                        .declare_operation_owned(
+                            &owner,
+                            &signed,
+                            &verifier,
+                            child,
+                            IdempotencyKey::new("owned-child")?,
+                            fence
+                        )
+                        .await
+                        .is_err()
+                );
+            }
+        }
+        Ok(())
     }
 
     struct DenyContentVerifier;

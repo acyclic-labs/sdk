@@ -58,6 +58,31 @@ pub struct MailReceiveTaskCommand {
     pub after: u64,
 }
 
+/// Versioned child admission through the existing registry and scheduler.
+pub const TASK_ADMIT_COMMAND_KIND: &str = "acyclic.task.admit.v1";
+/// Versioned nonblocking observation of that command's direct child.
+pub const TASK_OBSERVE_COMMAND_KIND: &str = "acyclic.task.observe.v1";
+
+/// Exact registered resumable child with inherited task authority and limits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskAdmitCommand {
+    /// Exact logical task name.
+    pub name: String,
+    /// Exact registered version.
+    pub version: String,
+    /// Input validated by the registered schema.
+    pub input: Value,
+}
+
+/// Selects a child derived from a prior admission command in this workflow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskObserveCommand {
+    /// Logical operation ID of the admitting workflow command.
+    pub admission_operation: OperationId,
+}
+
 /// Ref-resolved model input. The worker supplies the stable execution identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -170,6 +195,10 @@ where
                     self.tool_command(task, context, fence.clone(), command.operation_id, payload)
                         .await
                 }
+                TASK_ADMIT_COMMAND_KIND | TASK_OBSERVE_COMMAND_KIND => {
+                    self.task_command(task, &context, fence.clone(), &command, payload)
+                        .await
+                }
                 MAIL_SEND_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND => {
                     self.mail_command(task, &context, fence.clone(), &command, payload)
                         .await
@@ -215,6 +244,61 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    async fn task_command(
+        &self,
+        task: TaskId,
+        context: &TaskContext,
+        fence: LeaseFence,
+        command: &WorkflowCommand,
+        payload: Value,
+    ) -> Result<TaskCommandProgress> {
+        if command.kind == TASK_ADMIT_COMMAND_KIND {
+            let input: TaskAdmitCommand = serde_json::from_value(payload)
+                .map_err(|error| Error::Invalid(format!("invalid child command: {error}")))?;
+            let admission = self.runtime.harness().registered_child_admission(
+                child_operation(task, command.operation_id),
+                &input.name,
+                &input.version,
+                input.input,
+                task,
+                context.scope(),
+            )?;
+            match self
+                .runtime
+                .task_host()
+                .admit_owned(admission, fence)
+                .await?
+            {
+                crate::Admission::Accepted(child) => ready(Outcome::Succeeded(child)),
+                crate::Admission::Rejected { reason } => {
+                    ready(Outcome::<Value>::Failed { message: reason })
+                }
+                crate::Admission::Indeterminate { .. } => Ok(TaskCommandProgress::Indeterminate),
+            }
+        } else {
+            let input: TaskObserveCommand = serde_json::from_value(payload)
+                .map_err(|error| Error::Invalid(format!("invalid child observation: {error}")))?;
+            let child =
+                TaskId::from_bytes(child_operation(task, input.admission_operation).into_bytes());
+            if self
+                .runtime
+                .task_host()
+                .observe_admission(child)
+                .await?
+                .parent
+                != Some(task)
+            {
+                return Err(Error::Unauthorized(
+                    "observed task is not this command's direct child".into(),
+                ));
+            }
+            match self.runtime.task_host().outcome(child).await? {
+                None | Some(Outcome::Indeterminate { .. }) => Ok(TaskCommandProgress::Pending),
+                Some(outcome) => ready(outcome),
+            }
+        }
+    }
+
     async fn mail_command(
         &self,
         task: TaskId,
@@ -322,4 +406,14 @@ fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
     serde_json::to_value(value)
         .map(TaskCommandProgress::Ready)
         .map_err(|error| Error::Invalid(format!("invalid command outcome: {error}")))
+}
+
+fn child_operation(task: TaskId, command: OperationId) -> OperationId {
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"harness/v2/task-child\0");
+    digest.update(&task.into_bytes());
+    digest.update(&command.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
 }

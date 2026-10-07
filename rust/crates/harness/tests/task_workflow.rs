@@ -15,8 +15,9 @@ use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
     FilesystemTaskRuntime, MAIL_RECEIVE_TASK_COMMAND_KIND, MAIL_SEND_TASK_COMMAND_KIND,
     MODEL_TASK_COMMAND_KIND, MailReceiveTaskCommand, MailSendTaskCommand, ModelTaskCommand,
-    TIMER_TASK_COMMAND_KIND, TOOL_TASK_COMMAND_KIND, TaskCommandHost, TaskCommandProgress,
-    TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
+    TASK_ADMIT_COMMAND_KIND, TASK_OBSERVE_COMMAND_KIND, TIMER_TASK_COMMAND_KIND,
+    TOOL_TASK_COMMAND_KIND, TaskAdmitCommand, TaskCommandHost, TaskCommandProgress,
+    TaskObserveCommand, TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -207,6 +208,33 @@ async fn worker_mail_receive_requires_retained_read_grant() -> Result<()> {
     worker_restart_with_mail_read(WorkerCommand::MailReceive, false).await
 }
 
+#[tokio::test]
+async fn worker_child_admission_and_observation_share_one_slot_after_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::Child).await
+}
+
+struct CompletedChildMachine(TaskMachine);
+impl ResumableMachine for CompletedChildMachine {
+    fn identity(&self) -> &MachineIdentity {
+        self.0.identity()
+    }
+    fn state_schema(&self) -> &Value {
+        self.0.state_schema()
+    }
+    fn initialize(&self, input: &Value) -> Result<Value> {
+        Ok(input.clone())
+    }
+    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
+        Ok(MachineTransition {
+            state: state.clone(),
+            commands: Vec::new(),
+            status: MachineStatus::Completed {
+                value: state.clone(),
+            },
+        })
+    }
+}
+
 struct TestClock(AtomicU64);
 impl UnixMillisClock for TestClock {
     fn now_unix_millis(&self) -> u64 {
@@ -222,6 +250,7 @@ enum WorkerCommand {
     Timer,
     MailSend,
     MailReceive,
+    Child,
 }
 
 struct CommandMachine {
@@ -241,6 +270,30 @@ impl ResumableMachine for CommandMachine {
     }
     fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
         if input.is_null() {
+            if self.command == WorkerCommand::Child {
+                let commands =
+                    [
+                        ("admit", TASK_ADMIT_COMMAND_KIND, 26u8),
+                        ("observe", TASK_OBSERVE_COMMAND_KIND, 27),
+                    ]
+                    .into_iter()
+                    .map(|(field, kind, identity)| {
+                        Ok(WorkflowCommand {
+                            operation_id: OperationId::from_bytes([identity; 16]),
+                            kind: kind.into(),
+                            payload: serde_json::from_value(state.get(field).cloned().ok_or_else(
+                                || Error::Invalid("missing child command file".into()),
+                            )?)
+                            .map_err(|error| Error::Invalid(error.to_string()))?,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                return Ok(MachineTransition {
+                    state: state.clone(),
+                    commands,
+                    status: MachineStatus::Suspended,
+                });
+            }
             Ok(MachineTransition {
                 state: state.clone(),
                 commands: vec![WorkflowCommand {
@@ -266,7 +319,9 @@ impl ResumableMachine for CommandMachine {
             let outcome: Outcome<Value> = serde_json::from_value(
                 input
                     .get("commands")
-                    .and_then(|values| values.get(0))
+                    .and_then(|values| {
+                        values.get(usize::from(self.command == WorkerCommand::Child))
+                    })
                     .and_then(|value| value.get("value"))
                     .cloned()
                     .ok_or_else(|| Error::Invalid("missing command result".into()))?,
@@ -275,7 +330,9 @@ impl ResumableMachine for CommandMachine {
             let Outcome::Succeeded(value) = outcome else {
                 return Err(Error::Invalid("unexpected command outcome".into()));
             };
-            if self.command == WorkerCommand::MailReceive {
+            if self.command == WorkerCommand::Child {
+                assert_eq!(value, json!(7));
+            } else if self.command == WorkerCommand::MailReceive {
                 assert_eq!(value.get("sequence"), Some(&json!(1)));
                 assert!(value.get("payload").is_some());
             } else if matches!(self.command, WorkerCommand::Timer | WorkerCommand::MailSend) {
@@ -310,6 +367,7 @@ async fn worker_restart_with_mail_read(
     command: WorkerCommand,
     allow_mail_read: bool,
 ) -> Result<()> {
+    let with_child = command == WorkerCommand::Child;
     let with_command = command != WorkerCommand::Wait;
     let with_mail_send = command == WorkerCommand::MailSend;
     let with_mail_receive = command == WorkerCommand::MailReceive;
@@ -347,6 +405,7 @@ async fn worker_restart_with_mail_read(
             "mail:read".to_owned(),
             "tool:call:test.restore".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
+            "task:spawn:test.child@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
         ]),
@@ -386,6 +445,22 @@ async fn worker_restart_with_mail_read(
     let definition = tasks.get_version::<Value, u64>("test.restart", "1")?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
+    if with_child {
+        let child = Arc::new(CompletedChildMachine(TaskMachine {
+            identity: MachineIdentity {
+                name: "test.child".into(),
+                version: "1".into(),
+                digest: [44; 32],
+            },
+            schema: json!({"type":"integer"}),
+        }));
+        tasks.register(TaskDefinition::<u64, u64>::resumable(
+            child.clone(),
+            json!({"type":"integer"}),
+            json!({"type":"integer"}),
+        )?)?;
+        machines.register(child)?;
+    }
     let operation = OperationId::from_bytes([25; 16]);
     let task = TaskId::from_bytes(operation.into_bytes());
     let worker = Worker {
@@ -454,8 +529,8 @@ async fn worker_restart_with_mail_read(
             tools.clone(),
             SessionLimits {
                 active_tasks: 1,
-                total_tasks: 1,
-                depth: 1,
+                total_tasks: if with_child { 2 } else { 1 },
+                depth: if with_child { 2 } else { 1 },
                 model_steps: 1,
             },
             1,
@@ -464,7 +539,19 @@ async fn worker_restart_with_mail_read(
         )
         .await?;
         if !reopened {
-            let input = if with_command {
+            let input = if with_child {
+                let admit = serde_json::to_vec(&TaskAdmitCommand {
+                    name: "test.child".into(),
+                    version: "1".into(),
+                    input: json!(7),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                let observe = serde_json::to_vec(&TaskObserveCommand {
+                    admission_operation: OperationId::from_bytes([26; 16]),
+                })
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+                json!({"admit":payloads.stage(operation, "child-admit", &admit).await?, "observe":payloads.stage(operation, "child-observe", &observe).await?})
+            } else if with_command {
                 let payload = if with_mail_send {
                     serde_json::to_value(MailSendTaskCommand {
                         recipient: task,
@@ -520,7 +607,42 @@ async fn worker_restart_with_mail_read(
                 acyclic_harness::scheduler::OperationPhase::Suspended
             );
             assert!(retained.reservation.is_none());
-            assert!(coordinator.pull(&worker).await?.is_none());
+            if with_child {
+                let child_lease = coordinator
+                    .pull(&worker)
+                    .await?
+                    .ok_or_else(|| Error::NotFound("admitted child lease".into()))?;
+                assert_eq!(
+                    child_lease
+                        .operation
+                        .parent
+                        .as_ref()
+                        .map(|parent| parent.operation_id),
+                    Some(operation)
+                );
+                let child = TaskId::from_bytes(child_lease.operation.operation_id.into_bytes());
+                let admission = runtime.task_host().observe_admission(child).await?;
+                assert_eq!(admission.parent, Some(task));
+                let old = old_lease
+                    .as_ref()
+                    .ok_or_else(|| Error::NotFound("old parent lease".into()))?;
+                assert!(
+                    runtime
+                        .task_host()
+                        .admit_owned(admission.clone(), LeaseFence::from(&old.reservation))
+                        .await
+                        .is_err()
+                );
+                assert!(
+                    matches!(runtime.run_task(child_lease, &runtime.commands(), 1).await?, TaskWorkerOutcome::Completed {task: completed} if completed == child)
+                );
+                assert_eq!(
+                    runtime.task_host().outcome(child).await?,
+                    Some(Outcome::Succeeded(json!(7)))
+                );
+            } else {
+                assert!(coordinator.pull(&worker).await?.is_none());
+            }
             if with_mail_receive {
                 for index in [30u8, 31] {
                     let file = payloads
@@ -608,6 +730,42 @@ async fn worker_restart_with_mail_read(
                     acyclic_harness::scheduler::OperationPhase::Running
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+                if with_child {
+                    let context = runtime.harness().durable_context(task, operation).await?;
+                    let reference = runtime
+                        .task_host()
+                        .observe_admission(task)
+                        .await?
+                        .input
+                        .get("admit")
+                        .cloned()
+                        .ok_or_else(|| Error::Invalid("missing admission file".into()))?;
+                    let file = serde_json::from_value(reference)
+                        .map_err(|error| Error::Invalid(error.to_string()))?;
+                    let command = WorkflowCommand {
+                        operation_id: OperationId::from_bytes([26; 16]),
+                        kind: TASK_ADMIT_COMMAND_KIND.into(),
+                        payload: file,
+                    };
+                    let wrong = serde_json::to_value(TaskAdmitCommand {
+                        name: "test.child".into(),
+                        version: "2".into(),
+                        input: json!(7),
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                    assert!(matches!(
+                        runtime
+                            .commands()
+                            .execute(
+                                context,
+                                LeaseFence::from(&lease.reservation),
+                                command,
+                                wrong
+                            )
+                            .await,
+                        Err(Error::NotFound(_))
+                    ));
+                }
                 if with_mail_send {
                     let context = runtime.harness().durable_context(task, operation).await?;
                     let file = serde_json::from_value(

@@ -562,6 +562,56 @@ impl TaskRegistry {
             })
     }
 
+    /// Uses the same registered metadata for an erased stock child command.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn child_admission(
+        &self,
+        operation: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        parent: TaskId,
+        scope: &RuntimeScope,
+    ) -> Result<TaskAdmissionRecord> {
+        let entry = self
+            .0
+            .get(&(name.to_owned(), version.to_owned()))
+            .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
+        require_descendant_grant(scope.grants(), &entry.identity)?;
+        let machine = entry
+            .machine
+            .as_ref()
+            .filter(|_| entry.resumable)
+            .ok_or_else(|| Error::Unsupported("live task cannot be a durable command".into()))?;
+        if scope.extensions().is_some()
+            || entry
+                .requirements
+                .iter()
+                .any(|requirement| requirement.starts_with("extension:"))
+        {
+            return Err(Error::Unsupported(
+                "stock child extension runner is not composed".into(),
+            ));
+        }
+        TaskAdmissionRecord::from_parts(
+            operation,
+            name,
+            version,
+            input,
+            entry.input_schema.clone(),
+            entry.output_schema.clone(),
+            &entry.requirements,
+            &machine.digest,
+            Some(parent),
+            scope.grants().clone(),
+            scope.limits(),
+            scope.run_limits(),
+            None,
+            None,
+            None,
+        )
+    }
+
     pub(crate) fn validate_durable_admission(
         &self,
         identity: &ComponentIdentity,
@@ -3365,6 +3415,22 @@ impl AgentHarness {
         context
             .open_resumable_task(definition, fence, journal)
             .await
+    }
+
+    /// Builds the stock child request from the existing registered metadata.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn registered_child_admission(
+        &self,
+        operation: OperationId,
+        name: &str,
+        version: &str,
+        input: Value,
+        parent: TaskId,
+        scope: &RuntimeScope,
+    ) -> Result<TaskAdmissionRecord> {
+        self.assert_durable_policy_bindings()?;
+        self.tasks
+            .child_admission(operation, name, version, input, parent, scope)
     }
 
     /// Reopens an admitted task through its exact registered definition without

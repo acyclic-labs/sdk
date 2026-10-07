@@ -876,6 +876,132 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(self)
     }
 
+    /// Admits through the existing task path while retaining the parent's lease.
+    pub async fn admit_owned(
+        &self,
+        admission: TaskAdmissionRecord,
+        fence: crate::scheduler::LeaseFence,
+    ) -> Result<Admission<TaskId>> {
+        let parent = admission
+            .parent
+            .ok_or_else(|| Error::Invalid("owned child admission has no parent".into()))?;
+        self.verify_owner(parent, &fence, false).await?;
+        self.admit_record(admission, Some(fence)).await
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one complete immutable task admission validation path"
+    )]
+    async fn admit_record(
+        &self,
+        admission: TaskAdmissionRecord,
+        parent_fence: Option<crate::scheduler::LeaseFence>,
+    ) -> Result<Admission<TaskId>> {
+        let operation_id = admission.operation_id;
+        let identity = admission.task.clone();
+        let machine = admission.machine.clone();
+        let output_schema = admission.output_schema.clone();
+        let parent = admission.parent;
+        let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
+            .with_run_limits(admission.run_limits)?
+            .with_replayed_extensions(admission.extensions.clone())?;
+        self.root_scope
+            .narrow(scope.grants().clone(), scope.limits())?
+            .with_run_limits(scope.run_limits())?;
+        self.validate_parent_scope(parent, &scope).await?;
+        if parent.is_some() {
+            require_descendant_grant(scope.grants(), &identity)?;
+        }
+        if let Some(extensions) = scope.extensions() {
+            extensions.validate()?;
+        }
+        if scope.extensions() != self.root_scope.extensions() {
+            return Err(Error::Conflict(
+                "task extensions differ from owner bindings".into(),
+            ));
+        }
+        self.validate_local_admission_policy(&admission)?;
+        if machine.name != identity.name
+            || machine.version != identity.version
+            || machine.digest == [0; 32]
+            || self.machines.resolve(&machine).is_none()
+        {
+            return Err(Error::Invalid(
+                "task and machine identities disagree".into(),
+            ));
+        }
+        self.tasks.validate_durable_admission(
+            &identity,
+            &machine,
+            Some(&admission.input_schema),
+            &output_schema,
+            Some(&admission.input),
+        )?;
+        jsonschema::validator_for(&output_schema)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        admission.validate()?;
+        let canonical = admission.canonical_value();
+        let bytes = crate::contract::canonical_json_bytes(&canonical)?;
+        if bytes.len() as u64 > scope.limits().file_bytes {
+            return Err(Error::Invalid(
+                "durable task admission exceeds its file limit".into(),
+            ));
+        }
+        let key = format!("task-admission:{operation_id}");
+        let state = self.payloads.stage(operation_id, &key, &bytes).await?;
+        state.descriptor().verify(&bytes)?;
+        if self.read_json(&state).await? != canonical {
+            return Err(Error::Storage(
+                "staged task admission changed before publication".into(),
+            ));
+        }
+        let spec = OperationSpec {
+            operation_id,
+            parent: parent.map(|parent| ParentLink {
+                operation_id: OperationId::from_bytes(parent.into_bytes()),
+                slot: operation_id.to_string(),
+            }),
+            owner: DurableOwner::Attached {
+                authority: self.owner.clone(),
+            },
+            entrypoint: EntrypointRef {
+                name: identity.name,
+                version: identity.version,
+                digest: identity.digest,
+                result_schema: output_schema,
+            },
+            dependencies: BTreeSet::new(),
+            resources: ResourceRequest::default(),
+            placement: BTreeMap::new(),
+            orchestration: Orchestration::Leaf,
+            state,
+        };
+        let outcome = if let Some(fence) = parent_fence {
+            self.coordinator
+                .lock()
+                .await
+                .declare_operation_owned(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    spec,
+                    IdempotencyKey::new(key)?,
+                    fence,
+                )
+                .await
+        } else {
+            self.declare_task(spec, IdempotencyKey::new(key)?).await
+        };
+        match outcome {
+            Ok(_) => Ok(Admission::Accepted(TaskId::from_bytes(
+                operation_id.into_bytes(),
+            ))),
+            Err(Error::Indeterminate(_)) => Ok(Admission::Indeterminate { operation_id }),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn declare_task(
         &self,
         spec: OperationSpec,
@@ -1805,95 +1931,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         &'a self,
         admission: TaskAdmissionRecord,
     ) -> BoxFuture<'a, Result<Admission<TaskId>>> {
-        Box::pin(async move {
-            let operation_id = admission.operation_id;
-            let identity = admission.task.clone();
-            let machine = admission.machine.clone();
-            let output_schema = admission.output_schema.clone();
-            let parent = admission.parent;
-            let scope = RuntimeScope::new(admission.grants.clone(), admission.limits)?
-                .with_run_limits(admission.run_limits)?
-                .with_replayed_extensions(admission.extensions.clone())?;
-            self.root_scope
-                .narrow(scope.grants().clone(), scope.limits())?
-                .with_run_limits(scope.run_limits())?;
-            self.validate_parent_scope(parent, &scope).await?;
-            if parent.is_some() {
-                require_descendant_grant(scope.grants(), &identity)?;
-            }
-            if let Some(extensions) = scope.extensions() {
-                extensions.validate()?;
-            }
-            if scope.extensions() != self.root_scope.extensions() {
-                return Err(Error::Conflict(
-                    "task extensions differ from owner bindings".into(),
-                ));
-            }
-            self.validate_local_admission_policy(&admission)?;
-            if machine.name != identity.name
-                || machine.version != identity.version
-                || machine.digest == [0; 32]
-                || self.machines.resolve(&machine).is_none()
-            {
-                return Err(Error::Invalid(
-                    "task and machine identities disagree".into(),
-                ));
-            }
-            self.tasks.validate_durable_admission(
-                &identity,
-                &machine,
-                Some(&admission.input_schema),
-                &output_schema,
-                Some(&admission.input),
-            )?;
-            jsonschema::validator_for(&output_schema)
-                .map_err(|error| Error::Invalid(error.to_string()))?;
-            admission.validate()?;
-            let canonical = admission.canonical_value();
-            let bytes = crate::contract::canonical_json_bytes(&canonical)?;
-            if bytes.len() as u64 > scope.limits().file_bytes {
-                return Err(Error::Invalid(
-                    "durable task admission exceeds its file limit".into(),
-                ));
-            }
-            let key = format!("task-admission:{operation_id}");
-            let state = self.payloads.stage(operation_id, &key, &bytes).await?;
-            state.descriptor().verify(&bytes)?;
-            if self.read_json(&state).await? != canonical {
-                return Err(Error::Storage(
-                    "staged task admission changed before publication".into(),
-                ));
-            }
-            let spec = OperationSpec {
-                operation_id,
-                parent: parent.map(|parent| ParentLink {
-                    operation_id: OperationId::from_bytes(parent.into_bytes()),
-                    slot: operation_id.to_string(),
-                }),
-                owner: DurableOwner::Attached {
-                    authority: self.owner.clone(),
-                },
-                entrypoint: EntrypointRef {
-                    name: identity.name,
-                    version: identity.version,
-                    digest: identity.digest,
-                    result_schema: output_schema,
-                },
-                dependencies: BTreeSet::new(),
-                resources: ResourceRequest::default(),
-                placement: BTreeMap::new(),
-                orchestration: Orchestration::Leaf,
-                state,
-            };
-            let outcome = self.declare_task(spec, IdempotencyKey::new(key)?).await;
-            match outcome {
-                Ok(_) => Ok(Admission::Accepted(TaskId::from_bytes(
-                    operation_id.into_bytes(),
-                ))),
-                Err(Error::Indeterminate(_)) => Ok(Admission::Indeterminate { operation_id }),
-                Err(error) => Err(error),
-            }
-        })
+        Box::pin(async move { self.admit_record(admission, None).await })
     }
 
     fn outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
