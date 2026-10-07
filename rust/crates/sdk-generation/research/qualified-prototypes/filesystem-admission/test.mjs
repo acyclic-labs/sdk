@@ -75,7 +75,7 @@ const makeFixture = async ({ mode = "normal", archiveJs = undefined } = {}) => {
   await mkdir(join(archiveRoot, "generated", "wasm"), { recursive: true });
   await writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n');
 
-  const mutationTarget = JSON.stringify(mode === "mutate-source" ? SCRIPT : join(wasmRoot, "acyclic_fs_wasm_bg.wasm"));
+  const mutationTarget = JSON.stringify(mode === "mutate-source" ? join(ROOT, "Cargo.toml") : join(wasmRoot, "acyclic_fs_wasm_bg.wasm"));
   const wasmSource = `
 import { appendFileSync } from "node:fs";
 const mutationTarget = ${mutationTarget};
@@ -155,7 +155,8 @@ const main = async () => {
   const progress = label => process.stderr.write(`[filesystem-admission-test] ${label}\n`);
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-admission-regressions-"));
   const manifestPath = join(temporary, "source-attestation.json");
-  const selectedSource = join(ROOT, "rust", "crates", "sdk-generation", "research", "qualified-prototypes", "filesystem-admission", "run.mjs");
+const selectedSource = join(ROOT, "Cargo.toml");
+const selectedSourceLabel = "Cargo.toml";
   const selectedOriginal = await readFile(selectedSource);
   try {
     progress("write manifest");
@@ -188,7 +189,7 @@ const main = async () => {
       }
     })();
     assert.notEqual(sourceMutation.status, 0);
-    assert.match(sourceMutation.output, /source manifest hash mismatch for rust\/crates\/sdk-generation\/research\/qualified-prototypes\/filesystem-admission\/run\.mjs/);
+    assert.match(sourceMutation.output, new RegExp(`source manifest hash mismatch for ${selectedSourceLabel}`));
 
     progress("fresh git state");
     const freshGitState = await withManifest(manifestPath, manifest => {
@@ -238,7 +239,7 @@ const main = async () => {
       progress("source during qualification qualify");
       const result = await run(qualifyArgs(manifestPath, sourceDuringQualification));
       assert.notEqual(result.status, 0);
-      assert.match(result.output, /source manifest hash mismatch for rust\/crates\/sdk-generation\/research\/qualified-prototypes\/filesystem-admission\/run\.mjs/);
+      assert.match(result.output, new RegExp(`source manifest hash mismatch for ${selectedSourceLabel}`));
     } finally {
       await writeFile(selectedSource, selectedOriginal);
       await rm(sourceDuringQualification.fixture, { recursive: true, force: true });

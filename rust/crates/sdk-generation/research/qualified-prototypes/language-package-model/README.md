@@ -15,6 +15,11 @@ The receipt is a typed JSON document. A passed record requires its source
 revision, `source_inventory_sha256`, generator version, generator source digest, language-specific
 artifact entry, artifact path, artifact hash, and byte length to match the
 current Rust checkout and produced artifact. A marker alone is not sufficient.
+The receipt must also report `status: "PASS"` and nonempty `operations` and
+`checks` arrays matching the claimed execution scope. The example consumes
+those arrays from the receipt; it cannot add cancellation or all-operation
+claims to a narrower run. Historical logs without this evidence remain
+unqualified until the checks are actually rerun with source-bound receipts.
 The source inventory covers the selected Cargo package and local path
 dependencies, workspace Cargo/toolchain manifests, and protocol/generated Rust
 inputs. This keeps local verification bounded while detecting dirty source.

@@ -93,13 +93,41 @@
     "typing": {
       "mypy": "1.17.1",
       "pyright": "1.1.404",
-      "positive": "PASS: generated SubscriptionStartValue accepts CURSOR and CURRENT_HEAD constructor values",
-      "negative": "PASS: six deliberate invalid cases rejected by both checkers"
+      "positive": {
+        "mypy": "PASS",
+        "pyright": "FAIL: two constructor diagnostics for CURRENT_HEAD in all-fields-positive.py"
+      },
+      "negative": {
+        "mypy": "PASS: six deliberate invalid cases rejected",
+        "pyright": "PASS: six deliberate invalid cases rejected"
+      },
+      "evidence": {
+        "mypy_positive": {
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-positive.mypy.txt",
+          "sha256": "5D4B6D285B77932E3D08212C3B4974D0A803F98EC60408AC6CCF6A063FA6C19E",
+          "bytes": 42
+        },
+        "mypy_negative": {
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-negative.mypy.txt",
+          "sha256": "5D4B6D285B77932E3D08212C3B4974D0A803F98EC60408AC6CCF6A063FA6C19E",
+          "bytes": 42
+        },
+        "pyright_positive": {
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-positive.pyright.txt",
+          "sha256": "76CD247FB2EABF845221EC7612643471441276FA15A7FFA08E3F00D93A4A6D43",
+          "bytes": 614
+        },
+        "pyright_negative": {
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-negative.pyright.txt",
+          "sha256": "7495789D70CF323B0CBC68E8CF7C43760319997210AC25F9F69188CEEDA96E65",
+          "bytes": 567
+        }
+      }
     },
     "installed": {
-      "windows": "PASS: isolated wheel install and all-eight remote consumer, typed service error, pre-cancelled operation",
-      "linux_wsl": "PASS: isolated wheel install, union constructor probe, all-eight remote consumer through relay, typed service error, pre-cancelled operation",
-      "macos_ivar": "PASS: isolated arm64 wheel install, union constructor probe, all-eight remote consumer through SSH tunnel, typed service error, cancellation"
+      "windows": "RECORDED_EXTERNAL_RECEIPT: all-eight consumer, typed service error, and pre-cancelled operation; producer log is for the unpatched all8 wheel and is not bound to this patched output",
+      "linux_wsl": "RECORDED_EXTERNAL_RECEIPT: fresh install and relay run reported by cross-platform receipt; no producer log retained beside the patched wheel",
+      "macos_ivar": "RECORDED_EXTERNAL_RECEIPT: fresh install and SSH-tunnel run reported by cross-platform receipt; no producer log retained beside the patched wheel"
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",

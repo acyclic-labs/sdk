@@ -52,10 +52,21 @@ reimplementing protobuf semantics.
 
 `package-qualification.md` records the installed-header/static-library inventory,
 external consumer compile and link, and the clean Cargo packaging boundary. Cargo
-cannot produce a standalone archive while `acyclic-actors` is an unpublished
+cannot package the CXX crate directly while `acyclic-actors` is an unpublished
 workspace path dependency; an internal registry or separately published Actors
-artifact is required for an extracted Cargo build. The qualification does not
-hide that dependency or copy its contract into C++.
+artifact would be needed for ordinary registry resolution. The qualification
+does not hide that dependency or copy its contract into C++.
+
+The reproducible package entrypoint is
+`scripts/check-cpp-actors-package.sh <absolute-output>`. It produces the
+authoritative Actors `.crate`, extracts it, and supplies that directory through
+an external `[patch.crates-io]` file while packaging and building the CXX crate
+offline. It then installs the static library and generated headers, configures
+an external CMake consumer through `find_package(AcyclicActorsCXX CONFIG
+REQUIRED)`, links both the primitive and all-eight-operation consumers, and
+checks the two strong-type negative compilations. The installed config exposes
+the Cargo metadata version plus manifest and generated-header SHA-256 values.
+The patch is test-only and does not publish, exclude, or conceal Actors.
 
 ## Consumer compile qualification
 

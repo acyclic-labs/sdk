@@ -4,6 +4,13 @@ use language_package_model::{
 };
 use std::{env, path::PathBuf};
 
+#[derive(serde::Deserialize)]
+struct ExecutedQualification {
+    status: String,
+    operations: Vec<String>,
+    checks: Vec<String>,
+}
+
 fn value(args: &[String], name: &str) -> String {
     let flag = format!("--{name}");
     args.windows(2)
@@ -28,6 +35,12 @@ fn main() {
     let generator_source_sha256 = value(&args, "generator-source-sha256");
     let artifact = PathBuf::from(value(&args, "artifact"));
     let receipt = PathBuf::from(value(&args, "receipt"));
+    let executed: ExecutedQualification =
+        serde_json::from_slice(&std::fs::read(&receipt).unwrap()).unwrap();
+    assert_eq!(
+        executed.status, "PASS",
+        "receipt must report execution success"
+    );
     let receipt_marker = value(&args, "receipt-marker");
     let source_root = PathBuf::from(value(&args, "source-root"));
     let record = build_record_from_source(
@@ -46,8 +59,8 @@ fn main() {
         &receipt_marker,
         QualificationMetadata {
             status: QualificationStatus::Passed,
-            operations: vec!["all-eight-actors".into()],
-            checks: vec!["install".into(), "remote".into(), "cancellation".into()],
+            operations: executed.operations,
+            checks: executed.checks,
             receipt: language_package_model::sha256_file(&receipt).unwrap(),
         },
     )

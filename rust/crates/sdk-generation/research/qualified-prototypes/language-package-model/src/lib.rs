@@ -434,6 +434,9 @@ struct ReceiptToolchain {
 
 #[derive(Debug, Deserialize)]
 struct ReceiptDocument {
+    status: Option<String>,
+    operations: Option<Vec<String>>,
+    checks: Option<Vec<String>>,
     source_revision: Option<String>,
     source_inventory_sha256: Option<String>,
     toolchain: Option<ReceiptToolchain>,
@@ -459,7 +462,7 @@ fn receipt_artifact_key(language: Language) -> &'static str {
 
 fn validate_receipt(
     receipt: &Path,
-    status: QualificationStatus,
+    qualification: &QualificationMetadata,
     marker: &str,
     source_revision: &str,
     source_inventory: &SourceInventory,
@@ -467,6 +470,7 @@ fn validate_receipt(
     language: Language,
     artifact: &ArtifactIdentity,
 ) -> Result<ArtifactIdentity, Error> {
+    let status = qualification.status;
     let identity = sha256_file(receipt)?;
     let bytes = fs::read(receipt)?;
     if identity.bytes == 0 {
@@ -495,6 +499,17 @@ fn validate_receipt(
             serde_json::from_slice(&bytes).map_err(|_| Error::ReceiptMalformed {
                 path: receipt.to_owned(),
             })?;
+        // Bind the claimed runtime scope, not merely a PASS substring in a log.
+        if document.status.as_deref() != Some("PASS")
+            || qualification.operations.is_empty()
+            || qualification.checks.is_empty()
+            || document.operations.as_ref() != Some(&qualification.operations)
+            || document.checks.as_ref() != Some(&qualification.checks)
+        {
+            return Err(Error::ReceiptBindingMismatch {
+                path: receipt.to_owned(),
+            });
+        }
         if document.source_revision.as_deref() != Some(source_revision)
             || document.source_inventory_sha256.as_deref() != Some(source_inventory.sha256.as_str())
         {
@@ -584,7 +599,7 @@ fn build_record_with_identity(
     let artifact_identity = sha256_file(artifact)?;
     qualification.receipt = validate_receipt(
         receipt,
-        qualification.status,
+        &qualification,
         receipt_marker,
         &source_revision,
         &source_inventory,
@@ -774,7 +789,7 @@ mod tests {
         let receipt = root.join("receipt.json");
         let artifact_path = artifact.path.to_string_lossy().replace('\\', "\\\\");
         let text = format!(
-            r#"{{"source_revision":"{revision}","source_inventory_sha256":"{inventory}","toolchain":{{"uniffi_bindgen":"{version}","uniffi_source_sha256":"generator-source-sha256"}},"artifacts":{{"{key}":{{"path":"{}","sha256":"{}","bytes":{}}}}},"status":"PASS"}}"#,
+            r#"{{"source_revision":"{revision}","source_inventory_sha256":"{inventory}","toolchain":{{"uniffi_bindgen":"{version}","uniffi_source_sha256":"generator-source-sha256"}},"artifacts":{{"{key}":{{"path":"{}","sha256":"{}","bytes":{}}}}},"status":"PASS","operations":["all-eight-actors"],"checks":["install","cancellation"]}}"#,
             artifact_path,
             artifact.sha256,
             artifact.bytes,
@@ -892,6 +907,41 @@ mod tests {
                 | Err(Error::ReceiptBindingMismatch { .. })
                 | Err(Error::ReceiptMalformed { .. })
         ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn receipt_rejects_unexecuted_qualification_scope() {
+        let root = committed_fixture();
+        let artifact = root.join("artifact.whl");
+        fs::write(&artifact, b"qualified artifact\n").unwrap();
+        let receipt = typed_receipt(&root, &artifact, "python", "0.31.0");
+        let original: serde_json::Value =
+            serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        for (field, replacement) in [
+            ("status", serde_json::json!("FAIL")),
+            ("status", serde_json::Value::Null),
+            ("operations", serde_json::json!(["inspectActor"])),
+            ("operations", serde_json::Value::Null),
+            ("checks", serde_json::json!(["install"])),
+            ("checks", serde_json::Value::Null),
+        ] {
+            let mut changed = original.clone();
+            changed[field] = replacement;
+            fs::write(&receipt, serde_json::to_vec(&changed).unwrap()).unwrap();
+            let result = build_record_from_source(
+                &root,
+                &root.join("Cargo.toml"),
+                "acyclic-actors-uniffi",
+                Language::Python,
+                generator(),
+                &artifact,
+                &receipt,
+                "PASS",
+                qualification(&receipt),
+            );
+            assert!(result.is_err(), "accepted unexecuted {field}");
+        }
         let _ = fs::remove_dir_all(root);
     }
 

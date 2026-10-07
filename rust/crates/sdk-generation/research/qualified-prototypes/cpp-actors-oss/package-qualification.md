@@ -53,15 +53,29 @@ The manifest uses `acyclic-actors = { version = "0.2.0", path = "../../../../act
 so Cargo can validate the version declaration. `cargo package --allow-dirty
 --no-verify` then fails while preparing the package because `acyclic-actors`
 is not present in the crates.io index. The Actors workspace crate is unpublished;
-Cargo does not vendor a path dependency into this archive. This is an honest
-packaging blocker, so no extracted build is claimed and no dependency is hidden
-with an exclude or configuration hack.
+Cargo does not vendor a path dependency into this archive. This direct command
+remains an honest packaging failure; the reproducible qualification below uses
+the separately produced Actors archive and an explicit external patch for the
+offline extracted build.
 
 The source-only installed artifact is therefore qualified through its exact
 generated header, static library, and external consumer link. A publishable
 package needs an approved internal registry or a separately published Actors
 dependency; adding a second hand-written C++ contract would invalidate this
 qualification.
+
+The reproducible package qualification entrypoint is
+`scripts/check-cpp-actors-package.sh`. It packages the authoritative Actors
+crate first, extracts that produced `.crate`, and supplies the extracted path
+through an external `[patch.crates-io]` configuration while packaging and
+building this CXX crate with `--offline`. The extracted install is consumed by
+an independent CMake project using `find_package(AcyclicActorsCXX CONFIG
+REQUIRED)`. That project links the primitive smoke consumer and the full
+eight-operation consumer; direct syntax checks retain the `uint64_t` and
+nominal opaque-type expected negatives. CMake derives the package version with
+`cargo metadata` and records the Cargo manifest and generated-header hashes in
+the installed config. This test-only patch does not publish Actors and does
+not remove or conceal the dependency.
 
 `pcwalton/cxx-async` 0.1.4 remains a maintained future bridge option. Its C++20
 executor dependencies (cppcoro/Folly) are unavailable here; that does not
