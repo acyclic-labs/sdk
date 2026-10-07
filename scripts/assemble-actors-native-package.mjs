@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,22 +41,6 @@ function parseArgs(argv) {
   return options;
 }
 
-function companionName(target) {
-  const names = {
-    "x86_64-unknown-linux-gnu": "linux-x64-gnu",
-    "x86_64-unknown-linux-musl": "linux-x64-musl",
-    "aarch64-unknown-linux-gnu": "linux-arm64-gnu",
-    "aarch64-unknown-linux-musl": "linux-arm64-musl",
-    "x86_64-apple-darwin": "darwin-x64",
-    "aarch64-apple-darwin": "darwin-arm64",
-    "x86_64-pc-windows-msvc": "win32-x64-msvc",
-    "aarch64-pc-windows-msvc": "win32-arm64-msvc",
-  };
-  const suffix = names[target];
-  if (suffix === undefined) fail(`unsupported Actors N-API target ${target}`);
-  return `@acyclic-labs/actors-${suffix}`;
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -76,28 +60,27 @@ async function main() {
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-actors-package-"));
   try {
     const parentRoot = join(temporary, "parent");
-    const companionRoot = join(temporary, "companion");
+    const napiConfigPath = join(temporary, "napi-package.json");
     await cp(packagePath, parentRoot, { recursive: true, filter: (source) => !source.includes(`${join("generated", "native")}`) });
     await rm(join(parentRoot, "generated/native"), { recursive: true, force: true });
     await mkdir(output, { recursive: true });
     const parentArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: parentRoot });
 
-    await mkdir(join(companionRoot, "generated/native"), { recursive: true });
-    run(process.execPath, ["scripts/build-actors-native.mjs", "stage", "--bundle", bundle, "--output", join(companionRoot, "generated/native")]);
-    const companionManifest = {
-      name: companionName(metadata.selected_target),
-      version: manifest.version,
-      private: false,
-      description: `Native Actors Rust transport for ${metadata.selected_target}`,
-      type: "module",
-      files: ["generated/native"],
-      main: "generated/native/binding.cjs",
-      exports: {
-        ".": { types: "./generated/native/binding.d.ts", default: "./generated/native/binding.cjs" },
-        "./native-targets.json": "./generated/native/native-targets.json",
-      },
-    };
-    await writeFile(join(companionRoot, "package.json"), `${JSON.stringify(companionManifest, null, 2)}\n`);
+    // Let the maintained NAPI-RS 3.10.5 package APIs own target naming,
+    // package metadata, cpu/os/libc selectors, and the binary file list. The
+    // Rust bundle remains the attested input; the temporary config supplies
+    // its one selected target without adding a second checked-in target list.
+    const napiConfig = { ...manifest, napi: { ...manifest.napi, targets: [metadata.selected_target] } };
+    await writeFile(napiConfigPath, `${JSON.stringify(napiConfig, null, 2)}\n`);
+    const { NapiCli } = await import("@napi-rs/cli");
+    const napi = new NapiCli();
+    const npmDir = join(temporary, "npm");
+    await napi.createNpmDirs({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir });
+    await napi.artifacts({ cwd: temporary, packageJsonPath: napiConfigPath, npmDir, outputDir: bundle });
+    const companionEntries = (await readdir(npmDir, { withFileTypes: true })).filter(entry => entry.isDirectory());
+    if (companionEntries.length !== 1) fail(`NAPI-RS produced ${companionEntries.length} companion package directories`);
+    const companionRoot = join(npmDir, companionEntries[0].name);
+    const companionManifest = JSON.parse(await readFile(join(companionRoot, "package.json"), "utf8"));
     const companionArchive = run("npm", ["pack", "--ignore-scripts", "--pack-destination", output, "--silent"], { cwd: companionRoot });
     const receipt = {
       schema: "acyclic.actors.native-package-assembly.v1",
