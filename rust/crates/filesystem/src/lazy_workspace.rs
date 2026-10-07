@@ -4282,14 +4282,10 @@ where
         &self,
         path: &str,
     ) -> Result<Option<SourceVersion>, LazyWorkspaceError> {
-        let path = self.canonical_path(path)?;
+        let path = self.namespace_path(path)?;
         let state = self.state().await?;
         self.source
-            .lookup(
-                state.source,
-                &self.namespace_path(&path)?,
-                &CancellationToken::new(),
-            )
+            .lookup(state.source, &path, &CancellationToken::new())
             .await
             .map(|receipt| receipt.value.map(|node| node.version))
             .or_else(|failure| match failure.error {
