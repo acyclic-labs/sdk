@@ -5012,6 +5012,9 @@ mod tests {
         }
         let live = live_lazy_mount_over(&source, &mount, "live-hard-links", watched).await?;
         let same_file = |first: &str, second: &str| -> Result<(), Box<dyn std::error::Error>> {
+            // Keep the inode live while comparing names: an unwatched mount
+            // may receive FORGET between two otherwise independent stat calls.
+            let _held = std::fs::File::open(mount.join(first))?;
             let (one, other) = (
                 std::fs::metadata(mount.join(first))?,
                 std::fs::metadata(mount.join(second))?,
@@ -5054,6 +5057,7 @@ mod tests {
         // And every name still agrees after the source is revalidated.
         live.revalidate()?;
         for (first, second) in pairs {
+            let _held = std::fs::File::open(mount.join(first))?;
             assert_eq!(
                 std::fs::metadata(mount.join(first))?.ino(),
                 std::fs::metadata(mount.join(second))?.ino(),
