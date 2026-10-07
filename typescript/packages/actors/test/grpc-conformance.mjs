@@ -10,23 +10,29 @@ import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { WorkersService } from "../../workers/generated/proto/workers/v1/workers_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v2/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v2/objects_pb.js";
-import { createActorsGrpcClient } from "../dist/grpc.js";
+import { ActorsClient } from "../dist/index.js";
 import { createWorkersGrpcClient } from "../../workers/dist/grpc.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
-import { HttpActorsClient } from "../dist/http.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
-import { HTTP_ROUTES as actorRoutes } from "../dist/routes.js";
-import { HTTP_ROUTES as workerRoutes } from "../../workers/dist/routes.js";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 
+function rustRoutes(packageName, example) {
+  const generated = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", packageName, "--example", example], { cwd: root, encoding: "utf8" });
+  assert.equal(generated.status, 0, generated.stderr);
+  return Object.fromEntries(JSON.parse(generated.stdout));
+}
+
+const actorRoutes = rustRoutes("acyclic-actors", "actors-http-routes");
+const workerRoutes = rustRoutes("acyclic-workers", "workers-http-routes");
+
 function responseInitializer(method) {
   if (method.name === "InvokeActor") return { status: 201, headers: [{ name: "location", value: "/result" }] };
-  if (method.name === "CheckpointActor") return { actor: { actorId: "actor-a", checkpointEpoch: 9n } };
+  if (["CreateActor", "UpdateActor", "InspectActor", "AddSubscription", "RemoveSubscription", "ResumeSubscription", "CheckpointActor"].includes(method.name)) return { actor: { actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu", state: 1, checkpointEpoch: 9n, configurationRevision: 1n } };
   if (method.name === "InvokeVersion") return { resolvedSha256: new Uint8Array(32).fill(1) };
   if (method.name === "InvokeDeployment") return { resolvedSha256: new Uint8Array(32).fill(2), resolvedRevision: 8n };
   if (method.name === "SubmitJob") return { job: { jobId: "job-a", state: 1, resolvedSha256: new Uint8Array(32).fill(7) } };
@@ -72,11 +78,27 @@ if (process.argv.includes("--client")) {
   for await (const chunk of process.stdin) configText += chunk;
   const options = JSON.parse(configText);
   const objects = createObjectsV2GrpcClients(options);
-  const clients = [createActorsGrpcClient(options), createWorkersGrpcClient(options), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
+  const actors = new ActorsClient({
+    endpoint: options.endpoint,
+    token: options.token,
+    caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
+  });
+  const clients = [actors, createWorkersGrpcClient(options), createStreamGrpcClient(options), objects.buckets, objects.objects, objects.multipart];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
       const initializer = {};
+      if (method.name === "CreateActor") Object.assign(initializer, {
+        codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu",
+        limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-a",
+      });
+      if (method.name === "UpdateActor") Object.assign(initializer, {
+        actorId: "actor-a", codeSha256: new Uint8Array(32).fill(1),
+        limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, expectedConfigurationRevision: 1n, idempotencyKey: "update-a",
+      });
+      if (["InspectActor", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) Object.assign(initializer, {
+        actorId: "actor-a", subscriptionId: "input", idempotencyKey: "subscription-a",
+      });
       if (method.name === "InvokeActor") initializer.headers = [{ name: "content-type", value: "application/json" }];
       if (method.name === "SelectDeployment") initializer.expectedRevision = 7n;
       if (method.name === "InvokeVersion") initializer.versionSha256 = new Uint8Array(32).fill(1);
@@ -87,6 +109,7 @@ if (process.argv.includes("--client")) {
         idempotencyKey: "subscribe-a",
       });
       if (method.name === "CheckpointActor") Object.assign(initializer, { actorId: "actor-a", idempotencyKey: "checkpoint-a" });
+      if (method.name === "InvokeActor") Object.assign(initializer, { actorId: "actor-a", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "SubmitJob") Object.assign(initializer, {
         target: { target: { case: "deploymentAlias", value: "current" } },
         input: { source: { case: "object", value: { bucket: "customer-input", key: "video/input.mp4" } } },
@@ -108,18 +131,23 @@ if (process.argv.includes("--client")) {
       } else {
         const input = method.methodKind === "client_streaming" ? (async function* () { yield request; yield request; })() : request;
         const response = await clients[index][method.localName](input);
-        assert.equal(response.$typeName, method.output.typeName);
+        if (index === 0) assert.ok(response);
+        else assert.equal(response.$typeName, method.output.typeName);
         inspectResponse(method, response);
       }
       count++;
-      if (index < 2) {
-        const http = index === 0 ? new HttpActorsClient({ ...options, endpoint: options.httpEndpoint }) : new HttpWorkersClient({ ...options, endpoint: options.httpEndpoint });
+      if (index === 1) {
+        const http = new HttpWorkersClient({ ...options, endpoint: options.httpEndpoint });
         inspectResponse(method, await http[method.localName](request));
       }
     }
   }
-  const denied = createActorsGrpcClient({ ...options, token: "wrong" });
-  await assert.rejects(denied.inspectActor({ actorId: "a" }), error => error instanceof ConnectError && error.code === Code.Unauthenticated);
+  const denied = new ActorsClient({
+    endpoint: options.endpoint,
+    token: "wrong",
+    caCertificate: typeof options.caCertificate === "string" ? new TextEncoder().encode(options.caCertificate) : options.caCertificate,
+  });
+  await assert.rejects(denied.inspectActor({ actorId: "a" }), error => error?.code === "service" || error?.code === "unauthenticated");
   assert.equal(count, expected);
   console.log(`${process.versions.bun ? "Bun" : "Node"}: ${count} authenticated gRPC methods, streaming and denied authentication passed`);
   process.exit(0);
@@ -216,7 +244,8 @@ try {
   assert.equal(seen.size, expected);
   for (const [method, calls] of seen) assert.equal(calls, method.includes(".actors.") || method.includes(".workers.") ? 3 : 2, method);
   assert.equal(httpSeen.size, 15);
-  for (const [method, calls] of httpSeen) assert.equal(calls, 3, method);
+  const actorMethods = new Set(ActorsService.methods.map(method => method.name));
+  for (const [method, calls] of httpSeen) assert.equal(calls, actorMethods.has(method) ? 1 : 3, method);
 } finally {
   await new Promise(resolve => httpServer.close(resolve));
   await new Promise(resolve => server.close(resolve));

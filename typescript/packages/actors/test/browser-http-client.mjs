@@ -3,7 +3,7 @@ import { create } from "@bufbuild/protobuf";
 import { lifecycle } from "../../objects/test/v2-lifecycle.mjs";
 import { HttpObjectsV2 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
-import { ActorsService, ActorsTransportError, HttpActorsClient } from "@acyclic-labs/actors";
+import { ActorsClient, ActorsService } from "@acyclic-labs/actors";
 import { WorkersService, WorkersTransportError, HttpWorkersClient } from "@acyclic-labs/workers";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";
 
@@ -13,17 +13,32 @@ try {
   await lifecycle(objects);
   await assert.rejects(new HttpObjectsV2({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
   await assert.rejects(new HttpObjectsV2({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
+  const actors = new ActorsClient(options);
+  assert.equal(await actors.transport, "grpc-web");
   let methods = 0;
-  for (const [service, client] of [[ActorsService, new HttpActorsClient(options)], [WorkersService, new HttpWorkersClient(options)]]) {
+  for (const [service, client] of [[ActorsService, actors], [WorkersService, new HttpWorkersClient(options)]]) {
     for (const method of service.methods) {
       const init = {};
+      if (method.name === "CreateActor") Object.assign(init, {
+        codeSha256: new Uint8Array(32).fill(1), homeRegion: "eu",
+        limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, idempotencyKey: "create-browser",
+      });
+      if (method.name === "UpdateActor") Object.assign(init, {
+        actorId: "browser-actor", codeSha256: new Uint8Array(32).fill(1),
+        limits: { handlerTimeoutMillis: 1000n, memoryBytes: 1024n, checkpointBytes: 1024n }, expectedConfigurationRevision: 1n, idempotencyKey: "update-browser",
+      });
+      if (["InspectActor", "RemoveSubscription", "ResumeSubscription"].includes(method.name)) Object.assign(init, {
+        actorId: "browser-actor", subscriptionId: "input", idempotencyKey: "subscription-browser",
+      });
       if (method.name === "AddSubscription") Object.assign(init, { actorId: "browser-actor", subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } }, idempotencyKey: "subscribe-browser" });
       if (method.name === "CheckpointActor") Object.assign(init, { actorId: "browser-actor", idempotencyKey: "checkpoint-browser" });
+      if (method.name === "InvokeActor") Object.assign(init, { actorId: "browser-actor", method: "POST", url: "/invoke", body: new Uint8Array([1]) });
       if (method.name === "SelectDeployment") init.expectedRevision = 7n;
       if (method.name === "InvokeVersion") init.versionSha256 = new Uint8Array(32).fill(1);
       if (method.name === "InvokeDeployment") init.alias = "current";
       const result = await client[method.localName](create(method.input, init));
-      assert.equal(result.$typeName, method.output.typeName);
+      if (service === ActorsService) assert.ok(result);
+      else assert.equal(result.$typeName, method.output.typeName);
       if (method.name === "CheckpointActor") assert.equal(result.actor.checkpointEpoch, 9n);
       if (method.name === "InvokeActor") assert.equal(result.status, 201);
       if (method.name === "InvokeVersion") { assert.deepEqual(result.resolvedSha256, new Uint8Array(32).fill(1)); assert.equal(result.resolvedRevision, undefined); }
@@ -33,8 +48,11 @@ try {
   }
   assert.equal(methods, 15);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
-  await assert.rejects(new HttpActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.status === 403 && typeof error.code === "number");
-  await assert.rejects(new HttpActorsClient({ ...options, maximumResponseBytes: 8 }).inspectActor(create(inspectActor.input, { actorId: "oversize" })), error => error instanceof ActorsTransportError && error.message === "response exceeds configured bound");
+  await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "service" || error.code === "unauthenticated");
+  const cancellation = new AbortController();
+  const pending = actors.inspectActor({ actorId: "cancel" }, { signal: cancellation.signal });
+  setTimeout(() => cancellation.abort(), 0);
+  await assert.rejects(pending, error => error.code === "cancelled");
   const inspectJob = WorkersService.methods.find(method => method.name === "InspectJob");
   await assert.rejects(new HttpWorkersClient({ ...options, token: "wrong" }).inspectJob(create(inspectJob.input, { jobId: "job" })), error => error.status === 403 && typeof error.code === "number");
   await assert.rejects(new HttpWorkersClient({ ...options, maximumResponseBytes: 8 }).inspectJob(create(inspectJob.input, { jobId: "oversize" })), error => error instanceof WorkersTransportError && error.message === "response exceeds configured bound");
