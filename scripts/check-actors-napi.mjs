@@ -134,13 +134,19 @@ async function qualify(bindingPath) {
   } catch (error) {
     if (!String(error).includes("empty_actor_id")) throw error;
   }
-  const digest = binding.CodeSha256(new Uint8Array(32));
+  const digest = binding.CodeSha256(new Uint8Array(32).fill(1));
   if (!(digest instanceof Uint8Array) || digest.byteLength !== 32) {
     throw new Error("Rust CodeSha256 constructor changed its valid projection");
   }
   try {
     binding.CodeSha256(new Uint8Array(31));
-    throw new Error("Rust CodeSha256 constructor accepted an invalid digest");
+    throw new Error("Rust CodeSha256 constructor accepted a short digest");
+  } catch (error) {
+    if (!String(error).includes("invalid_code_sha256")) throw error;
+  }
+  try {
+    binding.CodeSha256(new Uint8Array(32));
+    throw new Error("Rust CodeSha256 constructor accepted an all-zero digest");
   } catch (error) {
     if (!String(error).includes("invalid_code_sha256")) throw error;
   }

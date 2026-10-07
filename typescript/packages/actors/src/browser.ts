@@ -1,4 +1,5 @@
 import type * as GeneratedBrowser from "../generated/wasm/acyclic_actors_wasm.js";
+import { normalizeActorsError } from "./client.js";
 
 type BrowserModule = typeof GeneratedBrowser;
 type BrowserClient = InstanceType<BrowserModule["ActorsClient"]>;
@@ -23,8 +24,12 @@ export class BrowserActorsClient {
   private constructor(private readonly binding: BrowserClient) {}
 
   static async connect(endpoint: string, token: string): Promise<BrowserActorsClient> {
-    const module = await loadBrowserModule();
-    return new BrowserActorsClient(new module.ActorsClient(endpoint, token));
+    try {
+      const module = await loadBrowserModule();
+      return new BrowserActorsClient(new module.ActorsClient(endpoint, token));
+    } catch (error) {
+      throw normalizeActorsError(error);
+    }
   }
 
   get transport(): string {
@@ -32,19 +37,23 @@ export class BrowserActorsClient {
   }
 
   async call(operation: string, request: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
-    const module = await loadBrowserModule();
-    const cancellation: BrowserCancellation = new module.CancellationHandle();
-    const abort = () => cancellation.cancel();
-    if (signal?.aborted) abort();
-    else signal?.addEventListener("abort", abort, { once: true });
+    let abort: (() => void) | undefined;
     try {
+      const module = await loadBrowserModule();
+      const cancellation: BrowserCancellation = new module.CancellationHandle();
+      const onAbort = () => cancellation.cancel();
+      abort = onAbort;
+      if (signal?.aborted) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
       const method = this.binding[operation as keyof BrowserClient] as (
         request: Uint8Array,
         cancellation: BrowserCancellation,
       ) => Promise<Uint8Array>;
       return await method.call(this.binding, request, cancellation);
+    } catch (error) {
+      throw normalizeActorsError(error);
     } finally {
-      signal?.removeEventListener("abort", abort);
+      if (abort !== undefined) signal?.removeEventListener("abort", abort);
     }
   }
 }

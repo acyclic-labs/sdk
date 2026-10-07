@@ -11,11 +11,7 @@ use std::{
     process::Command,
 };
 
-#[path = "../../actors/src/codegen.rs"]
-mod actors_codegen;
 mod compiled_generator_inputs;
-#[path = "../../actors/src/contract.rs"]
-mod contract;
 
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -131,10 +127,13 @@ fn verify_compiled_generator_source(root: &Path) -> io::Result<()> {
 
 fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_GENERATED_ROOT);
-    actors_codegen::generate(&stage)?;
-    if !stage.join("acyclic-actors-v1.bin").is_file() {
+    let proto_root = stage.join("proto");
+    acyclic_actors::contract::render_proto_files(&proto_root).map_err(io::Error::other)?;
+    let descriptor = stage.join("acyclic-actors-v1.bin");
+    fs::write(&descriptor, acyclic_actors::FILE_DESCRIPTOR_SET)?;
+    if !descriptor.is_file() {
         return Err(io::Error::other(
-            "Actors codegen did not produce a descriptor",
+            "Actors contract metadata did not produce a descriptor",
         ));
     }
     Ok(())

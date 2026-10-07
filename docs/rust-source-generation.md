@@ -9,7 +9,7 @@ reconstruct those declarations.
 
 | Responsibility | Pinned candidate | Working evidence | Remaining acceptance |
 | --- | --- | --- | --- |
-| Rust declarations to protobuf | Protify 0.1.4, Prost 0.14.4 | Rust-owned Actors contract plus shared `build.rs`/`codegen.rs`; fresh descriptor structural golden match recorded below | Full release drift gate over descriptor, options, streaming signatures, and tonic generation |
+| Rust declarations to protobuf | Protify 0.1.4, Prost 0.14.4 | Rust-owned Actors contract plus shared `build.rs`/`codegen.rs`; fresh descriptor structural golden match recorded below. `sdk-generation` renders the maintained proto through `acyclic_actors::contract` and stages the descriptor embedded by the Actors build | Full release drift gate over descriptor, options, streaming signatures, and the Actors-owned tonic build |
 | TypeScript static types | ts-rs 12.0.1 | Semantic export roots and `ts-rs` metadata live in `actors/src/domain.rs`; the Actors package consumes generated proto types through its HTTP and gRPC wrappers | Connect the Rust semantic export step to the standalone generation bundle, then qualify installed native/browser clients and complete operation coverage |
 | Rust documentation input | rustdoc-types 0.60.0, Rustdoc 1.98.1, format 60 | Real public/re-export/private-path fixtures; pinned typed input with docs and spans available by item identity | A typed Rustdoc-to-public-API join is not claimed until its provenance, source coverage and immutable bundle checks pass |
 | API signature formatting | public-api 0.52.2 | Integrated checked format adapter; real generic methods, repeated aliases, enum fields and associated items; custom formatter removed | Full SDK source coverage |
@@ -25,13 +25,24 @@ The Actors generation boundary is intentionally a thin physical build step.
 `rust/crates/actors/build.rs` declares the contract inputs and delegates to the
 shared `src/codegen.rs`; that code renders the Rust-owned contract through
 `src/contract.rs`, then invokes the maintained prost/tonic builder for the proto,
-descriptor set, and transport facade. A fresh structural golden comparison passed
-on 2026-10-06: the fresh descriptor SHA-256 was
+descriptor set, and transport facade. The standalone `sdk-generation` launcher
+uses the public `acyclic_actors::contract::render_proto_files` API for the
+intermediate proto and writes `acyclic_actors::FILE_DESCRIPTOR_SET`, which was
+compiled by that Actors build. It does not compile a second contract or emit a
+second tonic Rust facade. A fresh structural golden comparison passed on
+2026-10-06: the fresh descriptor SHA-256 was
 `c565b7d1fa43b3e96fc068ec7db687e504603a377e9e592d15033f15cd02e9e9`, compared
 with baseline `70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c`.
 The comparator reported `descriptor structural golden match`; it compares the
 descriptor's files, options, messages, fields, enums, services, and RPC shape,
 so this check does not depend on protobuf byte ordering.
+
+The compatibility manifest keeps the Actors `descriptorDigest` at the
+archived baseline value. It identifies the immutable descriptor used for
+compatibility comparison, not the byte hash of the newly generated descriptor.
+The fresh descriptor hash is recorded by `sdk-generation` in its
+`generation-manifest.json` artifact list. Other families' compatibility
+manifest descriptor fields retain their existing generated-artifact meaning.
 
 ## Current migration inventory
 
@@ -39,9 +50,13 @@ The Actors Rust bootstrap is now explicit and bounded. The Rust-owned contract
 is declared in `rust/crates/actors/src/contract.rs` and `domain.rs`; the thin
 `build.rs` invokes the shared `src/codegen.rs`, which renders the intermediate
 proto and descriptor before the tonic facade is generated. The standalone
-`sdk-generation` launcher imports that same codegen module, stages the outputs
-under its bundle, and then passes typed Rustdoc JSON to `sdk-docs`. Generated
-proto, Rust, and descriptor files remain artifacts and are not source inputs.
+`sdk-generation` launcher calls the contract module's public proto renderer,
+stages that proto and the canonical embedded descriptor under its bundle, and
+then passes typed Rustdoc JSON to `sdk-docs`. It does not regenerate tonic Rust
+source. Generated proto and descriptor files remain artifacts and are not source
+inputs; the compiled-generator source guard continues to hash the Actors
+`build.rs`, `codegen.rs`, contract definitions, manifest, and library sources
+that produce the embedded descriptor.
 
 The TypeScript wiring is a separate current path: `ts-rs` export roots are
 defined in `actors/src/domain.rs`, while

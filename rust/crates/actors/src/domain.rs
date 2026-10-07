@@ -138,6 +138,7 @@ pub type Header = wire::Header;
 /// Resource binding admitted by the canonical create/update validators.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/Binding.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct Binding {
     name: String,
     capability: String,
@@ -209,6 +210,7 @@ impl From<Binding> for wire::Binding {
 /// Positive limits admitted by the canonical create/update validators.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorLimits.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
     #[ts(type = "bigint")]
     handler_timeout_millis: u64,
@@ -290,6 +292,7 @@ impl From<ActorLimits> for wire::ActorLimits {
 /// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
+#[ts(type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }")]
 pub enum SubscriptionStart {
     /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
@@ -356,6 +359,7 @@ impl From<SubscriptionStart> for wire::SubscriptionStart {
 /// A subscription admitted by `validate_create` or `validate_add_subscription`.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionSpec.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct SubscriptionSpec {
     subscription_id: String,
     stream_path: String,
@@ -479,6 +483,7 @@ impl From<SubscriptionSpec> for wire::SubscriptionSpec {
 /// than normalized to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionState.ts")]
+#[ts(type = "0 | 1 | 2")]
 pub enum SubscriptionState {
     /// No subscription state was specified by the service.
     Unspecified,
@@ -514,6 +519,7 @@ impl From<SubscriptionState> for i32 {
 /// Known Actor states. Unknown protobuf integers remain observable errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorState.ts")]
+#[ts(type = "0 | 1 | 2 | 3")]
 pub enum ActorState {
     /// No Actor state was specified by the service.
     Unspecified,
@@ -529,6 +535,7 @@ pub enum ActorState {
 /// `DomainError::UnknownErrorCode` instead of being coerced to `Unspecified`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ErrorCode.ts")]
+#[ts(type = "0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10")]
 pub enum ErrorCode {
     /// No service error code was specified.
     Unspecified,
@@ -578,6 +585,7 @@ impl TryFrom<i32> for ErrorCode {
 /// A service error with a typed known code and lossless message.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ServiceError.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct ServiceError {
     code: ErrorCode,
     message: String,
@@ -669,6 +677,7 @@ impl From<ErrorCode> for i32 {
 /// Lossless semantic view of a subscription observation.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionObservation.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct SubscriptionObservation {
     subscription_id: String,
     stream_path: String,
@@ -758,6 +767,7 @@ impl From<SubscriptionObservation> for wire::SubscriptionObservation {
 /// Lossless semantic view of a server Actor observation.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ActorObservation.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct ActorObservation {
     actor_id: ActorId,
     code_sha256: CodeSha256,
@@ -845,6 +855,7 @@ macro_rules! actor_response_type {
     ($name:ident, $wire:ident) => {
         #[derive(Clone, Debug, Eq, PartialEq, TS)]
         #[ts(export_to = concat!("actors/", stringify!($name), ".ts"))]
+        #[ts(rename_all = "camelCase")]
         #[doc = "Typed response preserving the optional server Actor observation."]
         pub struct $name {
             actor: Option<ActorObservation>,
@@ -889,6 +900,7 @@ actor_response_type!(CheckpointActorResponse, CheckpointActorResponse);
 /// Create request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CreateActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct CreateActorRequest {
     code_sha256: CodeSha256,
     home_region: String,
@@ -978,6 +990,7 @@ impl From<CreateActorRequest> for wire::CreateActorRequest {
 /// Update request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/UpdateActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct UpdateActorRequest {
     actor_id: ActorId,
     code_sha256: CodeSha256,
@@ -1067,6 +1080,7 @@ impl From<UpdateActorRequest> for wire::UpdateActorRequest {
 /// Actor identity rule is applied by this conversion.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/InspectActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct InspectActorRequest {
     actor_id: ActorId,
 }
@@ -1101,6 +1115,7 @@ impl From<InspectActorRequest> for wire::InspectActorRequest {
 /// Add subscription request after the canonical admission validator has run.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/AddSubscriptionRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct AddSubscriptionRequest {
     actor_id: ActorId,
     subscription: SubscriptionSpec,
@@ -1161,6 +1176,7 @@ impl From<AddSubscriptionRequest> for wire::AddSubscriptionRequest {
 /// strings remain unbranded and are carried exactly as received.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/RemoveSubscriptionRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct RemoveSubscriptionRequest {
     actor_id: ActorId,
     subscription_id: String,
@@ -1213,6 +1229,7 @@ impl From<RemoveSubscriptionRequest> for wire::RemoveSubscriptionRequest {
 /// Resume has no canonical validator yet; the wire strings stay unbranded.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/ResumeSubscriptionRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct ResumeSubscriptionRequest {
     actor_id: ActorId,
     subscription_id: String,
@@ -1266,6 +1283,7 @@ impl From<ResumeSubscriptionRequest> for wire::ResumeSubscriptionRequest {
 /// applied and the idempotency key remains an ordinary string.
 #[derive(Clone, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/CheckpointActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct CheckpointActorRequest {
     actor_id: ActorId,
     idempotency_key: String,
@@ -1312,6 +1330,7 @@ impl From<CheckpointActorRequest> for wire::CheckpointActorRequest {
 /// existing wire contract without adding new validation rules.
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorRequest.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct InvokeActorRequest {
     actor_id: ActorId,
     method: String,
@@ -1386,6 +1405,7 @@ impl From<InvokeActorRequest> for wire::InvokeActorRequest {
 /// Typed invocation response with byte-preserving body and headers.
 #[derive(Clone, Debug, PartialEq, TS)]
 #[ts(export_to = "actors/InvokeActorResponse.ts")]
+#[ts(rename_all = "camelCase")]
 pub struct InvokeActorResponse {
     status: u32,
     #[ts(type = "Uint8Array")]

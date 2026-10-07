@@ -11,12 +11,49 @@ the previous version active, and paused subscriptions remain paused.
 
 The service owns execution, fencing, checkpoint storage, and hibernation. This
 crate validates customer-authored requests and packages the versioned wire
-descriptor used to generate TypeScript bindings. The Rust gRPC and HTTP
-adapters are native-only; browser consumers use the generated TypeScript
-transport over the same canonical contract.
+descriptor used to generate TypeScript bindings. Native builds expose direct
+gRPC and HTTP adapters; the shared client selects gRPC or gRPC-Web, while
+browser consumers may also use the TypeScript Actors transport over the same
+canonical contract.
 
-`grpc::connect(endpoint, token)` exposes every generated Actors service RPC.
-Use `grpc::connect_with_ca_certificate` for a caller-supplied private CA.
-`http::Client::new(endpoint, token, maximum_response_bytes)` exposes the same
-eight operations using canonical Protobuf JSON. Invocation carries request and
-response headers. HTTP mutations are not automatically retried.
+`client::connect(endpoint, token)` selects the canonical authenticated
+transport for the target: native builds use gRPC and browser builds use
+gRPC-Web. Use `client::connect_with_ca_certificate` when a native caller pins
+a private CA. The semantic client accepts the typed domain requests and
+returns typed responses; invocation carries request and response headers.
+
+## Canonical transport call
+
+This example uses the target-aware client and the semantic domain request. It
+is compile-checked by rustdoc and does not contact the example endpoint while
+documentation is built.
+
+```rust,no_run
+# async fn inspect() -> Result<(), Box<dyn std::error::Error>> {
+let client = acyclic_actors::client::connect("https://actors.example", "account-token").await?;
+let request = acyclic_actors::domain::InspectActorRequest::new(
+    acyclic_actors::domain::ActorId::new("actor-a".to_owned())?,
+);
+let response = client
+    .inspect_actor(&request)
+    .await?;
+if let Some(actor) = response.actor() {
+    println!("{}", actor.actor_id().as_str());
+}
+# let _ = response;
+# Ok(())
+# }
+```
+
+## Runnable examples
+
+The repository keeps the transport and descriptor examples as executable Rust
+sources:
+
+- [`actors-http-routes`](examples/actors-http-routes.rs) emits the route table
+  consumed by the TypeScript binding generator.
+- [`conformance-certificate`](examples/conformance-certificate.rs) creates the
+  ephemeral certificate used by local transport conformance.
+- [`transport-conformance`](examples/transport-conformance.rs) exercises all
+  eight Actors operations through both native transports against the local
+  test service.

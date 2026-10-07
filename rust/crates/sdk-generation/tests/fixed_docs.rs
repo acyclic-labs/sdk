@@ -27,6 +27,21 @@ fn copy_compiled_generator_sources(root: &Path) {
     }
 }
 
+fn fixture_workspace_manifest(source_root: &Path) -> String {
+    let source = fs::read_to_string(source_root.join("Cargo.toml")).unwrap();
+    let members_start = source.find("members = [").unwrap();
+    let members_close = source[members_start..]
+        .find("]\nresolver")
+        .map(|offset| members_start + offset)
+        .unwrap();
+    let mut manifest = String::with_capacity(source.len());
+    manifest.push_str(&source[..members_start]);
+    manifest
+        .push_str("members = [\n    \"rust/crates/actors\",\n    \"rust/crates/workers\",\n]\n");
+    manifest.push_str(&source[members_close + 1..]);
+    manifest
+}
+
 fn git(root: &Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -431,20 +446,32 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     let sandbox = temp("sdk-generation-rustdoc-stage");
     let root = sandbox.join("root");
     let output = sandbox.join("bundle");
+    let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     fs::create_dir_all(root.join("rust/crates/actors/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/actors/examples")).unwrap();
+    fs::create_dir_all(root.join("rust/crates/workers/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-docs/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-generation/src")).unwrap();
     fs::create_dir_all(root.join("rust/crates/sdk-generation/tests")).unwrap();
     fs::create_dir_all(root.join("docs")).unwrap();
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"rust/crates/actors\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.2.0\"\nedition = \"2024\"\nrust-version = \"1.98.1\"\n",
+        fixture_workspace_manifest(&source_root),
     )
     .unwrap();
     fs::write(
         root.join("rust/crates/actors/Cargo.toml"),
         "[package]\nname = \"acyclic-actors\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/workers/Cargo.toml"),
+        "[package]\nname = \"acyclic-workers\"\nversion.workspace = true\nedition.workspace = true\nrust-version.workspace = true\npublish = false\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("rust/crates/workers/src/lib.rs"),
+        "//! Fixture-only worker dependency.\n",
     )
     .unwrap();
     fs::write(

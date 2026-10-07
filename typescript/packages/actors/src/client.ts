@@ -1,4 +1,5 @@
-import { fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import type { MessageInitShape } from "@bufbuild/protobuf";
 import type { GenMessage } from "@bufbuild/protobuf/codegenv2";
 import {
   AddSubscriptionRequestSchema,
@@ -19,21 +20,13 @@ import {
   UpdateActorResponseSchema,
 } from "../generated/proto/actors/v1/actors_pb.js";
 import type {
-  AddSubscriptionRequest,
   AddSubscriptionResponse,
-  CheckpointActorRequest,
   CheckpointActorResponse,
-  CreateActorRequest,
   CreateActorResponse,
-  InspectActorRequest,
   InspectActorResponse,
-  InvokeActorRequest,
   InvokeActorResponse,
-  RemoveSubscriptionRequest,
   RemoveSubscriptionResponse,
-  ResumeSubscriptionRequest,
   ResumeSubscriptionResponse,
-  UpdateActorRequest,
   UpdateActorResponse,
 } from "../generated/proto/actors/v1/actors_pb.js";
 
@@ -46,7 +39,10 @@ export interface ActorsClientOptions {
 /** Rust-generated error metadata with the normal JavaScript Error surface. */
 export type ActorsError = Error & Readonly<Record<string, unknown>>;
 
-function actorsError(value: unknown): ActorsError {
+type ActorsRequest<S extends GenMessage<object>> = MessageInitShape<S>;
+
+/** Converts native, WASM, and ordinary JS failures to the shared Rust error surface. */
+export function normalizeActorsError(value: unknown): ActorsError {
   if (value instanceof Error) return value as ActorsError;
   const metadata = typeof value === "object" && value !== null ? value : {};
   const error = new Error(
@@ -90,28 +86,28 @@ export class ActorsClient {
     return this.binding.transport;
   }
 
-  async createActor(request: CreateActorRequest, signal?: AbortSignal): Promise<CreateActorResponse> {
+  async createActor(request: ActorsRequest<typeof CreateActorRequestSchema>, signal?: AbortSignal): Promise<CreateActorResponse> {
     return this.call("createActor", CreateActorRequestSchema, CreateActorResponseSchema, request, signal);
   }
-  async updateActor(request: UpdateActorRequest, signal?: AbortSignal): Promise<UpdateActorResponse> {
+  async updateActor(request: ActorsRequest<typeof UpdateActorRequestSchema>, signal?: AbortSignal): Promise<UpdateActorResponse> {
     return this.call("updateActor", UpdateActorRequestSchema, UpdateActorResponseSchema, request, signal);
   }
-  async inspectActor(request: InspectActorRequest, signal?: AbortSignal): Promise<InspectActorResponse> {
+  async inspectActor(request: ActorsRequest<typeof InspectActorRequestSchema>, signal?: AbortSignal): Promise<InspectActorResponse> {
     return this.call("inspectActor", InspectActorRequestSchema, InspectActorResponseSchema, request, signal);
   }
-  async addSubscription(request: AddSubscriptionRequest, signal?: AbortSignal): Promise<AddSubscriptionResponse> {
+  async addSubscription(request: ActorsRequest<typeof AddSubscriptionRequestSchema>, signal?: AbortSignal): Promise<AddSubscriptionResponse> {
     return this.call("addSubscription", AddSubscriptionRequestSchema, AddSubscriptionResponseSchema, request, signal);
   }
-  async removeSubscription(request: RemoveSubscriptionRequest, signal?: AbortSignal): Promise<RemoveSubscriptionResponse> {
+  async removeSubscription(request: ActorsRequest<typeof RemoveSubscriptionRequestSchema>, signal?: AbortSignal): Promise<RemoveSubscriptionResponse> {
     return this.call("removeSubscription", RemoveSubscriptionRequestSchema, RemoveSubscriptionResponseSchema, request, signal);
   }
-  async resumeSubscription(request: ResumeSubscriptionRequest, signal?: AbortSignal): Promise<ResumeSubscriptionResponse> {
+  async resumeSubscription(request: ActorsRequest<typeof ResumeSubscriptionRequestSchema>, signal?: AbortSignal): Promise<ResumeSubscriptionResponse> {
     return this.call("resumeSubscription", ResumeSubscriptionRequestSchema, ResumeSubscriptionResponseSchema, request, signal);
   }
-  async checkpointActor(request: CheckpointActorRequest, signal?: AbortSignal): Promise<CheckpointActorResponse> {
+  async checkpointActor(request: ActorsRequest<typeof CheckpointActorRequestSchema>, signal?: AbortSignal): Promise<CheckpointActorResponse> {
     return this.call("checkpointActor", CheckpointActorRequestSchema, CheckpointActorResponseSchema, request, signal);
   }
-  async invokeActor(request: InvokeActorRequest, signal?: AbortSignal): Promise<InvokeActorResponse> {
+  async invokeActor(request: ActorsRequest<typeof InvokeActorRequestSchema>, signal?: AbortSignal): Promise<InvokeActorResponse> {
     return this.call("invokeActor", InvokeActorRequestSchema, InvokeActorResponseSchema, request, signal);
   }
 
@@ -119,21 +115,21 @@ export class ActorsClient {
     operation: string,
     requestSchema: GenMessage<I>,
     responseSchema: GenMessage<O>,
-    request: I,
+    request: MessageInitShape<GenMessage<I>>,
     signal?: AbortSignal,
   ): Promise<O> {
     let bytes: Uint8Array;
     try {
-      bytes = toBinary(requestSchema, request);
+      bytes = toBinary(requestSchema, create(requestSchema, request));
     } catch (error) {
-      throw actorsError({ code: "invalid_argument", message: `${operation} request could not be encoded: ${String(error)}` });
+      throw normalizeActorsError({ code: "invalid_argument", message: `${operation} request could not be encoded: ${String(error)}` });
     }
     try {
       const response = await this.binding.call(operation, bytes, signal);
       return fromBinary(responseSchema, response);
     } catch (error) {
       if (error instanceof Error) throw error;
-      throw actorsError(error);
+      throw normalizeActorsError(error);
     }
   }
 }

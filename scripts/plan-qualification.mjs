@@ -106,6 +106,7 @@ export function laneKeys(lanes, entries, scope = "core") {
 export function chooseLanes(lanes, {
   force,
   mainPush,
+  fullQualification = false,
   pullRequest = false,
   coreOnly = false,
   trusted,
@@ -116,9 +117,9 @@ export function chooseLanes(lanes, {
   const reused = {};
   for (const lane of lanes) {
     if ((pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
-    // Source-bound artifacts record the commit they were built from, and
-    // releases require that commit to be the main commit being released.
-    if (force || (mainPush && lane.source_bound)) {
+    // Source-bound artifacts record the commit they were built from, so every
+    // full qualification run must rebuild them for its exact checked-out commit.
+    if (force || ((mainPush || fullQualification) && lane.source_bound)) {
       matrix.push(lane);
       continue;
     }
@@ -237,6 +238,7 @@ function select() {
   const { matrix, reused } = chooseLanes(readLanes(), {
     force,
     mainPush,
+    fullQualification,
     pullRequest,
     coreOnly: !fullQualification,
     trusted,

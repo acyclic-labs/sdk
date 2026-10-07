@@ -9,7 +9,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -254,14 +254,22 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
                 FORMAT_VERSION
             )));
         }
-        if let Some(crate_version) = krate.crate_version.as_deref() {
-            if crate_version != input.version {
+        match krate.crate_version.as_deref() {
+            Some(crate_version) if crate_version != input.version => {
                 return Err(Error::Invalid(format!(
                     "{} reports crate version {crate_version}, but the build is {}",
                     path.display(),
                     input.version
                 )));
             }
+            None if input.channel == Channel::Release => {
+                return Err(Error::Invalid(format!(
+                    "{} does not declare crate version for release {}",
+                    path.display(),
+                    input.version
+                )));
+            }
+            _ => {}
         }
         if krate.includes_private {
             return Err(Error::Invalid(format!(
@@ -309,6 +317,9 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
 }
 
 /// Write data, its Schemars-generated schema, and the guarded version index.
+///
+/// A persistent output-directory lock serializes concurrent publications
+/// across index validation, bundle writes, and index replacement.
 pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Result<(), Error> {
     if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
         return Err(Error::Invalid(
@@ -323,8 +334,9 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
     }
     validate_source_info(&data.source, &data.channel)?;
     reject_reparse_ancestors(output_dir)?;
-    let index = load_version_index(output_dir)?;
     fs::create_dir_all(output_dir)?;
+    let _publication_lock = lock_publication(output_dir)?;
+    let index = load_version_index(output_dir)?;
     let channel_dir = match data.channel {
         Channel::Release => "releases",
         Channel::Preview => "preview",
@@ -380,7 +392,15 @@ pub fn write_bundle(data: &DocsData, output_dir: &Path, mark_latest: bool) -> Re
 
 fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     let index_path = output_dir.join("sdk-docs-versions.v1.json");
+    reject_reparse_ancestors(&index_path)?;
     let index = if index_path.exists() {
+        let metadata = fs::symlink_metadata(&index_path)?;
+        if !metadata.is_file() {
+            return Err(Error::Invalid(format!(
+                "version index is not a regular file: {}",
+                index_path.display()
+            )));
+        }
         serde_json::from_slice::<VersionIndex>(&fs::read(&index_path)?)?
     } else {
         VersionIndex {
@@ -398,6 +418,25 @@ fn load_version_index(output_dir: &Path) -> Result<VersionIndex, Error> {
     }
     validate_version_index(&index, output_dir)?;
     Ok(index)
+}
+
+fn lock_publication(output_dir: &Path) -> Result<File, Error> {
+    let lock_path = output_dir.join(".sdk-docs-versions.v1.lock");
+    reject_reparse_ancestors(&lock_path)?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    reject_reparse_ancestors(&lock_path)?;
+    if !lock.metadata()?.is_file() {
+        return Err(Error::Invalid(format!(
+            "publication lock is not a regular file: {}",
+            lock_path.display()
+        )));
+    }
+    lock.lock()?;
+    Ok(lock)
 }
 
 fn validate_version_index(index: &VersionIndex, output_dir: &Path) -> Result<(), Error> {
@@ -513,6 +552,37 @@ fn validate_version_entry(
             data_path.display()
         )));
     }
+    let data: DocsData = serde_json::from_slice(&data_bytes).map_err(|error| {
+        Error::Invalid(format!(
+            "version index entry {} data file is not valid DocsData: {error}",
+            entry.version
+        ))
+    })?;
+    if data.schema != DATA_SCHEMA_VERSION || data.schema_version != DATA_SCHEMA_VERSION {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data file has an unsupported docs schema",
+            entry.version
+        )));
+    }
+    if data.version != entry.version {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data version is {}",
+            entry.version, data.version
+        )));
+    }
+    if data.channel != entry.channel {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data channel does not match the index",
+            entry.version
+        )));
+    }
+    if data.source.revision != entry.revision {
+        return Err(Error::Invalid(format!(
+            "version index entry {} data revision does not match the index",
+            entry.version
+        )));
+    }
+    validate_source_info(&data.source, &data.channel)?;
     Ok(())
 }
 
@@ -632,10 +702,13 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             continue;
         }
         let name = item_name(item).unwrap_or_default();
-        let docs = item
-            .docs
-            .clone()
-            .or_else(|| target.and_then(|target| target.docs.clone()));
+        // A public `use` is represented by its own item, but Rustdoc attaches
+        // inherited documentation and links to the referenced definition. Keep
+        // those projections on the same effective item so aliases do not lose
+        // the definition's links or accidentally expose links authored only on
+        // the re-export node.
+        let effective_item = target.unwrap_or(item);
+        let docs = item.docs.clone().or_else(|| effective_item.docs.clone());
         let (reexport, reexport_target) = match &item.inner {
             ItemEnum::Use(use_) => (
                 Some(use_.source.clone()),
@@ -653,7 +726,7 @@ fn build_family(repository_root: &Path, json_path: &Path, krate: &Crate) -> Resu
             path: path.join("::"),
             signature: public_item.display.clone(),
             docs,
-            links: rustdoc_links(item, &public_occurrence_paths),
+            links: rustdoc_links(effective_item, &public_occurrence_paths),
             source: item
                 .span
                 .as_ref()
@@ -1093,6 +1166,8 @@ pub fn schema_json() -> Result<serde_json::Value, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Barrier};
+    use std::thread;
     #[test]
     fn schema_is_stable_and_identifies_the_public_contract() {
         let first = schema_json().expect("schema should serialize");
@@ -1166,6 +1241,41 @@ mod tests {
             .expect_err("publication must include Rustdoc format metadata");
         assert!(error.to_string().contains("format metadata"));
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn version_index_must_be_a_regular_non_reparse_file() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-index-kind-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        fs::create_dir_all(output.join("sdk-docs-versions.v1.json"))
+            .expect("index directory should be creatable");
+        let data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let error = write_bundle(&data, &output, true)
+            .expect_err("directory at the index path must block publication");
+        assert!(error
+            .to_string()
+            .contains("version index is not a regular file"));
+        assert!(output.join("sdk-docs-versions.v1.json").is_dir());
+        assert!(!output.join("releases").exists());
+        fs::remove_dir_all(output).expect("test output should be removable");
     }
 
     #[test]
@@ -1271,6 +1381,112 @@ mod tests {
     }
 
     #[test]
+    fn version_index_rejects_invalid_docs_json_even_when_hash_matches() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-invalid-bundle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        write_bundle(&data, &output, true).expect("initial release should write");
+        let data_path = output.join("releases/1.0.0/sdk-docs-data.v1.json");
+        let invalid = b"not DocsData";
+        fs::write(&data_path, invalid).expect("invalid bundle should be writable");
+        let index_path = output.join("sdk-docs-versions.v1.json");
+        let mut index: VersionIndex =
+            serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
+                .expect("index should parse");
+        let digest = sha256_hex(invalid);
+        for entry in &mut index.releases {
+            entry.data_sha256 = digest.clone();
+        }
+        if let Some(latest) = &mut index.latest {
+            latest.data_sha256 = digest;
+        }
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&index).expect("index should serialize"),
+        )
+        .expect("index should be writable");
+        let before = fs::read(&index_path).expect("index should remain readable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("hash-valid invalid JSON must block publication");
+        assert!(error.to_string().contains("not valid DocsData"));
+        assert_eq!(
+            before,
+            fs::read(&index_path).expect("index should be unchanged")
+        );
+        fs::remove_dir_all(output).expect("test output should be removable");
+    }
+
+    #[test]
+    fn version_index_rejects_bundle_revision_mismatch() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-revision-index-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let data = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: "a".repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
+                input_sha256: "a".repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        write_bundle(&data, &output, true).expect("initial release should write");
+        let index_path = output.join("sdk-docs-versions.v1.json");
+        let mut index: VersionIndex =
+            serde_json::from_slice(&fs::read(&index_path).expect("index should exist"))
+                .expect("index should parse");
+        for entry in &mut index.releases {
+            entry.revision = "b".repeat(40);
+        }
+        if let Some(latest) = &mut index.latest {
+            latest.revision = "b".repeat(40);
+        }
+        fs::write(
+            &index_path,
+            serde_json::to_vec_pretty(&index).expect("index should serialize"),
+        )
+        .expect("index should be writable");
+        let before = fs::read(&index_path).expect("index should remain readable");
+        let error = write_bundle(&data, &output, true)
+            .expect_err("bundle revision mismatch must block publication");
+        assert!(error
+            .to_string()
+            .contains("data revision does not match the index"));
+        assert_eq!(
+            before,
+            fs::read(&index_path).expect("index should be unchanged")
+        );
+        fs::remove_dir_all(output).expect("test output should be removable");
+    }
+
+    #[test]
     fn version_index_advances_latest_and_preview_without_rewriting_releases() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-lifecycle-{}", std::process::id()));
@@ -1334,6 +1550,76 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_publications_preserve_both_entries_and_index_hashes() {
+        let output =
+            std::env::temp_dir().join(format!("sdk-docs-concurrent-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&output);
+        let make_data = |version: &str, revision: char| DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: version.into(),
+            channel: Channel::Release,
+            source: SourceInfo {
+                revision: revision.to_string().repeat(40),
+                source_state: "captured-snapshot".into(),
+                source_sha256: Some(format!("sha256:{}", revision.to_string().repeat(64))),
+                input_sha256: revision.to_string().repeat(64),
+                rustdoc_format_versions: vec![FORMAT_VERSION],
+                generator: "sdk-docs/test".into(),
+            },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            families: Vec::new(),
+        };
+        let first_data = make_data("1.0.0", 'a');
+        let second_data = make_data("2.0.0", 'b');
+        let barrier = Arc::new(Barrier::new(2));
+        let first_output = output.clone();
+        let first_barrier = Arc::clone(&barrier);
+        let first = thread::spawn(move || {
+            first_barrier.wait();
+            write_bundle(&first_data, &first_output, true)
+        });
+        let second_output = output.clone();
+        let second_barrier = Arc::clone(&barrier);
+        let second = thread::spawn(move || {
+            second_barrier.wait();
+            write_bundle(&second_data, &second_output, true)
+        });
+        first
+            .join()
+            .expect("first publication thread should complete")
+            .expect("first concurrent publication should succeed");
+        second
+            .join()
+            .expect("second publication thread should complete")
+            .expect("second concurrent publication should succeed");
+
+        let index: VersionIndex = serde_json::from_slice(
+            &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
+        )
+        .expect("index should parse");
+        assert_eq!(
+            index
+                .releases
+                .iter()
+                .map(|entry| entry.version.as_str())
+                .collect::<Vec<_>>(),
+            vec!["1.0.0", "2.0.0"]
+        );
+        assert_eq!(
+            index.latest.as_ref().map(|entry| entry.version.as_str()),
+            Some("2.0.0")
+        );
+        for entry in &index.releases {
+            let bytes = fs::read(output.join(&entry.data_file)).expect("bundle should exist");
+            assert_eq!(sha256_hex(&bytes), entry.data_sha256);
+        }
+        fs::remove_dir_all(output).expect("test output should be removable");
+    }
+
+    #[test]
     fn typed_rustdoc_projection_respects_public_reachability_and_use_aliases() {
         let root = std::env::temp_dir().join(format!("sdk-docs-rustdoc-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1341,12 +1627,12 @@ mod tests {
         let rustdoc_path = root.join("demo.json");
         let fixture = serde_json::json!({
             "root": 0,
-            "crate_version": null,
+            "crate_version": "1.0.0",
             "includes_private": false,
             "index": {
                 "0": {"id": 0, "crate_id": 0, "name": "demo", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [2, 4, 5, 6], "is_stripped": false}}},
-                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": "alias", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
-                "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
+                "2": {"id": 2, "crate_id": 0, "name": null, "span": null, "visibility": "public", "docs": null, "links": {"alias-only": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"use": {"source": "hidden::Visible", "name": "Visible", "id": 3, "is_glob": false}}},
+                "3": {"id": 3, "crate_id": 0, "name": "private_function", "span": null, "visibility": "public", "docs": "hidden", "links": {"target link": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "4": {"id": 4, "crate_id": 0, "name": "linked", "span": null, "visibility": "public", "docs": "links", "links": {"alias target": 3, "associated target": 5, "private target": 1, "external target": 99}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "5": {"id": 5, "crate_id": 0, "name": "associated_target", "span": null, "visibility": "public", "docs": "target", "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"function": {"sig": {"inputs": [], "output": null, "is_c_variadic": false}, "generics": {"params": [], "where_predicates": []}, "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"}, "has_body": true, "default_unstable": null}}},
                 "6": {"id": 6, "crate_id": 0, "name": "nested", "span": null, "visibility": "public", "docs": "Nested guide", "links": {"associated target": 5}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": false, "items": [7], "is_stripped": false}}},
@@ -1379,6 +1665,19 @@ mod tests {
         changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         let changed = build_data(&changed_source).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
+        let missing_version_path = root.join("missing-version.json");
+        let mut missing_version = fixture.clone();
+        missing_version["crate_version"] = serde_json::Value::Null;
+        fs::write(
+            &missing_version_path,
+            serde_json::to_vec(&missing_version).expect("missing-version fixture should serialize"),
+        )
+        .expect("missing-version fixture should write");
+        let mut missing_version_input = input.clone();
+        missing_version_input.rustdoc_files = vec![missing_version_path];
+        let error = build_data(&missing_version_input)
+            .expect_err("release rustdoc without crate version must fail");
+        assert!(error.to_string().contains("does not declare crate version"));
         let family = &first.families[0];
         let alias = family
             .items
@@ -1389,6 +1688,12 @@ mod tests {
             })
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
+        assert_eq!(alias.docs.as_deref(), Some("hidden"));
+        assert!(alias
+            .links
+            .get("target link")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
+        assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
             .iter()
@@ -1445,11 +1750,16 @@ mod tests {
         )
         .expect("non-empty links should deserialize");
         assert_eq!(&linked_roundtrip, linked);
-        let alias_json = serde_json::to_value(alias).expect("empty links should serialize");
-        assert!(alias_json.get("links").is_none());
+        let alias_json = serde_json::to_value(alias).expect("inherited links should serialize");
+        let alias_links = alias_json
+            .get("links")
+            .and_then(serde_json::Value::as_object)
+            .expect("inherited links should be present");
+        assert!(alias_links.contains_key("target link"));
+        assert!(!alias_links.contains_key("alias-only"));
         let alias_roundtrip: ApiItem =
-            serde_json::from_value(alias_json).expect("omitted links should default");
-        assert!(alias_roundtrip.links.is_empty());
+            serde_json::from_value(alias_json).expect("inherited links should deserialize");
+        assert_eq!(&alias_roundtrip, alias);
         let mismatched_path = root.join("mismatched.json");
         let mut mismatched = fixture.clone();
         mismatched["crate_version"] = serde_json::json!("9.9.9");

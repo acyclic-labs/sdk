@@ -14,14 +14,14 @@ pub mod contract;
 /// Native gRPC client for the canonical Actors v1 service.
 ///
 /// The client applies bearer authentication and TLS configuration to every
-/// generated RPC. Browser bindings use the generated TypeScript transport;
+/// generated RPC. Browser bindings use the TypeScript Actors transport;
 /// this adapter is intentionally unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 /// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
 ///
 /// The client exposes the same eight operations with bounded responses and
-/// bearer authentication. Browser bindings use the generated TypeScript
+/// bearer authentication. Browser bindings use the TypeScript Actors
 /// transport; this adapter is intentionally unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;

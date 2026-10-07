@@ -2053,14 +2053,10 @@ version = "0.1.0"
 dependencies = [
  "acyclic-actors",
  "depinfo",
- "protify",
- "protoc-bin-vendored",
  "sdk-docs",
  "serde",
  "serde_json",
  "sha2",
- "tonic-prost-build",
- "ts-rs",
 ]
 
 [[package]]

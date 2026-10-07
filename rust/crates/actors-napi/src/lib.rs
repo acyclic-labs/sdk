@@ -79,6 +79,36 @@ impl NativeActorsOperationResult {
     }
 }
 
+/// Typed connection result used by the generated platform wrapper.
+///
+/// Connection failures use the same Rust-owned metadata projection as
+/// operation failures. This keeps connection errors out of N-API's string
+/// `Error` reason, where the metadata would otherwise be serialized as JSON
+/// and lose its structured JavaScript fields.
+#[napi(object, object_from_js = false)]
+pub struct NativeActorsConnectResult {
+    /// Connected native client when the connection succeeded.
+    pub client: Option<NativeActorsClient>,
+    /// Structured Rust-owned error when the connection failed.
+    pub error: Option<NativeActorsErrorMetadata>,
+}
+
+impl NativeActorsConnectResult {
+    fn success(client: NativeActorsClient) -> Self {
+        Self {
+            client: Some(client),
+            error: None,
+        }
+    }
+
+    fn failure(error: ErrorMetadata) -> Self {
+        Self {
+            client: None,
+            error: Some(error),
+        }
+    }
+}
+
 fn napi_error(metadata: ErrorMetadata) -> Error {
     let reason = match serde_json::to_string(&metadata) {
         Ok(reason) => reason,
@@ -95,10 +125,6 @@ fn native_metadata(context: &str, error: impl std::fmt::Display) -> ErrorMetadat
         message: format!("{context}: {error}"),
         ..ErrorMetadata::default()
     }
-}
-
-fn native_error(context: &str, error: impl std::fmt::Display) -> Error {
-    napi_error(native_metadata(context, error))
 }
 
 /// Constructs the Rust-owned nominal Actor identity used by the TypeScript
@@ -235,18 +261,6 @@ fn domain_error_metadata(error: acyclic_actors::domain::DomainError) -> ErrorMet
     }
 }
 
-fn decode_wire<T: Message + Default>(value: &Buffer, operation: &str) -> Result<T> {
-    T::decode(value.as_ref()).map_err(|error| native_error(operation, error))
-}
-
-fn encode_wire<T: Message>(value: &T, operation: &str) -> Result<Buffer> {
-    let mut bytes = Vec::with_capacity(value.encoded_len());
-    value
-        .encode(&mut bytes)
-        .map_err(|error| native_error(operation, error))?;
-    Ok(Buffer::from(bytes))
-}
-
 fn decode_wire_metadata<T: Message + Default>(
     value: &Buffer,
     operation: &str,
@@ -290,6 +304,19 @@ where
     client::run_with_cancellation(operation, Some(cancellation.token))
         .await
         .map_err(client_error_metadata)
+}
+
+async fn connect_result_metadata<Operation>(
+    operation: Operation,
+    cancellation: Option<CancellationState>,
+) -> NativeActorsConnectResult
+where
+    Operation: Future<Output = std::result::Result<client::Client, client::Error>>,
+{
+    match cancellable_metadata(operation, cancellation).await {
+        Ok(inner) => NativeActorsConnectResult::success(NativeActorsClient::from_client(inner)),
+        Err(error) => NativeActorsConnectResult::failure(error),
+    }
 }
 
 #[derive(Clone)]
@@ -473,6 +500,24 @@ impl NativeActorsClient {
         Ok(Self::from_client(inner))
     }
 
+    /// Connects and returns a structured success/error envelope.
+    ///
+    /// This result-form entry point is the cross-platform error surface for
+    /// generated wrappers. The legacy `connect` factory remains available for
+    /// callers that already consume rejected N-API errors.
+    #[napi(js_name = "connectResult")]
+    pub async fn connect_result(
+        endpoint: String,
+        token: String,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsConnectResult> {
+        Ok(connect_result_metadata(
+            client::connect(&endpoint, &token),
+            cancellation_state(cancellation),
+        )
+        .await)
+    }
+
     /// Connects with a caller-pinned native CA certificate.
     #[napi(factory, js_name = "connectWithCa")]
     pub async fn connect_with_ca(
@@ -491,6 +536,26 @@ impl NativeActorsClient {
         )
         .await?;
         Ok(Self::from_client(inner))
+    }
+
+    /// Connects with a caller-pinned native CA certificate and returns a
+    /// structured success/error envelope.
+    #[napi(js_name = "connectWithCaResult")]
+    pub async fn connect_with_ca_result(
+        endpoint: String,
+        token: String,
+        ca_certificate_pem: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsConnectResult> {
+        Ok(connect_result_metadata(
+            client::connect_with_ca_certificate(
+                &endpoint,
+                &token,
+                Some(ca_certificate_pem.as_ref()),
+            ),
+            cancellation_state(cancellation),
+        )
+        .await)
     }
 
     /// Returns the native bridge package version.
@@ -617,24 +682,29 @@ mod tests {
     #[test]
     fn protobuf_boundary_preserves_empty_request() -> Result<()> {
         let request = wire::InvokeActorRequest::default();
-        let bytes = encode_wire(&request, "invoke_actor request")?;
-        let decoded = decode_wire::<wire::InvokeActorRequest>(&bytes, "invoke_actor request")?;
+        let mut bytes = Vec::with_capacity(request.encoded_len());
+        request
+            .encode(&mut bytes)
+            .map_err(|error| napi_error(native_metadata("invoke_actor request", error)))?;
+        let decoded = wire::InvokeActorRequest::decode(bytes.as_slice())
+            .map_err(|error| napi_error(native_metadata("invoke_actor request", error)))?;
         assert_eq!(decoded, request);
         Ok(())
     }
 
     #[test]
     fn malformed_protobuf_is_rejected_at_the_boundary() -> Result<()> {
-        let Err(error) = decode_wire::<wire::InvokeActorRequest>(
+        let Err(error) = decode_wire_metadata::<wire::InvokeActorRequest>(
             &Buffer::from(vec![0xff]),
             "invoke_actor request",
         ) else {
-            return Err(native_error(
+            return Err(napi_error(native_metadata(
                 "malformed protobuf test",
                 "decoder accepted invalid bytes",
-            ));
+            )));
         };
-        assert!(error.to_string().contains("invoke_actor request"));
+        assert_eq!(error.code, "invalid_argument");
+        assert!(error.message.contains("invoke_actor request"));
         Ok(())
     }
 
@@ -648,7 +718,7 @@ mod tests {
             }),
         });
         let json = serde_json::to_value(metadata)
-            .map_err(|error| native_error("error metadata test", error))?;
+            .map_err(|error| napi_error(native_metadata("error metadata test", error)))?;
         assert_eq!(json["grpcCode"], 13);
         assert_eq!(json["grpcName"], "internal");
         assert_eq!(json["serviceCode"], 0);
@@ -662,7 +732,7 @@ mod tests {
             }),
         });
         let unknown = serde_json::to_value(unknown)
-            .map_err(|error| native_error("error metadata test", error))?;
+            .map_err(|error| napi_error(native_metadata("error metadata test", error)))?;
         assert_eq!(unknown["serviceCode"], 99);
         Ok(())
     }
@@ -673,7 +743,7 @@ mod tests {
             acyclic_actors::domain::DomainError::UnknownActorState(99),
         );
         let unknown = serde_json::to_value(unknown)
-            .map_err(|error| native_error("semantic metadata test", error))?;
+            .map_err(|error| napi_error(native_metadata("semantic metadata test", error)))?;
         assert_eq!(unknown["code"], "semantic_error");
         assert_eq!(unknown["semanticCode"], "unknown_actor_state");
         assert_eq!(unknown["semanticValue"], 99);
@@ -682,7 +752,7 @@ mod tests {
             acyclic_actors::domain::DomainError::UnknownErrorCode(7),
         ));
         let through_client = serde_json::to_value(through_client)
-            .map_err(|error| native_error("semantic metadata test", error))?;
+            .map_err(|error| napi_error(native_metadata("semantic metadata test", error)))?;
         assert_eq!(through_client["semanticCode"], "unknown_error_code");
         assert_eq!(through_client["semanticValue"], 7);
 
@@ -692,7 +762,7 @@ mod tests {
             ),
         );
         let contract = serde_json::to_value(contract)
-            .map_err(|error| native_error("semantic metadata test", error))?;
+            .map_err(|error| napi_error(native_metadata("semantic metadata test", error)))?;
         assert_eq!(contract["code"], "limit_exceeded");
         assert_eq!(contract["semanticCode"], "contract");
         assert_eq!(contract["contractCode"], "limit_exceeded");
@@ -709,12 +779,12 @@ mod tests {
         cancellation.cancel();
         let result = pending
             .await
-            .map_err(|join| native_error("cancellation test", join))?;
+            .map_err(|join| napi_error(native_metadata("cancellation test", join)))?;
         let Err(error) = result else {
-            return Err(native_error(
+            return Err(napi_error(native_metadata(
                 "cancellation test",
                 "cancelled operation completed successfully",
-            ));
+            )));
         };
         assert!(error.to_string().contains("Actors operation cancelled"));
         Ok(())
@@ -730,10 +800,10 @@ mod tests {
         )
         .await;
         let Err(error) = result else {
-            return Err(native_error(
+            return Err(napi_error(native_metadata(
                 "cancellation test",
                 "cancelled handle was reused",
-            ));
+            )));
         };
         assert!(error.to_string().contains("Actors operation cancelled"));
         assert!(cancellation.cancelled());
@@ -745,6 +815,49 @@ mod tests {
         )
         .await?;
         assert_eq!(result, ());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_result_returns_structured_configuration_error() -> Result<()> {
+        let result = connect_result_metadata(
+            async {
+                Err::<client::Client, client::Error>(client::Error::Configuration(
+                    String::from("endpoint is missing"),
+                ))
+            },
+            None,
+        )
+        .await;
+
+        assert!(result.client.is_none());
+        let error = result
+            .error
+            .ok_or_else(|| napi_error(native_metadata("connect result test", "missing error metadata")))?;
+        assert_eq!(error.code, "invalid_argument");
+        assert_eq!(error.message, "endpoint is missing");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_result_returns_structured_cancellation_error() -> Result<()> {
+        let cancellation = NativeActorsCancellation::new();
+        let pending = tokio::spawn(connect_result_metadata(
+            std::future::pending::<std::result::Result<client::Client, client::Error>>(),
+            cancellation_state(Some(&cancellation)),
+        ));
+        cancellation.cancel();
+
+        let result = pending
+            .await
+            .map_err(|join| napi_error(native_metadata("connect cancellation test", join)))?;
+        assert!(result.client.is_none());
+        let error = result
+            .error
+            .ok_or_else(|| napi_error(native_metadata("connect cancellation test", "missing error metadata")))?;
+        assert_eq!(error.code, "cancelled");
+        assert_eq!(error.grpc_code, Some(1));
+        assert_eq!(error.grpc_name.as_deref(), Some("cancelled"));
         Ok(())
     }
 }

@@ -13,8 +13,8 @@
   "exports": {
     ".": {
       "browser": {
-        "types": "./dist/browser.d.ts",
-        "default": "./dist/browser.js"
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
       },
       "node": {
         "types": "./dist/index.d.ts",
@@ -22,6 +22,10 @@
       },
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "default": "./dist/browser.js"
     },
     "./proto": {
       "types": "./generated/proto/actors/v1/actors_pb.d.ts",
@@ -51,6 +55,7 @@
   ],
   "scripts": {
     "build:wasm": "bun ../../../scripts/build-actors-wasm.mjs ./generated/wasm",
+    "stage:rust-types": "node ../../../scripts/stage-rust-actors-types.mjs",
     "build": "bun run build:wasm && tsc -b",
     "test": "bun run build:wasm && tsc -b --pretty false",
     "prepack": "npm run build",

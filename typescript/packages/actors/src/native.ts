@@ -1,11 +1,13 @@
 import { Buffer } from "node:buffer";
 import { arch, platform } from "node:process";
 import type * as GeneratedNative from "../generated/native/binding.js";
+import { normalizeActorsError } from "./client.js";
 
 type NativeModule = typeof GeneratedNative;
 type NativeClient = InstanceType<NativeModule["NativeActorsClient"]>;
 type NativeCancellation = InstanceType<NativeModule["NativeActorsCancellation"]>;
 type NativeResult = Awaited<ReturnType<NativeClient["createActorResult"]>>;
+type NativeConnectResult = Awaited<ReturnType<NativeModule["NativeActorsClient"]["connectResult"]>>;
 
 let modulePromise: Promise<NativeModule> | undefined;
 
@@ -32,11 +34,24 @@ export class NativeActorsClient {
   ) {}
 
   static async connect(endpoint: string, token: string, caCertificate?: Uint8Array): Promise<NativeActorsClient> {
-    const module = await loadNativeModule();
-    const binding = caCertificate === undefined
-      ? await module.NativeActorsClient.connect(endpoint, token)
-      : await module.NativeActorsClient.connectWithCa(endpoint, token, Buffer.from(caCertificate));
-    return new NativeActorsClient(binding, module);
+    try {
+      const module = await loadNativeModule();
+      const result: NativeConnectResult = caCertificate === undefined
+        ? await module.NativeActorsClient.connectResult(endpoint, token, undefined)
+        : await module.NativeActorsClient.connectWithCaResult(
+          endpoint,
+          token,
+          Buffer.from(caCertificate),
+          undefined,
+        );
+      if (result.error !== undefined) throw normalizeActorsError(result.error);
+      if (result.client === undefined) {
+        throw normalizeActorsError({ code: "internal", message: "Actors native companion returned no client" });
+      }
+      return new NativeActorsClient(result.client, module);
+    } catch (error) {
+      throw normalizeActorsError(error);
+    }
   }
 
   get transport(): string {
@@ -54,8 +69,10 @@ export class NativeActorsClient {
         cancellation: NativeCancellation,
       ) => Promise<NativeResult>;
       const result = await method.call(this.binding, Buffer.from(request), cancellation);
-      if (result.error !== undefined) throw result.error;
-      if (result.value === undefined) throw new Error("Actors native companion returned no result");
+      if (result.error !== undefined) throw normalizeActorsError(result.error);
+      if (result.value === undefined) {
+        throw normalizeActorsError({ code: "internal", message: "Actors native companion returned no result" });
+      }
       return new Uint8Array(result.value);
     } finally {
       signal?.removeEventListener("abort", abort);
