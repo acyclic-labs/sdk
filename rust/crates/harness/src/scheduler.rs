@@ -2239,6 +2239,141 @@ mod tests {
         }
     }
 
+    fn check_model_claim_orderings(scheduler: &Scheduler, remaining: &[SchedulerEvent]) -> u64 {
+        if remaining.is_empty() {
+            return 1;
+        }
+        let used = |state: &Scheduler| {
+            state
+                .model_claims
+                .values()
+                .map(TaskModelClaims::used)
+                .sum::<u64>()
+        };
+        let mut leaves = 0;
+        for (index, event) in remaining.iter().enumerate() {
+            let mut next = scheduler.clone();
+            let accepted = next.apply(event.clone()).is_ok();
+            if !accepted {
+                assert_eq!(&next, scheduler, "rejected event mutated state: {event:?}");
+            }
+            if matches!(event, SchedulerEvent::LeaseReleased { .. }) {
+                assert!(!accepted, "stale fence released ownership: {event:?}");
+            }
+            if let SchedulerEvent::ModelDispatchClaimed {
+                operation_id,
+                attempt_id,
+                step,
+                ..
+            } = event
+            {
+                if scheduler
+                    .operation(*operation_id)
+                    .is_some_and(|op| op.cancellation_requested)
+                {
+                    assert!(!accepted, "cancelled owner charged work: {event:?}");
+                }
+                if accepted {
+                    let existing = scheduler
+                        .model_claims
+                        .get(operation_id)
+                        .and_then(|claims| claims.attempts.get(attempt_id))
+                        .is_some_and(|steps| steps.contains_key(step));
+                    assert_eq!(
+                        used(&next),
+                        used(scheduler) + u64::from(!existing),
+                        "exact retry changed accounting: {event:?}"
+                    );
+                }
+            }
+            assert!(used(&next) <= 2, "shared budget exceeded: {event:?}");
+            for (op, prior) in &scheduler.model_claims {
+                let current = next.model_claims.get(op).expect("claim refunded");
+                assert_eq!(current.ceiling, prior.ceiling);
+                for (attempt, steps) in &prior.attempts {
+                    for (step, digest) in steps {
+                        assert_eq!(
+                            current
+                                .attempts
+                                .get(attempt)
+                                .and_then(|retained| retained.get(step)),
+                            Some(digest),
+                            "retained request changed: {event:?}"
+                        );
+                    }
+                }
+            }
+            // Cancellation and uncertainty cannot free either owned slot.
+            for op in [id(2), id(3)] {
+                assert_eq!(
+                    next.operation(op).and_then(|op| op.reservation.as_ref()),
+                    scheduler
+                        .operation(op)
+                        .and_then(|op| op.reservation.as_ref()),
+                    "uncertainty released ownership: {event:?}"
+                );
+            }
+            let mut pending = remaining.to_vec();
+            pending.remove(index);
+            leaves += check_model_claim_orderings(&next, &pending);
+        }
+        leaves
+    }
+
+    /// Bounded exhaustive checking of the production reducer, not a second
+    /// transition implementation. Three tasks, two attempts, two leases and
+    /// eight inputs define this proof scenario; none is a runtime ceiling.
+    #[test]
+    fn all_model_claim_cancellation_and_uncertainty_orders_preserve_accounting() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(1), Orchestration::Join)?)?)?;
+        scheduler.apply(SchedulerEvent::SessionConfigured {
+            operation_id: id(1),
+            limits: SessionLimits {
+                active_tasks: 2,
+                total_tasks: 3,
+                depth: 1,
+                model_steps: 2,
+            },
+        })?;
+        for (op, lease) in [(2, 0), (3, 1)] {
+            let mut child = spec(id(op), Orchestration::Leaf)?;
+            child.parent = Some(ParentLink {
+                operation_id: id(1),
+                slot: op.to_string(),
+            });
+            scheduler.apply(scheduler.declare(child)?)?;
+            scheduler.apply(
+                event(&scheduler, Step::Admit(op, lease, 0))?
+                    .ok_or_else(|| Error::Invalid("model admission missing".into()))?,
+            )?;
+            scheduler.apply(
+                event(&scheduler, Step::Start(op, lease))?
+                    .ok_or_else(|| Error::Invalid("model start missing".into()))?,
+            )?;
+        }
+        let actions = [
+            Step::ModelClaim(2, 0, 0, 0, 1),
+            Step::ModelClaim(2, 0, 0, 0, 1), // exact retry
+            Step::ModelClaim(2, 0, 0, 0, 2), // changed request negative control
+            Step::ModelClaim(3, 1, 0, 0, 1),
+            Step::ModelClaim(2, 0, 1, 0, 1), // competing fresh attempt
+            Step::Cancel(1, true),
+            Step::Complete(2, 3, Some(0)), // uncertainty retains the lease
+            Step::ReleaseLease(2, 1),      // another task's fence negative control
+        ]
+        .into_iter()
+        .map(|step| {
+            event(&scheduler, step)?.ok_or_else(|| Error::Invalid("model action missing".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+        assert_eq!(
+            check_model_claim_orderings(&scheduler, &actions),
+            (1..=actions.len() as u64).product::<u64>()
+        );
+        Ok(())
+    }
+
     #[test]
     fn declarations_store_state_references_and_accept_long_placement_metadata() -> Result<()> {
         let scheduler = Scheduler::new();
