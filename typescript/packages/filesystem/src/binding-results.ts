@@ -4,8 +4,12 @@ import type {
   WasmRawFileRecordSnapshot,
   WorkspaceFileKind,
 } from "./contracts.js";
+import type * as NativeBinding from "../generated/native/binding.js";
+import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
+import { isFileKind } from "../generated/hosted-contract.js";
 
 type RawFileRecord = WasmRawFileRecordSnapshot;
+type BoundaryFileKind = WorkspaceFileKind | WasmBinding.BrowserFileKind | NativeBinding.NativeFileKind;
 type RawTreeEntry = TreeEntrySnapshot;
 
 /**
@@ -13,8 +17,15 @@ type RawTreeEntry = TreeEntrySnapshot;
  * each native/WASM boundary. Keep this projection as a type-preserving seam
  * for the shared adapters; do not duplicate the Rust domain list here.
  */
-export function projectFileKind<Value extends string>(value: Value): WorkspaceFileKind {
-  return value as unknown as WorkspaceFileKind;
+export function projectFileKind(value: BoundaryFileKind): WorkspaceFileKind {
+  if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
+  return value;
+}
+
+/** Validate the stringly accessor exposed by generated resolved-file classes. */
+export function projectRawFileKind(value: string): WorkspaceFileKind {
+  if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
+  return value;
 }
 
 export function copyFileRecord(record: FileRecordSnapshot | RawFileRecord): FileRecordSnapshot {

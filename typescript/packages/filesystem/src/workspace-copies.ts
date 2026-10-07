@@ -4,6 +4,7 @@ import type {
   WorkspaceExtentPlan, WorkspaceName, WorkspaceStat,
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
+import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
 
 /** Keep the public copy exhaustive when Rust adds a generated work counter. */
 function exhaustiveKeys<T>() {
@@ -12,13 +13,7 @@ function exhaustiveKeys<T>() {
   ): Keys => keys;
 }
 
-export const workCounterKeys = exhaustiveKeys<WorkCounters>()([
-  "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
-  "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
-  "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
-  "sourceBytesRead", "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
-  "peakAllocationBytes", "materializations",
-]);
+export const workCounterKeys = exhaustiveKeys<WorkCounters>()(WORK_COUNTER_KEYS);
 
 export function copyWork(value: BrowserWorkCounters): WorkCounters {
   const result = {} as Record<keyof WorkCounters, bigint>;

@@ -13,6 +13,7 @@ use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectStoreError, object_digest};
 use std::fmt;
+use strum::{AsRefStr, EnumDiscriminants, EnumIter};
 use thiserror::Error;
 
 const DOMAIN: &[u8; 8] = b"ACYFSFIL";
@@ -125,7 +126,12 @@ pub enum InlineFileDataError {
 }
 
 /// Kind-specific immutable file payload.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, EnumDiscriminants)]
+#[strum_discriminants(
+    name(FilePayloadKind),
+    derive(EnumIter, AsRefStr),
+    strum(serialize_all = "kebab-case")
+)]
 pub enum FilePayload {
     /// Tiny regular-file bytes embedded in the authenticated file-table leaf.
     InlineRegular(InlineFileData),
@@ -166,41 +172,11 @@ pub enum FilePayload {
     },
 }
 
-/// Finite wire-level kind of an immutable file payload.
-///
-/// This keeps generated-language bindings anchored to the canonical Rust
-/// payload variants without exposing payload internals at the boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FilePayloadKind {
-    /// Embedded bytes for a tiny regular file.
-    InlineRegular,
-    /// Sparse extent-tree payload for a regular file.
-    Regular,
-    /// Namespace-tree payload for a directory.
-    Directory,
-    /// Authenticated target payload for a symbolic link.
-    SymbolicLink,
-    /// No payload for FIFO, socket, or mount-boundary entries.
-    Empty,
-    /// Device major/minor payload.
-    Device,
-    /// Opaque Windows reparse payload.
-    ReparsePoint,
-}
-
 impl FilePayload {
     /// Returns the finite boundary kind for this payload.
     #[must_use]
-    pub const fn kind(&self) -> FilePayloadKind {
-        match self {
-            Self::InlineRegular(_) => FilePayloadKind::InlineRegular,
-            Self::Regular { .. } => FilePayloadKind::Regular,
-            Self::Directory { .. } => FilePayloadKind::Directory,
-            Self::SymbolicLink { .. } => FilePayloadKind::SymbolicLink,
-            Self::Empty => FilePayloadKind::Empty,
-            Self::Device { .. } => FilePayloadKind::Device,
-            Self::ReparsePoint { .. } => FilePayloadKind::ReparsePoint,
-        }
+    pub fn kind(&self) -> FilePayloadKind {
+        self.into()
     }
 }
 

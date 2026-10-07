@@ -84,7 +84,8 @@ import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
-  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult, projectFileKind } from "./binding-results.js";
+  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult, projectFileKind,
+  projectRawFileKind } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult, workCounterKeys } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 
@@ -763,7 +764,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
 
 function adaptResolvedFile(raw: import("./contracts.js").NativeRawResolvedFile): ResolvedFile {
   return {
-    kind: projectFileKind(raw.kind),
+    kind: projectRawFileKind(raw.kind),
     logicalBytes: raw.logicalBytes,
     metadataCanonicalBytes: copyBytes(raw.metadataCanonicalBytes),
     async readRange(offset, length) { return fileReadResult(await raw.readRange(offset, length)); },
