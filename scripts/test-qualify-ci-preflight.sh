@@ -220,7 +220,7 @@ chmod +x "$gate/bin/rustup" "$gate/bin/cargo-nextest"
 mapfile -t cargo_calls <"$gate/cargo.log"
 [[ "${#cargo_calls[@]}" -eq 2 ]]
 [[ "${cargo_calls[0]}" == 'test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked' ]]
-[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --locked --lib' ]]
+[[ "${cargo_calls[1]}" == 'nextest run --profile ci --workspace --all-features --locked' ]]
 
 full="$work/full"
 mkdir -p "$full/temp" "$full/artifacts" "$full/tools/cargo/bin" "$full/bin"

@@ -18,8 +18,11 @@ use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use tokio::sync::{RwLock, mpsc, watch};
+use tracing::Instrument as _;
+use tracing::field::Empty;
 
 use crate::journal::{Command, decode_command, journal_command, replay};
+use crate::obs;
 use crate::{
     AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest, ChildrenRequest,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
@@ -62,7 +65,7 @@ where
     T: Send + 'static,
     F: Future<Output = T> + Send + 'static,
 {
-    tokio::spawn(initialize)
+    tokio::spawn(initialize.in_current_span())
         .await
         .map_err(|_| LocalStreamError::Executor)
 }
@@ -151,6 +154,19 @@ pub enum LocalStreamError {
     /// Native blocking execution could not complete.
     #[error("local Stream executor is unavailable")]
     Executor,
+}
+
+impl obs::ErrorKind for LocalStreamError {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::AlreadyOpen => "already_open",
+            Self::Corrupt => "corrupt",
+            Self::InvalidLimits => "invalid_limits",
+            Self::Replay(error) => error.code(),
+            Self::Executor => "executor",
+        }
+    }
 }
 
 /// Exclusive-process durable local provider backed by a snapshot and a checksummed command
@@ -400,6 +416,11 @@ impl LocalStream {
         Self::open_with_clock_and_anchor(root, limits, clock, None).await
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.open",
+        skip_all,
+        fields(outcome = Empty, error.kind = Empty)
+    )]
     async fn open_with_clock_and_anchor(
         root: impl AsRef<Path>,
         limits: LocalStreamLimits,
@@ -410,10 +431,13 @@ impl LocalStream {
         // Dropping the caller must not release an external root gate while journal recovery is
         // still running on a blocking worker. The independently owned task retains every startup
         // input until the worker and bounded replay have both completed.
-        run_owned_initialization(async move {
-            Self::open_owned(root, limits, clock, ownership_anchor).await
-        })
-        .await?
+        obs::finish(
+            run_owned_initialization(async move {
+                Self::open_owned(root, limits, clock, ownership_anchor).await
+            })
+            .await
+            .and_then(|opened| opened),
+        )
     }
 
     async fn open_owned(
@@ -426,7 +450,10 @@ impl LocalStream {
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
-        let open = tokio::task::spawn_blocking(move || Journal::open(&root, limits, &recovered));
+        let span = tracing::debug_span!("acyclic.stream.recover", frames = Empty, bytes = Empty);
+        let open = tokio::task::spawn_blocking(move || {
+            span.in_scope(|| Journal::open(&root, limits, &recovered))
+        });
         #[cfg(test)]
         {
             if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
@@ -556,7 +583,16 @@ impl LocalStream {
     /// # Errors
     ///
     /// Fails, and poisons the store, when the journal cannot be flushed.
+    #[tracing::instrument(
+        name = "acyclic.stream.flush",
+        skip_all,
+        fields(batch_len = Empty, outcome = Empty, error.kind = Empty)
+    )]
     pub fn flush(&self) -> Result<(), StreamError> {
+        obs::finish(self.flush_all())
+    }
+
+    fn flush_all(&self) -> Result<(), StreamError> {
         let (target, file, durability) = {
             let journal = self
                 .inner
@@ -567,6 +603,7 @@ impl LocalStream {
             if journal.synced >= journal.appended {
                 return Ok(());
             }
+            obs::record("batch_len", journal.appended - journal.synced);
             (
                 journal.appended,
                 Arc::clone(&journal.sync),
@@ -620,7 +657,9 @@ impl LocalStream {
         let state = self.inner.provider.encode_state().await;
         let store_time = self.inner.clock.now_unix_millis();
         let inner = Arc::clone(&self.inner);
+        let span = tracing::debug_span!("acyclic.stream.compact", bytes = state.len());
         tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             let mut journal = inner
                 .journal
                 .journal
@@ -663,19 +702,29 @@ impl LocalStream {
                     journal.syncing = true;
                     Some((
                         journal.appended,
+                        journal.synced,
+                        journal.bytes,
                         Arc::clone(&journal.sync),
                         journal.limits.durability,
                     ))
                 }
             };
             match lead {
-                Some((target, file, durability)) => {
+                Some((target, synced_before, journal_bytes, file, durability)) => {
                     let inner = Arc::clone(&self.inner);
                     tokio::task::spawn_blocking(move || {
                         inner.flush_through(target, &file, durability);
                     })
                     .await
                     .map_err(|_| self.inner.poison())?;
+                    // Group commit: one fsync covers every frame written since the last one.
+                    tracing::debug!(
+                        fsyncs = 1_u64,
+                        batch_len = target.saturating_sub(synced_before),
+                        journal_bytes,
+                        waiters = self.inner.synced.receiver_count(),
+                        "acyclic.stream.fsync"
+                    );
                 }
                 None => {
                     if synced.changed().await.is_err() {
@@ -705,18 +754,22 @@ impl LocalStream {
         // The mutation runs on a task of its own, which takes its caller's
         // durability scope with it.
         let deferred = deferred();
-        tokio::spawn(DEFERRED.scope(deferred, async move {
-            let (result, required) = {
-                let _visibility = stream.inner.visibility.write().await;
-                stream.check_available()?;
-                let result = mutation(stream.clone()).await;
-                stream.inner.clock.unpin();
-                stream.inner.commit_clock.unpin();
-                (result, stream.inner.journal.required()?)
-            };
-            stream.await_durable(required).await?;
-            result
-        }))
+        tokio::spawn(
+            DEFERRED
+                .scope(deferred, async move {
+                    let (result, required) = {
+                        let _visibility = stream.inner.visibility.write().await;
+                        stream.check_available()?;
+                        let result = mutation(stream.clone()).await;
+                        stream.inner.clock.unpin();
+                        stream.inner.commit_clock.unpin();
+                        (result, stream.inner.journal.required()?)
+                    };
+                    stream.await_durable(required).await?;
+                    result
+                })
+                .in_current_span(),
+        )
         .await
         .map_err(|_| StreamError::Unavailable)?
     }
@@ -762,36 +815,69 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.bounds(path)).await
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.append",
+        skip_all,
+        fields(
+            items = request.records.len(),
+            bytes = request.records.iter().map(bytes::Bytes::len).sum::<usize>(),
+            rev = Empty,
+            outcome = Empty,
+            error.kind = Empty,
+        )
+    )]
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.exclusive(|stream| async move {
-            let command = Command::Append(request.clone());
-            let frame = stream.prepare(&command)?;
-            let retain_conflict = request.idempotency_key.is_some();
-            let outcome = stream.inner.provider.append(request).await?;
-            if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
-                stream.persist(frame).await?;
-            }
-            Ok(outcome)
-        })
-        .await
+        let outcome = self
+            .exclusive(|stream| async move {
+                let command = Command::Append(request.clone());
+                let frame = stream.prepare(&command)?;
+                let retain_conflict = request.idempotency_key.is_some();
+                let outcome = stream.inner.provider.append(request).await?;
+                if matches!(outcome, AppendOutcome::Committed(_)) || retain_conflict {
+                    stream.persist(frame).await?;
+                }
+                Ok(outcome)
+            })
+            .await;
+        if let Ok(AppendOutcome::Committed(receipt)) = &outcome {
+            obs::record("rev", receipt.tail);
+        }
+        obs::finish(outcome)
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.fork",
+        skip_all,
+        fields(outcome = Empty, error.kind = Empty)
+    )]
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.exclusive(|stream| async move {
-            let frame = stream.prepare(&Command::Fork(request.clone()))?;
-            let outcome = stream.inner.provider.fork(request).await?;
-            stream.persist(frame).await?;
-            Ok(outcome)
-        })
-        .await
+        obs::finish(
+            self.exclusive(|stream| async move {
+                let frame = stream.prepare(&Command::Fork(request.clone()))?;
+                let outcome = stream.inner.provider.fork(request).await?;
+                stream.persist(frame).await?;
+                Ok(outcome)
+            })
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.read",
+        skip_all,
+        fields(rev = request.from, items = request.limit, outcome = Empty, error.kind = Empty)
+    )]
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.read_visible(request).await
+        obs::finish(self.read_visible(request).await)
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.follow",
+        skip_all,
+        fields(rev = from, outcome = Empty, error.kind = Empty)
+    )]
     async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
-        self.tail(path.clone()).await?;
+        obs::finish(self.tail(path.clone()).await)?;
         let state = FollowState {
             provider: self.clone(),
             path,
@@ -850,32 +936,46 @@ impl StreamProvider for LocalStream {
             .await
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.commit",
+        skip_all,
+        fields(items = request.mutations.len(), outcome = Empty, error.kind = Empty)
+    )]
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.exclusive(|stream| async move {
-            let frame = stream.prepare(&Command::Commit(request.clone()))?;
-            let outcome = stream.inner.provider.commit(request).await?;
-            stream.persist(frame).await?;
-            Ok(outcome)
-        })
-        .await
+        obs::finish(
+            self.exclusive(|stream| async move {
+                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                let outcome = stream.inner.provider.commit(request).await?;
+                stream.persist(frame).await?;
+                Ok(outcome)
+            })
+            .await,
+        )
     }
 
+    #[tracing::instrument(
+        name = "acyclic.stream.commit",
+        skip_all,
+        fields(items = request.mutations.len(), outcome = Empty, error.kind = Empty)
+    )]
     async fn commit_before(
         &self,
         request: CommitRequest,
         deadline_unix_millis: u64,
     ) -> Result<CommitOutcome, StreamError> {
-        self.exclusive(move |stream| async move {
-            let frame = stream.prepare(&Command::Commit(request.clone()))?;
-            let outcome = stream
-                .inner
-                .provider
-                .commit_before(request, deadline_unix_millis)
-                .await?;
-            stream.persist(frame).await?;
-            Ok(outcome)
-        })
-        .await
+        obs::finish(
+            self.exclusive(move |stream| async move {
+                let frame = stream.prepare(&Command::Commit(request.clone()))?;
+                let outcome = stream
+                    .inner
+                    .provider
+                    .commit_before(request, deadline_unix_millis)
+                    .await?;
+                stream.persist(frame).await?;
+                Ok(outcome)
+            })
+            .await,
+        )
     }
 
     async fn read_commit(
@@ -1108,6 +1208,8 @@ impl Journal {
             return Err(LocalStreamError::InvalidLimits);
         }
         self.file.seek(SeekFrom::End(0))?;
+        obs::record("frames", operations);
+        obs::record("bytes", valid_length);
         self.operations = operations;
         self.bytes = valid_length;
         Ok(())
@@ -1167,6 +1269,11 @@ impl Journal {
     /// is `required` holds back every reader until then.
     fn append(&mut self, frame: &PreparedFrame, required: bool) -> Result<(), LocalStreamError> {
         self.file.write_all(&frame.encoded)?;
+        tracing::trace!(
+            bytes = frame.bytes,
+            required,
+            "acyclic.stream.journal_append"
+        );
         self.appended += 1;
         if required {
             self.required = self.appended;
@@ -2079,6 +2186,117 @@ mod tests {
             "a flushed mutation flushes those before it"
         );
         assert_eq!(provider.tail(StreamPath::new("deferred")?).await?, 3);
+        Ok(())
+    }
+
+    /// Spans and events by name, each with its fields as text.
+    type Captured = Arc<Mutex<Vec<(&'static str, Vec<(&'static str, String)>)>>>;
+
+    struct Capture(Captured, Mutex<std::collections::HashMap<u64, usize>>);
+
+    struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
+
+    impl tracing::field::Visit for Fields<'_> {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name(), value.to_owned()));
+        }
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name(), format!("{value:?}")));
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Capture {
+        fn on_new_span(
+            &self,
+            attributes: &tracing::span::Attributes<'_>,
+            id: &tracing::span::Id,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            attributes.record(&mut Fields(&mut fields));
+            let names = attributes
+                .metadata()
+                .fields()
+                .iter()
+                .map(|field| field.name());
+            fields.extend(names.map(|name| (name, String::new())));
+            let mut captured = self.0.lock().unwrap();
+            self.1.lock().unwrap().insert(id.into_u64(), captured.len());
+            captured.push((attributes.metadata().name(), fields));
+        }
+        fn on_record(
+            &self,
+            id: &tracing::span::Id,
+            values: &tracing::span::Record<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let index = self.1.lock().unwrap().get(&id.into_u64()).copied();
+            let mut captured = self.0.lock().unwrap();
+            let span = index.and_then(|index| captured.get_mut(index)).unwrap();
+            values.record(&mut Fields(&mut span.1));
+        }
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            event.record(&mut Fields(&mut fields));
+            self.0.lock().unwrap().push(("event", fields));
+        }
+    }
+
+    #[tokio::test]
+    async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        // With one live dispatcher, a callsite that a concurrent test reaches
+        // first caches only that thread's (absent) interest; a second one
+        // makes every callsite consult this test's subscriber too.
+        let _second = tracing::Dispatch::new(tracing_subscriber::Registry::default());
+        let captured = Captured::default();
+        let capture = Capture(Arc::clone(&captured), Mutex::default());
+        let _default =
+            tracing::subscriber::set_default(tracing_subscriber::Registry::default().with(capture));
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("traced/path")?,
+                records: vec![Bytes::from_static(b"body"), Bytes::from_static(b"more")],
+                if_tail: None,
+                idempotency_key: None,
+            })
+            .await?;
+        let captured = captured.lock().unwrap();
+        let fields = |name: &str| {
+            captured
+                .iter()
+                .find(|(found, _)| *found == name)
+                .map(|(_, fields)| fields.clone())
+                .unwrap_or_default()
+        };
+        let append = fields("acyclic.stream.append");
+        for field in [
+            ("items", "2"),
+            ("bytes", "8"),
+            ("rev", "2"),
+            ("outcome", "ok"),
+        ] {
+            assert!(
+                append.contains(&(field.0, field.1.to_owned())),
+                "{append:?}"
+            );
+        }
+        assert!(fields("acyclic.stream.open").contains(&("outcome", "ok".to_owned())));
+        assert!(captured.iter().any(|(name, fields)| {
+            *name == "event" && fields.contains(&("fsyncs", "1".to_owned()))
+        }));
+        for (_, fields) in captured.iter() {
+            for (field, value) in fields {
+                assert!(!["path", "token", "content", "body", "authorization"].contains(field));
+                assert!(!value.contains("traced"), "{field} leaks a stream path");
+            }
+        }
         Ok(())
     }
 

@@ -26,11 +26,6 @@ const qualificationDefinition = path =>
 const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDefinition(path);
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
 
-// Pull requests retain the security preflight and these two repository-level
-// checks. Platform packaging and browser/native downstream lanes qualify on
-// release, scheduled, or manual runs; an explicit forced dispatch reruns all.
-export const pullRequestCoreLanes = new Set(["gate", "policy"]);
-
 export const qualificationEventKinds = Object.freeze({
   pullRequest: "pull_request",
   mainPush: "main_push",
@@ -75,6 +70,14 @@ export const ignored = {
     path.startsWith("languages/") ||
     path.startsWith("ffi/") ||
     ["bun.lock", "package.json", "tsconfig.json", "tsconfig.base.json"].includes(path),
+  // The TypeScript workspace and everything its WASM builds, generated
+  // contracts and conformance servers compile: every Rust crate except those
+  // no package reads, and no Rust integration tests.
+  typescript: path =>
+    ignored.product(path) ||
+    /^rust\/crates\/(conformance|harness-codex|machines-daytona|sdk-docs)\//.test(path) ||
+    /^rust\/crates\/[^/]+\/(tests|benches)\//.test(path) ||
+    ["plugin/", "languages/", "ffi/"].some(prefix => path.startsWith(prefix)),
   // Rust plus the TypeScript workspace.
   product: path => documentation(path) || unrelatedGithub(path) || standaloneProjects(path),
   // Repository-wide metadata, boundary, and license checks.
@@ -104,7 +107,10 @@ export function laneKeys(lanes, entries, scope = "core") {
   return keys;
 }
 
-// Decides each lane's fate. `marker(lane)` returns the run that recorded the
+// Decides each lane's fate. Pull requests and main pushes run the security
+// preflight and the lanes scoped "core"; release, scheduled, manual, and
+// forced runs run those scoped "full"; "both" lanes run in either, under
+// separate cache identities. `marker(lane)` returns the run that recorded the
 // lane's fingerprint, if any; `retained(runId, prefix)` names the artifact that
 // run still retains, or "".
 export function chooseLanes(lanes, {
@@ -118,8 +124,9 @@ export function chooseLanes(lanes, {
 }) {
   const matrix = [];
   const reused = {};
+  const scope = !force && (pullRequest || coreOnly) ? "core" : "full";
   for (const lane of lanes) {
-    if (!force && (pullRequest || coreOnly) && !pullRequestCoreLanes.has(lane.lane)) continue;
+    if (lane.scope !== "both" && lane.scope !== scope) continue;
     // Source-bound artifacts record the commit they were built from, so every
     // full qualification run must rebuild them for its exact checked-out commit.
     if (force || ((mainPush || fullQualification) && lane.source_bound)) {

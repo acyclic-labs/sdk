@@ -31,6 +31,11 @@ mod journal;
 #[cfg(feature = "local")]
 mod local;
 mod memory;
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "grpc", feature = "http", feature = "local")
+))]
+mod obs;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use browser::{BrowserStream, BrowserStreamLimits};
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

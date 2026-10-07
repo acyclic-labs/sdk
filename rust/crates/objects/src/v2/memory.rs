@@ -1,5 +1,6 @@
 //! Bounded logical Objects reference provider. Listings traverse current keys.
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -419,6 +420,18 @@ impl MemoryObjects {
     }
 }
 
+/// The least string above every string that starts with `prefix`, if any.
+fn successor(prefix: &str) -> Option<String> {
+    let mut next = prefix.to_owned();
+    while let Some(last) = next.pop() {
+        if let Some(bumped) = (last..=char::MAX).nth(1) {
+            next.push(bumped);
+            return Some(next);
+        }
+    }
+    None
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn timestamp() -> Result<prost_types::Timestamp, Error> {
     let duration = SystemTime::now()
@@ -767,28 +780,48 @@ impl ObjectsProvider for MemoryObjects {
         let cursor = self.decode_cursor(&query)?;
         let state = self.lock_state()?;
         let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
-        let mut listing = BTreeMap::new();
-        for (key, value) in bucket.objects.range(query.prefix.clone()..) {
-            let Some(suffix) = key.strip_prefix(&query.prefix) else {
-                break;
-            };
-            if !query.delimiter.is_empty()
-                && let Some(index) = suffix.find(&query.delimiter)
+        // Logical entries (keys and common prefixes) never sort below the keys
+        // that produce them, so the scan starts strictly after the cursor and
+        // stops at `limit + 1` entries, skipping each common-prefix group by
+        // seeking to its successor.
+        let mut lower = match &cursor {
+            Some(cursor) if *cursor >= query.prefix => Bound::Excluded(cursor.clone()),
+            _ => Bound::Included(query.prefix.clone()),
+        };
+        let mut page = Vec::new();
+        'scan: loop {
+            let mut next = None;
+            for (key, value) in bucket
+                .objects
+                .range::<_, str>((lower.as_ref().map(String::as_str), Bound::Unbounded))
             {
-                let prefix = key
-                    .get(..query.prefix.len() + index + query.delimiter.len())
-                    .ok_or(Error::from(InvalidArgument))?
-                    .to_owned();
-                listing.insert(prefix, None);
-                continue;
+                let Some(suffix) = key.strip_prefix(&query.prefix) else {
+                    break 'scan;
+                };
+                if !query.delimiter.is_empty()
+                    && let Some(index) = suffix.find(&query.delimiter)
+                {
+                    let prefix = key
+                        .get(..query.prefix.len() + index + query.delimiter.len())
+                        .ok_or(Error::from(InvalidArgument))?;
+                    next = successor(prefix);
+                    if cursor.as_deref().is_none_or(|cursor| prefix > cursor) {
+                        page.push((prefix.to_owned(), None));
+                    }
+                    break;
+                }
+                page.push((key.clone(), Some(value.info.clone())));
+                if page.len() > limit {
+                    break 'scan;
+                }
             }
-            listing.insert(key.clone(), Some(value.info.clone()));
+            match next {
+                Some(next) if page.len() <= limit => lower = Bound::Included(next),
+                _ => break,
+            }
         }
-        let mut selected = listing
-            .into_iter()
-            .filter(|(key, _)| cursor.as_ref().is_none_or(|cursor| key > cursor));
-        let page: Vec<_> = selected.by_ref().take(limit).collect();
-        let is_truncated = selected.next().is_some();
+        let is_truncated = page.len() > limit;
+        page.truncate(limit);
         let continuation_token = if is_truncated {
             page.last()
                 .map(|(key, _)| self.cursor(&query, key))
@@ -891,8 +924,8 @@ impl ObjectsProvider for MemoryObjects {
         let value = upload(&state, name, &query.object_key, &query.upload_id)?;
         let mut parts = value
             .parts
-            .values()
-            .filter(|(part, _)| part.part_number > query.after_part_number);
+            .range(query.after_part_number + 1..)
+            .map(|(_, part)| part);
         let page: Vec<_> = parts
             .by_ref()
             .take(limit)

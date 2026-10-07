@@ -105,7 +105,7 @@ finish() {
 release_plugin() {
   CARGO_TARGET_DIR="$target_dir-release" node scripts/build-product.mjs
   node plugin/scripts/package.mjs \
-    --binary "$target_dir-release/release/acyclic" \
+    --binary "$target_dir-release/dist/acyclic" \
     --out "$SDK_ARTIFACT_DIR/acyclic-plugin"
   node plugin/scripts/validate-package.mjs "$SDK_ARTIFACT_DIR/acyclic-plugin"
 }
@@ -135,7 +135,9 @@ case "$lane" in
     # llvm-cov cannot cover them, even during full qualification.
     cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
     if [[ "$full_qualification" != true ]]; then
-      nextest --workspace --locked --lib
+      # The same suite the full native lanes run, without coverage; the
+      # ignored live-mount and fork/join suites stay there.
+      nextest --workspace --all-features --locked
       mkdir -p "$SDK_ARTIFACT_DIR/coverage"
       printf '%s\n' '{"scope":"rust-contract-tests","coverage_instrumented":false}' >"$SDK_ARTIFACT_DIR/coverage/core-check.json"
       exit 0
@@ -340,7 +342,7 @@ case "$lane" in
     cargo test -p acyclic-fs --features native-mount --locked \
       --target "$target" --lib native_capture::
     finish release
-    binary="$target_dir-release/$target/release/acyclic"
+    binary="$target_dir-release/$target/dist/acyclic"
     node scripts/verify-release-binary.mjs "$release_target" "$binary"
     expected="$(cargo metadata --locked --no-deps --format-version 1 |
       jq -r '.packages[] | select(.name == "acyclic-plugin") | "acyclic \(.version)"')"
@@ -349,7 +351,7 @@ case "$lane" in
   policy)
     bash scripts/test-qualify-ci-preflight.sh
     if [[ "$full_qualification" != true ]]; then
-      cargo clippy --workspace --lib --locked -- -D warnings
+      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       node --test scripts/test-plan-qualification.mjs
       cargo fmt --all -- --check
       exit 0
@@ -416,6 +418,19 @@ case "$lane" in
     bun run --filter '@acyclic-labs/harness' build
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
+    ;;
+  typescript)
+    # Pull requests and main pushes only; full runs cover this in the linux
+    # lane. As there, check:generated runs after `bun run test` has built the
+    # uncommitted packages, against the restored committed filesystem and
+    # stream WASM whose host-specific bytes that build rewrites.
+    source scripts/ensure-bun.sh
+    wasm_bindgen_bin="$(bash scripts/ensure-wasm-bindgen.sh)"
+    export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
+    bun install --frozen-lockfile
+    bun run test
+    git restore --worktree --       typescript/packages/filesystem/generated/wasm       typescript/packages/stream/generated/wasm       typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts       typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm.d.ts
+    bun run check:generated
     ;;
   linux-arm64)
     if ! command -v cc >/dev/null || ! command -v unzip >/dev/null || \

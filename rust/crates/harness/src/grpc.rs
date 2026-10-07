@@ -44,79 +44,159 @@ impl HarnessGrpcService {
 
 #[tonic::async_trait]
 impl transport::harness_service_server::HarnessService for HarnessGrpcService {
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.rpc.handshake",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, rpc.code = crate::obs::Empty)
+        )
+    )]
     async fn handshake(
         &self,
         request: Request<wire::HandshakeRequest>,
     ) -> Result<Response<wire::HandshakeResponse>, Status> {
-        self.api
-            .handshake(request.into_inner())
-            .await
-            .map(Response::new)
-            .map_err(status)
+        traced(
+            self.api
+                .handshake(request.into_inner())
+                .await
+                .map(Response::new)
+                .map_err(status),
+        )
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.rpc.submit",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, rpc.code = crate::obs::Empty)
+        )
+    )]
     async fn submit(
         &self,
         request: Request<wire::CommandEnvelope>,
     ) -> Result<Response<wire::Admission>, Status> {
-        let command = request.into_inner();
-        validate_command_protocol(&command).map_err(status)?;
-        let admission = self.api.submit(command.clone()).await.map_err(status)?;
-        validate_admission(&command, &admission).map_err(status)?;
-        Ok(Response::new(admission))
+        traced(
+            async {
+                let command = request.into_inner();
+                validate_command_protocol(&command).map_err(status)?;
+                let admission = self.api.submit(command.clone()).await.map_err(status)?;
+                validate_admission(&command, &admission).map_err(status)?;
+                Ok(Response::new(admission))
+            }
+            .await,
+        )
     }
 
     type ReplayStream = BoxStream<'static, Result<wire::Delivery, Status>>;
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.rpc.replay",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, rpc.code = crate::obs::Empty)
+        )
+    )]
     async fn replay(
         &self,
         request: Request<wire::ResumeRequest>,
     ) -> Result<Response<Self::ReplayStream>, Status> {
-        validate_resume_protocol(request.get_ref()).map_err(status)?;
-        let stream = self
-            .api
-            .replay(request.into_inner())
-            .await
-            .map_err(status)?
-            .map(|item| item.map_err(status));
-        Ok(Response::new(Box::pin(stream)))
+        traced(
+            async {
+                validate_resume_protocol(request.get_ref()).map_err(status)?;
+                let stream = self
+                    .api
+                    .replay(request.into_inner())
+                    .await
+                    .map_err(status)?
+                    .map(|item| item.map_err(wire_status));
+                Ok(Response::new(Box::pin(stream) as Self::ReplayStream))
+            }
+            .await,
+        )
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.rpc.observe",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, rpc.code = crate::obs::Empty)
+        )
+    )]
     async fn observe(
         &self,
         request: Request<wire::ObserveRequest>,
     ) -> Result<Response<wire::OperationStatus>, Status> {
-        let control = validate_observe_request(request.get_ref()).map_err(status)?;
-        self.api
-            .authorize_operation_control(&control)
-            .await
-            .map_err(status)?;
-        let request = request.into_inner();
-        let response = self.api.observe(request.clone()).await.map_err(status)?;
-        validate_operation_status(&request, &response).map_err(status)?;
-        Ok(Response::new(response))
+        traced(
+            async {
+                let control = validate_observe_request(request.get_ref()).map_err(status)?;
+                self.api
+                    .authorize_operation_control(&control)
+                    .await
+                    .map_err(status)?;
+                let request = request.into_inner();
+                let response = self.api.observe(request.clone()).await.map_err(status)?;
+                validate_operation_status(&request, &response).map_err(status)?;
+                Ok(Response::new(response))
+            }
+            .await,
+        )
     }
 
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        tracing::instrument(
+            name = "acyclic.harness.rpc.cancel",
+            skip_all,
+            fields(outcome = crate::obs::Empty, error.kind = crate::obs::Empty, rpc.code = crate::obs::Empty)
+        )
+    )]
     async fn cancel(
         &self,
         request: Request<wire::CancelRequest>,
     ) -> Result<Response<wire::CancelResponse>, Status> {
-        let control = validate_cancel_request(request.get_ref())
-            .map_err(status)?
-            .control;
-        self.api
-            .authorize_operation_control(&control)
-            .await
-            .map_err(status)?;
-        let request = request.into_inner();
-        let response = self.api.cancel(request.clone()).await.map_err(status)?;
-        validate_cancel_response(&request, &response).map_err(status)?;
-        Ok(Response::new(response))
+        traced(
+            async {
+                let control = validate_cancel_request(request.get_ref())
+                    .map_err(status)?
+                    .control;
+                self.api
+                    .authorize_operation_control(&control)
+                    .await
+                    .map_err(status)?;
+                let request = request.into_inner();
+                let response = self.api.cancel(request.clone()).await.map_err(status)?;
+                validate_cancel_response(&request, &response).map_err(status)?;
+                Ok(Response::new(response))
+            }
+            .await,
+        )
     }
 }
 
-#[allow(clippy::needless_pass_by_value, reason = "a `map_err` adapter")]
+/// Records the handler's `outcome` and `rpc.code`.
+fn traced<T>(result: Result<T, Status>) -> Result<T, Status> {
+    #[cfg(not(target_arch = "wasm32"))]
+    tracing::Span::current()
+        .record("outcome", if result.is_ok() { "ok" } else { "err" })
+        .record(
+            "rpc.code",
+            result.as_ref().err().map_or(tonic::Code::Ok, Status::code) as i32,
+        );
+    result
+}
+
+/// Converts a handler error, recording its `error.kind` on the handler span.
 fn status(error: Error) -> Status {
+    crate::obs::obs_record!("error.kind" = error.kind());
+    wire_status(error)
+}
+
+#[allow(clippy::needless_pass_by_value, reason = "a `map_err` adapter")]
+fn wire_status(error: Error) -> Status {
     use tonic::Code;
     let code = match error.code() {
         wire::ErrorCode::NotFound => Code::NotFound,
