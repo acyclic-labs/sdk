@@ -5,9 +5,9 @@
 <script type="importmap">
 {
   "imports": {
-    "@bufbuild/protobuf": "/node_modules/@bufbuild/protobuf/dist/esm/index.js",
-    "@bufbuild/protobuf/codegenv2": "/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
-    "@bufbuild/protobuf/wkt": "/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+    "@bufbuild/protobuf": "../node_modules/@bufbuild/protobuf/dist/esm/index.js",
+    "@bufbuild/protobuf/codegenv2": "../node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+    "@bufbuild/protobuf/wkt": "../node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
   }
 }
 </script>
@@ -15,7 +15,8 @@
 <script type="module">
 import { create } from "@bufbuild/protobuf";
 import { DEFAULT_LIMITS, EmbeddedWireTransport, Harness, NativeContracts, WireError } from "../dist/index.js";
-import { ErrorCode, HandshakeRequestSchema, HandshakeResponseSchema, ResumeRequestSchema } from "../dist/proto.js";
+import { ErrorCode, ResumeRequestSchema } from "../generated/proto/harness/v2/harness_pb.js";
+import { HandshakeRequestSchema, HandshakeResponseSchema } from "../generated/proto/protocol/v1/protocol_pb.js";
 
 try {
   const originalFetch = globalThis.fetch;
