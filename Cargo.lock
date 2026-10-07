@@ -127,6 +127,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "serde_json",
+ "strum",
  "tempfile",
  "tokio",
 ]
@@ -147,6 +148,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_bytes",
  "serde_json",
+ "strum",
  "thiserror",
  "tsify",
  "wasm-bindgen",

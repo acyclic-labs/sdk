@@ -73,6 +73,7 @@ import {
   stringifyGitCompatCommand,
 } from "./compat.js";
 import { nodeWasmBindings } from "./wasm-node.js";
+import { installStatusMetadata } from "./workspace-results.js";
 
 import { adaptWorkspaceContextRegistry } from "./workspace-context.js";
 import { adaptTransaction } from "./transaction-adapter.js";
@@ -174,6 +175,7 @@ async function bindings(): Promise<NativeBindings> {
     ) {
       throw new Error("native companion target does not match the current Node.js process");
     }
+    installStatusMetadata(candidate.statusMetadata());
     return candidate;
   }).catch((error: unknown) => {
     bindingPromise = undefined;
