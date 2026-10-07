@@ -93,6 +93,12 @@ evidence.
 5. **Constructor invariants:** every public native constructor establishes the
    same invariants as `ActorId`, `CodeSha256`, and other Rust domain constructors,
    including rejection of invalid lengths and values.
+6. **Opaque-handle ownership:** a native handle is usable only while its Rust
+   owner is live; creation, move/clone, and release preserve one ownership
+   accounting invariant, release is idempotence-safe, and every operation on a
+   stale, null, forged, or foreign handle returns a typed error before touching
+   the pointee. A proof may model handles as registry keys and generations; it
+   must not assume that an arbitrary foreign pointer is valid.
 
 Only bounded predicates, enum conversions, and selected constructor invariants
 have a small pure-Rust proof surface. Wire identity and presence/value
@@ -132,6 +138,38 @@ for bounded model checking of small, pure Rust conversion and validation
 functions. It can provide proof within explicit finite bounds; it cannot prove
 native package loading, a remote service, or an unbounded stream.
 
+### C ABI opaque-handle proof boundary
+
+Before any C ABI is used as the native substrate for another language, the
+Rust side should expose a small pure state machine for proof, independent of
+raw pointer representation:
+
+* A fresh `(slot, generation)` key enters `Live` exactly once. A live operation
+  preserves the key and its owned state; release transitions it to `Closed` and
+  cannot free it twice.
+* Releasing, borrowing, or cancelling a closed generation is rejected without
+  dereferencing a foreign value. Reusing a slot requires a different
+  generation, so an old key cannot address a new object; generation exhaustion
+  must return an error before wrapping rather than silently reusing a key.
+* A move consumes the source owner without increasing the live-owner count. A
+  clone is allowed only when the contract names shared ownership and increments
+  that count exactly once; a borrowed call cannot outlive its owner.
+* Repeated release has one documented result, such as a typed `AlreadyClosed`
+  error, and never performs a second destruction or decrements ownership below
+  zero.
+* Every exported fallible operation has a no-unwind result path. On an error or
+  cancellation, the handle state remains either the pre-call live state or the
+  explicitly documented closed state, and no callback is invoked after its
+  owner has been released.
+
+These are finite transition properties suitable for a Kani harness over an
+integer key, generation, owner count, and closed flag. They prove the Rust
+ownership protocol, not the validity of an arbitrary C address, allocator
+behavior, ABI calling convention, thread scheduler, or foreign-language
+garbage collector. Those boundary claims require an implemented C ABI and
+consumer tests that pass only handles returned by the Rust constructors. No
+C ABI implementation is qualified by this proof section alone.
+
 ### Current bounded proof status
 
 The current receipt `rust/crates/actors/proofs/kani-domain-invariants-current.json`
@@ -143,6 +181,11 @@ invariants. The receipt identifies the exact source revision and
 hashes the complete Actors Rust source tree, build inputs, manifests, lockfile,
 toolchain/config files, and portable proof runner. Its external evidence log is
 `foundation-kani-068/runner-validation-10-final.log`.
+
+The Objects request receipt `rust/crates/objects/proofs/kani-request-invariants-current.json`
+is a separate four-harness proof of range resolution, upload-size admission,
+and multipart-number bounds. It is source-bound to the Objects Rustc dependency
+closure and does not extend the Actors receipt or qualify an Objects transport.
 
 The older individual Kani receipts remain historical evidence. The current
 combined receipt is the source of truth for the bounded proof snapshot.

@@ -676,3 +676,103 @@ mod tests {
         Ok(())
     }
 }
+
+// Kani supplies this cfg while compiling the proof harness; Objects has no
+// build script because the harness is intentionally source-local.
+#[allow(unexpected_cfgs)]
+#[cfg(kani)]
+mod kani_proofs {
+    //! Bounded proofs for the pure Objects admission and range predicates.
+    //!
+    //! These harnesses deliberately stop at arithmetic and wire-level
+    //! admission.  Provider state, transport framing, and multipart ordering
+    //! are outside this finite proof boundary and remain covered by the
+    //! provider conformance tests.
+
+    use super::{part_number, range, upload_length};
+    use crate::v2::wire;
+
+    const MAX_UPLOAD_LENGTH: u64 = 5 * 1024 * 1024 * 1024;
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn byte_ranges_are_exact_for_nonempty_representations() {
+        let size: u64 = kani::any();
+        kani::assume(size > 0);
+
+        let start: u64 = kani::any();
+        let has_end: bool = kani::any();
+        let requested_end: u64 = kani::any();
+        let value = Some(wire::ByteRange {
+            selection: Some(wire::byte_range::Selection::Bytes(
+                wire::InclusiveRange {
+                    start,
+                    end: has_end.then_some(requested_end),
+                },
+            )),
+        });
+
+        let result = range(&value, size);
+        if start >= size || (has_end && requested_end < start) {
+            assert!(result.is_err());
+        } else {
+            match result {
+                Ok(Some(actual)) => {
+                    assert_eq!(actual.start, start);
+                    assert_eq!(actual.total, size);
+                    let expected_end = if has_end {
+                        requested_end.min(size - 1)
+                    } else {
+                        size - 1
+                    };
+                    assert_eq!(actual.end, expected_end);
+                }
+                Ok(None) | Err(_) => {
+                    assert!(false);
+                }
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn suffix_ranges_are_exact_for_nonempty_representations() {
+        let size: u64 = kani::any();
+        kani::assume(size > 0);
+        let length: u64 = kani::any();
+        let value = Some(wire::ByteRange {
+            selection: Some(wire::byte_range::Selection::SuffixLength(length)),
+        });
+
+        let result = range(&value, size);
+        if length == 0 {
+            assert!(result.is_err());
+        } else {
+            match result {
+                Ok(Some(actual)) => {
+                    assert_eq!(actual.start, size.saturating_sub(length));
+                    assert_eq!(actual.end, size - 1);
+                    assert_eq!(actual.total, size);
+                }
+                Ok(None) | Err(_) => {
+                    assert!(false);
+                }
+            }
+        }
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn upload_length_has_the_inclusive_contract_bound() {
+        let size: u64 = kani::any();
+        assert_eq!(upload_length(size).is_ok(), size <= MAX_UPLOAD_LENGTH);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn part_number_has_the_inclusive_contract_bound() {
+        let value: u32 = kani::any();
+        let maximum = wire::ObjectsLimit::MaxMultipartParts as u32;
+        assert_eq!(part_number(value).is_ok(), value != 0 && value <= maximum);
+    }
+}

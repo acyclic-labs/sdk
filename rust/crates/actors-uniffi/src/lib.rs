@@ -16,24 +16,24 @@ uniffi::setup_scaffolding!();
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum BindingError {
     /// Endpoint, credential, or trust configuration was rejected by Rust.
-    #[error("Actors configuration failed: {message}")]
-    Configuration { message: String },
+    #[error("Actors configuration failed: {detail_message}")]
+    Configuration { detail_message: String },
     /// The Rust-owned transport could not be constructed or reached.
-    #[error("Actors transport failed: {message}")]
-    Transport { message: String },
+    #[error("Actors transport failed: {detail_message}")]
+    Transport { detail_message: String },
     /// The service rejected an operation.
-    #[error("Actors service failed: {message}")]
+    #[error("Actors service failed: {detail_message}")]
     Service {
         grpc_code: i32,
         service_code: Option<i32>,
-        message: String,
+        detail_message: String,
     },
     /// Rust's canonical request validator rejected an operation.
-    #[error("Actors contract rejected the request: {message}")]
-    Contract { message: String },
+    #[error("Actors contract rejected the request: {detail_message}")]
+    Contract { detail_message: String },
     /// Rust could not project a wire value into its semantic domain.
-    #[error("Actors semantic conversion failed: {message}")]
-    Semantic { message: String },
+    #[error("Actors semantic conversion failed: {detail_message}")]
+    Semantic { detail_message: String },
     /// The Rust-owned operation observed cancellation.
     #[error("Actors operation cancelled")]
     Cancelled,
@@ -41,23 +41,25 @@ pub enum BindingError {
 
 fn domain_error(error: domain::DomainError) -> BindingError {
     BindingError::Semantic {
-        message: error.to_string(),
+        detail_message: error.to_string(),
     }
 }
 
 fn client_error(error: client::Error) -> BindingError {
     match error {
-        client::Error::Configuration(message) => BindingError::Configuration { message },
-        client::Error::Transport(message) => BindingError::Transport { message },
+        client::Error::Configuration(detail_message) => {
+            BindingError::Configuration { detail_message }
+        }
+        client::Error::Transport(detail_message) => BindingError::Transport { detail_message },
         client::Error::Service { grpc_code, detail } => BindingError::Service {
             grpc_code,
             service_code: detail.as_ref().map(|value| value.code),
-            message: detail
+            detail_message: detail
                 .map(|value| value.message)
                 .unwrap_or_else(|| "service rejected operation".to_owned()),
         },
         client::Error::Contract(error) => BindingError::Contract {
-            message: error.to_string(),
+            detail_message: error.to_string(),
         },
         client::Error::Semantic(error) => domain_error(error),
         client::Error::Cancelled => BindingError::Cancelled,

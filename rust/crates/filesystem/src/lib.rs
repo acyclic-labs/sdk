@@ -101,6 +101,8 @@ pub mod merge_driver;
 pub mod model;
 pub mod mount;
 pub mod multi_root;
+mod numeric;
+pub use numeric::exact_u32_from_f64;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;

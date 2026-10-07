@@ -110,10 +110,16 @@ struct RustdocInput {
     markdown_dependencies: Vec<PathBuf>,
     generated_sources: Vec<GeneratedSource>,
     _cache_lock: Option<RustdocCacheLock>,
+    _staging_lock: Option<RustdocStagingLock>,
     toolchain: Option<PinnedToolchainRecord>,
 }
 
 struct RustdocCacheLock {
+    _file: File,
+}
+
+struct RustdocStagingLock {
+    root: PathBuf,
     _file: File,
 }
 
@@ -1185,6 +1191,214 @@ fn generated_sources_for_owner(
     Ok(generated_sources)
 }
 
+/// Rustdoc records generated source spans using the compiler's physical OUT_DIR.
+/// The directory name is content-addressed by Cargo and can change when the
+/// same checkout is built in a different target directory.  Attest those
+/// bytes first, then project the path through a stable sibling of the checkout
+/// so the JSON consumed by sdk-docs contains a checkout-relative identity.
+fn normalize_rustdoc_json(
+    json: &Path,
+    generated_sources: &[GeneratedSource],
+    staging_root: &Path,
+    json_target: &Path,
+) -> io::Result<(PathBuf, Vec<GeneratedSource>)> {
+    let staging_root = canonical(staging_root)?;
+
+    let mut replacements = BTreeMap::new();
+    let mut attested = Vec::with_capacity(generated_sources.len());
+    for source in generated_sources {
+        reject_reparse_ancestors(&source.physical_path, true)?;
+        let physical = canonical(&source.physical_path)?;
+        let bytes = fs::read(&physical)?;
+        if digest(&bytes) != source.sha256 {
+            return Err(io::Error::other(format!(
+                "generated source digest changed before rustdoc normalization: {}",
+                physical.display()
+            )));
+        }
+        let destination = staging_root.join(&source.logical_path);
+        if !destination.starts_with(&staging_root) {
+            return Err(io::Error::other(
+                "generated source staging escapes its root",
+            ));
+        }
+        if let Some(parent) = destination.parent() {
+            reject_reparse_ancestors(parent, false)?;
+            fs::create_dir_all(parent)?;
+            reject_reparse_ancestors(parent, true)?;
+        }
+        reject_reparse_ancestors(&destination, false)?;
+        fs::write(&destination, &bytes)?;
+        let destination_hash = hash_file(&destination, source.logical_path.display().to_string())?;
+        if destination_hash.sha256 != source.sha256 || destination_hash.bytes != bytes.len() as u64
+        {
+            return Err(io::Error::other(format!(
+                "generated source staging changed while normalizing: {}",
+                destination.display()
+            )));
+        }
+        let destination = canonical(&destination)?;
+        if replacements
+            .insert(physical, stable_generated_reference(&source.logical_path))
+            .is_some()
+        {
+            return Err(io::Error::other(
+                "generated source physical path is declared more than once",
+            ));
+        }
+        attested.push(GeneratedSource {
+            physical_path: destination,
+            logical_path: source.logical_path.clone(),
+            sha256: source.sha256.clone(),
+        });
+    }
+
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(json)?)
+        .map_err(|error| io::Error::other(format!("invalid rustdoc JSON: {error}")))?;
+    normalize_rustdoc_paths(&mut value, &replacements);
+    let bytes = serde_json::to_vec(&value).map_err(io::Error::other)?;
+    let normalized_root = canonical(json_target)?.join("normalized");
+    reject_reparse_ancestors(&normalized_root, false)?;
+    fs::create_dir_all(&normalized_root)?;
+    reject_reparse_ancestors(&normalized_root, true)?;
+    let normalized = normalized_root.join(
+        json.file_name()
+            .ok_or_else(|| io::Error::other("rustdoc JSON has no file name"))?,
+    );
+    reject_reparse_ancestors(&normalized, false)?;
+    fs::write(&normalized, bytes)?;
+    Ok((canonical(&normalized)?, attested))
+}
+
+fn stable_generated_reference(logical_path: &Path) -> String {
+    PathBuf::from("..")
+        .join(".sdk-docs-generated")
+        .join(logical_path)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn rustdoc_absolute_path(value: &str) -> Option<PathBuf> {
+    let value = value.strip_prefix(r"\\?\").unwrap_or(value);
+    let path = PathBuf::from(value);
+    path.is_absolute().then(|| canonical(&path).ok()).flatten()
+}
+
+fn normalize_rustdoc_paths(
+    value: &mut serde_json::Value,
+    replacements: &BTreeMap<PathBuf, String>,
+) {
+    if let serde_json::Value::Object(values) = value {
+        if let Some(serde_json::Value::Object(span)) = values.get_mut("span") {
+            if let Some(serde_json::Value::String(filename)) = span.get_mut("filename") {
+                if let Some(path) = rustdoc_absolute_path(filename) {
+                    if let Some(reference) = replacements.get(&path) {
+                        *filename = reference.clone();
+                    }
+                }
+            }
+        }
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                normalize_rustdoc_paths(value, replacements);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for (key, value) in values {
+                if key == "span" {
+                    continue;
+                }
+                // rustdoc also serializes compiler-generated attribute spans
+                // inside `attrs.other`.  These are metadata strings, rather
+                // than authored documentation.  Rewrite only exact generated
+                // source paths in that field; arbitrary strings elsewhere in
+                // the JSON must remain byte-for-byte unchanged.
+                if key == "other" {
+                    if let serde_json::Value::String(other) = value {
+                        normalize_generated_attribute_paths(other, replacements);
+                        continue;
+                    }
+                }
+                normalize_rustdoc_paths(value, replacements);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_generated_attribute_paths(
+    value: &mut String,
+    replacements: &BTreeMap<PathBuf, String>,
+) {
+    for (physical, reference) in replacements {
+        let display = physical.to_string_lossy();
+        let slash_display = display.replace('\\', "/");
+        let candidates = [
+            display.to_string(),
+            format!(r"\?\{}", display),
+            format!(r"\\?\{}", display),
+            slash_display.clone(),
+            format!(r"\?\{}", slash_display),
+            format!(r"\\?\{}", slash_display),
+        ];
+        for candidate in candidates {
+            *value = value.replace(&candidate, reference);
+        }
+        replace_generated_path_with_mixed_separators(value, &slash_display, reference);
+    }
+}
+
+fn replace_generated_path_with_mixed_separators(
+    value: &mut String,
+    slash_path: &str,
+    reference: &str,
+) {
+    let Some(prefix) = slash_path
+        .as_bytes()
+        .get(0..2)
+        .filter(|prefix| prefix[1] == b':')
+    else {
+        return;
+    };
+    let prefix = String::from_utf8_lossy(prefix);
+    let mut search_from = 0;
+    while let Some(found) = value[search_from..].find(prefix.as_ref()) {
+        let start = search_from + found;
+        let mut value_index = start;
+        let mut path_index = 0;
+        while path_index < slash_path.len() {
+            let Some(expected) = slash_path.as_bytes().get(path_index).copied() else {
+                break;
+            };
+            if expected == b'/' {
+                if !matches!(value.as_bytes().get(value_index), Some(b'/' | b'\\')) {
+                    break;
+                }
+            } else if value.as_bytes().get(value_index).copied() != Some(expected) {
+                break;
+            }
+            value_index += 1;
+            path_index += 1;
+        }
+        if path_index == slash_path.len() {
+            let mut replacement_start = start;
+            let before = &value[..start];
+            for prefix in [r"\\?\", r"\?\"] {
+                if before.ends_with(prefix) {
+                    replacement_start -= prefix.len();
+                    break;
+                }
+            }
+            value.replace_range(replacement_start..value_index, reference);
+            search_from = replacement_start + reference.len();
+        } else {
+            search_from = start + prefix.len();
+        }
+    }
+}
+
 fn reject_unsupported_make_escapes(path: &Path) -> io::Result<()> {
     let display = path.to_string_lossy();
     if display.contains(r"\#") || display.contains(r"\:") {
@@ -1495,6 +1709,33 @@ impl RustdocCacheLock {
     }
 }
 
+fn rustdoc_staging_root(config: &Config) -> io::Result<PathBuf> {
+    let root = canonical(&config.root)?;
+    let parent = root
+        .parent()
+        .ok_or_else(|| io::Error::other("source checkout has no parent"))?;
+    Ok(parent.join(".sdk-docs-generated"))
+}
+
+impl RustdocStagingLock {
+    fn acquire(config: &Config) -> io::Result<Self> {
+        let root = rustdoc_staging_root(config)?;
+        reject_reparse_ancestors(&root, false)?;
+        fs::create_dir_all(&root)?;
+        reject_reparse_ancestors(&root, true)?;
+        let root = canonical(&root)?;
+        let path = root.join(".lock");
+        reject_reparse_ancestors(&path, false)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)?;
+        file.lock()?;
+        Ok(Self { root, _file: file })
+    }
+}
+
 fn rustdoc_target_named(config: &Config, name: &str) -> io::Result<PathBuf> {
     let parent = rustdoc_cache_base(config)?;
     let target = parent.join(name);
@@ -1567,6 +1808,7 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
 
 fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<RustdocInput> {
     let cache_lock = RustdocCacheLock::acquire(config)?;
+    let staging_lock = RustdocStagingLock::acquire(config)?;
     let json_target = rustdoc_target_named(config, "sdk-generation-rustdoc-target")?;
     let dep_info_target = rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
     let manifest = config.root.join("Cargo.toml");
@@ -1603,7 +1845,6 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
                 json.display()
             )));
         }
-        paths.push(canonical(&json)?);
         run_pinned_rustdoc(
             &tools,
             &manifest,
@@ -1626,13 +1867,21 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
             )));
         }
         let parsed_dep_info = read_dep_info(&dep_info)?;
-        generated_sources.extend(generated_sources_for_owner(
+        let owner_generated_sources = generated_sources_for_owner(
             config,
             &parsed_dep_info,
             &dep_info_target,
             &json_target,
             owner,
-        )?);
+        )?;
+        let (normalized_json, normalized_sources) = normalize_rustdoc_json(
+            &json,
+            &owner_generated_sources,
+            &staging_lock.root,
+            &json_target,
+        )?;
+        paths.push(normalized_json);
+        generated_sources.extend(normalized_sources);
         markdown_dependencies.extend(rustdoc_markdown_dependencies(
             &dep_info,
             &config.root,
@@ -1647,6 +1896,7 @@ fn generate_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rust
         markdown_dependencies,
         generated_sources,
         _cache_lock: Some(cache_lock),
+        _staging_lock: Some(staging_lock),
         toolchain,
     })
 }
@@ -1664,6 +1914,7 @@ fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rustd
                 markdown_dependencies: Vec::new(),
                 generated_sources: Vec::new(),
                 _cache_lock: None,
+                _staging_lock: None,
                 toolchain: None,
             })
         }
@@ -2042,5 +2293,178 @@ mod tests {
                 .to_string()
                 .contains("generated source artifact changed")
         );
+    }
+
+    #[test]
+    fn generated_rustdoc_paths_use_stable_logical_references() {
+        let suffix = std::process::id();
+        let root = env::temp_dir().join(format!("sdk-generation-rustdoc-root-{suffix}"));
+        let target = env::temp_dir().join(format!("sdk-generation-rustdoc-target-{suffix}"));
+        let json = target.join("doc/acyclic_workers.json");
+        let source = target.join("debug/build/acyclic-workers-random/out/rust/wire.rs");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(json.parent().unwrap()).unwrap();
+        fs::write(&source, b"pub struct Wire;\n").unwrap();
+        let raw_filename = format!(r"\\?\{}", source.display());
+        fs::write(
+            &json,
+            serde_json::json!({
+                "span": { "filename": raw_filename },
+                "same": { "filename": source.to_string_lossy() },
+                "attrs": [{
+                    "other": format!("generated span {}:1:2", format!(r"\?\{}", source.display()))
+                }],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let config = Config {
+            operation: "drift".into(),
+            root: root.clone(),
+            rustdoc_json: None,
+            output: root.join("bundle"),
+            version: "0.2.0".into(),
+            channel: "release".into(),
+        };
+        let logical_path = PathBuf::from("generated/acyclic_workers/rust/wire.rs");
+        let source_hash = hash_file(&source, "wire.rs".into()).unwrap().sha256;
+        let source_string = source.to_string_lossy().into_owned();
+        let generated = GeneratedSource {
+            physical_path: source,
+            logical_path: logical_path.clone(),
+            sha256: source_hash,
+        };
+        let staging_root = rustdoc_staging_root(&config).unwrap();
+        fs::create_dir_all(&staging_root).unwrap();
+        let (normalized, staged) =
+            normalize_rustdoc_json(&json, &[generated], &staging_root, &target).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(normalized).unwrap()).unwrap();
+        assert_eq!(
+            value["span"]["filename"],
+            "../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs"
+        );
+        assert_eq!(value["same"]["filename"], source_string);
+        assert_eq!(
+            value["attrs"][0]["other"],
+            "generated span ../.sdk-docs-generated/generated/acyclic_workers/rust/wire.rs:1:2"
+        );
+        assert!(staged[0].physical_path.is_file());
+        assert_eq!(staged[0].logical_path, logical_path);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&target);
+    }
+
+    #[test]
+    fn path_normalization_is_alias_stable_but_preserves_generated_byte_digests() {
+        let suffix = std::process::id();
+        let root = env::temp_dir().join(format!("sdk-generation-rustdoc-alias-root-{suffix}"));
+        let target = env::temp_dir().join(format!("sdk-generation-rustdoc-alias-target-{suffix}"));
+        let json_a = target.join("doc/a.json");
+        let json_b = target.join("doc/b.json");
+        let source = target.join("debug/build/acyclic-workers-alias/out/rust/wire.rs");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&target);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::create_dir_all(json_a.parent().unwrap()).unwrap();
+        fs::write(&source, b"pub struct Wire;\n").unwrap();
+        fs::write(
+            &json_a,
+            serde_json::json!({ "span": { "filename": source.to_string_lossy() } }).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            &json_b,
+            serde_json::json!({
+                "span": { "filename": format!(r"\\?\{}", source.display()) }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let config = Config {
+            operation: "drift".into(),
+            root: root.clone(),
+            rustdoc_json: None,
+            output: root.join("bundle"),
+            version: "0.2.0".into(),
+            channel: "release".into(),
+        };
+        let logical_path = PathBuf::from("generated/acyclic_workers/rust/wire.rs");
+        let bytes_a = b"pub struct Wire;\n";
+        let hash_a = digest(bytes_a);
+        let source_a = GeneratedSource {
+            physical_path: source.clone(),
+            logical_path: logical_path.clone(),
+            sha256: hash_a.clone(),
+        };
+        let staging_root = rustdoc_staging_root(&config).unwrap();
+        fs::create_dir_all(&staging_root).unwrap();
+        let (normalized_a, staged_a) =
+            normalize_rustdoc_json(&json_a, &[source_a], &staging_root, &target).unwrap();
+        let (normalized_b, staged_b) = normalize_rustdoc_json(
+            &json_b,
+            &[GeneratedSource {
+                physical_path: source.clone(),
+                logical_path: logical_path.clone(),
+                sha256: hash_a,
+            }],
+            &staging_root,
+            &target,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read(normalized_a).unwrap(),
+            fs::read(normalized_b).unwrap(),
+            "OUT_DIR spelling aliases must produce the same normalized snapshot"
+        );
+        assert_eq!(staged_a[0].sha256, staged_b[0].sha256);
+        let duplicate = normalize_rustdoc_json(
+            &json_a,
+            &[
+                GeneratedSource {
+                    physical_path: source.clone(),
+                    logical_path: PathBuf::from("generated/acyclic_workers/rust/one.rs"),
+                    sha256: staged_a[0].sha256.clone(),
+                },
+                GeneratedSource {
+                    physical_path: source.clone(),
+                    logical_path: PathBuf::from("generated/acyclic_workers/rust/two.rs"),
+                    sha256: staged_a[0].sha256.clone(),
+                },
+            ],
+            &staging_root,
+            &target,
+        )
+        .unwrap_err();
+        assert!(
+            duplicate
+                .to_string()
+                .contains("physical path is declared more than once")
+        );
+
+        let bytes_b = b"pub struct WireChanged;\n";
+        fs::write(&source, bytes_b).unwrap();
+        let staged_changed = normalize_rustdoc_json(
+            &json_a,
+            &[GeneratedSource {
+                physical_path: source,
+                logical_path,
+                sha256: digest(bytes_b),
+            }],
+            &staging_root,
+            &target,
+        )
+        .unwrap()
+        .1;
+        assert_ne!(
+            staged_a[0].sha256, staged_changed[0].sha256,
+            "normalization must not erase generated source byte changes"
+        );
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&target);
     }
 }

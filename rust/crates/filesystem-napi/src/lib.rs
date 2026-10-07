@@ -69,13 +69,8 @@ impl NapiU32 {
 }
 
 fn validate_napi_u32(number: f64) -> Result<u32> {
-    if !number.is_finite() || number.fract() != 0.0 || number < 0.0 || number > u32::MAX as f64 {
-        return Err(Error::new(
-            Status::InvalidArg,
-            "expected a finite integer in the u32 range",
-        ));
-    }
-    Ok(number as u32)
+    acyclic_fs::exact_u32_from_f64(number)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
 #[allow(unsafe_code)]

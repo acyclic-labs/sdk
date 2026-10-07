@@ -800,8 +800,9 @@ mod bindings {
             path: String,
             offset: u64,
             length: u64,
-            maximum_spans: u32,
+            maximum_spans: f64,
         ) -> Result<BrowserWorkspaceExtentPlan, JsValue> {
+            let maximum_spans = wasm_u32(maximum_spans)?;
             let value = match &self.engine {
                 BrowserWorkspaceEngine::IndexedDb(value) => {
                     value
@@ -1010,10 +1011,13 @@ mod bindings {
         pub async fn live_rebase(
             &self,
             idempotency_key: Option<Vec<u8>>,
-            maximum_generations: u32,
-            maximum_changes: u32,
-            maximum_conflicts: u32,
+            maximum_generations: f64,
+            maximum_changes: f64,
+            maximum_conflicts: f64,
         ) -> Result<BrowserWorkspaceRebaseResult, JsValue> {
+            let maximum_generations = wasm_u32(maximum_generations)?;
+            let maximum_changes = wasm_u32(maximum_changes)?;
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let idempotency_key = idempotency_key.map_or_else(
                 || Ok(IdempotencyKey::new()),
                 |value| fixed_16_owned(value).map(IdempotencyKey::from_bytes),
@@ -1057,8 +1061,9 @@ mod bindings {
             &self,
             from: &BrowserGeneration,
             to: &BrowserGeneration,
-            maximum_changes: u32,
+            maximum_changes: f64,
         ) -> Result<BrowserChangeSet, JsValue> {
+            let maximum_changes = wasm_u32(maximum_changes)?;
             let engine = match (&self.engine, &from.engine, &to.engine) {
                 (
                     BrowserWorkspaceEngine::IndexedDb(workspace),
@@ -1217,8 +1222,9 @@ mod bindings {
         pub async fn compose(
             &self,
             next: &BrowserChangeSet,
-            maximum_changes: u32,
+            maximum_changes: f64,
         ) -> Result<BrowserChangeSet, JsValue> {
+            let maximum_changes = wasm_u32(maximum_changes)?;
             let engine = match (&self.engine, &next.engine) {
                 (
                     BrowserChangeSetEngine::IndexedDb(value),
@@ -1406,8 +1412,9 @@ mod bindings {
             &self,
             path: String,
             after: Option<JsValue>,
-            maximum_entries: u32,
+            maximum_entries: f64,
         ) -> Result<BrowserWorkspaceDirectoryPage, JsValue> {
+            let maximum_entries = wasm_u32(maximum_entries)?;
             let after = after.map(browser_workspace_name).transpose()?;
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => {
@@ -1449,8 +1456,9 @@ mod bindings {
             path: String,
             offset: u64,
             length: u64,
-            maximum_spans: u32,
+            maximum_spans: f64,
         ) -> Result<BrowserWorkspaceExtentPlan, JsValue> {
+            let maximum_spans = wasm_u32(maximum_spans)?;
             let value = match &self.engine {
                 BrowserGenerationEngine::IndexedDb(value) => {
                     value
@@ -1795,7 +1803,8 @@ mod bindings {
 
         /// Safely advances this retained candidate and sparsely replays its work.
         #[wasm_bindgen]
-        pub async fn rebase(&mut self, maximum_conflicts: u32) -> Result<JsValue, JsValue> {
+        pub async fn rebase(&mut self, maximum_conflicts: f64) -> Result<JsValue, JsValue> {
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => value
                     .rebase(maximum_conflicts)
@@ -3138,8 +3147,9 @@ mod bindings {
             &self,
             parent_context_id: Vec<u8>,
             child_context_id: Vec<u8>,
-            maximum: u32,
+            maximum: f64,
         ) -> Result<Vec<u8>, JsValue> {
+            let maximum = wasm_u32(maximum)?;
             let discarded = self
                 .inner
                 .discard_subtree(
@@ -3626,9 +3636,10 @@ mod bindings {
             &self,
             manifest: JsValue,
             cursor: u64,
-            maximum_objects: u32,
+            maximum_objects: f64,
             maximum_object_bytes: u64,
         ) -> Result<GenerationTransferBatchResult, JsValue> {
+            let maximum_objects = wasm_u32(maximum_objects)?;
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
@@ -3693,8 +3704,9 @@ mod bindings {
             manifest: JsValue,
             cursor: u64,
             objects: JsValue,
-            maximum_objects: u32,
+            maximum_objects: f64,
         ) -> Result<GenerationTransferCursorResult, JsValue> {
+            let maximum_objects = wasm_u32(maximum_objects)?;
             let manifest: ImportManifest =
                 serde_wasm_bindgen::from_value(manifest).map_err(js_error)?;
             let manifest = decode_export_manifest(&manifest)?;
@@ -4068,8 +4080,9 @@ mod bindings {
             &self,
             before: Vec<u8>,
             after: Vec<u8>,
-            maximum_changes: u32,
+            maximum_changes: f64,
         ) -> Result<BrowserGenerationDiffResult, JsValue> {
+            let maximum_changes = wasm_u32(maximum_changes)?;
             let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &before,
                 "before generation identity",
@@ -4444,9 +4457,11 @@ mod bindings {
         pub async fn prepare_merge(
             &mut self,
             theirs: Vec<u8>,
-            maximum_changes: u32,
-            maximum_conflicts: u32,
+            maximum_changes: f64,
+            maximum_conflicts: f64,
         ) -> Result<BrowserMergePreparationResult, JsValue> {
+            let maximum_changes = wasm_u32(maximum_changes)?;
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                 &theirs,
                 "merge generation identity",
@@ -4844,8 +4859,9 @@ mod bindings {
             path: String,
             after_class: Option<String>,
             after_name: Option<Vec<u8>>,
-            maximum_entries: u32,
+            maximum_entries: f64,
         ) -> Result<BrowserNamedAttributePageResult, JsValue> {
+            let maximum_entries = wasm_u32(maximum_entries)?;
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = match (after_class, after_name) {
                 (None, None) => None,
@@ -5135,8 +5151,9 @@ mod bindings {
             path: String,
             offset: u64,
             length: u64,
-            maximum_spans: u32,
+            maximum_spans: f64,
         ) -> Result<BrowserExtentPlanResult, JsValue> {
+            let maximum_spans = wasm_u32(maximum_spans)?;
             let path = browser_path(&path, self.profile, self.limits)?;
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5180,8 +5197,9 @@ mod bindings {
             file_id: Vec<u8>,
             offset: u64,
             length: u64,
-            maximum_spans: u32,
+            maximum_spans: f64,
         ) -> Result<BrowserExtentPlanResult, JsValue> {
+            let maximum_spans = wasm_u32(maximum_spans)?;
             let file_id = FileId::from_bytes(fixed_16(&file_id)?);
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
@@ -5344,8 +5362,9 @@ mod bindings {
             &mut self,
             path: String,
             after: Option<String>,
-            maximum_entries: u32,
+            maximum_entries: f64,
         ) -> Result<BrowserDirectoryPageResult, JsValue> {
+            let maximum_entries = wasm_u32(maximum_entries)?;
             let portable = PortablePath::parse(&path, self.limits).map_err(js_error)?;
             let path =
                 NamespacePath::from_portable_in_profile(&portable, self.profile, self.limits)
@@ -5415,8 +5434,9 @@ mod bindings {
             &mut self,
             path: String,
             after: Option<String>,
-            maximum_entries: u32,
+            maximum_entries: f64,
         ) -> Result<BrowserDirectoryRecordPageResult, JsValue> {
+            let maximum_entries = wasm_u32(maximum_entries)?;
             let path = browser_path(&path, self.profile, self.limits)?;
             let after = after
                 .as_deref()
@@ -5601,9 +5621,11 @@ mod bindings {
             &mut self,
             path: String,
             kind: String,
-            major: u32,
-            minor: u32,
+            major: f64,
+            minor: f64,
         ) -> Result<BrowserMutationResult, JsValue> {
+            let major = wasm_u32(major)?;
+            let minor = wasm_u32(minor)?;
             let path = browser_path(&path, self.profile, self.limits)?;
             let kind = device_kind(&kind)?;
             let cancellation = CancellationToken::default();
@@ -6188,9 +6210,11 @@ mod bindings {
             &mut self,
             #[wasm_bindgen(unchecked_param_type = "TransactionOperation[]")] operations: JsValue,
             operation_id: Vec<u8>,
-            maximum_attempts: u32,
-            maximum_conflicts: u32,
+            maximum_attempts: f64,
+            maximum_conflicts: f64,
         ) -> Result<BrowserLiveTransactionResult, JsValue> {
+            let maximum_attempts = wasm_u32(maximum_attempts)?;
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let authored = decode_authored_transactions(operations, self.profile, self.limits)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
@@ -6220,9 +6244,11 @@ mod bindings {
         pub async fn resume_live(
             &mut self,
             operation_id: Vec<u8>,
-            maximum_attempts: u32,
-            maximum_conflicts: u32,
+            maximum_attempts: f64,
+            maximum_conflicts: f64,
         ) -> Result<BrowserLiveMutationResult, JsValue> {
+            let maximum_attempts = wasm_u32(maximum_attempts)?;
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
@@ -6269,8 +6295,9 @@ mod bindings {
         #[wasm_bindgen(js_name = rebaseHead)]
         pub async fn rebase_head(
             &mut self,
-            maximum_conflicts: u32,
+            maximum_conflicts: f64,
         ) -> Result<BrowserRebaseResult, JsValue> {
+            let maximum_conflicts = wasm_u32(maximum_conflicts)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
@@ -6444,6 +6471,10 @@ mod bindings {
 
     fn js_error(error: impl std::fmt::Display) -> JsValue {
         browser_error("AcyclicFilesystemError", &error.to_string())
+    }
+
+    fn wasm_u32(number: f64) -> Result<u32, JsValue> {
+        acyclic_fs::exact_u32_from_f64(number).map_err(js_error)
     }
 
     fn speculation_busy() -> JsValue {
@@ -7627,6 +7658,23 @@ mod bindings {
     mod tests {
         use super::*;
         use wasm_bindgen_test::*;
+
+        #[wasm_bindgen_test]
+        fn wasm_u32_admission_preserves_zero_and_u32_max() -> Result<(), JsValue> {
+            assert_eq!(wasm_u32(0.0)?, 0);
+            assert_eq!(wasm_u32(f64::from(u32::MAX))?, u32::MAX);
+            for value in [
+                -1.0,
+                0.5,
+                f64::from(u32::MAX) + 1.0,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+            ] {
+                assert!(wasm_u32(value).is_err(), "accepted invalid value {value}");
+            }
+            Ok(())
+        }
 
         wasm_bindgen_test_configure!(run_in_browser);
 

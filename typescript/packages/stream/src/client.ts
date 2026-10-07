@@ -1,4 +1,4 @@
-import { HttpStreamProvider } from "./http.js";
+import { DefaultStreamProvider } from "./default.js";
 import { MemoryStreamProvider } from "./memory.js";
 import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
 import type {
@@ -140,9 +140,10 @@ export class StreamClient {
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
   static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
-    return new StreamClient(new HttpStreamProvider({
+    return new StreamClient(new DefaultStreamProvider({
       endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
       token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
+      ...(environment?.caCertificate === undefined ? {} : { caCertificate: environment.caCertificate.slice() }),
     }));
   }
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
