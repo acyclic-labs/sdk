@@ -17,7 +17,7 @@
     },
     "wheel": {
       "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-wheel-current-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
-      "sha256": "0D96809BE41C62DC893EDA16CB8DC1A1F1602F7227622EF1A167BDDA5288D154",
+      "sha256": "E410FEE2924CA8FCAFC749CB6747FA3191E6B534BDB7EBC6AC509D1F5A7A5FF4",
       "bytes": 2302199
     },
     "constructor_probe": "PASS",
@@ -47,3 +47,4 @@
   },
   "scope": "Platform packaging and typing evidence; all-eight remote behavior remains qualified by the Windows wheel receipt"
 }
+

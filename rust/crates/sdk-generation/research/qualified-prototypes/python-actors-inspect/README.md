@@ -36,3 +36,7 @@ the binding-generation path. Full diagnostics are retained beside the fixtures.
 The generated Kotlin and Swift artifact hashes and the shared fixture identity
 are recorded in `all8-qualification-receipt.json`. No binary artifacts are
 checked into this research directory.
+
+
+Cross-platform package and host evidence is recorded in cross-platform.md and cross-platform-qualification-receipt.json.
+

@@ -1,0 +1,31 @@
+{
+  "schema": "acyclic.rust-uniffi.python.windows-wheel-qualification.v1",
+  "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "adapter_source_sha256": "BF538948EBB787EE3D69DA0F8110526E901724D88AAD57B65CF5E8F84EFB5743",
+  "wheel": {
+    "path": "Q:\\sdk\\work\\actors-uniffi-python-windows-wheel-current-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+    "sha256": "340984D8F57F154BDFEEB4F017D0AA07628626978B0A4932625BF165AB36B571",
+    "bytes": 3016134,
+    "tag": "py3-none-win_amd64"
+  },
+  "install": "PASS: isolated Windows Python 3.12 wheel install with --no-index --no-deps --force-reinstall",
+  "remote": {
+    "result": "PASS",
+    "script": "Q:\\sdk\\work\\actors-uniffi-python-wheel-all8-current-20261007\\installed-all8-remote-conformance.py",
+    "fixture": "Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json",
+    "operations": [
+      "create",
+      "update",
+      "inspect_actor_request",
+      "add_subscription",
+      "remove_subscription",
+      "resume_subscription",
+      "checkpoint_actor",
+      "invoke"
+    ],
+    "service_error": "PASS",
+    "cancellation": "PASS"
+  },
+  "package_metadata": "PASS: README metadata, py.typed, and Windows DLL included",
+  "note": "No publication or merge performed"
+}
