@@ -1,0 +1,59 @@
+{
+  "schema": "acyclic.sdk.scenario-projections.v1",
+  "projections": [
+    {
+      "scenarioId": "actors/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/actors",
+      "path": "generated/scenarios/actors/typescript-consumer.ts",
+      "sourceSha256": "sha256:3d4ae12d12a5ab4f00db6e832704b4dc328535cbb12750dacc9c302ba4cb8630",
+      "rustOutputSha256": "sha256:ece2cee6ef8b6565a9c4e9cd9dfb40e09be6c56562ac0bb02436c51fa05bcf17",
+      "snippetSha256": "sha256:95a8b8813a65f200abdb45ea944755da1e38bba6518ed8320c6698de97b1b1b8"
+    },
+    {
+      "scenarioId": "stream/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/stream",
+      "path": "generated/scenarios/stream/typescript-consumer.ts",
+      "sourceSha256": "sha256:453c43c63537c1619fbe2125a7d5c8573936a9afb796a5c355c1dc8641e2569f",
+      "rustOutputSha256": "sha256:81414fe84095e6a30d20f098512ce91a25ac8830a47b4e4bea22abf351436afb",
+      "snippetSha256": "sha256:c6bfba20fe5960f00b79a40a923d2ede8e7dc650786d851d5a196ed22983c34c"
+    },
+    {
+      "scenarioId": "machines/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/machines",
+      "path": "generated/scenarios/machines/typescript-consumer.ts",
+      "sourceSha256": "sha256:1ac8f91f682935c5b9dc944bad34b46cd09147b3867565884f006b27b1b85819",
+      "rustOutputSha256": "sha256:da352173c5e5a3795dc8bc41ef0a712c99992531e557b81046a43331a222fe6e",
+      "snippetSha256": "sha256:358cebe95b7b434ee1dd1b92cb4055f7dc0fbeb9ed93c6d517ab83a7ded3778e"
+    },
+    {
+      "scenarioId": "workers/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/workers",
+      "path": "generated/scenarios/workers/typescript-consumer.ts",
+      "sourceSha256": "sha256:76f4ebecfb61d9b56a0dd26a731ed2c71d642ada3367a5defaad2a020eec87ec",
+      "rustOutputSha256": "sha256:dea41e6c4e3ddc5148fb209ab834d1e3fbc9dfb3a14a22bec62f1a8f36675c48",
+      "snippetSha256": "sha256:740e67e72616b1fdb060e298621cdac31e6fa2dd253c2f1e1df62bc0be866aaa"
+    },
+    {
+      "scenarioId": "objects/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/objects",
+      "path": "generated/scenarios/objects/typescript-consumer.ts",
+      "sourceSha256": "sha256:808b777b5acf816f9ece6be23832a898570e0e46801e7b130535463e1e81680c",
+      "rustOutputSha256": "sha256:93ef337032290ebb852ebfb6085297dfe90a90d5d9f77046d535a4e7b18ce111",
+      "snippetSha256": "sha256:7c8aa5800fc7768d5bd48ff05bcba44a17041821e96c200aad913ca15ab925db"
+    },
+    {
+      "scenarioId": "inference/typescript-consumer",
+      "language": "typescript",
+      "package": "@acyclic-labs/inference",
+      "path": "generated/scenarios/inference/typescript-consumer.ts",
+      "sourceSha256": "sha256:19c84ae0eb108ddc36641a40e6f7e3dc8435a6ab1f7d3b777861b2ca73a42900",
+      "rustOutputSha256": "sha256:a95d223479366e9bd1eb04ddc6864f113a3a27e6d7beea05300037cc2351903b",
+      "snippetSha256": "sha256:2ab52f2e8537a6e73198b771e1607377167ff11fa28b260668204ba57d1beafd"
+    }
+  ]
+}

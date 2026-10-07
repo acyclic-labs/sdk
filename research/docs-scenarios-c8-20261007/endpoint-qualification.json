@@ -1,0 +1,50 @@
+{
+  "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "status": "source-and-compile-qualified; both endpoint scenarios passed against task-local authenticated fixtures",
+  "scenarios": [
+    {
+      "id": "actors/transport-conformance-unary",
+      "package": "acyclic-actors",
+      "sourcePath": "rust/crates/actors/examples/transport-conformance.rs",
+      "sourceSha256": "sha256:7e8a1ac472da7dbb20cd271ed0537acd0ae3b7f4c75c493fce7d177173d6f610",
+      "compile": "passed: cargo check --quiet --locked --manifest-path rust/crates/actors/Cargo.toml --example transport-conformance",
+      "execution": "passed-local-fixture",
+      "fixture": {
+        "script": "typescript/packages/actors/test/grpc-conformance.mjs",
+        "scriptSha256": "sha256:a3e1c19fea8cdaec36aa03cd926e29a5fa5278cec21f21e110444fc0208a918e",
+        "command": "bun typescript/packages/actors/test/grpc-conformance.mjs",
+        "output": [
+          "Bun: 38 authenticated gRPC methods, streaming and denied authentication passed",
+          "Bun: 38 authenticated gRPC methods, streaming and denied authentication passed",
+          "Rust: 15 authenticated gRPC and HTTP methods, denied authentication and response bound passed"
+        ],
+        "scope": "task-local TLS/HTTP fixture; no production service claim"
+      },
+      "requiredInput": {
+        "stdinJson": ["endpoint", "httpEndpoint", "caCertificate", "token"],
+        "service": "authenticated Actors and Workers gRPC plus HTTP conformance fixture"
+      },
+      "reason": "Executed with the repository's generated local TLS certificate and conformance token."
+    },
+    {
+      "id": "stream/http-conformance-streaming",
+      "package": "acyclic-stream",
+      "sourcePath": "rust/crates/stream/examples/http-conformance.rs",
+      "sourceSha256": "sha256:60091cf290ccf8758dd204fa93e4cabcef97939692a694e75fb10985c679b054",
+      "compile": "passed: cargo check --quiet --locked --manifest-path rust/crates/stream/Cargo.toml --features http --example http-conformance",
+      "execution": "passed-local-fixture",
+      "fixture": {
+        "script": "typescript/packages/stream/test/http-provider-conformance.mjs",
+        "scriptSha256": "sha256:edfb1a796bf37f061409444575731a64fedb5eeb4ddb6d29e7a9c16a128edd21",
+        "command": "bun typescript/packages/stream/test/http-provider-conformance.mjs",
+        "output": "Rust Stream HTTP: full public conformance, authentication and bounds passed",
+        "scope": "task-local authenticated HTTP fixture; no production service claim"
+      },
+      "requiredInput": {
+        "argv": ["<https-endpoint>"],
+        "service": "authenticated Stream HTTP conformance fixture"
+      },
+      "reason": "Executed against the repository's task-local authenticated HTTP fixture with token conformance."
+    }
+  ]
+}

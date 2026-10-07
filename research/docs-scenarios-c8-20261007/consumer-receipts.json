@@ -1,0 +1,6 @@
+{
+  "schema": "acyclic.sdk.scenario-consumer-receipts.v2",
+  "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "sourceOfTruth": "package-archive-receipts.json",
+  "note": "The previous partial Actors/Machines receipt was replaced because its Rust-output and rendered-snippet hashes predated the strict generated-consumer refresh. The v2 receipt covers all six projections and extracted 0.2.0 package archives."
+}

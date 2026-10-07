@@ -1,0 +1,53 @@
+{
+  "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "rustScenarioRegistry": 19,
+  "rustScenarioExecution": 17,
+  "rustEndpointExecution": 2,
+  "generatedTypescriptProjections": 6,
+  "typescriptQualification": {
+    "typecheck": "passed: strict tsc 7.0.2, noEmit with noUncheckedIndexedAccess and exactOptionalPropertyTypes across all six generated consumers extracted from their package archives",
+    "actors": "passed: Bun runtime against extracted @acyclic-labs/actors 0.2.0 archive -> {\"homeRegion\":\"eu\",\"encodedBytes\":139}",
+    "stream": "passed: Bun runtime against extracted @acyclic-labs/stream 0.2.0 archive -> {\"tail\":\"2\",\"records\":2}",
+    "machines": "passed: Bun runtime against extracted @acyclic-labs/machines 0.2.0 archive -> {\"kind\":\"created\",\"pageSize\":1,\"suspension\":\"after-idle\"}",
+    "workers": "passed: Bun runtime against extracted @acyclic-labs/workers 0.2.0 archive -> {\"validated\":true,\"moduleBytes\":67,\"attempts\":2}",
+    "objects": "passed: Bun runtime against extracted @acyclic-labs/objects 0.2.0 archive -> {\"bucket\":\"customer.example\",\"key\":\"welcome.txt\",\"size\":15}",
+    "inference": "passed: Bun runtime against extracted @acyclic-labs/inference 0.2.0 archive -> {\"maximumMessageBytes\":8388608,\"maximumHttpJsonBytes\":16777216}"
+  },
+  "packageArchiveReceipt": "package-archive-receipts.json binds each projection to the exact local 0.2.0 archive SHA256, package.json SHA256, Rust scenario source/output SHA256, and rendered snippet SHA256; temporary tarballs were removed after hashing",
+  "endpointReceipt": "endpoint-qualification.json records both endpoint scenarios as compile-qualified and passed against task-local authenticated fixtures; no production service claim",
+  "harness": {
+    "registered": 7,
+    "executed": 7,
+    "typescriptConsumerEquivalent": false,
+    "reason": "These examples exercise low-level Harness policies without a corresponding public package operation; retaining Rust receipts avoids a hand-authored mirror."
+  },
+  "pi": {
+    "rustOwner": "shared-harness-boundary",
+    "status": "No separate Rust Pi crate exists; shared Harness Rust WASM owns descriptor/hash/file-policy validation while Pi model-wire projection is intentionally TS-owned."
+  },
+  "packageArtifactHashes": {
+    "workersPackageJson": "54fa1a5137c8aaf04c8687ae8c39c7dbe6da37b68ee7febf03a210d307e251fb",
+    "workersIndexDts": "cd0022aed301d7bae2ea15a4148994e6cac0e76f4edefac305c8880207891906",
+    "objectsPackageJson": "992ab7b7b30030a4139376151b882b11cf79a58cc2c2a6f7366c2c1e9aff5b3d",
+    "objectsIndexDts": "885b72a403c4e3a9ebe84b43c173002302cc16dc59258dc2e845d676ee0dcb69",
+    "objectsWasmJs": "f5aa833d73974001fea9940d4d960d24ad69702d03a2404b68bfa783cf9cd8d8",
+    "inferencePackageJson": "8a2a0d50575d601d03d65f504286211ee3862d3035d61d5092c1c9a7fcd6a3c0",
+    "inferenceIndexDts": "3604d7d445685dd37b9fbf441f47e3f3dcf9aaaf0450bfbf04f92fcda596ac47",
+    "inferenceWasmJs": "36aaccbb445deb033153f3d4b3d4bcf586f868c65af206e87331889e6376f14c"
+  },
+  "rustHostQualification": {
+    "piTypecheck": "passed: bun run --cwd typescript/packages/pi test",
+    "pluginLib": "passed: cargo test --locked --manifest-path plugin/Cargo.toml --lib (0 tests)",
+    "pluginCliScenario": "passed: cargo run --quiet --locked --manifest-path plugin/Cargo.toml --bin acyclic -- --help",
+    "nativeRuntime": "passed: cargo test --locked --manifest-path rust/crates/native-runtime/Cargo.toml --lib (53 passed, 1 ignored)",
+    "nativeRuntimeScenario": "passed: cargo run --quiet --locked --manifest-path rust/crates/native-runtime/Cargo.toml --example native-runtime-positional-io -> {\"bytes\":9,\"round_trip\":true}"
+  },
+  "rendererAudit": {
+    "sourceDerivedValues": "passed: renderers consume Rust JSON fields for request/data values",
+    "rustOutputMutation": "passed: Workers Rust scenario output mutation changed output digest and rendered TypeScript source",
+    "strictIndexedAccess": "passed: Stream and Machines renderers emit explicit bounds checks under noUncheckedIndexedAccess",
+    "actorsProjection": "reviewed: generated Actors consumer uses public protobuf schemas with no casts; HttpActorsClient/createActorsGrpcClient require fixture endpoint and token inputs absent from the Rust request-only scenario, so no fabricated semantic transport call was added",
+    "schemaLiterals": "limited to generated protobuf oneof discriminators and package API names",
+    "duplicatePiPolicy": "shared Harness Rust WASM validation retained; Pi model-wire projection remains TS-owned"
+  }
+}

@@ -37,6 +37,7 @@ struct GenerateArgs {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 struct GenerationManifest {
     schema: String,
@@ -185,6 +186,11 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
             "release generation requires a clean source checkout".into(),
         ));
     }
+    if args.channel == Channel::Release && args.skip_scenarios {
+        return Err(CliError(
+            "release generation cannot skip the registered scenario source closure".into(),
+        ));
+    }
 
     let receipts = rustdoc_files(&rustdoc_dir)?;
     if receipts.is_empty() {
@@ -200,6 +206,14 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     let mut receipt_manifest = BTreeMap::new();
     for receipt in receipts {
         let observation = observe_rustdoc(&receipt).map_err(profile_error)?;
+        let source_attestation = receipt_source_attestation(&receipt)?;
+        if source_attestation.as_deref() != Some(source_sha256.as_str()) {
+            return Err(CliError(format!(
+                "Rustdoc receipt {} is missing a matching source attestation (expected {})",
+                receipt.display(),
+                source_sha256
+            )));
+        }
         let package = package_for_crate(&metadata, &observation.crate_name)?;
         validate_rustdoc_version(&metadata, &package.name.to_string(), &observation)
             .map_err(profile_error)?;
@@ -298,7 +312,8 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
     if !args.skip_scenarios {
         let sources = scenarios::validate(&root).map_err(scenario_error)?;
         scenarios::compile_all(&root, &sources, None).map_err(scenario_error)?;
-        let executions = scenarios::execute_local(&root, &sources, None).map_err(scenario_error)?;
+        let executions =
+            scenarios::execute_all(&root, &sources, None, None).map_err(scenario_error)?;
         let snippets = scenarios::render_typescript(&executions).map_err(scenario_error)?;
         write_immutable(&scenario_path, &json_bytes(&scenarios::catalog(&sources))?)?;
         let executions_path = output.join("sdk-docs-scenario-executions.v1.json");
@@ -347,7 +362,12 @@ fn generate(args: GenerateArgs) -> Result<(), CliError> {
         artifacts,
     };
     let manifest_path = output.join("generation-manifest.v1.json");
-    write_immutable(&manifest_path, &json_bytes(&manifest)?)?;
+    let manifest_bytes = json_bytes(&manifest)?;
+    write_immutable(&manifest_path, &manifest_bytes)?;
+    write_immutable(
+        &output.join("generation-manifest.v1.sha256"),
+        sha256_bytes(&manifest_bytes).as_bytes(),
+    )?;
     let _ = scenario_artifacts;
     println!("generated {}", output.display());
     Ok(())
@@ -361,6 +381,31 @@ fn drift((root, output, rustdoc_dir): (PathBuf, PathBuf, PathBuf)) -> Result<(),
     let manifest: GenerationManifest =
         serde_json::from_slice(&fs::read(&manifest_path).map_err(io_error)?)
             .map_err(|e| CliError(format!("invalid generation manifest: {e}")))?;
+    let manifest_bytes = fs::read(&manifest_path).map_err(io_error)?;
+    let expected_manifest_digest =
+        fs::read_to_string(output.join("generation-manifest.v1.sha256")).map_err(io_error)?;
+    if expected_manifest_digest.trim() != sha256_bytes(&manifest_bytes) {
+        return Err(CliError(
+            "generation manifest integrity check failed".into(),
+        ));
+    }
+    if manifest.revision != git_revision(&root)? {
+        return Err(CliError("source revision changed since generation".into()));
+    }
+    let expected_state = if manifest.channel == Channel::Release {
+        "captured-snapshot"
+    } else {
+        "working-tree"
+    };
+    if manifest.source_state != expected_state {
+        return Err(CliError(format!(
+            "generation source state `{}` does not match channel `{expected_state}`",
+            manifest.source_state
+        )));
+    }
+    if manifest.channel == Channel::Release && git_dirty(&root)? {
+        return Err(CliError("release checkout is no longer clean".into()));
+    }
     let source_files = source_file_hashes(&root, &output)?;
     let digest = digest_map(&source_files);
     if source_files != manifest.source_files || digest != manifest.source_sha256 {
@@ -489,6 +534,15 @@ fn sha256_bytes(bytes: &[u8]) -> String {
 }
 fn sha256_file(path: &Path) -> Result<String, CliError> {
     Ok(sha256_bytes(&fs::read(path).map_err(io_error)?))
+}
+
+fn receipt_source_attestation(path: &Path) -> Result<Option<String>, CliError> {
+    let sidecar = path.with_extension("source.sha256");
+    match fs::read_to_string(&sidecar) {
+        Ok(value) => Ok(Some(value.trim().to_owned())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(error)),
+    }
 }
 
 fn rustdoc_key(root: &Path, path: &Path) -> Result<String, CliError> {
@@ -637,8 +691,11 @@ fn write_immutable(path: &Path, bytes: &[u8]) -> Result<(), CliError> {
     file.write_all(bytes).map_err(io_error)?;
     file.sync_all().map_err(io_error)?;
     drop(file);
-    match fs::rename(&temp, path) {
-        Ok(()) => Ok(()),
+    match fs::hard_link(&temp, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&temp);
+            Ok(())
+        }
         Err(error) => {
             let _ = fs::remove_file(&temp);
             if let Ok(existing) = fs::read(path) {
@@ -657,7 +714,9 @@ fn artifact_hashes(output: &Path) -> Result<BTreeMap<String, String>, CliError> 
     files.sort();
     let mut result = BTreeMap::new();
     for path in files {
-        if path.file_name() == Some(OsStr::new("generation-manifest.v1.json")) {
+        if path.file_name() == Some(OsStr::new("generation-manifest.v1.json"))
+            || path.file_name() == Some(OsStr::new("generation-manifest.v1.sha256"))
+        {
             continue;
         }
         let relative = path.strip_prefix(output).unwrap_or(&path);
@@ -727,19 +786,14 @@ fn collect_source_files(
         } else if path.is_file() {
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let components = relative.components().collect::<Vec<_>>();
-            let under_crate_src = components.len() >= 4
+            let under_crates = components.len() >= 3
                 && components[0].as_os_str() == OsStr::new("rust")
-                && components[1].as_os_str() == OsStr::new("crates")
-                && components[3].as_os_str() == OsStr::new("src");
-            let crate_manifest = components.len() == 4
-                && components[0].as_os_str() == OsStr::new("rust")
-                && components[1].as_os_str() == OsStr::new("crates")
-                && components[3].as_os_str() == OsStr::new("Cargo.toml");
-            let include = ((under_crate_src || crate_manifest)
+                && components[1].as_os_str() == OsStr::new("crates");
+            let include = (under_crates
                 && relative
                     .extension()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|ext| matches!(ext, "rs" | "toml" | "lock")))
+                    .is_some_and(|ext| matches!(ext, "rs" | "toml" | "lock" | "md")))
                 || relative == Path::new("Cargo.toml")
                 || relative == Path::new("Cargo.lock")
                 || relative == Path::new("release/cargo-crates.json");

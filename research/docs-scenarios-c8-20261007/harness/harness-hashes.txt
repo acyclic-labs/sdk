@@ -1,0 +1,7 @@
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\authority-id-contract.output A8F50A05D8753F5090AF0144DA4D1F88D3022C1073E367B17A26DD2AB7F3B0DC
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\child-page-contract.output BCDCC070032399B2946D1B22CF2C9ED8AB846A698F47EE302B1E65250A02FE4D
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\component-label-contract.output AF0EA0BC6B02AD5AD793A4F2FB494F629F746ACA9BB9581BD17462EE72E978EF
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\conversation-page-contract.output 76EF4171C71B01398464A21C1E8684F0DEFA86962D50FBC6E84F02E39705D289
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\custom_executor.output E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\limits-contract.output 89928C718669D53B8436D1D670E886AB2B6C3906E30C579DC6AA1853743E253E
+C:\Users\varun\.codex\worktrees\rust-profile-c8-port\research\docs-scenarios-c8-20261007\harness\private-directory-page-contract.output 2861FD7BD6101F5E871DFBB4D96822043A20D46F59C5B5DBF29660E598A40AC8

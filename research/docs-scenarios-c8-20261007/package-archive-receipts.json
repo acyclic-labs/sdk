@@ -1,0 +1,90 @@
+{
+  "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+  "generatedAt": "2026-10-07T16:59:45.3450492Z",
+  "packages": [
+    {
+      "scenario": "actors/typescript-consumer",
+      "package": "@acyclic-labs/actors",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:3d4ae12d12a5ab4f00db6e832704b4dc328535cbb12750dacc9c302ba4cb8630",
+      "rustOutputSha256": "sha256:ece2cee6ef8b6565a9c4e9cd9dfb40e09be6c56562ac0bb02436c51fa05bcf17",
+      "snippetSha256": "sha256:95a8b8813a65f200abdb45ea944755da1e38bba6518ed8320c6698de97b1b1b8",
+      "packageJsonSha256": "c0223a7212485df9b70aab5f46fe6ae5fa21c375887aee8f7158ba221920cbde",
+      "archive": "acyclic-labs-actors-0.2.0.tgz",
+      "archiveSha256": "20e2df41f028e7d8e9dd8f06ea55ff06f5aedc2d28cc3d7f958c4edd0e9641e7",
+      "archiveBytes": 11644,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"homeRegion\":\"eu\",\"encodedBytes\":139}"
+    },
+    {
+      "scenario": "inference/typescript-consumer",
+      "package": "@acyclic-labs/inference",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:19c84ae0eb108ddc36641a40e6f7e3dc8435a6ab1f7d3b777861b2ca73a42900",
+      "rustOutputSha256": "sha256:a95d223479366e9bd1eb04ddc6864f113a3a27e6d7beea05300037cc2351903b",
+      "snippetSha256": "sha256:2ab52f2e8537a6e73198b771e1607377167ff11fa28b260668204ba57d1beafd",
+      "packageJsonSha256": "8a2a0d50575d601d03d65f504286211ee3862d3035d61d5092c1c9a7fcd6a3c0",
+      "archive": "acyclic-labs-inference-0.2.0.tgz",
+      "archiveSha256": "bc38caac486fb1d6b3e9221cf2243f6c8e118b09da13560ba4fcd7f497592ea7",
+      "archiveBytes": 304382,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"maximumMessageBytes\":8388608,\"maximumHttpJsonBytes\":16777216}"
+    },
+    {
+      "scenario": "machines/typescript-consumer",
+      "package": "@acyclic-labs/machines",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:1ac8f91f682935c5b9dc944bad34b46cd09147b3867565884f006b27b1b85819",
+      "rustOutputSha256": "sha256:da352173c5e5a3795dc8bc41ef0a712c99992531e557b81046a43331a222fe6e",
+      "snippetSha256": "sha256:358cebe95b7b434ee1dd1b92cb4055f7dc0fbeb9ed93c6d517ab83a7ded3778e",
+      "packageJsonSha256": "4964af821f3229484a9d6b569365db3dba2863cddacc751811e19d0c70dc5e1b",
+      "archive": "acyclic-labs-machines-0.2.0.tgz",
+      "archiveSha256": "ab9f2ac637798b74ccc49ae8f2a8a2ddacf9adfc46cf8aec7a51337a2b2527f7",
+      "archiveBytes": 218258,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"kind\":\"created\",\"pageSize\":1,\"suspension\":\"after-idle\"}"
+    },
+    {
+      "scenario": "objects/typescript-consumer",
+      "package": "@acyclic-labs/objects",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:808b777b5acf816f9ece6be23832a898570e0e46801e7b130535463e1e81680c",
+      "rustOutputSha256": "sha256:93ef337032290ebb852ebfb6085297dfe90a90d5d9f77046d535a4e7b18ce111",
+      "snippetSha256": "sha256:7c8aa5800fc7768d5bd48ff05bcba44a17041821e96c200aad913ca15ab925db",
+      "packageJsonSha256": "992ab7b7b30030a4139376151b882b11cf79a58cc2c2a6f7366c2c1e9aff5b3d",
+      "archive": "acyclic-labs-objects-0.2.0.tgz",
+      "archiveSha256": "9f03f263fade8c61fd1bf2e2e8f6b565c7d326db9cf81b6020bad6cdadd9a75a",
+      "archiveBytes": 388252,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"bucket\":\"customer.example\",\"key\":\"welcome.txt\",\"size\":15}"
+    },
+    {
+      "scenario": "stream/typescript-consumer",
+      "package": "@acyclic-labs/stream",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:453c43c63537c1619fbe2125a7d5c8573936a9afb796a5c355c1dc8641e2569f",
+      "rustOutputSha256": "sha256:81414fe84095e6a30d20f098512ce91a25ac8830a47b4e4bea22abf351436afb",
+      "snippetSha256": "sha256:c6bfba20fe5960f00b79a40a923d2ede8e7dc650786d851d5a196ed22983c34c",
+      "packageJsonSha256": "9ddd5e9ee512712c2345bc7bb0db2a3d6edb41e610d6aa3b36fe02bc052acb12",
+      "archive": "acyclic-labs-stream-0.2.0.tgz",
+      "archiveSha256": "3613d7485235c66e13d2ac3dc909e371219f4a5d0e5ba66033765dcd0118debf",
+      "archiveBytes": 203571,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"tail\":\"2\",\"records\":2}"
+    },
+    {
+      "scenario": "workers/typescript-consumer",
+      "package": "@acyclic-labs/workers",
+      "version": "0.2.0",
+      "sourceSha256": "sha256:76f4ebecfb61d9b56a0dd26a731ed2c71d642ada3367a5defaad2a020eec87ec",
+      "rustOutputSha256": "sha256:dea41e6c4e3ddc5148fb209ab834d1e3fbc9dfb3a14a22bec62f1a8f36675c48",
+      "snippetSha256": "sha256:740e67e72616b1fdb060e298621cdac31e6fa2dd253c2f1e1df62bc0be866aaa",
+      "packageJsonSha256": "54fa1a5137c8aaf04c8687ae8c39c7dbe6da37b68ee7febf03a210d307e251fb",
+      "archive": "acyclic-labs-workers-0.2.0.tgz",
+      "archiveSha256": "3e57934070e0aa9035ac84401cfcd1281cb0915743c202c9d1fc720914ccb2c4",
+      "archiveBytes": 11962,
+      "qualification": "strict TypeScript 7.0.2 noEmit plus Bun runtime against copied archive contents",
+      "runtime": "{\"validated\":true,\"moduleBytes\":67,\"attempts\":2}"
+    }
+  ]
+}

@@ -62,6 +62,8 @@ pub struct Scenario {
     pub kind: ScenarioKind,
     pub mode: ScenarioMode,
     pub features: &'static [&'static str],
+    /// Optional repository-owned fixture runner for endpoint scenarios.
+    pub fixture_script: Option<&'static str>,
 }
 
 /// Source-backed scenarios with explicit operation identities. Cargo example
@@ -78,6 +80,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::ActorsUnary,
         mode: ScenarioMode::ExecuteWithEndpoint,
         features: &[],
+        fixture_script: Some("typescript/packages/actors/test/grpc-conformance.mjs"),
     },
     Scenario {
         id: "actors/typescript-consumer",
@@ -89,6 +92,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::ActorsTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "stream/http-conformance-streaming",
@@ -99,7 +103,8 @@ pub const SCENARIOS: &[Scenario] = &[
         operation: "tail",
         kind: ScenarioKind::StreamStreaming,
         mode: ScenarioMode::ExecuteWithEndpoint,
-        features: &[],
+        features: &["http"],
+        fixture_script: Some("typescript/packages/stream/test/http-provider-conformance.mjs"),
     },
     Scenario {
         id: "stream/typescript-consumer",
@@ -111,6 +116,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::StreamTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "filesystem/embedded-workspace",
@@ -121,7 +127,8 @@ pub const SCENARIOS: &[Scenario] = &[
         operation: "mounted-view",
         kind: ScenarioKind::FilesystemEmbedded,
         mode: ScenarioMode::ExecuteLocal,
-        features: &[],
+        features: &["local"],
+        fixture_script: None,
     },
     Scenario {
         id: "machines/typescript-consumer",
@@ -133,6 +140,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::MachinesTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "workers/module-contract",
@@ -144,6 +152,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::WorkersModuleContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "workers/typescript-consumer",
@@ -155,6 +164,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::WorkersTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "objects/typescript-consumer",
@@ -166,6 +176,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::ObjectsTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "inference/typescript-consumer",
@@ -177,6 +188,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::InferenceContractDefaults,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "plugin/cli-help",
@@ -188,6 +200,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::PluginCliHelp,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "native-runtime/positional-io",
@@ -199,6 +212,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::NativeRuntimePositionalIo,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/authority-id-contract",
@@ -210,6 +224,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessAuthorityIdContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/child-page-contract",
@@ -221,6 +236,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessChildPageContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/component-label-contract",
@@ -232,6 +248,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessComponentLabelContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/conversation-page-contract",
@@ -243,6 +260,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessConversationPageContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/custom-executor",
@@ -254,6 +272,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessCustomExecutor,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/limits-contract",
@@ -265,6 +284,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessLimitsContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
     Scenario {
         id: "harness/private-directory-page-contract",
@@ -276,6 +296,7 @@ pub const SCENARIOS: &[Scenario] = &[
         kind: ScenarioKind::HarnessPrivateDirectoryPageContract,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
+        fixture_script: None,
     },
 ];
 
@@ -305,6 +326,7 @@ pub struct ScenarioRecord {
     pub kind: ScenarioKind,
     pub mode: ScenarioMode,
     pub features: &'static [&'static str],
+    pub fixture_script: Option<&'static str>,
     pub source_sha256: String,
 }
 
@@ -332,6 +354,7 @@ pub fn catalog(sources: &[ScenarioSource]) -> ScenarioCatalog {
                 kind: source.scenario.kind,
                 mode: source.scenario.mode,
                 features: source.scenario.features,
+                fixture_script: source.scenario.fixture_script,
                 source_sha256: source.source_sha256.clone(),
             })
             .collect(),
@@ -524,6 +547,68 @@ pub fn execute_local(
             // Successful Cargo runs may emit compiler diagnostics only on the
             // first build. They are toolchain/cache noise rather than
             // scenario output, so keep the execution receipt deterministic.
+            stderr_sha256: digest_bytes(&[]),
+            stdout,
+        });
+    }
+    Ok(executions)
+}
+
+/// Execute every registered scenario that has a release-gate invocation.
+///
+/// Local Cargo examples and endpoint-backed fixture scripts are both selected
+/// from the Rust-owned registry. The latter are deliberately invoked through
+/// the checked-in fixture path recorded on [`Scenario::fixture_script`], so a
+/// generation run cannot silently report the 17 local examples as the full
+/// 19-scenario release result.
+pub fn execute_all(
+    root: &Path,
+    sources: &[ScenarioSource],
+    cargo_path: Option<&Path>,
+    bun_path: Option<&Path>,
+) -> Result<Vec<ScenarioExecution>, Error> {
+    let mut executions = execute_local(root, sources, cargo_path)?;
+    let bun = bun_path.unwrap_or_else(|| Path::new("bun"));
+    for source in sources {
+        if source.scenario.mode != ScenarioMode::ExecuteWithEndpoint {
+            continue;
+        }
+        let fixture_script = source.scenario.fixture_script.ok_or_else(|| {
+            Error::Invalid(format!(
+                "endpoint scenario {} has no fixture script",
+                source.scenario.id
+            ))
+        })?;
+        let fixture = root.join(fixture_script);
+        if !fixture.is_file() {
+            return Err(Error::Invalid(format!(
+                "scenario {} fixture script is missing {}",
+                source.scenario.id,
+                fixture.display()
+            )));
+        }
+        let mut command = Command::new(bun);
+        command.current_dir(root).arg(&fixture);
+        let output = command
+            .output()
+            .map_err(|error| Error::Io(format!("{}: {error}", source.scenario.id)))?;
+        if !output.status.success() {
+            return Err(Error::Invalid(format!(
+                "scenario {} fixture failed: {}",
+                source.scenario.id,
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8(output.stdout).map_err(|error| {
+            Error::Invalid(format!(
+                "scenario {} fixture stdout is not UTF-8: {error}",
+                source.scenario.id
+            ))
+        })?;
+        executions.push(ScenarioExecution {
+            scenario: source.scenario,
+            source_sha256: source.source_sha256.clone(),
+            stdout_sha256: digest_bytes(stdout.as_bytes()),
             stderr_sha256: digest_bytes(&[]),
             stdout,
         });
@@ -1075,7 +1160,11 @@ pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
         let package_root = root.join("rust/crates").join(package_directory(scenario));
         let manifest = package_root.join("Cargo.toml");
         let lockfile = root.join("Cargo.lock");
-        for path in [&source, &manifest, &lockfile] {
+        let mut source_files = vec![source, manifest.clone(), lockfile];
+        if let Some(fixture_script) = scenario.fixture_script {
+            source_files.push(root.join(fixture_script));
+        }
+        for path in &source_files {
             if !path.is_file() {
                 return Err(Error::Invalid(format!(
                     "scenario {} source closure is missing {}",
@@ -1094,8 +1183,8 @@ pub fn validate(root: &Path) -> Result<Vec<ScenarioSource>, Error> {
         }
         result.push(ScenarioSource {
             scenario: *scenario,
-            source_sha256: digest_files(root, [&source, &manifest, &lockfile])?,
-            source_files: vec![source, manifest, lockfile],
+            source_sha256: digest_files(root, source_files.iter())?,
+            source_files,
         });
     }
     Ok(result)
@@ -1179,6 +1268,21 @@ mod tests {
                 .count(),
             7
         );
+        assert_eq!(
+            SCENARIOS
+                .iter()
+                .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
+                .count(),
+            2
+        );
+        assert!(SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteWithEndpoint)
+            .all(|scenario| scenario.fixture_script.is_some()));
+        assert!(SCENARIOS
+            .iter()
+            .filter(|scenario| scenario.mode == ScenarioMode::ExecuteLocal)
+            .all(|scenario| scenario.fixture_script.is_none()));
     }
 
     #[test]
@@ -1186,10 +1290,15 @@ mod tests {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let sources = validate(&root).expect("registered scenario sources should exist");
         assert_eq!(sources.len(), SCENARIOS.len());
-        assert!(sources
-            .iter()
-            .all(|source| source.source_sha256.starts_with("sha256:")
-                && source.source_files.len() == 3));
+        assert!(sources.iter().all(|source| {
+            source.source_sha256.starts_with("sha256:")
+                && source.source_files.len()
+                    == if source.scenario.mode == ScenarioMode::ExecuteWithEndpoint {
+                        4
+                    } else {
+                        3
+                    }
+        }));
     }
 
     #[test]
