@@ -1,0 +1,54 @@
+use language_package_model::{
+    build_record_from_source, GeneratorIdentity, Language, QualificationMetadata,
+    QualificationStatus,
+};
+use std::{env, path::PathBuf};
+
+fn value(args: &[String], name: &str) -> String {
+    let flag = format!("--{name}");
+    args.windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].clone())
+        .unwrap_or_else(|| panic!("missing {flag}"))
+}
+
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let manifest = PathBuf::from(value(&args, "manifest-path"));
+    let package = value(&args, "package");
+    let language = match value(&args, "language").as_str() {
+        "python" => Language::Python,
+        "kotlin" => Language::Jvm,
+        "swift" => Language::Swift,
+        "ruby" => Language::Ruby,
+        "csharp" => Language::Dotnet,
+        other => panic!("unsupported prototype language {other}"),
+    };
+    let generator_version = value(&args, "generator");
+    let artifact = PathBuf::from(value(&args, "artifact"));
+    let receipt = PathBuf::from(value(&args, "receipt"));
+    let receipt_marker = value(&args, "receipt-marker");
+    let source_root = PathBuf::from(value(&args, "source-root"));
+    let record = build_record_from_source(
+        &source_root,
+        &manifest,
+        &package,
+        language,
+        GeneratorIdentity {
+            family: "uniffi".into(),
+            version: generator_version,
+            source: "mozilla/uniffi-rs".into(),
+        },
+        &artifact,
+        &receipt,
+        &receipt_marker,
+        QualificationMetadata {
+            status: QualificationStatus::Passed,
+            operations: vec!["all-eight-actors".into()],
+            checks: vec!["install".into(), "remote".into(), "cancellation".into()],
+            receipt: language_package_model::sha256_file(&receipt).unwrap(),
+        },
+    )
+    .unwrap();
+    println!("{}", record.evidence_json().unwrap());
+}

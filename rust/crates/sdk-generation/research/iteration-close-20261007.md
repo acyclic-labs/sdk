@@ -1,65 +1,66 @@
 # Integration checkpoint, 2026-10-07
 
-The goal remains active. Website presentation, registry publication and
-production deployment are outside this loop.
+The full goal remains active. Generated versioned documentation data is in scope;
+website presentation, registry publication and production deployment stay outside
+this loop.
 
 ## Authoritative state
 
-- Main: `fd8272d97ffc20fea444e37f100e738d94e0dbc4`.
-- Coordinator merges: PR252 (`f4b27bea5092b2c9f575f81c6e4ecf3226898c09`)
-  and PR254 (`4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41`).
-- Remote source checkpoint: `fe5eef146075c3e166eddb58c374a7474c78ffb9`.
-  This preserves unqualified work; it is not a release qualification.
-- PR258 remains draft. Revised source uses Cargo package metadata, required
-  v2 package/search schema fields and same-version immutable-history checks.
-  Independent review and an exact signed candidate are still required.
-- PR259 signed tree `2ad68b79d5d9ac202de95d096889de150bc19d8c` is identical
-  to the previously qualified Stream tree. Its signature gate passed, but
-  final review found loader, platform fallback and provenance gaps. No merge.
+- Remote main verified by ls-remote: ef65198d08ddf59d632e73ff8c7c362defb9ffda.
+  PR262 changes binding conversions, dependencies and generation scripts. Every
+  pending port must preserve these fixes rather than overwrite newer main files.
+- Coordinator merged PR252, PR254 and PR258. PR258 merged at
+  3a7ca21c8195e0ef847cf88c12a950dd41b903f0 on 2026-10-07 08:12:48 UTC.
+  It supplies Cargo-bound v2 package/search docs metadata and immutable bundles.
+- Verified remote WIP checkpoint refs before this update:
+  foundation 4ef2b10761afde394f49cc4f7b30f10cca1658e1;
+  Actors generation 1429d5cf38b982ba0be4d87233a6bacbdda85ac7.
+  These preserve source; they do not establish release qualification.
+- PR259 remote head 018ef828b8ecf6d98844791f3c218b2f0c85de46 lacks the latest
+  locally qualified fixes. It must not be merged in that state.
+- Filesystem checkpoint 9dd4261da162f6f28225e0c270ffdcb1379ac1c4 is remotely
+  preserved but has old parent fd8272d97ffc20fea444e37f100e738d94e0dbc4.
+  A current-main candidate and new source/artifact attestation remain required.
 
-## Evidence and failures
+## Evidence and remaining gaps
 
-- Actors Rust renderer and Buf descriptor have semantic parity; six descriptor
-  compatibility tests passed. The immutable archived descriptor stays intact.
-- Extracted Actors Cargo archive passed 70 tests. All-target compilation failed
-  because a cross-family conformance example depended on a local-only Workers
-  dev dependency. Relocate that fixture to an existing unpublished owner;
-  do not hide the failing target from qualification.
-- Portable pending Actors fixture and control client are source-owned under
-  `scripts/`. The control client passed with normal process exit after observing
-  pending server work, client cancellation and zero remaining active work.
-- Swift regenerated from a maintained UniFFI 0.31 source-template patch observed
-  pending work on the live gate, then propagated Task cancellation into Rust
-  and returned `CancellationError`. Preserve the source patch and qualify the
-  full package/cohort before enabling support.
-- Filesystem WASM numeric-only admission was insufficient: its f64 ABI coerced
-  strings, booleans, null and boxed numbers. The owner replaced those boundary
-  arguments with Rust JsValue primitive-number extraction and regenerated
-  artifacts. Independent packed-package native/browser matrix remains required.
-- Filesystem native u64 counters and finite-domain public TypeScript unions
-  require exact Rust-owned projections; ordinary string/number casts do not
-  establish the requested type fidelity.
-- Python and Dart maintained-generator typing/lowering gaps remain open.
-  Passing constructor or transport probes alone does not qualify a language.
-- An obsolete read-only Git unreachable-object scan owned by this loop was
-  stopped after its process ancestry was verified. Free physical memory rose
-  from approximately 2 GB to 30 GB; source files were not changed by that action.
+- Installed Stream testing caught a cancellation constructor import failure.
+  The generated-binding async factory fixes it. Latest local source passes
+  TypeScript, 55 Stream tests, 19 planner tests, browser fallback and installed
+  Windows native follow cancellation/server release. Selection and alias tests
+  were added. Independent review and direct stalled native-connect cancellation
+  evidence still gate the final candidate.
+- Filesystem staging passes 70 tests, strict native/browser input matrices,
+  Rust u64 preservation and extracted-package finite-type compile negatives.
+  This proves that snapshot only. The old 0D29 archive cannot be relabeled with
+  a new source identity. Build and attest the exact final signed candidate.
+- Machines transport validation reuses the Rust safe-integer predicate. Its WASM
+  build, 24 tests and TypeScript check pass. Keep it out of the Filesystem PR;
+  port the bounded TypeScript deletion while retaining main's conversion fixes.
+- Actors has Rust-owned Protify contracts, descriptor semantic parity, archive
+  all-target compilation and 70 passing tests. The ten-owner generation/docs
+  drift run is still being closed. Other families retain legacy contracts;
+  broad authored-TypeScript deletion has not been accomplished.
+- Real Rustdoc feature-profile executions pass. Production integration and
+  binding API coverage remain outstanding. Resolving a core-crate owner must
+  not hide the binding's public Rust types.
+- Maintained language generator source patches are being qualified for strong
+  types and Rust future cancellation. All-operation installed evidence is
+  cohort-specific; constructor probes and older receipts cannot qualify a newly
+  generated package.
+- New symbolic u64/presence Kani runs reached the solver but timed out. They are
+  inconclusive, not proofs. Existing proof claims retain their recorded scope.
 
 ## Next bounded milestones
 
-1. Review and sign the complete PR258 data producer, including its proof source
-   hash and actual schema-negative tests; run cheap core CI and merge only the
-   verified revision.
-2. Correct all PR259 loader, unsupported-platform, compiled-dependency and
-   source-root provenance findings. Requalify the exact resulting package and
-   require independent review before admin merge.
-3. Finish Actors archive all-target compilation and minimal mirror removal;
-   freeze the current-main generator closure before the single full ten-owner
-   generation/drift run. Integrate new docs metadata through Cargo metadata.
-4. Close strict Filesystem installed-package parity and exact public TypeScript
-   projections. Preserve qualified language source patches and receipts remotely.
+1. Port Stream and Filesystem onto current main without undoing PR262. Complete
+   exact-source installed qualification and independent review before merging.
+2. Close the frozen Actors ten-owner generation/drift run, port the minimal
+   contract cutover, and delete replaced mirrors and generation scripts.
+3. Preserve Machines and language/profile/proof prototype source remotely;
+   integrate only qualified, minimal dependencies and source patches.
+4. Extend Rust authority to remaining families, remove duplicate TypeScript
+   policy, and qualify executable examples and versioned documentation data.
 
-Renderer replay tests are empirical regression evidence. Mathematical claims
-are limited to the explicit properties proved by the current source-bound Kani
-harnesses or constructive proof notes; package/runtime behavior needs its own
-execution evidence.
+Ordinary CI stays cheap. Broader qualification binds source, generator versions
+and installed artifacts. No auto-merge is enabled.

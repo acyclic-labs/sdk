@@ -1,0 +1,72 @@
+{
+  "schema": "acyclic.actors.uniffi.csharp.repro-package.v1",
+  "generated_at": "2026-10-07",
+  "source_only": true,
+  "production_abi_changed": false,
+  "generator": {
+    "repository": "https://github.com/NordSecurity/uniffi-bindgen-cs",
+    "tag": "v0.11.0+v0.31.0",
+    "commit": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
+    "license": "MPL-2.0",
+    "uniffi_target": "0.31.0",
+    "build": "cargo build --release --locked --bin uniffi-bindgen-cs",
+    "source_patch": "generator/generator-source.patch",
+    "source_patch_sha256": "CB8C2154E390A2913DDF667F6F3534D43BDF04D376AC04906A37AB8C52F93016",
+    "tracked_template_count": 5,
+    "diff_insertions": 69,
+    "diff_deletions": 16,
+    "tracked_templates": [
+      "bindgen/templates/Async.cs",
+      "bindgen/templates/Helpers.cs",
+      "bindgen/templates/ObjectTemplate.cs",
+      "bindgen/templates/TopLevelFunctionTemplate.cs",
+      "bindgen/templates/macros.cs"
+    ],
+    "excluded_untracked_staging": [".cargo-ok", "ObjectTemplate.cs.patch"]
+  },
+  "rust_input": {
+    "foundation_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "package": "acyclic-actors-uniffi",
+    "version": "0.2.0",
+    "manifest": "rust/actors-uniffi/Cargo.toml",
+    "manifest_sha256": "3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB737",
+    "lockfile": "rust/actors-uniffi/Cargo.lock",
+    "lockfile_sha256": "EF8E90A082D6DC6D61421AC15261587AC6F0E161AC269EBE89571E9157DAC0F5",
+    "facade_source": "rust/actors-uniffi/src/lib.rs",
+    "facade_source_sha256": "9AF194096FEE04643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
+    "cargo_metadata": "rust/cargo-metadata.json",
+    "cargo_metadata_sha256": "654B3FF4FE7BB1DA8ED8D855D6DC0D3B25D9CBFC700A3B251042511112FDEE3A",
+    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2"
+  },
+  "generated": {
+    "source": "generated/acyclic_actors_uniffi.cs",
+    "source_sha256": "1227BF526944F1C1FBDE38115C9FC4CC2EC01435FB9B4CFCBB8A9A16BF200734",
+    "config": "generated/uniffi.toml",
+    "config_sha256": "628941A0FDD0D045DEB3EDEC6CAFFB7744DB41ABD833D556C1C9747FBB5D29CC",
+    "compile": "PASS; installed C# compiler, 0 errors"
+  },
+  "probes": {
+    "ordinary_all8": {
+      "source": "managed/AllEightProgram.cs",
+      "source_sha256": "321F7F438F6E93449CBFF588D00C2FC3A042F57EB3929350D22B296026545C41",
+      "compile": "PASS",
+      "runtime": "PASS; all eight ordinary operations",
+      "manual_rust_cancellation_handle": false
+    },
+    "pending_cancellation_token": {
+      "source": "managed/Program.cs",
+      "source_sha256": "E4806031DC36D25A7085A629616C52C9912727EE5CC9910DC41F6031F8C24B58",
+      "compile": "PASS",
+      "runtime": "PASS; 3 iterations; map baseline=0, peaks=1,1,1, after=0",
+      "fixture": "started=3, aborted=3, active=0",
+      "exception": "OperationCanceledException carrying request CancellationToken",
+      "manual_rust_cancellation_handle": false
+    },
+    "raw_handle_forge": {
+      "source": "managed/RawHandleNegative.cs",
+      "source_sha256": "0A4C89532964CEF83D325E5869C41AEBD44A6C0201809E8DB79D52A271E9F3E2",
+      "compile": "EXPECTED FAIL; CS1729 (internal marker constructor is inaccessible externally)"
+    }
+  },
+  "retained_files": "SHA256SUMS.txt covers every file except receipt.json itself"
+}

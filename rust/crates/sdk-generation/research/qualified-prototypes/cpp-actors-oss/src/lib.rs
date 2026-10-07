@@ -1,4 +1,5 @@
 //! Qualification fixture: CXX is the maintained bridge; Actors remains the Rust source of truth.
+use std::future::Future;
 use std::sync::Arc;
 use acyclic_actors::{client, domain, wire};
 use tokio_util::sync::CancellationToken;
@@ -112,6 +113,7 @@ pub struct ActorsClient {
     // The maintained client type is owned by Rust; a real constructor is async.
     inner: Option<client::Client>,
     last_error: Option<ActorsError>,
+    runtime: Option<tokio::runtime::Runtime>,
 }
 
 pub struct ActorsError {
@@ -129,6 +131,7 @@ fn actors_client_new() -> Box<ActorsClient> {
     Box::new(ActorsClient {
         inner: None,
         last_error: None,
+        runtime: None,
     })
 }
 
@@ -145,10 +148,12 @@ fn actors_client_connect(endpoint: &str, token: &str, ca_certificate: &str) -> B
         Ok(client) => Box::new(ActorsClient {
             inner: Some(client),
             last_error: None,
+            runtime: Some(runtime),
         }),
         Err(error) => Box::new(ActorsClient {
             inner: None,
             last_error: Some(ActorsError::from_client(error)),
+            runtime: Some(runtime),
         }),
     }
 }
@@ -220,6 +225,316 @@ impl ProbeFailure {
             kind: ffi::ErrorKind::Semantic,
             message: message.into(),
         }
+    }
+}
+
+fn empty_operation_result() -> ffi::ActorOperationResult {
+    ffi::ActorOperationResult {
+        ok: false,
+        error: ffi::ErrorKind::NoError,
+        message: String::new(),
+        actor_id: String::new(),
+        home_region: String::new(),
+        active: false,
+        subscriptions_empty: false,
+        configuration_revision: 0,
+        checkpoint_epoch: 0,
+        has_checkpoint: false,
+        checkpoint: 0,
+        status: 0,
+        has_location_header: false,
+    }
+}
+
+fn operation_error(error: client::Error) -> ffi::ActorOperationResult {
+    let error = ActorsError::from_client(error);
+    let mut result = empty_operation_result();
+    result.error = error.kind;
+    result.message = error.message;
+    result
+}
+
+fn operation_semantic(message: impl Into<String>) -> ffi::ActorOperationResult {
+    let mut result = empty_operation_result();
+    result.error = ffi::ErrorKind::Semantic;
+    result.message = message.into();
+    result
+}
+
+fn observation_operation_result(
+    observation: Option<&domain::ActorObservation>,
+) -> ffi::ActorOperationResult {
+    let Some(observation) = observation else {
+        return operation_semantic("remote response omitted actor");
+    };
+    let mut result = empty_operation_result();
+    result.ok = true;
+    result.error = ffi::ErrorKind::NoError;
+    result.actor_id = observation.actor_id().as_str().to_string();
+    result.home_region = observation.home_region().to_string();
+    result.active = observation.state() == domain::ActorState::Active;
+    result.subscriptions_empty = observation.subscriptions().is_empty();
+    result.configuration_revision = observation.configuration_revision();
+    result.checkpoint_epoch = observation.checkpoint_epoch();
+    result.has_checkpoint = observation.checkpoint_unix_millis().is_some();
+    result.checkpoint = observation.checkpoint_unix_millis().unwrap_or_default();
+    result
+}
+
+fn invoke_operation_result(response: &domain::InvokeActorResponse) -> ffi::ActorOperationResult {
+    let mut result = empty_operation_result();
+    result.ok = response.status() == 201
+        && response
+            .headers()
+            .first()
+            .is_some_and(|header| header.name == "location");
+    result.error = if result.ok {
+        ffi::ErrorKind::NoError
+    } else {
+        ffi::ErrorKind::Semantic
+    };
+    result.status = response.status();
+    result.has_location_header = response
+        .headers()
+        .first()
+        .is_some_and(|header| header.name == "location");
+    if !result.ok {
+        result.message = "remote invoke response changed status or headers".into();
+    }
+    result
+}
+
+fn block_on_client<T, F>(facade: &ActorsClient, operation: F) -> Result<T, client::Error>
+where
+    F: Future<Output = Result<T, client::Error>>,
+{
+    let Some(runtime) = facade.runtime.as_ref() else {
+        return Err(client::Error::Configuration("client is not connected".into()));
+    };
+    runtime.block_on(operation)
+}
+
+fn canonical_actor_id() -> Result<domain::ActorId, String> {
+    domain::ActorId::new("actor-a".into()).map_err(|error| error.to_string())
+}
+
+fn canonical_code_sha256() -> Result<domain::CodeSha256, String> {
+    domain::CodeSha256::new(vec![1; 32]).map_err(|error| error.to_string())
+}
+
+fn canonical_limits() -> Result<domain::ActorLimits, String> {
+    domain::ActorLimits::new(1_000, 1024, 1024).map_err(|error| error.to_string())
+}
+
+fn canonical_subscription() -> Result<domain::SubscriptionSpec, String> {
+    domain::SubscriptionSpec::new(
+        "input".into(),
+        "events/input".into(),
+        domain::SubscriptionStart::Cursor {
+            cursor: 9_007_199_254_740_993,
+        },
+        false,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn actors_create_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return facade
+            .last_error
+            .as_ref()
+            .map(|error| {
+                let mut result = empty_operation_result();
+                result.error = error.kind;
+                result.message = error.message.clone();
+                result
+            })
+            .unwrap_or_else(|| operation_semantic("client is not connected"));
+    };
+    let request = match (
+        canonical_code_sha256(),
+        canonical_limits(),
+    ) {
+        (Ok(code_sha256), Ok(limits)) => domain::CreateActorRequest::new(
+            code_sha256,
+            "eu".into(),
+            vec![],
+            limits,
+            vec![],
+            "create-cxx".into(),
+        ),
+        (Err(error), _) | (_, Err(error)) => return operation_semantic(error),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return operation_semantic(error.to_string()),
+    };
+    match block_on_client(facade, client.create_actor(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_update_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match (
+        canonical_actor_id(),
+        canonical_code_sha256(),
+        canonical_limits(),
+    ) {
+        (Ok(actor_id), Ok(code_sha256), Ok(limits)) => domain::UpdateActorRequest::new(
+            actor_id,
+            code_sha256,
+            vec![],
+            limits,
+            0,
+            "update-cxx".into(),
+        ),
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+            return operation_semantic(error)
+        }
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return operation_semantic(error.to_string()),
+    };
+    match block_on_client(facade, client.update_actor(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_inspect_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::InspectActorRequest::new(actor_id),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client.inspect_actor(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_add_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match (
+        canonical_actor_id(),
+        canonical_subscription(),
+    ) {
+        (Ok(actor_id), Ok(subscription)) => domain::AddSubscriptionRequest::new(
+            actor_id,
+            subscription,
+            "subscribe-cxx".into(),
+        ),
+        (Err(error), _) | (_, Err(error)) => return operation_semantic(error),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(error) => return operation_semantic(error.to_string()),
+    };
+    match block_on_client(facade, client.add_subscription(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_remove_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::RemoveSubscriptionRequest::new(
+            actor_id,
+            "input".into(),
+            "remove-cxx".into(),
+        ),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client.remove_subscription(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_resume_subscription(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::ResumeSubscriptionRequest::new(
+            actor_id,
+            "input".into(),
+            "resume-cxx".into(),
+        ),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client.resume_subscription(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_checkpoint_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::CheckpointActorRequest::new(actor_id, "checkpoint-a".into()),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client.checkpoint_actor(&request)) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_invoke_actor(facade: &ActorsClient) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::InvokeActorRequest::new(
+            actor_id,
+            "POST".into(),
+            "/".into(),
+            br#"{}"#.to_vec(),
+            vec![domain::Header {
+                name: "content-type".into(),
+                value: "application/json".into(),
+            }],
+        ),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client.invoke_actor(&request)) {
+        Ok(response) => invoke_operation_result(&response),
+        Err(error) => operation_error(error),
+    }
+}
+
+fn actors_inspect_actor_with_cancel(
+    facade: &ActorsClient,
+    operation: &ActorsOperation,
+) -> ffi::ActorOperationResult {
+    let Some(client) = facade.inner.as_ref() else {
+        return operation_semantic("client is not connected");
+    };
+    let request = match canonical_actor_id() {
+        Ok(actor_id) => domain::InspectActorRequest::new(actor_id),
+        Err(error) => return operation_semantic(error),
+    };
+    match block_on_client(facade, client::run_with_cancellation(
+        client.inspect_actor(&request),
+        Some(operation.cancellation.clone()),
+    )) {
+        Ok(response) => observation_operation_result(response.actor()),
+        Err(error) => operation_error(error),
     }
 }
 
@@ -509,7 +824,7 @@ fn actors_operation_new() -> Box<ActorsOperation> {
     })
 }
 
-fn actors_operation_cancel(operation: &mut ActorsOperation) {
+fn actors_operation_cancel(operation: &ActorsOperation) {
     operation.cancellation.cancel();
 }
 
