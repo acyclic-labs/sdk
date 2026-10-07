@@ -2,11 +2,18 @@
 
 Status: active. This ledger is specific to the Rust-source migration, not the historical SDK_CONTRACT_GOAL.md.
 
+Current scope (2026-10-07): merge dependency-complete, minimal SDK PRs after local
+Rust/TypeScript and correctness/maintainability qualification. Additional languages
+follow only after qualification. Generate immutable, versioned documentation data
+from Rust and Rust-owned examples for eventual website consumption; do not merge
+or deploy the website, and do not generate redirects. Historical iteration records
+below describe earlier scopes and evidence, not current completion claims.
+
 ## Boundaries
 
 - SDK branch: `codex/rust-sdk-docs-source`, isolated worktree based on `5beef008f88cd51a434260b36b79776bb95e605f`.
 - Website branch: `codex/rust-sdk-docs-source`, isolated worktree based on `68fea323412df5461b9c54475d97b2a48ca9c14e`.
-- Never merge to main, enable auto-merge, publish registry artifacts, or deploy production in this loop.
+- The user authorized self-contained PRs and admin merges when merge-ready. Only the coordinator merges, after the applicable source generation, compatibility, installed package, correctness and maintainability gates pass. Never enable auto-merge, publish registry artifacts, or deploy production in this loop.
 - Keep available subagent slots occupied with explicitly owned independent work; replenish finished tasks.
 - Preserve existing protocol identities, descriptor handshake digests, archived contracts, release claims, and user changes.
 
@@ -22,12 +29,12 @@ Crate-owned Markdown included by rustdoc is allowed for guides. Website SDK cont
 2. Select the minimal qualifying toolchain based on actual evidence; document gaps that justify custom Rust metadata tooling.
 3. Establish Rust-owned contract export, compatibility verification, one generation command, and docs/scenario bundle.
 4. Qualify installable generated packages and migrate existing shared TypeScript behavior incrementally.
-5. Replace website SDK content with generated content, preserve routes, and verify rendered previews.
+5. Produce complete versioned documentation data and verified executable snippets for eventual website consumption; default version selection to latest. Keep website integration outside this loop.
 6. Expand every viable OSS language target, record evidence, and run clean reproducibility/conformance/package checks.
 
 ## Completion rule
 
-Do not mark this goal complete while a viable target, migrated API, shared TypeScript implementation, independent SDK website content, or required compatibility/installation/snippet/preview check remains outstanding. Prototype or smoke results are not full language qualification.
+Do not mark this goal complete while a viable target, migrated API, replaced shared TypeScript implementation, Rust-owned generated documentation source coverage, or required compatibility/installation/snippet check remains outstanding. Prototype or smoke results are not full language qualification. Website integration is outside the current loop.
 
 ## Iteration 1 — 2026-10-03
 
@@ -368,3 +375,10 @@ Next bounded milestones: restore and render the actual docs preview; ingest exac
 - Root inspected legacy generation: scripts/generate-typescript-packages.mjs still independently owns8 family import rewrites despite invoking Rust for prototype content. TypeScript owner is migrating those final outputs/path mappings into Rust; legacy package.json generation chains will be removed only with verified equivalent Rust-owned coverage.
 - Website owner153613b/9ee005d reports70/70 Rust guide destinations and query/fragment preservation, with all70 legacy URLs307. This proves destination coverage, not preservation of every old substantive instruction or rendered desktop/mobile quality. Additional content equivalence and immutable-version search/navigation checks remain assigned.
 - All16 subagent slots remain occupied with explicit responsibilities. Current clean full generation, complete language/platform packages, strict docs, snippet execution, rendered website proof and Rust-only change propagation remain outstanding. No merge, auto-merge, registry publishing or production deployment.
+## Current authorization and verification closure — 2026-10-04
+
+The previous goal turn made concrete progress: recorded the failed immutable-source full run with all log hashes and diagnosed exact output-routing and producer prerequisite failures. The current turn committed the stronger external-policy routing/tamper regression (719328f96), which passed. Manual/release qualification now invokes revision-bound Rust source, installed embedded, and native Stream checks (ccadaeddaf); all 16 fast qualification policy tests pass. Native hosted execution is required before cross-platform qualification is complete.
+
+The user authorized the specific acyclic-labs/sdk isolated branch push, PR, and manual CI after automatic review rejected the initial external transfer. The isolated branch was pushed at ccadaeddaf and draft PR https://github.com/acyclic-labs/sdk/pull/241 is attached to this task. The first manual dispatch was rejected with HTTP 422 because runner.temp appeared in a job-level environment; the workflow owner is fixing that exact context error before a retry. No merge is authorized until the full completion audit proves the requested end state. Production publication and deployment remain outside the loop.
+
+Qualification still requires actual installed archives to execute against the matching Rust fixture source. Historical fixture transcripts, ancestry checks, fresh packing of previously tested loose dist trees, compile-only platform evidence, and orphan commit objects do not establish integrated current-source package qualification. Outstanding viable language targets remain part of the original goal. Generated documentation redirects are absent from the current website.
