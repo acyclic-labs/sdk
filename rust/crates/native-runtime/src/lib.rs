@@ -2115,59 +2115,13 @@ fn read_batch_impl(file: &File, reads: &[OwnedRead]) -> io::Result<Vec<Bytes>> {
 }
 
 #[cfg(windows)]
-fn wait_for_windows_io<T: Send + 'static>(
-    submit: impl FnOnce(Box<dyn FnOnce(io::Result<T>) + Send>) -> io::Result<()>,
-) -> io::Result<T> {
-    let (sender, receiver) = mpsc::sync_channel(1);
-    submit(Box::new(move |result| {
-        let _ = sender.send(result);
-    }))?;
-    receiver.recv().map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::BrokenPipe,
-            "completion owner stopped before terminal I/O result",
-        )
-    })?
-}
-
-#[cfg(windows)]
 fn read_at_impl(file: &File, offset: u64, destination: &mut [u8]) -> io::Result<usize> {
-    let file = Arc::new(file.try_clone()?);
-    let mut reads = wait_for_windows_io(|finish| {
-        windows::submit_read(
-            file,
-            false,
-            vec![OwnedRead {
-                offset,
-                length: destination.len(),
-            }],
-            finish,
-        )
-    })?;
-    let bytes = reads
-        .pop()
-        .ok_or_else(|| io::Error::other("native read returned no result"))?;
-    destination
-        .get_mut(..bytes.len())
-        .ok_or_else(|| io::Error::other("native read exceeded submitted length"))?
-        .copy_from_slice(&bytes);
-    Ok(bytes.len())
+    windows::read_at(file, offset, destination)
 }
 
 #[cfg(windows)]
 fn write_all_at_impl(file: &File, offset: u64, bytes: &[u8]) -> io::Result<()> {
-    let file = Arc::new(file.try_clone()?);
-    wait_for_windows_io(|finish| {
-        windows::submit_write(
-            file,
-            false,
-            vec![OwnedWrite {
-                offset,
-                bytes: Bytes::copy_from_slice(bytes),
-            }],
-            finish,
-        )
-    })
+    windows::write_all_at(file, offset, bytes)
 }
 
 #[cfg(target_vendor = "apple")]
