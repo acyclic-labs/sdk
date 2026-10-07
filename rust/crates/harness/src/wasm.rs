@@ -2480,17 +2480,7 @@ pub fn encode_model_prefix(
     limits: JsValue,
 ) -> Result<Vec<u8>, JsValue> {
     let limits: Limits = from_js(limits)?;
-    let prepare = |bytes: &[u8]| -> crate::Result<crate::model::PreparedModelRequest> {
-        let request = crate::contract::json_from_slice(bytes)
-            .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        let prepared = crate::model::PreparedModelRequest::prepare(request, limits)?;
-        if prepared.bytes() != bytes {
-            return Err(crate::Error::Invalid(
-                "request bytes are not canonical".into(),
-            ));
-        }
-        Ok(prepared)
-    };
+    let prepare = |bytes: &[u8]| crate::model::PreparedModelRequest::decode(bytes, limits);
     let request = prepare(&request).map_err(js_error)?;
     let parent: Option<FileRef> = from_js(parent)?;
     let parent_request = parent_request
@@ -2520,6 +2510,37 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
     let prepared =
         crate::model::PreparedModelRequest::prepare(request, from_js(limits)?).map_err(js_error)?;
     Ok(prepared.bytes().to_vec())
+}
+
+/// Validates a host-approved pinned selection without granting read authority.
+#[wasm_bindgen(js_name = validateContextSelection)]
+pub fn validate_context_selection(
+    #[wasm_bindgen(unchecked_param_type = "ContextSelection")] selection: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<(), JsValue> {
+    let selection: crate::context::ContextSelection = from_js(selection)?;
+    selection.validate(from_js(limits)?).map_err(js_error)
+}
+
+/// Applies a host renderer's output using the same native placement and bounds.
+/// Hosts supply authorized reads; this call performs no I/O or model admission.
+#[wasm_bindgen(js_name = applyContextProjection, unchecked_return_type = "Context")]
+pub fn apply_context_projection(
+    #[wasm_bindgen(unchecked_param_type = "Context")] context: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "readonly WasmModelMessageInput[]")] messages: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ContextRenderMode")] mode: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ContextPlacement")] placement: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let context = crate::context::apply_context_projection(
+        from_js(context)?,
+        from_js(messages)?,
+        from_js(mode)?,
+        from_js(placement)?,
+        from_js(limits)?,
+    )
+    .map_err(js_error)?;
+    to_js(&context)
 }
 
 /// Validates provider-neutral model content under the exact native limits.

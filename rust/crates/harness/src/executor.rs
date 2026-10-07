@@ -492,8 +492,7 @@ impl StockExecutor {
                 _ => None,
             })
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let request = load_json::<ModelRequest>(journal, file).await?;
-        let prepared = crate::model::PreparedModelRequest::prepare(request, self.limits)?;
+        let prepared = load_model_request(journal, file, self.limits).await?;
         if prepared.manifest().request_digest != digest {
             return Err(Error::Conflict("tool prefix request digest differs".into()));
         }
@@ -637,6 +636,27 @@ impl StockExecutor {
         Ok(())
     }
 
+    /// Runs one admitted model step independently of the stock control loop.
+    /// Custom loops reuse exact artifacts, validation, reconciliation and durable
+    /// observations. A started attempt never reruns sources or redispatches effects.
+    pub async fn model_step(
+        &self,
+        journal: &dyn ExecutionJournal,
+        input: &TurnInput,
+        step: u32,
+        prior_messages: &[ModelMessage],
+    ) -> Result<Vec<ModelEvent>> {
+        self.validate_turn_input(journal, input).await?;
+        if step >= input.max_steps {
+            return Err(Error::Invalid(
+                "model step is outside admitted turn bounds".into(),
+            ));
+        }
+        self.ensure_started(journal, input).await?;
+        self.run_model_step(journal, input, step, prior_messages)
+            .await
+    }
+
     /// Resolves one model step's events, replaying an already completed or started attempt
     /// from the durable journal exactly once instead of re-invoking the provider.
     #[allow(
@@ -659,20 +679,6 @@ impl StockExecutor {
         let (_, records) = self
             .model_records(journal, input.operation_id, step)
             .await?;
-        let context = self
-            .context
-            .run(&ContextInput {
-                input: input.input.clone(),
-                selected_context: input.selected_context.clone(),
-                step,
-                prior_messages: prior_messages.to_vec(),
-            })
-            .await?;
-        for message in &context.messages {
-            for reference in message.content.file_refs() {
-                journal.verify_input_file(reference).await?;
-            }
-        }
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
         for record in &records {
@@ -687,39 +693,12 @@ impl StockExecutor {
                 replayed_model.push(event);
             }
         }
-        let request = ModelRequest {
-            model: self.model.clone(),
-            messages: context.messages,
-            tools: self
-                .tools
-                .definitions()?
-                .into_iter()
-                .filter(|tool| {
-                    self.tool_scope
-                        .grants()
-                        .contains(&capability::tool_call(&tool.name))
-                })
-                .collect(),
-            max_output_tokens: Some(4_096),
-        };
-        let request = if let Some((prefix, verifier)) = &self.inherited_prefix {
-            crate::model::PreparedModelRequest::inherit(
-                request,
-                prefix,
-                verifier.as_ref(),
-                self.limits,
-            )
-            .await?
-        } else {
-            crate::model::PreparedModelRequest::prepare(request, self.limits)?
-        };
-        let request_digest = request.manifest().request_digest;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ModelStarted {
                 step: event_step,
                 request_digest,
-                ..
-            } if *event_step == step => Some(*request_digest),
+                request,
+            } if *event_step == step => Some((*request_digest, request)),
             _ => None,
         });
         if started.is_none() && !replayed_model.is_empty() {
@@ -727,27 +706,60 @@ impl StockExecutor {
                 "model observations exist without an admitted attempt".into(),
             ));
         }
-        if started.is_some_and(|existing_digest| existing_digest != request_digest) {
-            return Err(Error::Conflict(
-                "model attempt identity is bound to another request".into(),
-            ));
-        }
-        if let Some(reference) = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                step: event_step,
-                request,
-                ..
-            } if *event_step == step => Some(request),
-            _ => None,
-        }) {
-            let recorded = load_json::<ModelRequest>(journal, reference).await?;
-            let recorded = crate::model::PreparedModelRequest::prepare(recorded, self.limits)?;
-            if recorded.bytes() != request.bytes() {
+        let request = if let Some((digest, reference)) = started {
+            let recorded = load_model_request(journal, reference, self.limits).await?;
+            if recorded.manifest().request_digest != digest {
                 return Err(Error::Conflict(
-                    "recorded model request differs from dispatch".into(),
+                    "recorded model request digest differs from admission".into(),
                 ));
             }
+            recorded
+        } else {
+            let context = self
+                .context
+                .run_bounded(
+                    &ContextInput {
+                        input: input.input.clone(),
+                        selected_context: input.selected_context.clone(),
+                        step,
+                        prior_messages: prior_messages.to_vec(),
+                    },
+                    self.limits,
+                )
+                .await?;
+            let request = ModelRequest {
+                model: self.model.clone(),
+                messages: context.messages,
+                tools: self
+                    .tools
+                    .definitions()?
+                    .into_iter()
+                    .filter(|tool| {
+                        self.tool_scope
+                            .grants()
+                            .contains(&capability::tool_call(&tool.name))
+                    })
+                    .collect(),
+                max_output_tokens: Some(4_096),
+            };
+            if let Some((prefix, verifier)) = &self.inherited_prefix {
+                crate::model::PreparedModelRequest::inherit(
+                    request,
+                    prefix,
+                    verifier.as_ref(),
+                    self.limits,
+                )
+                .await?
+            } else {
+                crate::model::PreparedModelRequest::prepare(request, self.limits)?
+            }
+        };
+        for message in &request.request().messages {
+            for reference in message.content.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
         }
+        let request_digest = request.manifest().request_digest;
         let replay_completed = admission.completed;
         let model_events = if replay_completed {
             replayed_model
@@ -1552,10 +1564,15 @@ async fn stage_bytes(
     Ok(reference)
 }
 
-pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
+async fn load_model_request(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
-) -> Result<T> {
+    limits: Limits,
+) -> Result<crate::model::PreparedModelRequest> {
+    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits)
+}
+
+async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<Vec<u8>> {
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
     {
@@ -1565,6 +1582,14 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     }
     let bytes = journal.load(reference).await?;
     reference.descriptor().verify(&bytes)?;
+    Ok(bytes)
+}
+
+pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
+    journal: &dyn ExecutionJournal,
+    reference: &FileRef,
+) -> Result<T> {
+    let bytes = load_json_bytes(journal, reference).await?;
     let parsed: Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
     if crate::contract::canonical_json_bytes(&parsed)? != bytes {
@@ -2093,6 +2118,68 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    struct OnceStage(AtomicUsize);
+    impl crate::context::ContextStage for OnceStage {
+        fn name(&self) -> &str {
+            "once"
+        }
+        fn contract(&self) -> Value {
+            json!({"revision": "1"})
+        }
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            context: crate::context::Context,
+        ) -> BoxFuture<'a, Result<crate::context::Context>> {
+            Box::pin(async move {
+                if self.0.fetch_add(1, Ordering::SeqCst) != 0 {
+                    return Err(Error::NotFound("source removed after admission".into()));
+                }
+                Ok(context)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
+        let stage = Arc::new(OnceStage(AtomicUsize::new(0)));
+        let provider = Arc::new(PrefixBoundaryModel::default());
+        let executor = StockExecutor::new(
+            Model::new("test", "model", "1", Value::Null)?,
+            provider.clone(),
+            ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
+            ToolRegistry::new(),
+        );
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("exact é\0\r\n".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
+        let first = executor.model_step(&journal, &input, 0, &[]).await?;
+        assert_eq!(first, executor.model_step(&journal, &input, 0, &[]).await?);
+        assert_eq!(stage.0.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            provider
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("test lock".into()))?
+                .len(),
+            1
+        );
+        // Missing admitted bytes fail closed; completed output is no substitute.
+        journal
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("test lock".into()))?
+            .clear();
+        assert!(executor.execute(input, &journal).await.is_err());
+        assert_eq!(stage.0.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     #[tokio::test]

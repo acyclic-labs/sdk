@@ -389,6 +389,20 @@ impl ModelRequest {
 }
 
 impl PreparedModelRequest {
+    /// Reconstructs exact retained canonical bytes; unknown/defaulted fields or
+    /// alternative encodings cannot silently change an admitted request.
+    pub fn decode(bytes: &[u8], limits: crate::conversation::Limits) -> Result<Self> {
+        let request = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let prepared = Self::prepare(request, limits)?;
+        if prepared.bytes() != bytes {
+            return Err(Error::Invalid(
+                "retained model request is not exact canonical input".into(),
+            ));
+        }
+        Ok(prepared)
+    }
+
     /// Admits explicit input without retrieval, compaction or truncation.
     /// Providers are trusted to honor the token ceiling and native encoding.
     pub fn prepare(request: ModelRequest, limits: crate::conversation::Limits) -> Result<Self> {
@@ -728,6 +742,20 @@ mod tests {
         assert_eq!(
             prepared.bytes(),
             include_bytes!("../fixtures/model-request.json")
+        );
+        assert_eq!(
+            PreparedModelRequest::decode(prepared.bytes(), Limits::default())?.bytes(),
+            prepared.bytes()
+        );
+        let mut unknown = serde_json::to_value(prepared.request())
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        unknown["discarded"] = Value::Bool(true);
+        assert!(
+            PreparedModelRequest::decode(
+                &crate::contract::canonical_json_bytes(&unknown)?,
+                Limits::default()
+            )
+            .is_err()
         );
         assert_eq!(
             ModelPrefix::select(&prepared, None)?.canonical_bytes()?,

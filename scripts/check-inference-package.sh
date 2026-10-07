@@ -2,7 +2,20 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if command -v wslpath >/dev/null 2>&1; then
+if ! command -v bun >/dev/null 2>&1; then
+  echo "bun is required for the inference package check" >&2
+  exit 1
+fi
+bun_platform="$(bun -e 'process.stdout.write(process.platform)' 2>/dev/null)"
+case "$bun_platform" in
+  win32) windows_bun=true ;;
+  linux|darwin) windows_bun=false ;;
+  *)
+    echo "unsupported Bun platform: $bun_platform" >&2
+    exit 1
+    ;;
+esac
+if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1; then
   windows_temp="$(cmd.exe /d /c echo %TEMP% | tr -d '\r')"
   work="$(mktemp -d "$(wslpath -u "$windows_temp")/sdk-inference-package.XXXXXXXX")"
 else
@@ -33,10 +46,10 @@ fi
 typescript_archive="$work/acyclic-inference.tgz"
 bun_archive="$typescript_archive"
 bun_archive_url="$typescript_archive"
-if command -v cygpath >/dev/null 2>&1; then
+if [[ "$windows_bun" == true ]] && command -v cygpath >/dev/null 2>&1; then
   bun_archive="$(cygpath -w "$typescript_archive")"
   bun_archive_url="$(cygpath -m "$typescript_archive")"
-elif command -v wslpath >/dev/null 2>&1; then
+elif [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1; then
   bun_archive="$(wslpath -w "$typescript_archive")"
   bun_archive_url="$(wslpath -m "$typescript_archive")"
 fi
@@ -94,7 +107,7 @@ cargo_bin="cargo"
 source_manifest="$root/Cargo.toml"
 package_target="$work/package-target"
 package_target_argument="$package_target"
-if command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
+if [[ "$windows_bun" == true ]] && command -v wslpath >/dev/null 2>&1 && command -v cargo.exe >/dev/null 2>&1; then
   cargo_bin="cargo.exe"
   source_manifest="$(wslpath -w "$source_manifest")"
   package_target_argument="$(wslpath -w "$package_target")"

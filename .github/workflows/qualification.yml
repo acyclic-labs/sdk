@@ -4,16 +4,31 @@ on:
   pull_request:
   push:
     branches: [main]
-  schedule:
-    # Weekly full qualification catches drift outside the repository (runner
-    # images, registries, browsers) that lane fingerprints cannot observe.
-    - cron: '17 6 * * 1'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       force:
         description: Execute every lane even when its inputs already qualified
         type: boolean
-        default: true
+        default: false
+  workflow_call:
+    inputs:
+      force:
+        description: Execute every lane for a release caller
+        required: false
+        type: boolean
+        default: false
+      source_ref:
+        description: Exact commit SHA to qualify
+        required: false
+        type: string
+        default: ''
+      release_tag:
+        description: Release tag whose exact source is being qualified
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -27,8 +42,8 @@ env:
   CARGO_PROFILE_TEST_DEBUG: '0'
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
-  CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  FORCE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
+  CI_HEAD_SHA: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
+  FORCE: ${{ inputs.force || github.event_name == 'release' || github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
 
 jobs:
   plan:
@@ -44,11 +59,12 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       reused: ${{ steps.select.outputs.reused }}
       trusted: ${{ steps.select.outputs.trusted }}
+      windows: ${{ steps.select.outputs.windows }}
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -66,7 +82,22 @@ jobs:
           SDK_TEMP_DIR: ${{ runner.temp }}/sdk
           SDK_ARTIFACT_DIR: ${{ runner.temp }}/artifacts
           TOOLS_DIR: ${{ runner.temp }}/tools/preflight-${{ runner.arch }}
-        run: bash scripts/qualify-ci.sh preflight
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${RELEASE_TAG:-}" ]]; then
+            release_event="$SDK_TEMP_DIR/release-event.json"
+            mkdir -p "$SDK_TEMP_DIR"
+            RELEASE_TAG="$RELEASE_TAG" node -e \
+              'process.stdout.write(JSON.stringify({release:{tag_name:process.env.RELEASE_TAG}}))' \
+              >"$release_event"
+            GITHUB_EVENT_NAME=release \
+              GITHUB_REF="refs/tags/$RELEASE_TAG" \
+              GITHUB_EVENT_PATH="$release_event" \
+              bash scripts/qualify-ci.sh preflight
+          else
+            bash scripts/qualify-ci.sh preflight
+          fi
 
       - name: Fingerprint lane inputs
         id: fingerprints
@@ -164,7 +195,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
@@ -182,7 +213,8 @@ jobs:
   # Its runner must match the windows entry in .github/qualification-lanes.json.
   windows:
     name: windows
-    if: github.event_name == 'pull_request'
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.windows == 'true'
     runs-on: blacksmith-4vcpu-windows-2025
     permissions:
       contents: read
@@ -223,7 +255,7 @@ jobs:
         if: steps.plan.outputs.run == 'true'
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ inputs.source_ref || (github.event_name == 'release' && github.event.release.tag_name || github.event.pull_request.head.sha || github.sha) }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
@@ -249,7 +281,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.source_ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 

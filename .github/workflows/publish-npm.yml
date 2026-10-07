@@ -79,8 +79,8 @@ jobs:
           set -euo pipefail
           run=$(gh api --method GET \
             "repos/$GITHUB_REPOSITORY/actions/workflows/qualification.yml/runs" \
-            -f head_sha="$SOURCE_SHA" -f status=success -f event=push -F per_page=20 \
-            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success")] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
+            -f head_sha="$SOURCE_SHA" -f status=success -F per_page=100 \
+            --jq '[.workflow_runs[] | select(.head_sha == env.SOURCE_SHA and .conclusion == "success" and (.event == "workflow_dispatch" or .event == "release"))] | sort_by([.run_number, .run_attempt]) | last | [.id, .run_attempt] | @tsv')
           read -r run_id run_attempt <<<"$run"
           test -n "$run_id" && test -n "$run_attempt"
           artifact="packages-linux-${run_id}-${run_attempt}"

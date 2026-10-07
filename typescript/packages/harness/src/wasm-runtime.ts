@@ -13,6 +13,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
   "validateModelContent", "prepareModelRequest", "encodeModelPrefix", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection", "validateSelectedModelContext",
+  "validateContextSelection", "applyContextProjection",
   "prepareConversationTurn",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
   "taskAdmissionIdentities", "admitTask", "admitBatch", "admitBatchRequest",
