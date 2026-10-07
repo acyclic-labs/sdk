@@ -1,7 +1,7 @@
 use cargo_metadata::Metadata;
 use sdk_docs::{
-    Channel,
     scenarios::{ScenarioMode, ScenarioSource},
+    Channel,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -246,4 +246,3 @@ fn mode_name(mode: ScenarioMode) -> &'static str {
         ScenarioMode::ExecuteWithEndpoint => "executeWithEndpoint",
     }
 }
-
