@@ -10,8 +10,8 @@ import { BucketsService as BucketsV2, ObjectsService as ObjectsV2, MultipartServ
 
 // Retired v1 RPCs remain inventoried from the frozen published descriptor.
 const requireObjects = createRequire(new URL("../typescript/packages/objects/package.json", import.meta.url));
-const { fromBinary, createFileRegistry } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf")));
-const { FileDescriptorSetSchema } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf/wkt")));
+const { fromBinary, createFileRegistry } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf")).href);
+const { FileDescriptorSetSchema } = await import(pathToFileURL(requireObjects.resolve("@bufbuild/protobuf/wkt")).href);
 const legacyRegistry = createFileRegistry(fromBinary(FileDescriptorSetSchema,
   readFileSync(new URL("../compatibility/objects/v1/objects_descriptor.bin", import.meta.url))));
 const legacyServices = ["BucketsService", "ObjectsService", "MultipartService", "SnapshotsService"].map(name => {

@@ -6,7 +6,22 @@ import type { RunTerminalKind, RunTerminalMetadata } from "../generated/terminal
 type InferenceWasm = typeof import("../generated/wasm/acyclic_inference_wasm.js");
 type WatchRunState = ReturnType<InferenceWasm["watch_run_start_state_wire"]>;
 
-export class InferenceProtocolError extends Error {}
+/** `invalid` for a contract violation; `unavailable` when the Rust descriptor cannot load. */
+export type InferenceProtocolErrorCode = "invalid" | "unavailable";
+
+export class InferenceProtocolError extends Error {
+  constructor(message: string, readonly code: InferenceProtocolErrorCode = "invalid") {
+    super(message);
+  }
+}
+
+/** Keep the Rust message and stable `code` of a WASM error. */
+function protocolError(error: unknown): InferenceProtocolError {
+  if (error instanceof InferenceProtocolError) return error;
+  const code = (error as { code?: unknown } | null)?.code;
+  return new InferenceProtocolError(error instanceof Error ? error.message : String(error),
+    code === "unavailable" ? code : "invalid");
+}
 
 export type { RunTerminalKind, RunTerminalMetadata };
 
@@ -47,7 +62,7 @@ export async function validateContract<Schema extends DescMessage>(
   try {
     module.validate_customer_wire(kind, toBinary(schema, value), expected, related);
   } catch (error) {
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -58,11 +73,9 @@ export async function validateRuntimeShape<Schema extends DescMessage>(
 ): Promise<void> {
   const module = await loadBinding();
   try {
-    const error = module.runtime_shape_error(schema.typeName, value);
-    if (error !== undefined) throw new InferenceProtocolError(error);
+    module.validate_runtime_shape(schema.typeName, value);
   } catch (error) {
-    if (error instanceof InferenceProtocolError) throw error;
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -74,8 +87,7 @@ async function loadTerminalMetadata(): Promise<readonly RunTerminalMetadata[]> {
   try {
     return validateRunTerminalMetadata(module.run_terminal_metadata());
   } catch (error) {
-    if (error instanceof InferenceProtocolError) throw error;
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -115,8 +127,7 @@ export function validateRunTerminalMetadata(raw: string): readonly RunTerminalMe
     }
     return validated;
   } catch (error) {
-    if (error instanceof InferenceProtocolError) throw error;
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -130,7 +141,7 @@ export async function watchRunStart(
   try {
     return module.watch_run_start_state_wire(viewBytes, runId, fromSequence.toString());
   } catch (error) {
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -139,7 +150,7 @@ export function watchRunAdvance(state: WatchRunState, event: RunEvent): void {
   try {
     state.advance(toBinary(RunEventSchema, event));
   } catch (error) {
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }
 
@@ -148,6 +159,6 @@ export function watchRunFinish(state: WatchRunState): void {
   try {
     state.finish();
   } catch (error) {
-    throw new InferenceProtocolError(String(error));
+    throw protocolError(error);
   }
 }

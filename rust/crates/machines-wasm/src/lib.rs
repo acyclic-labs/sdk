@@ -8,12 +8,16 @@
 
 use acyclic_machines::SimulatedMachines;
 use sha2::{Digest as _, Sha256};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use uuid::Uuid;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod http;
+#[allow(
+    deprecated,
+    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
+)]
 mod public;
 
 /// Largest integer a JavaScript number represents exactly.
@@ -72,8 +76,7 @@ macro_rules! define_http_routes {
             "export interface MachinesHttpRoutes {\n",
             $("    readonly ", stringify!($name), ": ", stringify!($route), ";\n",)+
             "}\n\n",
-            "export function httpRoutes(): MachinesHttpRoutes;\n",
-            "export function httpRoute(route: MachinesHttpRoute): MachinesHttpRoute;\n\n",
+            "export function httpRoutes(): MachinesHttpRoutes;\n\n",
             "export interface MachinesHttpRequestMap {\n",
             $("    ", stringify!($route), ": ", $request, ";\n",)+
             "}\n\n",
@@ -144,15 +147,6 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Ok(Uuid::from_bytes(bytes).to_string())
-}
-
-/// Canonicalizes a hosted HTTP route through the Rust-owned route table before
-/// a client uses it to construct a request URL.
-#[wasm_bindgen(js_name = httpRoute, unchecked_return_type = "MachinesHttpRoute")]
-pub fn http_route(
-    #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-) -> Result<String, JsValue> {
-    Ok(http_route::canonical(&route)?.to_owned())
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical
@@ -397,44 +391,26 @@ impl WasmSimulatedMachines {
         public::dispatch(&self.inner, operation_name, payload).await
     }
 
-    /// Validates and projects a hosted HTTP response against its request context.
-    #[wasm_bindgen]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "wasm-bindgen exports owned JavaScript strings"
-    )]
-    pub fn validate_http_response(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-        response_json: String,
-        expected_json: String,
-    ) -> Result<(), JsValue> {
-        http::validate(&route, &response_json, &expected_json)
-    }
-
     /// Decodes a hosted HTTP response using the Rust-owned scalar wrappers and
     /// the same public DTO shape as simulator methods.
     #[wasm_bindgen(
         js_name = decodeHttpResponse,
         unchecked_return_type = "MachinesHttpResponseUnion"
     )]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "wasm-bindgen exports owned JavaScript strings"
-    )]
     pub fn decode_http_response(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
-        response_json: String,
-        expected_json: String,
+        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: &str,
+        response_json: &str,
+        expected_json: &str,
     ) -> Result<JsValue, JsValue> {
-        http::decode(&route, &response_json, &expected_json)
+        http::decode(route, response_json, expected_json)
     }
 
     /// Encodes a natural hosted request using Rust-owned bigint and bytes
     /// wrappers before it crosses the HTTP boundary.
     #[wasm_bindgen(js_name = encodeHttpRequest)]
     pub fn encode_http_request(
-        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRequestUnion")] request: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "MachinesHttpRequestUnion")] request: &JsValue,
     ) -> Result<String, JsValue> {
-        http::encode_request(&request)
+        http::encode_request(request)
     }
 }

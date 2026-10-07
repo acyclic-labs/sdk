@@ -148,7 +148,11 @@ export class WebSocketWireTransport implements WireTransport {
     readonly url: string,
     readonly negotiation: HandshakeRequest,
     readonly factory: WebSocketFactory = (url, protocols) => new WebSocket(url, protocols),
-  ) {}
+    /** Ceiling, in UTF-8 bytes, for each server message. */
+    readonly maximumMessageBytes = 8 * 1024 * 1024,
+  ) {
+    assertMessageBound(maximumMessageBytes);
+  }
 
   async connect(resume: ResumeRequest, signal?: AbortSignal): Promise<WireConnection> {
     resume = withResumeProtocol(resume, this.negotiation);
@@ -156,7 +160,7 @@ export class WebSocketWireTransport implements WireTransport {
     const socket = this.factory(this.url, ["acyclic.harness.v2"]);
     const incoming = new AsyncQueue<string>();
     const onMessage = (event: MessageEvent) => {
-      void websocketText(event.data).then(value => incoming.push(value), error => incoming.fail(error));
+      void websocketText(event.data, this.maximumMessageBytes).then(value => incoming.push(value), error => incoming.fail(error));
     };
     const onClose = () => incoming.fail(new WireError(ErrorCode.INDETERMINATE, "WebSocket closed"));
     const onError = () => incoming.fail(new WireError(ErrorCode.INDETERMINATE, "WebSocket failed"));
@@ -199,9 +203,7 @@ export class HttpSseWireTransport implements WireTransport {
         endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
       throw new TypeError("Harness endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
     }
-    if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes < 1) {
-      throw new RangeError("maximumMessageBytes must be a positive safe integer");
-    }
+    assertMessageBound(maximumMessageBytes);
     this.#endpoint = endpoint;
   }
 
@@ -554,6 +556,8 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   #error: unknown;
 
   push(value: T): void {
+    // A failed stream must not deliver later values past the failure.
+    if (this.#error !== undefined) return;
     const waiter = this.#waiters.shift();
     if (waiter) waiter.resolve({ done: false, value });
     else this.#values.push(value);
@@ -713,12 +717,30 @@ async function waitForOpen(socket: WebSocket, signal?: AbortSignal): Promise<voi
   });
 }
 
-async function websocketText(value: unknown): Promise<string> {
-  if (typeof value === "string") return value;
-  if (value instanceof ArrayBuffer) return new TextDecoder().decode(value);
-  if (ArrayBuffer.isView(value)) return new TextDecoder().decode(value);
-  if (value instanceof Blob) return value.text();
-  throw new TypeError("unsupported WebSocket message type");
+async function websocketText(value: unknown, maximum: number): Promise<string> {
+  const exceeded = () => new WireError(ErrorCode.INDETERMINATE, "server message exceeds configured bound");
+  if (typeof value === "string") {
+    if (utf8Exceeds(value, maximum)) throw exceeded();
+    return value;
+  }
+  const binary = value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+  if (!binary && !(value instanceof Blob)) throw new TypeError("unsupported WebSocket message type");
+  if ((binary ? value.byteLength : value.size) > maximum) throw exceeded();
+  return binary ? new TextDecoder().decode(value) : value.text();
+}
+
+function assertMessageBound(maximum: number): void {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) {
+    throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  }
+}
+
+const utf8 = new TextEncoder();
+// A UTF-16 unit encodes to one to three UTF-8 bytes, so only re-encode text
+// whose length alone cannot decide the bound.
+function utf8Exceeds(text: string, maximum: number): boolean {
+  return text.length > maximum ||
+    (text.length * 3 > maximum && utf8.encode(text).byteLength > maximum);
 }
 
 function withSlash(value: string): string {
@@ -764,11 +786,6 @@ async function boundedText(response: Response, maximum: number): Promise<string>
 async function* sseData(stream: ReadableStream<Uint8Array>, maximum: number): AsyncIterable<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  // A UTF-16 unit encodes to one to three UTF-8 bytes, so only re-encode text
-  // whose length alone cannot decide the bound.
-  const exceeds = (text: string) => text.length > maximum ||
-    (text.length * 3 > maximum && encoder.encode(text).byteLength > maximum);
   let buffered = "";
   let completed = false;
   try {
@@ -778,13 +795,13 @@ async function* sseData(stream: ReadableStream<Uint8Array>, maximum: number): As
       let boundary: number;
       while ((boundary = buffered.indexOf("\n\n")) >= 0) {
         const event = buffered.slice(0, boundary);
-        if (exceeds(event)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
+        if (utf8Exceeds(event, maximum)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
         buffered = buffered.slice(boundary + 2);
         const data = event.split("\n").filter(line => line.startsWith("data:"))
           .map(line => line.slice(5).trimStart()).join("\n");
         if (data !== "") yield data;
       }
-      if (exceeds(buffered)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
+      if (utf8Exceeds(buffered, maximum)) throw new WireError(ErrorCode.INDETERMINATE, "server event exceeds configured bound");
       if (done) break;
     }
     completed = true;

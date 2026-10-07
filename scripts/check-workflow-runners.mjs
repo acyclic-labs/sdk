@@ -32,7 +32,7 @@ for (const name of readdirSync(directory).filter(name => /\.ya?ml$/.test(name)).
     throw new Error(`${path} computes a shell dynamically; use the runner default or a literal shell`);
   }
   for (const match of source.matchAll(/^\s{2,}(?<scope>[a-z][a-z-]+):\s*(?:read|write|none)\s*$/gm)) {
-    const scope = match.groups.scope;
+    const [, scope] = match;
     if (!permissionScopes.has(scope)) {
       throw new Error(`${path} uses unknown permission scope ${scope}`);
     }

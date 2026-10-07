@@ -5,6 +5,7 @@ const { createHash } = require("node:crypto");
 const { closeSync, existsSync, openSync, readFileSync, readSync } = require("node:fs");
 const { join } = require("node:path");
 
+/** @param {any} [report] */
 function linuxLibc(report = process.report?.getReport?.()) {
   return typeof report?.header?.glibcVersionRuntime === "string"
     && report.header.glibcVersionRuntime.length > 0 ? "gnu" : "musl";

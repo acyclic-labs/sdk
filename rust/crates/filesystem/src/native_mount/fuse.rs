@@ -52,9 +52,11 @@
 
 use super::view_ledger::ViewOriginScope;
 use super::{
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
     MountPath, MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest,
-    ViewObserver, ViewOrigin, ViewStamp, metadata_or, system_time_ns,
+    ViewObserver, ViewOrigin, ViewStamp, create_metadata, errno, metadata_or, source_error,
+    system_time_ns,
 };
 use crate::kernel::{FileMetadata, MetadataField};
 use bytes::Bytes;
@@ -181,9 +183,6 @@ mod mode {
     pub(super) const S_IFREG: u32 = libc::S_IFREG as u32;
 }
 use mode::{S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK};
-const DIRECTORY_PAGE_SIZE: u32 = 256;
-const ATTRIBUTE_PAGE_SIZE: u32 = 256;
-const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 const DETACHED_COPY_CHUNK_BYTES: u32 = 1024 * 1024;
 /// Directory listings a projection keeps positioned for the kernel.
 const MAXIMUM_DIRECTORY_STREAMS: usize = 256;
@@ -3210,7 +3209,7 @@ impl FuseProjection {
                 }
             }
         } else {
-            let metadata = create_metadata(request, mode, S_IFREG);
+            let metadata = create_metadata(mode, S_IFREG, request.uid(), request.gid());
             let created = match proof {
                 Some(proof) => source.create_absent_file(path, metadata, proof),
                 None => source.create_file(path, metadata),
@@ -3959,7 +3958,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let _request = self.core.request("mkdir");
-        let metadata = create_metadata(request, mode & !umask, S_IFDIR);
+        let metadata = create_metadata(mode & !umask, S_IFDIR, request.uid(), request.gid());
         respond!(
             reply,
             self.create_node(parent.0, name, |path| self
@@ -3990,7 +3989,7 @@ impl Filesystem for FuseProjection {
             S_IFBLK => (MountNodeKind::BlockDevice, Some(native_device_parts(rdev))),
             _ => return reply.error(Errno::from_i32(libc::EOPNOTSUPP)),
         };
-        let metadata = create_metadata(request, mode & !umask, mode & S_IFMT);
+        let metadata = create_metadata(mode & !umask, mode & S_IFMT, request.uid(), request.gid());
         respond!(
             reply,
             self.create_node(parent.0, name, |path| self
@@ -4009,7 +4008,7 @@ impl Filesystem for FuseProjection {
         reply: ReplyEntry,
     ) {
         let _request = self.core.request("symlink");
-        let metadata = create_metadata(request, 0o777, S_IFLNK);
+        let metadata = create_metadata(0o777, S_IFLNK, request.uid(), request.gid());
         let target = Bytes::copy_from_slice(target.as_os_str().as_bytes());
         respond!(
             reply,
@@ -4476,24 +4475,6 @@ fn time_or_now_ns(value: TimeOrNow) -> Result<i64, i32> {
     })
 }
 
-fn create_metadata(request: &Request, mode: u32, kind: u32) -> FileMetadata {
-    let now = system_time_ns(SystemTime::now()).unwrap_or(i64::MAX);
-    FileMetadata {
-        posix_mode: MetadataField::Value((mode & 0o7777) | kind),
-        posix_uid: MetadataField::Value(request.uid()),
-        posix_gid: MetadataField::Value(request.gid()),
-        posix_flags: MetadataField::Value(0),
-        windows_attributes: MetadataField::Unavailable,
-        created_ns: MetadataField::Value(now),
-        modified_ns: MetadataField::Value(now),
-        accessed_ns: MetadataField::Value(now),
-        changed_ns: MetadataField::Value(now),
-        named_attributes: MetadataField::Unavailable,
-        acl: MetadataField::Unavailable,
-        security_descriptor: MetadataField::Unavailable,
-    }
-}
-
 fn native_device_parts(device: u32) -> (u32, u32) {
     super::device::split_device(u64::from(device))
 }
@@ -4512,23 +4493,6 @@ fn native_device_number(major: u32, minor: u32) -> Result<u32, i32> {
 /// Splits a non-root path into its parent directory and final name.
 fn split_parent(path: &MountPath) -> Option<(MountPath, &[u8])> {
     Some((path.parent()?, path.components().last()?))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn source_error(error: MountSourceError) -> NativeMountError {
-    NativeMountError::Driver(error.to_string())
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn errno(error: MountSourceError) -> i32 {
-    match error {
-        MountSourceError::NotFound => libc::ENOENT,
-        MountSourceError::AlreadyExists => libc::EEXIST,
-        MountSourceError::Invalid(_) => libc::EINVAL,
-        MountSourceError::Unsupported(_) => libc::EOPNOTSUPP,
-        MountSourceError::Engine(_) => libc::EIO,
-        MountSourceError::Stale => libc::ESTALE,
-    }
 }
 
 fn admit_open(writable: bool, flags: i32) -> Result<(), i32> {
@@ -5045,12 +5009,14 @@ mod tests {
             let invalidator = std::thread::spawn({
                 let core = Arc::clone(&core);
                 move || {
-                    // Waits once: only a notification ends it before the
-                    // deadline.
+                    // Only a notification ends the wait before the deadline;
+                    // an item deferred before the wait began needs none.
                     let state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
                     let (state, waited) = core
                         .invalidation
-                        .wait_timeout(state, std::time::Duration::from_secs(20))
+                        .wait_timeout_while(state, std::time::Duration::from_secs(20), |state| {
+                            state.invalidation.deferred.is_empty()
+                        })
                         .unwrap_or_else(PoisonError::into_inner);
                     (state.invalidation.deferred.len(), waited.timed_out())
                 }

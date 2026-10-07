@@ -142,7 +142,7 @@ test("installer recovers cleanup failure after durable identity publication", ()
     const recovered = install(value.bin);
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(digest(value.installed), digest(value.source));
-    const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json")));
+    const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
     assert.equal(identity.sha256, digest(value.source));
     assert.equal(existsSync(join(value.bin, "install-transaction.json")), false);
   } finally {
@@ -308,7 +308,7 @@ test("installer rejects traversal in a recovery journal", () => {
   try {
     const first = install(value.bin);
     assert.equal(first.status, 0, first.stderr);
-    const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json")));
+    const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
     writeFileSync(join(value.bin, "install-transaction.json"), JSON.stringify({
       version: 1,
       phase: "activated",
@@ -337,7 +337,7 @@ for (const crash of ["staged", "backed-up", "activated"]) {
       const recovered = install(value.bin);
       assert.equal(recovered.status, 0, recovered.stderr);
       assert.equal(digest(value.installed), digest(value.source));
-      const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json")));
+      const identity = JSON.parse(readFileSync(join(value.bin, "installed-binary.json"), "utf8"));
       assert.equal(identity.sha256, digest(value.source));
     } finally {
       rmSync(value.root, { recursive: true, force: true });
@@ -351,7 +351,7 @@ test("same version cannot be replaced with different bytes", () => {
     const first = install(value.bin);
     assert.equal(first.status, 0, first.stderr);
     writeFileSync(value.source, "different release bytes");
-    const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json")));
+    const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
     manifest.targets[target].sha256 = digest(value.source);
     writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
     const conflict = install(value.bin);
@@ -368,8 +368,8 @@ test("the published package declares the Codex hook MCP server on the installed 
   for (const path of [".mcp.json", ".codex-plugin/plugin.json", "hooks/hooks.json", "bin/acyclic"]) {
     assert.ok(files.includes(path), `package omits ${path}`);
   }
-  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"))).mcpServers, "./.mcp.json");
-  const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"))).mcpServers;
+  assert.equal(JSON.parse(readFileSync(join(plugin, ".codex-plugin", "plugin.json"), "utf8")).mcpServers, "./.mcp.json");
+  const servers = JSON.parse(readFileSync(join(plugin, ".mcp.json"), "utf8")).mcpServers;
   assert.deepEqual(Object.keys(servers), ["acyclic-hooks"]);
   // Codex starts the server from the plugin root. `bin/acyclic` is the
   // native executable on Unix; on Windows the installer removes it, so Codex
@@ -387,13 +387,13 @@ test("the published package declares the Codex hook MCP server on the installed 
 // uninstall.
 function packageRelease(version, extraBytes) {
   const value = fixture();
-  const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json")));
+  const manifest = JSON.parse(readFileSync(join(value.bin, "platform-binaries.json"), "utf8"));
   if (extraBytes) {
     writeFileSync(value.source, Buffer.concat([readFileSync(value.source), extraBytes]));
     manifest.targets[target].sha256 = digest(value.source);
     writeFileSync(join(value.bin, "platform-binaries.json"), JSON.stringify(manifest));
   }
-  const packageJson = JSON.parse(readFileSync(join(plugin, "package.json")));
+  const packageJson = JSON.parse(readFileSync(join(plugin, "package.json"), "utf8"));
   writeFileSync(join(value.root, "package.json"), JSON.stringify({
     name: packageJson.name,
     version,
@@ -401,7 +401,7 @@ function packageRelease(version, extraBytes) {
     scripts: packageJson.scripts,
   }));
   const packed = run(`npm pack --silent --pack-destination "${value.root}"`, value.root);
-  return { ...value, tarball: join(value.root, packed.trim().split(/\r?\n/).pop()) };
+  return { ...value, tarball: join(value.root, packed.trim().split(/\r?\n/).at(-1) ?? "") };
 }
 
 function run(command, cwd, environment = {}) {
@@ -443,7 +443,7 @@ const managers = {
     // `bun add` of a second tarball of the same package reports a dependency
     // loop, so the upgrade changes the declared dependency and reinstalls.
     install: (tarball, home) => {
-      const manifest = JSON.parse(readFileSync(join(home, "package.json")));
+      const manifest = JSON.parse(readFileSync(join(home, "package.json"), "utf8"));
       manifest.dependencies = { "@acyclic-labs/plugin": `file:${tarball}` };
       writeFileSync(join(home, "package.json"), JSON.stringify(manifest));
       return `bun install --cwd "${home}"`;

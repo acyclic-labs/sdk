@@ -1790,9 +1790,9 @@ export interface InitOutput {
     readonly openBrowserFs: (a: any) => any;
     readonly openMemoryFs: (a: any) => [number, number, number];
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_3a5d99b64720c547___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;

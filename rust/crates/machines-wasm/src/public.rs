@@ -22,7 +22,7 @@ use serde::{
     de::{self, Visitor},
 };
 use std::{collections::BTreeSet, num::NonZeroU32};
-use tsify_next::Tsify;
+use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 /// A public JavaScript number accepted only when it is an exact safe integer.
@@ -122,9 +122,7 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 fn provider_error(error: ProviderError) -> JsValue {
     let code = match &error {
-        ProviderError::NotFound(message) => {
-            return crate::js_error("not-found", format!("resource not found: {message}"));
-        }
+        ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
         ProviderError::Unsupported(_) => "unsupported",
         ProviderError::Invalid(_) => "invalid",

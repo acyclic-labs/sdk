@@ -19,6 +19,7 @@ function verifyElf(bytes, target) {
   const entrySize = bytes.readUInt16LE(54);
   const entryCount = bytes.readUInt16LE(56);
   expect(entrySize >= 56 && programOffset + entrySize * entryCount <= bytes.length, "ELF program headers are invalid");
+  /** @type {string | null} */
   let interpreter = null;
   for (let index = 0; index < entryCount; index += 1) {
     const offset = programOffset + index * entrySize;

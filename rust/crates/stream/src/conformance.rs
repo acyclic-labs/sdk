@@ -11,6 +11,7 @@ use crate::{
 
 /// Canonical language-neutral Stream conformance inventory.
 pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
+const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 
 /// Exercises the complete provider-independent hierarchical Stream contract.
 #[allow(
@@ -24,9 +25,6 @@ pub const SUITE: &[u8] = include_bytes!("../conformance/stream.json");
     reason = "the linear provider conformance walkthrough keeps each assertion visible"
 )]
 pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
-    if SUITE.is_empty() {
-        return Err("Stream conformance inventory is empty".into());
-    }
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;

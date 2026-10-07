@@ -30,6 +30,8 @@ const withTests = [
   ["-p", "acyclic-stream"],
   ["-p", "acyclic-stream", "--no-default-features"],
   ["-p", "acyclic-stream", "--no-default-features", "--features", "local"],
+  // Inference without its gRPC host, as the browser build uses it.
+  ["-p", "acyclic-inference", "--no-default-features"],
   // Harness host runtime alone, then each provider adapter feature alone.
   ["-p", "acyclic-harness"],
   ["-p", "acyclic-harness", "--features", "filesystem"],

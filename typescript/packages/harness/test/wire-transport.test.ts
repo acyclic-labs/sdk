@@ -352,6 +352,33 @@ test("framed status mismatch rejects instead of stranding observation", async ()
   ])).rejects.toBeInstanceOf(WireError);
 });
 
+test("WebSocket bounds each server message in UTF-8 bytes", async () => {
+  expect(() => new WebSocketWireTransport("ws://example.test", negotiation, undefined, 0)).toThrow(RangeError);
+  const handshakeFrame = toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
+    frame: { case: "handshake", value: handshake },
+  }));
+  const maximum = handshakeFrame.length;
+  // Non-ASCII text within the UTF-16 length bound but over the UTF-8 byte bound.
+  const wide = "é".repeat(Math.floor(maximum / 2) + 1);
+  expect(wide.length).toBeLessThan(maximum);
+  for (const oversized of [wide, new Uint8Array(maximum + 1), new Blob(["x".repeat(maximum + 1)])]) {
+    class FakeSocket extends EventTarget {
+      readonly readyState = WebSocket.OPEN;
+      sent = 0;
+      send() {
+        this.sent += 1;
+        const data = this.sent === 1 ? handshakeFrame : oversized;
+        queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data })));
+      }
+      close() {}
+    }
+    const connection = await new WebSocketWireTransport("ws://example.test/v2/harness/ws", negotiation,
+      () => new FakeSocket() as unknown as WebSocket, maximum).connect(resume);
+    await expect((async () => { for await (const _ of connection) { /* drain */ } })())
+      .rejects.toThrow("server message exceeds configured bound");
+  }
+});
+
 test("embedded status rejects an error correlated to another operation", async () => {
   const operationId = "01010101-0101-0101-0101-010101010101";
   const transport = new EmbeddedWireTransport({

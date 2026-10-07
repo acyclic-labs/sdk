@@ -2384,7 +2384,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         for held in collection.held() {
             match held {
                 crate::collection::Held::Checkout(held) => {
-                    marker.set_limits(decode_limits(held.config));
+                    marker.set_limits(DecodeLimits::for_volume(held.config));
                     marker
                         .generation(GenerationId::new(held.base.digest))
                         .await
@@ -2392,7 +2392,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                     marker.working(&held.working).await.map_err(mark_error)?;
                 }
                 crate::collection::Held::Record { record, config } => {
-                    marker.set_limits(decode_limits(config));
+                    marker.set_limits(DecodeLimits::for_volume(config));
                     marker.record(&record).await.map_err(mark_error)?;
                 }
             }
@@ -2511,7 +2511,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         marker: &mut crate::kernel::Marker<'_, LocalObjectBackend>,
         cancellation: &CancellationToken,
     ) -> Result<DecodeLimits, FsError> {
-        let mut widest = decode_limits(VolumeConfig::portable(Lifecycle::Durable));
+        let mut widest = DecodeLimits::for_volume(VolumeConfig::portable(Lifecycle::Durable));
         let authorities = self
             .inner
             .authority
@@ -2566,7 +2566,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             if volume_authority_id(created.volume_id) != authority_id {
                 return Err(FsError::VolumeMismatch);
             }
-            let limits = decode_limits(created.config);
+            let limits = DecodeLimits::for_volume(created.config);
             *widest = widest_limits(*widest, limits);
             marker.set_limits(limits);
             self.mark_local_volume(marker, authority_id, created.volume_id, head, cancellation)
@@ -2599,7 +2599,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
                 .await?;
             return Ok(());
         }
-        let limits = decode_limits(retained.config);
+        let limits = DecodeLimits::for_volume(retained.config);
         *widest = widest_limits(*widest, limits);
         marker.set_limits(limits);
         marker
@@ -3749,7 +3749,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &self.inner.objects,
             root.file_table,
             file_id,
-            decode_limits(workspace.config),
+            DecodeLimits::for_volume(workspace.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -3783,7 +3783,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     length: logical_bytes,
                 },
                 maximum_spans: workspace.config.limits.maximum_directory_page_entries,
-                limits: decode_limits(workspace.config),
+                limits: DecodeLimits::for_volume(workspace.config),
                 budget: WorkBudget::UNBOUNDED,
             },
             &CancellationToken::new(),
@@ -3826,9 +3826,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await
                 .map_err(crate::workspace::WorkspaceError::engine)?;
             metadata.push(
-                decode_file_metadata(&read.value.bytes, decode_limits(workspace.config))
-                    .map_err(crate::workspace::WorkspaceError::engine)?
-                    .without_timestamps(),
+                decode_file_metadata(
+                    &read.value.bytes,
+                    DecodeLimits::for_volume(workspace.config),
+                )
+                .map_err(crate::workspace::WorkspaceError::engine)?
+                .without_timestamps(),
             );
         }
         Ok(metadata.first() == metadata.get(1))
@@ -3850,8 +3853,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )
             .await
             .map_err(crate::workspace::WorkspaceError::engine)?;
-        decode_file_metadata(&read.value.bytes, decode_limits(workspace.config))
-            .map_err(crate::workspace::WorkspaceError::engine)?;
+        decode_file_metadata(
+            &read.value.bytes,
+            DecodeLimits::for_volume(workspace.config),
+        )
+        .map_err(crate::workspace::WorkspaceError::engine)?;
         Ok(read.value.bytes.to_vec())
     }
 
@@ -3925,7 +3931,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         workspace: &Volume<A, O>,
         bytes: &[u8],
     ) -> Result<ObjectId, crate::workspace::WorkspaceError> {
-        decode_file_metadata(bytes, decode_limits(workspace.config))
+        decode_file_metadata(bytes, DecodeLimits::for_volume(workspace.config))
             .map_err(crate::workspace::WorkspaceError::engine)?;
         let (object, _) = self
             .put_encoded(
@@ -4206,7 +4212,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 maximum_conflicts,
                 resolutions: BTreeMap::new(),
             },
-            decode_limits(target.config),
+            DecodeLimits::for_volume(target.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4410,7 +4416,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 maximum_conflicts,
                 resolutions,
             },
-            decode_limits(target.config),
+            DecodeLimits::for_volume(target.config),
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -5502,7 +5508,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             self.root.file_table,
             file_ids,
             self.volume.config.limits.maximum_paths_per_batch,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             budget,
             cancellation,
         )
@@ -5663,7 +5669,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 self.root.file_table,
                 &file_ids,
                 maximum_entries,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -5709,8 +5715,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             if record.file_id != binding.file_id || record.kind != binding.kind {
                 return Err(OperationFailure::new(FsError::InvalidDirectoryRecord, work));
             }
-            let metadata = decode_file_metadata(&metadata, decode_limits(self.volume.config))
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let metadata =
+                decode_file_metadata(&metadata, DecodeLimits::for_volume(self.volume.config))
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
             let logical_bytes = record_logical_bytes(record);
             entries.push(ResolvedDirectoryEntry {
                 name: binding.name,
@@ -5761,7 +5768,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 record,
                 range,
                 maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget,
             },
             cancellation,
@@ -5797,8 +5804,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             .map_err(|failure| {
                 failure.map_with_prior_work(WorkCounters::default(), FsError::Object)
             })?;
-        let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
-            .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
+        let value = decode_file_metadata(
+            &metadata.value,
+            DecodeLimits::for_volume(self.volume.config),
+        )
+        .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
         Ok(FsReceipt {
             value,
             work: metadata.work,
@@ -5901,7 +5911,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 file_size: logical_bytes,
                 range,
                 maximum_spans,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget: remaining(work, budget)?,
             },
             cancellation,
@@ -5942,7 +5952,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 record,
                 range,
                 maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget: remaining(work, budget)?,
             },
             cancellation,
@@ -6018,7 +6028,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 root,
                 after.as_ref(),
                 256,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -6040,7 +6050,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                         offset: 0,
                         length: entry.value_bytes,
                     },
-                    decode_limits(self.volume.config),
+                    DecodeLimits::for_volume(self.volume.config),
                     remaining(work, budget)?,
                     cancellation,
                 )
@@ -6132,8 +6142,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
             let bytes = reads
                 .next()
                 .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), work))?;
-            let metadata = decode_file_metadata(&bytes, decode_limits(self.volume.config))
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let metadata =
+                decode_file_metadata(&bytes, DecodeLimits::for_volume(self.volume.config))
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
             let logical_bytes = record_logical_bytes(record);
             handles.push(Some(ResolvedFile {
                 reader: self.clone(),
@@ -6263,7 +6274,7 @@ async fn list_directory_page_pinned<A: AsyncAuthorityStore, O: AsyncObjectStore>
         entries,
         after,
         maximum_entries,
-        decode_limits(volume.config),
+        DecodeLimits::for_volume(volume.config),
         remaining(work, budget)?,
         cancellation,
     )
@@ -6305,7 +6316,7 @@ async fn read_symbolic_link_record<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             offset: 0,
             length: target_bytes,
         },
-        decode_limits(volume.config),
+        DecodeLimits::for_volume(volume.config),
         budget,
         cancellation,
     )
@@ -6419,7 +6430,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 maximum_conflicts,
                 resolutions: BTreeMap::new(),
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -6532,7 +6543,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 file_table: self.root.file_table,
                 merge_parent: None,
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             budget,
             cancellation,
         )
@@ -6688,7 +6699,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         let probe = AuthenticatedGenerationProbe::new(
             &self.volume.fs.inner.objects,
             ProbeLimits {
-                decode: decode_limits(self.volume.config),
+                decode: DecodeLimits::for_volume(self.volume.config),
                 maximum_cached_generations: 2,
                 maximum_cached_records: self.volume.config.limits.maximum_checkout_dependencies,
                 maximum_extent_spans: self.volume.config.limits.maximum_directory_page_entries,
@@ -6790,7 +6801,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 maximum_conflicts,
                 resolutions: BTreeMap::new(),
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(*work, budget)?,
             cancellation,
         )
@@ -6978,7 +6989,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 file_id,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 budget,
                 cancellation,
             )
@@ -6996,7 +7007,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 file_id,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -9224,7 +9235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 offset: 0,
                 length: payload_bytes,
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9502,7 +9513,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     record,
                     range,
                     maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                    limits: decode_limits(self.volume.config),
+                    limits: DecodeLimits::for_volume(self.volume.config),
                     budget: remaining(work, budget)?,
                 },
                 cancellation,
@@ -9591,7 +9602,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 file_size: logical_bytes,
                 range,
                 maximum_spans,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget: remaining(work, budget)?,
             },
             cancellation,
@@ -9662,7 +9673,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             file_size: logical_bytes,
                             offset,
                             target,
-                            limits: decode_limits(self.volume.config),
+                            limits: DecodeLimits::for_volume(self.volume.config),
                             budget: remaining(work, budget)?,
                         },
                         cancellation,
@@ -9738,8 +9749,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .await
             .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
         work = add(work, metadata.work)?;
-        let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
-            .map_err(|error| OperationFailure::new(error.into(), work))?;
+        let value = decode_file_metadata(
+            &metadata.value,
+            DecodeLimits::for_volume(self.volume.config),
+        )
+        .map_err(|error| OperationFailure::new(error.into(), work))?;
         if self.tracks_observations() {
             work = self
                 .observe_base_metadata_ids(
@@ -9777,7 +9791,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9800,7 +9814,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 offset: 0,
                 length: entry.value_bytes,
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9845,7 +9859,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             root,
             after,
             maximum_entries,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9894,7 +9908,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9930,7 +9944,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             root,
             vec![mutation],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9976,7 +9990,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -9994,7 +10008,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 expected: Some(expected),
             }],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -11292,8 +11306,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 .await
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
             work = add(work, metadata.work)?;
-            let metadata = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let metadata = decode_file_metadata(
+                &metadata.value,
+                DecodeLimits::for_volume(self.volume.config),
+            )
+            .map_err(|error| OperationFailure::new(error.into(), work))?;
             if self.tracks_observations() {
                 work = self
                     .observe_base_metadata_ids(
@@ -11723,7 +11740,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     entries,
                     at,
                     maximum_entries,
-                    decode_limits(self.volume.config),
+                    DecodeLimits::for_volume(self.volume.config),
                     remaining(work, budget)?,
                     cancellation,
                 )
@@ -11734,7 +11751,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     entries,
                     after,
                     maximum_entries,
-                    decode_limits(self.volume.config),
+                    DecodeLimits::for_volume(self.volume.config),
                     remaining(work, budget)?,
                     cancellation,
                 )
@@ -11888,7 +11905,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.root.file_table,
                 &file_ids,
                 maximum_entries,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -11946,8 +11963,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             .try_reserve_exact(named_records.len())
             .map_err(|_| OperationFailure::new(FsError::PendingMutationAllocationFailed, work))?;
         for ((name, record), metadata) in named_records.into_iter().zip(metadata_reads.value) {
-            let metadata = decode_file_metadata(&metadata, decode_limits(self.volume.config))
-                .map_err(|error| OperationFailure::new(error.into(), work))?;
+            let metadata =
+                decode_file_metadata(&metadata, DecodeLimits::for_volume(self.volume.config))
+                    .map_err(|error| OperationFailure::new(error.into(), work))?;
             entries.push(DirectoryRecordEntry {
                 name,
                 record,
@@ -12021,7 +12039,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12044,7 +12062,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 offset: 0,
                 length: entry.value_bytes,
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12090,7 +12108,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             root,
             after,
             maximum_entries,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12141,7 +12159,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12177,7 +12195,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             root,
             vec![mutation],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12216,7 +12234,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12234,7 +12252,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 expected: Some(expected),
             }],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12322,7 +12340,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 file_size: logical_bytes,
                 range,
                 maximum_spans,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget: remaining(work, budget)?,
             },
             cancellation,
@@ -12399,7 +12417,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                             file_size: logical_bytes,
                             offset,
                             target,
-                            limits: decode_limits(self.volume.config),
+                            limits: DecodeLimits::for_volume(self.volume.config),
                             budget: remaining(work, budget)?,
                         },
                         cancellation,
@@ -12493,7 +12511,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 record,
                 range,
                 maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget: remaining(work, budget)?,
             },
             cancellation,
@@ -12520,7 +12538,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 self.root.file_table,
                 file_id,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 budget,
                 cancellation,
             )
@@ -12591,7 +12609,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 &self.volume.fs.inner.objects,
                 self.base_root.file_table,
                 file_id,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -12633,7 +12651,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 self.base_root.file_table,
                 &file_ids,
                 maximum,
-                decode_limits(self.volume.config),
+                DecodeLimits::for_volume(self.volume.config),
                 remaining(work, budget)?,
                 cancellation,
             )
@@ -12803,7 +12821,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                             file_size: logical_bytes,
                             offset,
                             target,
-                            limits: decode_limits(self.volume.config),
+                            limits: DecodeLimits::for_volume(self.volume.config),
                             budget,
                         },
                         cancellation,
@@ -12936,7 +12954,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             &self.volume.fs.inner.objects,
             root,
             name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -12959,7 +12977,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 offset: 0,
                 length: entry.value_bytes,
             },
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13001,7 +13019,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             root,
             after,
             maximum_entries,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13059,7 +13077,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13095,7 +13113,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             root,
             vec![mutation],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13136,7 +13154,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             &self.volume.fs.inner.objects,
             root,
             &name,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13154,7 +13172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 expected: Some(expected),
             }],
             1,
-            decode_limits(self.volume.config),
+            DecodeLimits::for_volume(self.volume.config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13199,8 +13217,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
             .map_err(|failure| {
                 OperationFailure::new(FsError::Object(failure.error), *failure.work)
             })?;
-        let value = decode_file_metadata(&metadata.value, decode_limits(self.volume.config))
-            .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
+        let value = decode_file_metadata(
+            &metadata.value,
+            DecodeLimits::for_volume(self.volume.config),
+        )
+        .map_err(|error| OperationFailure::new(error.into(), metadata.work))?;
         Ok(FsReceipt {
             value,
             work: metadata.work,
@@ -13266,7 +13287,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> DetachedFile<A, O> {
                 record: self.record,
                 range,
                 maximum_spans: self.volume.config.limits.maximum_mutations_per_batch,
-                limits: decode_limits(self.volume.config),
+                limits: DecodeLimits::for_volume(self.volume.config),
                 budget,
             },
             cancellation,
@@ -13404,7 +13425,7 @@ pub(crate) async fn read_generation_root<O: AsyncObjectStore>(
         ObjectReadRetention::Shared => 0,
         ObjectReadRetention::Owned { logical_bytes } => logical_bytes,
     };
-    let decode = decode_limits(config);
+    let decode = DecodeLimits::for_volume(config);
     let parent_count = generation_root_parent_count(&receipt.value, decode)
         .map_err(|error| OperationFailure::new(error.into(), receipt.work))?;
     let parent_bytes = parent_count
@@ -13693,7 +13714,7 @@ async fn diff_generation_file_tables<O: AsyncObjectStore>(
         Some(before),
         Some(after),
         maximum_changes,
-        decode_limits(config),
+        DecodeLimits::for_volume(config),
         remaining(work, budget)?,
         cancellation,
     )
@@ -13732,7 +13753,7 @@ async fn diff_generation_file_tables<O: AsyncObjectStore>(
             before_entries,
             after_entries,
             u32::try_from(remaining_changes).unwrap_or(u32::MAX),
-            decode_limits(config),
+            DecodeLimits::for_volume(config),
             remaining(work, budget)?,
             cancellation,
         )
@@ -13915,7 +13936,7 @@ fn validate_checkout(
 
 fn closure_limits(config: VolumeConfig) -> ClosureLimits {
     ClosureLimits {
-        decode: decode_limits(config),
+        decode: DecodeLimits::for_volume(config),
         maximum_objects: config.limits.maximum_objects_per_generation,
         maximum_files: config.limits.maximum_files_per_generation,
         maximum_object_bytes: config.limits.maximum_generation_bytes,
@@ -13923,18 +13944,6 @@ fn closure_limits(config: VolumeConfig) -> ClosureLimits {
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,
         sparse_files: config.sparse_files,
-    }
-}
-
-fn decode_limits(config: VolumeConfig) -> DecodeLimits {
-    DecodeLimits {
-        maximum_object_bytes: config.limits.maximum_object_bytes,
-        maximum_name_bytes: config.limits.maximum_component_bytes,
-        maximum_page_items: config.limits.maximum_directory_page_entries,
-        maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes).unwrap_or(u32::MAX),
-        maximum_page_height: config.limits.maximum_page_height,
-        maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-            .unwrap_or(u32::MAX),
     }
 }
 
@@ -14020,7 +14029,7 @@ const fn live_publication_observation(
 
 fn probe_limits(config: VolumeConfig) -> ProbeLimits {
     ProbeLimits {
-        decode: decode_limits(config),
+        decode: DecodeLimits::for_volume(config),
         maximum_cached_generations: 2,
         maximum_cached_records: config.limits.maximum_checkout_dependencies,
         maximum_extent_spans: config.limits.maximum_directory_page_entries,
@@ -14180,18 +14189,13 @@ fn remaining(
 
 fn merge_simultaneous_work(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     budget: WorkBudget,
 ) -> Result<WorkCounters, OperationFailure<FsError>> {
-    let simultaneous_peak = live_bytes
-        .checked_add(nested.peak_allocation_bytes)
-        .ok_or_else(|| OperationFailure::new(FsError::Work(WorkError::Overflow), prior))?;
-    nested.peak_allocation_bytes = 0;
-    let mut merged = prior
-        .checked_add(nested)
+    let merged = prior
+        .with_backend(nested, live_bytes)
         .map_err(|error| OperationFailure::new(error.into(), prior))?;
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
     merged
         .verify(budget)
         .map_err(|error| OperationFailure::new(error.into(), merged))?;
@@ -14200,19 +14204,14 @@ fn merge_simultaneous_work(
 
 fn merge_simultaneous_failure(
     prior: WorkCounters,
-    mut nested: WorkCounters,
+    nested: WorkCounters,
     live_bytes: u64,
     error: FsError,
 ) -> OperationFailure<FsError> {
-    let Some(simultaneous_peak) = live_bytes.checked_add(nested.peak_allocation_bytes) else {
-        return OperationFailure::new(FsError::Work(WorkError::Overflow), prior);
-    };
-    nested.peak_allocation_bytes = 0;
-    let Ok(mut merged) = prior.checked_add(nested) else {
-        return OperationFailure::new(FsError::Work(WorkError::Overflow), prior);
-    };
-    merged.peak_allocation_bytes = merged.peak_allocation_bytes.max(simultaneous_peak);
-    OperationFailure::new(error, merged)
+    match prior.with_backend(nested, live_bytes) {
+        Ok(merged) => OperationFailure::new(error, merged),
+        Err(overflow) => OperationFailure::new(overflow.into(), prior),
+    }
 }
 
 #[cfg(all(test, feature = "memory"))]

@@ -372,7 +372,7 @@ impl ContextSource for Context {
 /// Placement of source messages relative to existing context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextPlacement {
     /// Insert before current messages.
     Prepend,
@@ -496,7 +496,7 @@ impl ContextStage for CompactionStage {
 /// Mutable context assembled for one model step.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct Context {
     /// Ordered model-visible messages.
     #[cfg_attr(feature = "wasm", tsify(type = "WasmModelMessageWire[]"))]
