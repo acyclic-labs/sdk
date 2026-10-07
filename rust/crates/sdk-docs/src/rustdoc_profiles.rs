@@ -184,6 +184,7 @@ pub struct ProfileSpec {
     pub features: BTreeSet<String>,
 }
 
+/// Stable package/target/default/feature identity for one Rustdoc receipt.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProfileId(pub String);
 
@@ -408,11 +409,17 @@ pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, Prof
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedApiItem {
+    /// Package whose Rustdoc receipt supplied this exact item.
     pub rustdoc_package: String,
+    /// Published package owning the shared Rust contract.
     pub published_owner: String,
+    /// Stable package/target/features identity of the receipt.
     pub profile: ProfileId,
+    /// Signature-aware Rustdoc identity of the item.
     pub key: ProjectionKey,
+    /// Crate version reported by Rustdoc, when present.
     pub rustdoc_version: Option<String>,
+    /// Whether Rustdoc supplied documentation for the item.
     pub docs_present: bool,
 }
 
@@ -551,32 +558,49 @@ pub const PROFILE_AVAILABILITY_SCHEMA: &str = "sdk-docs-profile-availability.v1"
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileAvailability {
+    /// Sidecar schema identity.
     pub schema: String,
+    /// Deterministically ordered item availability entries.
     pub entries: Vec<ProfileAvailabilityEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileAvailabilityEntry {
+    /// ID assigned by the existing `sdk-docs` item catalog.
     pub item_id: String,
+    /// Rustdoc path retained for consumers that do not load the catalog.
     pub path: String,
+    /// Rustdoc item kind.
     pub kind: String,
+    /// Exact rendered Rust signature; this keeps overloads distinct.
     pub signature: String,
+    /// Profiles in which this exact item was publicly emitted.
     pub profiles: Vec<ProfileAvailabilityProfile>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileAvailabilityProfile {
+    /// Stable package/target/features identity.
     pub profile: ProfileId,
+    /// Package whose Rustdoc receipt supplied the item.
     pub rustdoc_package: String,
+    /// Published package owning the shared Rust contract.
     pub published_owner: String,
+    /// Version reported by the Rustdoc receipt.
     pub rustdoc_version: String,
+    /// Version reported by Cargo for the published owner.
     pub published_version: String,
+    /// Stable API owner category.
     pub owner_kind: String,
+    /// Target triple used for this receipt.
     pub target: String,
+    /// Whether Cargo defaults were enabled.
     pub default_features: bool,
+    /// Local Cargo features enabled for this receipt.
     pub features: Vec<String>,
+    /// Rust-derived binding and platform capabilities.
     pub capabilities: Vec<String>,
 }
 

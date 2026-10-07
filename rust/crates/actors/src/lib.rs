@@ -41,7 +41,9 @@ pub const MAX_BINDINGS: usize = 64;
 pub(crate) fn valid_token(token: &str) -> bool {
     !token.trim().is_empty()
         && token.len() <= 8192
-        && !token.chars().any(|character| matches!(character, '\r' | '\n' | '\0'))
+        && !token
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0'))
 }
 
 /// Idempotency keys are present and bounded consistently across operations.

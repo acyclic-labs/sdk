@@ -63,9 +63,8 @@ pub struct NativeActorsConnectResult {
 }
 
 fn napi_error(metadata: NativeActorsErrorMetadata) -> Error {
-    let reason = serde_json::to_string(&metadata).unwrap_or_else(|_| {
-        String::from(r#"{"code":"internal","message":"Actors error"}"#)
-    });
+    let reason = serde_json::to_string(&metadata)
+        .unwrap_or_else(|_| String::from(r#"{"code":"internal","message":"Actors error"}"#));
     Error::new(Status::GenericFailure, reason)
 }
 
@@ -75,19 +74,27 @@ fn nominal_error(error: domain::DomainError) -> NativeActorsErrorMetadata {
         domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
         domain::DomainError::NotPositive => "not_positive",
     };
-    NativeActorsErrorMetadata { code: code.to_owned(), message: error.to_string(), ..Default::default() }
+    NativeActorsErrorMetadata {
+        code: code.to_owned(),
+        message: error.to_string(),
+        ..Default::default()
+    }
 }
 
 /// Validate and return a nominal Actor identity.
 #[napi(js_name = "ActorId")]
 pub fn actor_id(value: String) -> Result<String> {
-    domain::ActorId::new(value).map(|value| value.as_str().to_owned()).map_err(|error| napi_error(nominal_error(error)))
+    domain::ActorId::new(value)
+        .map(|value| value.as_str().to_owned())
+        .map_err(|error| napi_error(nominal_error(error)))
 }
 
 /// Validate and return a nominal SHA-256 digest.
 #[napi(js_name = "CodeSha256")]
 pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
-    domain::CodeSha256::new(value.as_ref().to_vec()).map(|value| Uint8Array::from(value.as_bytes().to_vec())).map_err(|error| napi_error(nominal_error(error)))
+    domain::CodeSha256::new(value.as_ref().to_vec())
+        .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
+        .map_err(|error| napi_error(nominal_error(error)))
 }
 
 /// Validate and return a nominal positive integer.
@@ -95,125 +102,451 @@ pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
 pub fn positive_u64(value: BigInt) -> Result<BigInt> {
     let (sign, raw, lossless) = value.get_u64();
     if sign || !lossless {
-        return Err(napi_error(NativeActorsErrorMetadata { code: String::from("not_positive"), message: String::from("value must be a lossless positive u64"), ..Default::default() }));
+        return Err(napi_error(NativeActorsErrorMetadata {
+            code: String::from("not_positive"),
+            message: String::from("value must be a lossless positive u64"),
+            ..Default::default()
+        }));
     }
-    domain::PositiveU64::new(raw).map(|value| BigInt::from(value.get())).map_err(|error| napi_error(nominal_error(error)))
+    domain::PositiveU64::new(raw)
+        .map(|value| BigInt::from(value.get()))
+        .map_err(|error| napi_error(nominal_error(error)))
 }
 
 fn grpc_name(code: i32) -> &'static str {
-    match code { 0 => "ok", 1 => "cancelled", 2 => "unknown", 3 => "invalid_argument", 4 => "deadline_exceeded", 5 => "not_found", 6 => "already_exists", 7 => "permission_denied", 8 => "resource_exhausted", 9 => "failed_precondition", 10 => "aborted", 11 => "out_of_range", 12 => "unimplemented", 13 => "internal", 14 => "unavailable", 15 => "data_loss", 16 => "unauthenticated", _ => "unknown" }
+    match code {
+        0 => "ok",
+        1 => "cancelled",
+        2 => "unknown",
+        3 => "invalid_argument",
+        4 => "deadline_exceeded",
+        5 => "not_found",
+        6 => "already_exists",
+        7 => "permission_denied",
+        8 => "resource_exhausted",
+        9 => "failed_precondition",
+        10 => "aborted",
+        11 => "out_of_range",
+        12 => "unimplemented",
+        13 => "internal",
+        14 => "unavailable",
+        15 => "data_loss",
+        16 => "unauthenticated",
+        _ => "unknown",
+    }
 }
 
 fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
     match error {
-        client::Error::Configuration(message) => NativeActorsErrorMetadata { code: String::from("invalid_argument"), message, ..Default::default() },
-        client::Error::Transport(message) => NativeActorsErrorMetadata { code: String::from("unavailable"), message, ..Default::default() },
-        client::Error::Contract(error) => { let code = match error { acyclic_actors::ContractError::InvalidArgument => "invalid_argument", acyclic_actors::ContractError::LimitExceeded => "limit_exceeded", acyclic_actors::ContractError::DuplicateName => "duplicate_name" }; NativeActorsErrorMetadata { code: code.to_owned(), message: error.to_string(), contract_code: Some(code.to_owned()), ..Default::default() } }
-        client::Error::Service { grpc_code, detail } => NativeActorsErrorMetadata { code: grpc_name(grpc_code).to_owned(), message: detail.as_ref().map_or_else(|| String::from("Actors service failure"), |value| value.message.clone()), grpc_code: Some(grpc_code), grpc_name: Some(grpc_name(grpc_code).to_owned()), service_code: detail.as_ref().map(|value| value.code), service_message: detail.map(|value| value.message), ..Default::default() },
-        client::Error::Cancelled => NativeActorsErrorMetadata { code: String::from("cancelled"), message: String::from("Actors operation cancelled"), grpc_code: Some(1), grpc_name: Some(String::from("cancelled")), ..Default::default() },
+        client::Error::Configuration(message) => NativeActorsErrorMetadata {
+            code: String::from("invalid_argument"),
+            message,
+            ..Default::default()
+        },
+        client::Error::Transport(message) => NativeActorsErrorMetadata {
+            code: String::from("unavailable"),
+            message,
+            ..Default::default()
+        },
+        client::Error::Contract(error) => {
+            let code = match error {
+                acyclic_actors::ContractError::InvalidArgument => "invalid_argument",
+                acyclic_actors::ContractError::LimitExceeded => "limit_exceeded",
+                acyclic_actors::ContractError::DuplicateName => "duplicate_name",
+            };
+            NativeActorsErrorMetadata {
+                code: code.to_owned(),
+                message: error.to_string(),
+                contract_code: Some(code.to_owned()),
+                ..Default::default()
+            }
+        }
+        client::Error::Service { grpc_code, detail } => NativeActorsErrorMetadata {
+            code: grpc_name(grpc_code).to_owned(),
+            message: detail.as_ref().map_or_else(
+                || String::from("Actors service failure"),
+                |value| value.message.clone(),
+            ),
+            grpc_code: Some(grpc_code),
+            grpc_name: Some(grpc_name(grpc_code).to_owned()),
+            service_code: detail.as_ref().map(|value| value.code),
+            service_message: detail.map(|value| value.message),
+            ..Default::default()
+        },
+        client::Error::Cancelled => NativeActorsErrorMetadata {
+            code: String::from("cancelled"),
+            message: String::from("Actors operation cancelled"),
+            grpc_code: Some(1),
+            grpc_name: Some(String::from("cancelled")),
+            ..Default::default()
+        },
     }
 }
 
-fn decode<T: Message + Default>(value: &Buffer, operation: &str) -> Result<T> { T::decode(value.as_ref()).map_err(|error| napi_error(NativeActorsErrorMetadata { code: String::from("invalid_argument"), message: format!("{operation}: {error}"), ..Default::default() })) }
+fn decode<T: Message + Default>(value: &Buffer, operation: &str) -> Result<T> {
+    T::decode(value.as_ref()).map_err(|error| {
+        napi_error(NativeActorsErrorMetadata {
+            code: String::from("invalid_argument"),
+            message: format!("{operation}: {error}"),
+            ..Default::default()
+        })
+    })
+}
 
-fn encode<T: Message>(value: &T, operation: &str) -> std::result::Result<Buffer, NativeActorsErrorMetadata> { let mut bytes = Vec::with_capacity(value.encoded_len()); value.encode(&mut bytes).map_err(|error| NativeActorsErrorMetadata { code: String::from("internal"), message: format!("{operation}: {error}"), ..Default::default() })?; Ok(Buffer::from(bytes)) }
+fn encode<T: Message>(
+    value: &T,
+    operation: &str,
+) -> std::result::Result<Buffer, NativeActorsErrorMetadata> {
+    let mut bytes = Vec::with_capacity(value.encoded_len());
+    value
+        .encode(&mut bytes)
+        .map_err(|error| NativeActorsErrorMetadata {
+            code: String::from("internal"),
+            message: format!("{operation}: {error}"),
+            ..Default::default()
+        })?;
+    Ok(Buffer::from(bytes))
+}
 
 #[derive(Clone)]
-struct CancellationState { token: CancellationToken }
+struct CancellationState {
+    token: CancellationToken,
+}
 
 /// Monotonic native cancellation handle.
 #[napi]
-pub struct NativeActorsCancellation { state: CancellationState }
-impl Default for NativeActorsCancellation { fn default() -> Self { Self { state: CancellationState { token: CancellationToken::new() } } } }
+pub struct NativeActorsCancellation {
+    state: CancellationState,
+}
+impl Default for NativeActorsCancellation {
+    fn default() -> Self {
+        Self {
+            state: CancellationState {
+                token: CancellationToken::new(),
+            },
+        }
+    }
+}
 #[napi]
 impl NativeActorsCancellation {
     /// Create a fresh cancellation handle.
     #[napi(constructor)]
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     /// Cancel attached operations.
-    pub fn cancel(&self) { self.state.token.cancel(); }
+    pub fn cancel(&self) {
+        self.state.token.cancel();
+    }
     /// Whether the handle is cancelled.
     #[napi(getter)]
-    pub fn cancelled(&self) -> bool { self.state.token.is_cancelled() }
+    pub fn cancelled(&self) -> bool {
+        self.state.token.is_cancelled()
+    }
 }
 
-async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>>>(future: F, cancellation: Option<CancellationState>) -> std::result::Result<T, NativeActorsErrorMetadata> { client::run_with_cancellation(future, cancellation.map(|value| value.token)).await.map_err(client_error) }
+async fn cancellable<T, F: Future<Output = std::result::Result<T, client::Error>>>(
+    future: F,
+    cancellation: Option<CancellationState>,
+) -> std::result::Result<T, NativeActorsErrorMetadata> {
+    client::run_with_cancellation(future, cancellation.map(|value| value.token))
+        .await
+        .map_err(client_error)
+}
 
 /// Native client backed directly by the canonical Rust client.
 #[napi]
-pub struct NativeActorsClient { inner: Arc<client::Client> }
-impl NativeActorsClient { fn from_client(inner: client::Client) -> Self { Self { inner: Arc::new(inner) } } }
+pub struct NativeActorsClient {
+    inner: Arc<client::Client>,
+}
+impl NativeActorsClient {
+    fn from_client(inner: client::Client) -> Self {
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+}
 
-async fn connect_envelope<F: Future<Output = std::result::Result<client::Client, client::Error>>>(future: F, cancellation: Option<CancellationState>) -> NativeActorsConnectResult { match cancellable(future, cancellation).await { Ok(client) => NativeActorsConnectResult { client: Some(NativeActorsClient::from_client(client)), error: None }, Err(error) => NativeActorsConnectResult { client: None, error: Some(error) } } }
+async fn connect_envelope<
+    F: Future<Output = std::result::Result<client::Client, client::Error>>,
+>(
+    future: F,
+    cancellation: Option<CancellationState>,
+) -> NativeActorsConnectResult {
+    match cancellable(future, cancellation).await {
+        Ok(client) => NativeActorsConnectResult {
+            client: Some(NativeActorsClient::from_client(client)),
+            error: None,
+        },
+        Err(error) => NativeActorsConnectResult {
+            client: None,
+            error: Some(error),
+        },
+    }
+}
 
 #[napi]
 impl NativeActorsClient {
     /// Connect using native TLS and Rust-owned policy.
     #[napi(factory)]
-    pub async fn connect(endpoint: String, token: String, cancellation: Option<&NativeActorsCancellation>) -> Result<Self> { cancellable(client::connect(&endpoint, &token), cancellation.map(|value| value.state.clone())).await.map(Self::from_client).map_err(napi_error) }
+    pub async fn connect(
+        endpoint: String,
+        token: String,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<Self> {
+        cancellable(
+            client::connect(&endpoint, &token),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await
+        .map(Self::from_client)
+        .map_err(napi_error)
+    }
     /// Structured connection result.
     #[napi(js_name = "connectResult")]
-    pub async fn connect_result(endpoint: String, token: String, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsConnectResult> { Ok(connect_envelope(client::connect(&endpoint, &token), cancellation.map(|value| value.state.clone())).await) }
+    pub async fn connect_result(
+        endpoint: String,
+        token: String,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsConnectResult> {
+        Ok(connect_envelope(
+            client::connect(&endpoint, &token),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await)
+    }
     /// Connect with an additional native CA certificate.
     #[napi(factory, js_name = "connectWithCa")]
-    pub async fn connect_with_ca(endpoint: String, token: String, ca: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<Self> { cancellable(client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())), cancellation.map(|value| value.state.clone())).await.map(Self::from_client).map_err(napi_error) }
+    pub async fn connect_with_ca(
+        endpoint: String,
+        token: String,
+        ca: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<Self> {
+        cancellable(
+            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await
+        .map(Self::from_client)
+        .map_err(napi_error)
+    }
     /// Structured connection result with a native CA certificate.
     #[napi(js_name = "connectWithCaResult")]
-    pub async fn connect_with_ca_result(endpoint: String, token: String, ca: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsConnectResult> { Ok(connect_envelope(client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())), cancellation.map(|value| value.state.clone())).await) }
+    pub async fn connect_with_ca_result(
+        endpoint: String,
+        token: String,
+        ca: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsConnectResult> {
+        Ok(connect_envelope(
+            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await)
+    }
     /// Native bridge package version.
-    pub fn version() -> String { PACKAGE_VERSION.to_owned() }
+    pub fn version() -> String {
+        PACKAGE_VERSION.to_owned()
+    }
     /// Selected transport.
-    pub fn transport(&self) -> String { self.inner.transport().to_owned() }
+    pub fn transport(&self) -> String {
+        self.inner.transport().to_owned()
+    }
 }
 
 #[napi]
 impl NativeActorsClient {
     #[napi(js_name = "createActorResult")]
-    pub async fn create_actor_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute CreateActor and return encoded bytes or structured error.
+    pub async fn create_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::CreateActorRequest>(&request, "create_actor")?;
-        let value = cancellable(self.inner.create_actor(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "create_actor").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.create_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "create_actor").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "updateActorResult")]
-    pub async fn update_actor_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute UpdateActor and return encoded bytes or structured error.
+    pub async fn update_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::UpdateActorRequest>(&request, "update_actor")?;
-        let value = cancellable(self.inner.update_actor(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "update_actor").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.update_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "update_actor").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "inspectActorResult")]
-    pub async fn inspect_actor_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute InspectActor and return encoded bytes or structured error.
+    pub async fn inspect_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::InspectActorRequest>(&request, "inspect_actor")?;
-        let value = cancellable(self.inner.inspect_actor(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "inspect_actor").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.inspect_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "inspect_actor").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "addSubscriptionResult")]
-    pub async fn add_subscription_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute AddSubscription and return encoded bytes or structured error.
+    pub async fn add_subscription_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::AddSubscriptionRequest>(&request, "add_subscription")?;
-        let value = cancellable(self.inner.add_subscription(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "add_subscription").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.add_subscription(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "add_subscription").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "removeSubscriptionResult")]
-    pub async fn remove_subscription_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute RemoveSubscription and return encoded bytes or structured error.
+    pub async fn remove_subscription_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::RemoveSubscriptionRequest>(&request, "remove_subscription")?;
-        let value = cancellable(self.inner.remove_subscription(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "remove_subscription").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.remove_subscription(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "remove_subscription").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "resumeSubscriptionResult")]
-    pub async fn resume_subscription_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute ResumeSubscription and return encoded bytes or structured error.
+    pub async fn resume_subscription_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::ResumeSubscriptionRequest>(&request, "resume_subscription")?;
-        let value = cancellable(self.inner.resume_subscription(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "resume_subscription").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.resume_subscription(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "resume_subscription").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "checkpointActorResult")]
-    pub async fn checkpoint_actor_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute CheckpointActor and return encoded bytes or structured error.
+    pub async fn checkpoint_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::CheckpointActorRequest>(&request, "checkpoint_actor")?;
-        let value = cancellable(self.inner.checkpoint_actor(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "checkpoint_actor").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.checkpoint_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "checkpoint_actor").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
     #[napi(js_name = "invokeActorResult")]
-    pub async fn invoke_actor_result(&self, request: Buffer, cancellation: Option<&NativeActorsCancellation>) -> Result<NativeActorsOperationResult> {
+    /// Execute InvokeActor and return encoded bytes or structured error.
+    pub async fn invoke_actor_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeActorsCancellation>,
+    ) -> Result<NativeActorsOperationResult> {
         let decoded = decode::<wire::InvokeActorRequest>(&request, "invoke_actor")?;
-        let value = cancellable(self.inner.invoke_actor(&decoded), cancellation.map(|value| value.state.clone())).await;
-        Ok(match value { Ok(value) => NativeActorsOperationResult { value: Some(encode(&value, "invoke_actor").map_err(napi_error)?), error: None }, Err(error) => NativeActorsOperationResult { value: None, error: Some(error) } })
+        let value = cancellable(
+            self.inner.invoke_actor(&decoded),
+            cancellation.map(|value| value.state.clone()),
+        )
+        .await;
+        Ok(match value {
+            Ok(value) => NativeActorsOperationResult {
+                value: Some(encode(&value, "invoke_actor").map_err(napi_error)?),
+                error: None,
+            },
+            Err(error) => NativeActorsOperationResult {
+                value: None,
+                error: Some(error),
+            },
+        })
     }
 }

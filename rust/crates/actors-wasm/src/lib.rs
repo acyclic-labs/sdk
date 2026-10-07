@@ -12,11 +12,7 @@ use wasm_bindgen::prelude::*;
 fn js_error(code: &str, message: impl std::fmt::Display) -> JsValue {
     let error = js_sys::Error::new(&message.to_string());
     error.set_name("ActorsError");
-    let _ = js_sys::Reflect::set(
-        &error,
-        &JsValue::from_str("code"),
-        &JsValue::from_str(code),
-    );
+    let _ = js_sys::Reflect::set(&error, &JsValue::from_str("code"), &JsValue::from_str(code));
     error.into()
 }
 

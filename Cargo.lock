@@ -3367,8 +3367,6 @@ dependencies = [
 [[package]]
 name = "protify-proc-macro"
 version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6927c26f755f73a592d4cf2e1a287b21bd977a8b837e80afad2e3c8e3effcf5"
 dependencies = [
  "bool-enum",
  "bytes",

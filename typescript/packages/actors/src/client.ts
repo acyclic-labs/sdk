@@ -1,4 +1,4 @@
-import { fromBinary, toBinary, type Message } from "@bufbuild/protobuf";
+import { fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import type {
   AddSubscriptionRequest, AddSubscriptionResponse,
   CheckpointActorRequest, CheckpointActorResponse,
@@ -68,7 +68,7 @@ export class ActorsClient {
   checkpointActor(request: CheckpointActorRequest): Promise<CheckpointActorResponse> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema); }
   invokeActor(request: InvokeActorRequest): Promise<InvokeActorResponse> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema); }
 
-  async #call(operation: Operation, input: { readonly typeName: string }, request: Message, output: { readonly typeName: string }): Promise<any> {
+  async #call<I extends DescMessage, O extends DescMessage>(operation: Operation, input: I, request: MessageShape<I>, output: O): Promise<MessageShape<O>> {
     const client = await this.#client;
     const response = await client[operation](toBinary(input, request));
     return fromBinary(output, response);
