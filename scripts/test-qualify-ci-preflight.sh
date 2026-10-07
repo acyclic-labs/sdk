@@ -177,6 +177,7 @@ chmod +x "$gate/bin/rustup"
 (
   cd "$root"
   SDK_TEMP_DIR="$gate/temp" SDK_ARTIFACT_DIR="$gate/artifacts" TOOLS_DIR="$gate/tools" \
+    FORCE=false GITHUB_EVENT_NAME=pull_request \
     FAKE_CARGO_LOG="$gate/cargo.log" PATH="$gate/bin:$work/bin:$PATH" \
     bash scripts/qualify-ci.sh gate
 )
