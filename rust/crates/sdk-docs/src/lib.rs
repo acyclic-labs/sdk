@@ -3,17 +3,21 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod public_api;
+/// Cargo/Rustdoc-owned profile projections.
+pub mod rustdoc_profiles;
+/// Rust-owned executable examples and generated consumer projections.
+pub mod scenarios;
 
 pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v2";
 pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";
@@ -372,13 +376,7 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
             )));
         }
         format_versions.insert(krate.format_version);
-        let family = build_family(
-            &repository_root,
-            &generated_sources,
-            path,
-            &bytes,
-            &krate,
-        )?;
+        let family = build_family(&repository_root, &generated_sources, path, &bytes, &krate)?;
         if family.crate_name != metadata.crate_name {
             return Err(Error::Invalid(format!(
                 "{} has Rust crate {}, but Cargo metadata names {}",
@@ -431,6 +429,105 @@ pub fn build_data(input: &BuildInput) -> Result<DocsData, Error> {
     };
     validate_source_info(&data.source, &input.channel)?;
     Ok(data)
+}
+
+/// Merge one feature/target Rustdoc projection into the existing family
+/// catalog. Profile receipts are additional views of the same published
+/// crate, so they contribute public items without creating a second family or
+/// package entry. IDs are stable from the rendered identity, independent of
+/// Rustdoc's per-receipt numeric IDs.
+pub fn merge_profile_catalog(data: &mut DocsData, variant: DocsData) -> Result<(), Error> {
+    if data.schema != variant.schema
+        || data.schema_version != variant.schema_version
+        || data.version != variant.version
+        || data.channel != variant.channel
+        || data.source.revision != variant.source.revision
+        || data.source.source_state != variant.source.source_state
+        || data.source.source_sha256 != variant.source.source_sha256
+        || data.source.generator != variant.source.generator
+    {
+        return Err(Error::Invalid(
+            "profile catalog has a different docs/source identity".into(),
+        ));
+    }
+
+    for variant_family in variant.families {
+        let family = data
+            .families
+            .iter_mut()
+            .find(|family| family.crate_name == variant_family.crate_name)
+            .ok_or_else(|| {
+                Error::Invalid(format!(
+                    "profile family {} is absent from the generated docs catalog",
+                    variant_family.crate_name
+                ))
+            })?;
+
+        let mut existing = family
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    (item.path.clone(), item.kind.clone(), item.signature.clone()),
+                    item.id.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut id_map = BTreeMap::<String, String>::new();
+        let mut pending: Vec<ApiItem> = Vec::new();
+        for mut item in variant_family.items {
+            let key = (item.path.clone(), item.kind.clone(), item.signature.clone());
+            if let Some(existing_id) = existing.get(&key) {
+                id_map.insert(item.id, existing_id.clone());
+                continue;
+            }
+
+            let digest = sha256_hex(format!("{}\0{}\0{}", key.0, key.1, key.2).as_bytes());
+            let mut id = format!("profile-{digest}");
+            if family.items.iter().any(|candidate| candidate.id == id)
+                || pending.iter().any(|candidate: &ApiItem| candidate.id == id)
+            {
+                id.push_str("-variant");
+            }
+            id_map.insert(item.id.clone(), id.clone());
+            item.id = id;
+            existing.insert(key, item.id.clone());
+            pending.push(item);
+        }
+        for mut item in pending {
+            item.parent_id = item
+                .parent_id
+                .map(|parent| id_map.get(&parent).cloned().unwrap_or(parent));
+            family.items.push(item);
+        }
+        family.items.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then(left.kind.cmp(&right.kind))
+                .then(left.signature.cmp(&right.signature))
+                .then(left.id.cmp(&right.id))
+        });
+
+        let mut guide_paths = family
+            .guides
+            .iter()
+            .map(|guide| guide.path.clone())
+            .collect::<BTreeSet<String>>();
+        for guide in variant_family.guides {
+            if guide_paths.insert(guide.path.clone()) {
+                family.guides.push(guide);
+            }
+        }
+        family
+            .guides
+            .sort_by(|left, right| left.path.cmp(&right.path));
+    }
+
+    data.navigation = Navigation {
+        entries: navigation_entries(&data.families),
+    };
+    data.search = search_index(&data.families);
+    Ok(())
 }
 
 /// Write data, its Schemars-generated schema, and the guarded version index.
@@ -1111,7 +1208,6 @@ fn validate_generated_catalog(data: &DocsData) -> Result<(), Error> {
     }
     Ok(())
 }
-
 
 fn package_metadata_for_path<'a>(
     metadata: &'a [PackageMetadata],
@@ -1960,9 +2056,9 @@ pub fn schema_json() -> Result<serde_json::Value, Error> {
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| Error::Invalid("DocsData schema properties are missing".into()))?;
     for field in ["schema", "schemaVersion"] {
-        let property = properties
-            .get_mut(field)
-            .ok_or_else(|| Error::Invalid(format!("DocsData schema property {field} is missing")))?;
+        let property = properties.get_mut(field).ok_or_else(|| {
+            Error::Invalid(format!("DocsData schema property {field} is missing"))
+        })?;
         property["const"] = serde_json::Value::String(DATA_SCHEMA_VERSION.into());
     }
     Ok(schema)
@@ -1973,6 +2069,68 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
     use std::thread;
+
+    #[test]
+    fn profile_catalog_union_retains_feature_only_items() {
+        let source = SourceInfo {
+            revision: "a".repeat(40),
+            source_state: "working-tree".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+            input_sha256: "c".repeat(64),
+            rustdoc_format_versions: vec![FORMAT_VERSION],
+            generator: "sdk-docs/test".into(),
+        };
+        let item = |id: &str, name: &str| ApiItem {
+            id: id.into(),
+            parent_id: None,
+            name: name.into(),
+            kind: "struct".into(),
+            path: format!("demo::{name}"),
+            signature: format!("pub struct {name}"),
+            docs: Some(format!("{name} docs")),
+            links: BTreeMap::new(),
+            source: None,
+            reexport: None,
+            reexport_target: None,
+        };
+        let family = |items| Family {
+            slug: "demo".into(),
+            title: "Demo".into(),
+            crate_name: "demo".into(),
+            items,
+            guides: Vec::new(),
+        };
+        let base = DocsData {
+            schema: DATA_SCHEMA_VERSION.into(),
+            schema_version: DATA_SCHEMA_VERSION.into(),
+            version: "0.2.0-preview".into(),
+            channel: Channel::Preview,
+            source: source.clone(),
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            packages: PackageCatalog::default(),
+            search: SearchIndex::default(),
+            families: vec![family(vec![item("1", "Base")])],
+        };
+        let variant = DocsData {
+            families: vec![family(vec![item("1", "Base"), item("2", "FeatureOnly")])],
+            ..base.clone()
+        };
+        let mut merged = base;
+        merge_profile_catalog(&mut merged, variant).expect("profile family should merge");
+        let items = &merged.families[0].items;
+        assert_eq!(items.len(), 2);
+        assert!(items
+            .iter()
+            .any(|item| item.name == "FeatureOnly" && item.id.starts_with("profile-")));
+        assert!(merged
+            .search
+            .entries
+            .iter()
+            .any(|entry| entry.path == "demo::FeatureOnly"));
+    }
+
     #[test]
     fn schema_is_stable_and_identifies_the_public_contract() {
         let first = schema_json().expect("schema should serialize");
@@ -1985,7 +2143,10 @@ mod tests {
         assert!(required.iter().any(|field| field == "packages"));
         assert!(required.iter().any(|field| field == "search"));
         assert_eq!(first["properties"]["schema"]["const"], DATA_SCHEMA_VERSION);
-        assert_eq!(first["properties"]["schemaVersion"]["const"], DATA_SCHEMA_VERSION);
+        assert_eq!(
+            first["properties"]["schemaVersion"]["const"],
+            DATA_SCHEMA_VERSION
+        );
         let mut wrong = serde_json::json!({
             "schema": "sdk-docs-data.v1",
             "schemaVersion": DATA_SCHEMA_VERSION,
@@ -2028,19 +2189,15 @@ mod tests {
         assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
         assert_eq!(safe_version("a/b").unwrap(), "~612f62");
         assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
-        assert!(
-            safe_version(&"a".repeat(256))
-                .unwrap_err()
-                .to_string()
-                .contains("exceeds 255 bytes")
-        );
+        assert!(safe_version(&"a".repeat(256))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes"));
         assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
-        assert!(
-            safe_version(&":".repeat(128))
-                .unwrap_err()
-                .to_string()
-                .contains("exceeds 255 bytes")
-        );
+        assert!(safe_version(&":".repeat(128))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes"));
     }
 
     #[test]
@@ -2118,11 +2275,9 @@ mod tests {
 
         let error = source_span_at_root(&repository_root, &HashMap::new(), &external_span)
             .expect_err("unattested external source must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("without an attested generated source")
-        );
+        assert!(error
+            .to_string()
+            .contains("without an attested generated source"));
 
         let mut bad_digest = generated.clone();
         bad_digest.sha256 = "0".repeat(64);
@@ -2150,11 +2305,9 @@ mod tests {
             non_portable.logical_path = PathBuf::from(logical_path);
             let error = attest_generated_sources(&repository_root, &[non_portable])
                 .expect_err("non-portable generated logical path must be rejected");
-            assert!(
-                error
-                    .to_string()
-                    .contains("contains a non-portable segment")
-            );
+            assert!(error
+                .to_string()
+                .contains("contains a non-portable segment"));
         }
 
         let collision_path = repository_root.join("generated/actors/existing.rs");
@@ -2170,11 +2323,9 @@ mod tests {
         collision.logical_path = PathBuf::from("generated/actors/existing.rs");
         let error = attest_generated_sources(&repository_root, &[collision])
             .expect_err("generated logical path colliding with repository source must be rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("collides with a repository path")
-        );
+        assert!(error
+            .to_string()
+            .contains("collides with a repository path"));
 
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
@@ -2263,8 +2414,12 @@ mod tests {
                     crate_name: "zeta".into(),
                 }],
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: vec![
                 Family {
                     slug: "zeta".into(),
@@ -2284,11 +2439,9 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("publication must reject stale or incomplete navigation");
-        assert!(
-            error
-                .to_string()
-                .contains("navigation entries must exactly match")
-        );
+        assert!(error
+            .to_string()
+            .contains("navigation entries must exactly match"));
         assert!(!output.exists());
     }
 
@@ -2615,12 +2768,10 @@ mod tests {
                 end_column: 43,
             })
         );
-        assert!(
-            family
-                .items
-                .iter()
-                .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
-        );
+        assert!(family
+            .items
+            .iter()
+            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
 
         let mut external_trait = fixture;
         external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
@@ -2657,8 +2808,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
@@ -2767,9 +2922,15 @@ mod tests {
                 rustdoc_format_versions: vec![FORMAT_VERSION],
                 generator: "sdk-docs/0.1.0".into(),
             },
-            navigation: Navigation { entries: Vec::new() },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            navigation: Navigation {
+                entries: Vec::new(),
+            },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let old_index_bytes = fs::read(output.join("sdk-docs-versions.v1.json"))
@@ -2784,21 +2945,31 @@ mod tests {
         };
         let error = write_bundle(&same_version, &output, true)
             .expect_err("v1 to v2 publication at one version must be immutable");
-        assert!(error.to_string().contains("refusing to rewrite release 1.0.0"));
-        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
+        assert!(error
+            .to_string()
+            .contains("refusing to rewrite release 1.0.0"));
         assert_eq!(
-            fs::read(output.join("sdk-docs-versions.v1.json"))
-                .expect("old index should remain"),
+            fs::read(&old_path).expect("old data should remain"),
+            old_bytes
+        );
+        assert_eq!(
+            fs::read(output.join("sdk-docs-versions.v1.json")).expect("old index should remain"),
             old_index_bytes
         );
         write_bundle(&new_data, &output, true).expect("v2 publication should preserve v1 history");
 
-        assert_eq!(fs::read(&old_path).expect("old data should remain"), old_bytes);
+        assert_eq!(
+            fs::read(&old_path).expect("old data should remain"),
+            old_bytes
+        );
         let index: VersionIndex = serde_json::from_slice(
             &fs::read(output.join("sdk-docs-versions.v1.json")).expect("index should exist"),
         )
         .expect("mixed index should deserialize");
-        assert_eq!(index.latest.as_ref().map(|entry| entry.version.as_str()), Some("2.0.0"));
+        assert_eq!(
+            index.latest.as_ref().map(|entry| entry.version.as_str()),
+            Some("2.0.0")
+        );
         assert_eq!(index.releases.len(), 2);
         assert!(index
             .releases
@@ -2834,17 +3005,19 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("directory at the index path must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("version index is not a regular file")
-        );
+        assert!(error
+            .to_string()
+            .contains("version index is not a regular file"));
         assert!(output.join("sdk-docs-versions.v1.json").is_dir());
         assert!(!output.join("releases").exists());
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -2870,8 +3043,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
@@ -2924,8 +3101,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let error = write_bundle(&data, &output, true)
@@ -2977,8 +3158,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
@@ -2993,7 +3178,10 @@ mod tests {
         let error = write_bundle(&data, &output, true)
             .expect_err("missing v2 schema sidecar must block publication");
         assert!(error.to_string().contains("missing v2 schema sidecar"));
-        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        assert_eq!(
+            valid,
+            fs::read(&data_path).expect("data must remain unchanged")
+        );
         assert_eq!(
             index_before_sidecar_failure,
             fs::read(&index_path).expect("index must remain unchanged")
@@ -3001,8 +3189,13 @@ mod tests {
         fs::write(&schema_path, b"{}").expect("corrupt schema sidecar should be writable");
         let error = write_bundle(&data, &output, true)
             .expect_err("corrupt v2 schema sidecar must block publication");
-        assert!(error.to_string().contains("does not match the pinned schema"));
-        assert_eq!(valid, fs::read(&data_path).expect("data must remain unchanged"));
+        assert!(error
+            .to_string()
+            .contains("does not match the pinned schema"));
+        assert_eq!(
+            valid,
+            fs::read(&data_path).expect("data must remain unchanged")
+        );
         assert_eq!(
             index_before_sidecar_failure,
             fs::read(&index_path).expect("index must remain unchanged")
@@ -3037,7 +3230,10 @@ mod tests {
         let error = write_bundle(&data, &output, true)
             .expect_err("v2 bundle without packages must block publication");
         assert!(error.to_string().contains("requires packages"));
-        assert_eq!(before_missing, fs::read(&index_path).expect("index should be unchanged"));
+        assert_eq!(
+            before_missing,
+            fs::read(&index_path).expect("index should be unchanged")
+        );
         fs::write(&data_path, &valid).expect("valid bundle should be restored");
         let valid_digest = sha256_hex(&valid);
         for entry in &mut index.releases {
@@ -3101,8 +3297,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("initial release should write");
@@ -3124,11 +3324,9 @@ mod tests {
         let before = fs::read(&index_path).expect("index should remain readable");
         let error = write_bundle(&data, &output, true)
             .expect_err("bundle revision mismatch must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("data revision does not match the index")
-        );
+        assert!(error
+            .to_string()
+            .contains("data revision does not match the index"));
         assert_eq!(
             before,
             fs::read(&index_path).expect("index should be unchanged")
@@ -3157,8 +3355,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         write_bundle(&data, &output, true).expect("first release should write");
@@ -3223,16 +3425,12 @@ mod tests {
             index.preview.as_ref().map(|entry| entry.version.as_str()),
             Some("branch_ABC")
         );
-        assert!(
-            output
-                .join("preview/branch_abc/sdk-docs-data.v2.json")
-                .is_file()
-        );
-        assert!(
-            output
-                .join("preview/~6272616e63685f414243/sdk-docs-data.v2.json")
-                .is_file()
-        );
+        assert!(output
+            .join("preview/branch_abc/sdk-docs-data.v2.json")
+            .is_file());
+        assert!(output
+            .join("preview/~6272616e63685f414243/sdk-docs-data.v2.json")
+            .is_file());
         fs::remove_dir_all(output).expect("test output should be removable");
     }
 
@@ -3287,8 +3485,12 @@ mod tests {
             navigation: Navigation {
                 entries: Vec::new(),
             },
-            packages: PackageCatalog { entries: Vec::new() },
-            search: SearchIndex { entries: Vec::new() },
+            packages: PackageCatalog {
+                entries: Vec::new(),
+            },
+            search: SearchIndex {
+                entries: Vec::new(),
+            },
             families: Vec::new(),
         };
         let first_data = make_data("1.0.0", 'a');
@@ -3406,13 +3608,15 @@ mod tests {
         assert_eq!(preview.packages.entries[0].version, "1.0.0");
         let mut mismatched_metadata = input.clone();
         mismatched_metadata.package_metadata[0].crate_name = "different-crate".into();
-        let error = build_data(&mismatched_metadata)
-            .expect_err("Cargo crate identity mismatch must fail");
-        assert!(error.to_string().contains("Cargo metadata names different-crate"));
+        let error =
+            build_data(&mismatched_metadata).expect_err("Cargo crate identity mismatch must fail");
+        assert!(error
+            .to_string()
+            .contains("Cargo metadata names different-crate"));
         let mut missing_metadata = input.clone();
         missing_metadata.package_metadata[0].version.clear();
-        let error = build_data(&missing_metadata)
-            .expect_err("missing Cargo package version must fail");
+        let error =
+            build_data(&missing_metadata).expect_err("missing Cargo package version must fail");
         assert!(error
             .to_string()
             .contains("requires package name, crate name, and version"));
@@ -3619,12 +3823,10 @@ mod tests {
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         assert_eq!(alias.docs.as_deref(), Some("hidden"));
-        assert!(
-            alias
-                .links
-                .get("target link")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(alias
+            .links
+            .get("target link")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
@@ -3634,12 +3836,10 @@ mod tests {
         // Rustdoc resolves the alias reference to definition id 3; the
         // public occurrence map still exposes the reachable `demo::Visible`
         // use path rather than confusing the use item id with the definition.
-        assert!(
-            linked
-                .links
-                .get("alias target")
-                .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned()))
-        );
+        assert!(linked
+            .links
+            .get("alias target")
+            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
         let associated_paths = linked
             .links
             .get("associated target")
@@ -3682,12 +3882,10 @@ mod tests {
             .iter()
             .find(|guide| guide.path == "demo::nested")
             .expect("the public module guide should be projected");
-        assert!(
-            guide
-                .links
-                .get("associated target")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(guide
+            .links
+            .get("associated target")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )
