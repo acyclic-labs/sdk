@@ -469,7 +469,7 @@ impl Client {
                     if cursor.active.is_none() {
                         match cursor.open().await {
                             Ok(active) => cursor.active = Some(active),
-                            Err(error) => return Some((Err(error), cursor)),
+                            Err(error) => return cursor.failure(error),
                         }
                     }
                     let Some(active) = cursor.active.as_mut() else {
@@ -479,14 +479,14 @@ impl Client {
                     match active.records.next().await {
                         Some(Ok(response)) => match read_response(response) {
                             Ok(records) => cursor.buffered = records,
-                            Err(error) => return Some((Err(error), cursor)),
+                            Err(error) => return cursor.failure(error),
                         },
                         Some(Err(error)) if retryable(&error) => {
                             cursor.advance_follow(active_endpoint);
                             tokio::time::sleep(RETRY_DELAY).await;
                             cursor.active = None;
                         }
-                        Some(Err(error)) => return Some((Err(status(&error)), cursor)),
+                        Some(Err(error)) => return cursor.failure(status(&error)),
                         None if cursor.remaining.is_none() => {
                             cursor.advance_follow(active_endpoint);
                             tokio::time::sleep(RETRY_DELAY).await;
@@ -525,6 +525,17 @@ struct ActiveRecords {
 }
 
 impl RecordCursor {
+    /// Reports `error`. A denied credential ends the stream: reopening would only
+    /// fail again, so buffered records are dropped and the next poll ends.
+    fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
+        if error == StreamError::AccessDenied {
+            self.active = None;
+            self.buffered.clear();
+            self.remaining = Some(0);
+        }
+        Some((Err(error), self))
+    }
+
     fn advance_follow(&self, observed: usize) {
         if self.remaining.is_some() {
             return;
@@ -1245,6 +1256,9 @@ mod tests {
         inner: MemoryStream,
         follows: AtomicUsize,
         tail_delay: std::time::Duration,
+        /// `Some(n)`: Follow yields the first `n` records, then a denied credential;
+        /// `Some(0)` denies the Follow when it opens.
+        denial: Option<usize>,
     }
 
     #[async_trait]
@@ -1277,9 +1291,19 @@ mod tests {
             self.inner.read(request).await
         }
 
-        async fn follow(&self, _path: StreamPath, _from: u64) -> Result<RecordStream, StreamError> {
+        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
             self.follows.fetch_add(1, Ordering::Relaxed);
-            Ok(stream::empty().boxed())
+            match self.denial {
+                None => Ok(stream::empty().boxed()),
+                Some(0) => Err(StreamError::AccessDenied),
+                Some(count) => {
+                    let limit = u32::try_from(count).map_err(|_| StreamError::InvalidArgument)?;
+                    let records = self.inner.read(ReadRequest { path, from, limit }).await?;
+                    Ok(records
+                        .chain(stream::once(async { Err(StreamError::AccessDenied) }))
+                        .boxed())
+                }
+            }
         }
 
         async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -1724,6 +1748,7 @@ mod tests {
             inner: MemoryStream::default(),
             follows: AtomicUsize::new(0),
             tail_delay: std::time::Duration::from_millis(600),
+            denial: None,
         });
         provider
             .inner
@@ -1748,12 +1773,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_denied_follow_reports_access_denied_once_and_then_ends()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for denial in [0, 2] {
+            let provider = Arc::new(FiniteFollow {
+                inner: MemoryStream::default(),
+                follows: AtomicUsize::new(0),
+                tail_delay: std::time::Duration::ZERO,
+                denial: Some(denial),
+            });
+            provider
+                .inner
+                .append(AppendRequest {
+                    path: StreamPath::new("accounts/events")?,
+                    records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+                    if_tail: Some(0),
+                    idempotency_key: None,
+                })
+                .await?;
+            let transport = Client::from_channels(
+                Arc::from([provider_channel(Service::new(Arc::clone(&provider)))]),
+                "fixture",
+            )?;
+            let items = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                transport
+                    .follow(StreamPath::new("accounts/events")?, 0)
+                    .await?
+                    .collect::<Vec<_>>(),
+            )
+            .await?;
+            let sequences = items
+                .into_iter()
+                .map(|item| item.map(|record| record.sequence))
+                .collect::<Vec<_>>();
+            let expected = (0..u64::try_from(denial)?)
+                .map(Ok)
+                .chain([Err(StreamError::AccessDenied)])
+                .collect::<Vec<_>>();
+            assert_eq!(sequences, expected);
+            assert_eq!(provider.follows.load(Ordering::Relaxed), 1);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn clean_follow_eof_advances_once_to_the_next_endpoint()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ended = Arc::new(FiniteFollow {
             inner: MemoryStream::default(),
             follows: AtomicUsize::new(0),
             tail_delay: std::time::Duration::ZERO,
+            denial: None,
         });
         let durable = Arc::new(MemoryStream::default());
         durable
