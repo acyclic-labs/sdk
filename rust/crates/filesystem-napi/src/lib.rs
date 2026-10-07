@@ -93,7 +93,10 @@ fn validate_napi_u32(number: f64) -> Result<u32> {
         .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
-#[allow(unsafe_code)]
+#[allow(
+    unsafe_code,
+    reason = "N-API trait hooks require a narrow unsafe boundary"
+)]
 mod napi_u32_codec {
     //! The only unsafe code in this binding is the two N-API trait hooks below.
     //!
@@ -115,6 +118,7 @@ mod napi_u32_codec {
             env: napi::sys::napi_env,
             value: napi::sys::napi_value,
         ) -> Result<Self> {
+            // SAFETY: N-API provided the live environment and value handles.
             let unknown = unsafe { <Unknown as FromNapiValue>::from_napi_value(env, value)? };
             if unknown.get_type()? != ValueType::Number {
                 return Err(napi::Error::new(
@@ -122,6 +126,7 @@ mod napi_u32_codec {
                     "expected a JavaScript number",
                 ));
             }
+            // SAFETY: the value type was checked as Number immediately above.
             let number = unsafe { unknown.cast::<JsNumber>()? }.get_double()?;
             Ok(Self(validate_napi_u32(number)?))
         }
@@ -136,6 +141,7 @@ mod napi_u32_codec {
             env: napi::sys::napi_env,
             value: Self,
         ) -> Result<napi::sys::napi_value> {
+            // SAFETY: N-API supplied the live environment for this export hook.
             unsafe { <u32 as ToNapiValue>::to_napi_value(env, value.0) }
         }
     }
@@ -158,70 +164,100 @@ fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Encodes a merge-plan payload in the versioned compatibility envelope.
 pub fn encode_merge_plan_json(value_json: String) -> Result<String> {
     compat_wire::encode_merge_plan_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Decodes a versioned merge-plan envelope to its canonical payload.
 pub fn decode_merge_plan_json(value_json: String) -> Result<String> {
     compat_wire::decode_merge_plan_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Encodes a merge-candidate payload in the versioned compatibility envelope.
 pub fn encode_merge_candidate_json(value_json: String) -> Result<String> {
     compat_wire::encode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Decodes a versioned merge-candidate envelope to its canonical payload.
 pub fn decode_merge_candidate_json(value_json: String) -> Result<String> {
     compat_wire::decode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Encodes a multi-root plan payload in the versioned compatibility envelope.
 pub fn encode_multi_root_plan_json(value_json: String) -> Result<String> {
     compat_wire::encode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Decodes a versioned multi-root plan envelope to its canonical payload.
 pub fn decode_multi_root_plan_json(value_json: String) -> Result<String> {
     compat_wire::decode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Encodes a multi-root candidate payload in the compatibility envelope.
 pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String> {
     compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Decodes a multi-root candidate envelope to its canonical payload.
 pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String> {
     compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Encodes a publication payload in the versioned compatibility envelope.
 pub fn encode_publication_json(value_json: String) -> Result<String> {
     compat_wire::encode_publication_payload(&value_json).map_err(napi_wire_error)
 }
 
 #[napi]
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
 /// Decodes a versioned publication envelope to its canonical payload.
 pub fn decode_publication_json(value_json: String) -> Result<String> {
     compat_wire::decode_publication_payload(&value_json).map_err(napi_wire_error)

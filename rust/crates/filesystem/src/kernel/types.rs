@@ -148,8 +148,14 @@ impl LogicalName {
 
 /// Complete namespace entry kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "typescript", derive(serde::Serialize, tsify::Tsify))]
-#[cfg_attr(feature = "typescript", serde(rename_all = "kebab-case"))]
+#[cfg_attr(
+    all(feature = "typescript", target_arch = "wasm32"),
+    derive(serde::Serialize, tsify::Tsify)
+)]
+#[cfg_attr(
+    all(feature = "typescript", target_arch = "wasm32"),
+    serde(rename_all = "kebab-case")
+)]
 #[cfg_attr(feature = "napi-types", napi_derive::napi(string_enum = "kebab-case"))]
 pub enum FileKind {
     /// Ordinary byte file.
