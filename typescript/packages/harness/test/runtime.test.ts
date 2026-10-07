@@ -1805,8 +1805,8 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
-    const budgets: number[] = [];
-    const provider = { async *generate(request: { model: unknown; maxOutputTokens: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
+    const budgets: (number | undefined)[] = [];
+    const provider = { async *generate(request: { model: unknown; maxOutputTokens?: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
     const runtime = Harness.builder(contracts).model(rootIdentity, provider).modelOutputTokens(8_192).build();
     rootIdentity.options.mode = "mutated";
