@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_LIMITS, Harness, MemoryConversation, NativeContracts, parseIdentity, type AgentId, type ConversationMessageId, type OperationId } from "../src/index.js";
 import { WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import { ErrorCode } from "../generated/proto/harness/v2/harness_pb.js";
 import { HARNESS_CONVERSATION_PAGE_MAXIMUM } from "../src/conversation-page-contract.js";
 
 const wasm = readFileSync(
@@ -91,8 +92,9 @@ test("Rust-backed identity constructors preserve brands and canonical UUID spell
   const operation: OperationId = await parseIdentity("operation", uuid);
   expect(String(agent)).toBe(uuid);
   expect(String(operation)).toBe(uuid);
-  await expect(parseIdentity("agent", "not-an-agent")).rejects.toThrow();
-  await expect(parseIdentity("operation", "not-an-operation")).rejects.toThrow();
+  // Rust failures cross the WASM boundary as `Error`s carrying the wire code.
+  await expect(parseIdentity("agent", "not-an-agent")).rejects.toMatchObject({ code: ErrorCode.INVALID });
+  await expect(parseIdentity("operation", "not-an-operation")).rejects.toBeInstanceOf(Error);
 });
 
 test("Rust operation derivation preserves the prior WebCrypto identity and rejects malformed input", async () => {
