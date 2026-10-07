@@ -161,6 +161,31 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    fn read_private_prefix<'a>(
+        &'a self,
+        volume: &'a VolumeRef,
+        granted_prefix: &'a str,
+        path: &'a str,
+        generation: &'a GenerationRef,
+        maximum_bytes: u64,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
+                return Err(Error::Invalid("prefix read exceeds provider limit".into()));
+            }
+            let grant = ContentGrant::verify_directory_read(
+                &self.verifier,
+                &self.scope,
+                volume,
+                granted_prefix,
+            )?;
+            self.host
+                .read_private_prefix(volume, &grant, path, generation, maximum_bytes)
+                .await
+                .map(|bytes| bytes.to_vec())
+        })
+    }
+
     fn list_private_directory<'a>(
         &'a self,
         volume: &'a VolumeRef,
@@ -2200,6 +2225,39 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )?;
         grant.require_file_read(&reference)?;
         Ok((reference, bytes))
+    }
+
+    /// Reads only a finite authenticated prefix at an explicitly pinned generation.
+    /// It grants no write authority and does not resolve a live head.
+    pub async fn read_private_prefix(
+        &self,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        path: &str,
+        generation: &GenerationRef,
+        maximum_bytes: u64,
+    ) -> Result<Bytes> {
+        self.require_private_directory(volume, grant, path)?;
+        crate::conversation::validate_content_path(path)?;
+        if maximum_bytes == 0 {
+            return Err(Error::Invalid("prefix read limit must be positive".into()));
+        }
+        let reference = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
+        self.retain_generation(&reference, generation).await?;
+        let workspace = self.open(&reference).await?;
+        let pinned = self.generation(&workspace, generation).await?;
+        let path = format!("/{path}");
+        let stat = pinned.stat(&path).await.map_err(map_error)?;
+        if stat.kind != FileKind::Regular {
+            return Err(Error::Invalid("prefix requires a regular file".into()));
+        }
+        let length = stat
+            .logical_bytes
+            .ok_or_else(|| Error::Storage("file length is missing".into()))?;
+        pinned
+            .read_range(&path, 0, maximum_bytes.min(length))
+            .await
+            .map_err(map_error)
     }
 
     fn require_private_directory(

@@ -21,6 +21,8 @@ use futures::StreamExt as _;
 
 mod selection;
 pub use selection::*;
+mod discovery;
+pub use discovery::*;
 
 /// Immutable reference proving which pre-compaction context was summarized.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -75,6 +75,27 @@ export async function exerciseWorkspace(engine) {
   if (transactionCommit.status !== "committed") {
     throw new Error(`atomic workspace transaction did not commit: ${transactionCommit.status}`);
   }
+  const reopened = await engine.openWorkspace("main");
+  const headBeforeLookup = await reopened.head();
+  const restored = await reopened.generation(exact.id);
+  if (!restored.id.every((byte, index) => byte === exact.id[index])
+      || !restored.workspaceId.every((byte, index) => byte === exact.workspaceId[index])) {
+    throw new Error("exact generation lookup changed retained identity");
+  }
+  const restoredBytes = await restored.read("/binary", BigInt(payload.byteLength));
+  if (!payload.every((byte, index) => byte === restoredBytes[index])) {
+    throw new Error("exact generation lookup changed retained bytes");
+  }
+  const foreignWorkspace = await engine.createWorkspace("generation-foreign");
+  const foreignGeneration = await foreignWorkspace.sync();
+  for (const id of [new Uint8Array(31), new Uint8Array(32), foreignGeneration.id]) {
+    let rejected = false;
+    try { await reopened.generation(id); } catch { rejected = true; }
+    if (!rejected) throw new Error("exact generation lookup accepted malformed, absent, or foreign state");
+  }
+  if (!(await reopened.head()).every((byte, index) => byte === headBeforeLookup[index])) {
+    throw new Error("exact generation lookup moved the live head");
+  }
   if (new TextDecoder().decode(await workspace.read("/output/status", 5n)) !== "ready") {
     throw new Error("atomic workspace transaction did not publish complete state");
   }
