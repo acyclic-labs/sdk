@@ -12,6 +12,14 @@
   "type": "module",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./dist/browser.d.ts",
+        "default": "./dist/browser.js"
+      },
+      "node": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
@@ -29,17 +37,23 @@
     },
     "./types": {
       "types": "./dist/types.d.ts"
+    },
+    "./wasm": {
+      "types": "./generated/wasm/acyclic_actors_wasm.d.ts",
+      "default": "./generated/wasm/acyclic_actors_wasm.js"
     }
   },
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "generated/proto",
+    "generated",
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "tsc -b",
-    "test": "tsc -b --pretty false",
+    "build:wasm": "bun ../../../scripts/build-actors-wasm.mjs ./generated/wasm",
+    "build": "bun run build:wasm && tsc -b",
+    "test": "bun run build:wasm && tsc -b --pretty false",
+    "prepack": "npm run build",
     "pack:dry": "bun pm pack --dry-run"
   },
   "dependencies": {

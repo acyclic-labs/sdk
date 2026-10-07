@@ -19,16 +19,21 @@ external rustdoc JSON, calls the existing `sdk-docs` library, and writes a
 versioned manifest. The same run calls the Actors crate's `domain::export_typescript`
 stage, so `generated/typescript/actors` is emitted from the Rust-owned semantic
 types and included in the artifact digest. Before either operation, the
-launcher compares the configured checkout's hashed TypeScript source inputs
-(the four Actors Rust type sources plus this crate's manifest, lockfile, build
-script, and launcher source) with the inputs compiled into this binary, so a
-bundle cannot combine a rustdoc checkout with a stale TypeScript exporter or
-dependency lock. Release
+launcher compares the configured checkout's hashed compiled-generator inputs
+(the Actors contract/build sources, sdk-docs inputs, and this crate's manifest,
+lockfile, build script, and launcher sources) with the inputs compiled into
+this binary, so a bundle cannot combine a rustdoc checkout with a stale
+TypeScript exporter, documentation stage, or dependency lock. Release
 generation requires a clean checkout; preview generation binds the working-tree
 digest. Release drift reruns the pinned Rustdoc stage, while preview drift uses
 the supplied JSON input. Release Rustdoc also emits its exact dep-info file;
 checkout Markdown named there is added to the source digest, and missing or
 escaping Markdown dependencies fail the stage.
+
+The TypeScript stage also emits `generated/typescript/actors/types.ts`, a
+deterministic barrel generated from the `.ts` modules that `ts-rs` produced.
+The barrel is included in the artifact digest and is the package `./types`
+entrypoint source.
 
 ```text
 cargo +1.98.1 test --offline --locked

@@ -6,6 +6,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[path = "../src/compiled_generator_inputs.rs"]
+mod compiled_generator_inputs;
+
 fn temp(name: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -16,19 +19,9 @@ fn temp(name: &str) -> PathBuf {
         .join(format!("{name}-{nonce}"))
 }
 
-fn copy_compiled_actors_typescript_sources(root: &Path) {
+fn copy_compiled_generator_sources(root: &Path) {
     let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    for relative in [
-        "rust/crates/actors/src/codegen.rs",
-        "rust/crates/actors/src/contract.rs",
-        "rust/crates/actors/src/domain.rs",
-        "rust/crates/actors/src/wire.rs",
-        "rust/crates/actors/Cargo.toml",
-        "rust/crates/sdk-generation/Cargo.toml",
-        "rust/crates/sdk-generation/Cargo.lock",
-        "rust/crates/sdk-generation/build.rs",
-        "rust/crates/sdk-generation/src/main.rs",
-    ] {
+    for relative in compiled_generator_inputs::PATHS {
         let destination = root.join(relative);
         fs::copy(source_root.join(relative), destination).unwrap();
     }
@@ -95,6 +88,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let first = temp("sdk-generation-first");
     let second = temp("sdk-generation-second");
     let foreign = temp("sdk-generation-foreign");
+    let foreign_docs = temp("sdk-generation-foreign-docs");
     for path in [
         "rust/crates/actors/src",
         "rust/crates/actors/examples",
@@ -159,7 +153,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
         "tracked guide discovered from the source closure\n",
     )
     .unwrap();
-    copy_compiled_actors_typescript_sources(&root);
+    copy_compiled_generator_sources(&root);
     fs::write(root.join(".gitignore"), "rust/crates/sdk-docs/target/\n").unwrap();
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
@@ -205,11 +199,34 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let source_binding = fs::read(&source_binding_path).unwrap();
     fs::write(&source_binding_path, b"foreign semantic source\n").unwrap();
     assert!(
-        !run(binary, "generate", &root, Some(&rustdoc), &foreign, "preview")
-            .status
-            .success()
+        !run(
+            binary,
+            "generate",
+            &root,
+            Some(&rustdoc),
+            &foreign,
+            "preview"
+        )
+        .status
+        .success()
     );
     fs::write(&source_binding_path, source_binding).unwrap();
+    let docs_source_path = root.join("rust/crates/sdk-docs/src/lib.rs");
+    let docs_source = fs::read(&docs_source_path).unwrap();
+    fs::write(&docs_source_path, b"foreign docs implementation\n").unwrap();
+    assert!(
+        !run(
+            binary,
+            "generate",
+            &root,
+            Some(&rustdoc),
+            &foreign_docs,
+            "preview"
+        )
+        .status
+        .success()
+    );
+    fs::write(&docs_source_path, docs_source).unwrap();
     let duplicate = Command::new(binary)
         .args([
             "generate",
@@ -248,6 +265,13 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     assert_eq!(manifest["tool"]["version"], "0.2.0");
     assert_eq!(manifest["tool"]["channel"], "preview");
     assert!(manifest["tool"].get("args").is_none());
+    assert!(
+        manifest["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| { artifact["path"] == "generated/typescript/actors/types.ts" })
+    );
     assert_eq!(
         fs::read(first.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap(),
         fs::read(second.join("preview/0.2.0/sdk-docs-data.v1.json")).unwrap()
@@ -264,12 +288,34 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     assert!(data.contains("sdk-docs-data.v1"));
     let typescript = first.join("generated/typescript/actors/InvokeActorRequest.ts");
     assert!(typescript.is_file());
-    assert!(fs::read_to_string(&typescript)
-        .unwrap()
-        .contains("InvokeActorRequest"));
+    assert!(
+        fs::read_to_string(&typescript)
+            .unwrap()
+            .contains("InvokeActorRequest")
+    );
     assert_eq!(
         fs::read(&typescript).unwrap(),
         fs::read(second.join("generated/typescript/actors/InvokeActorRequest.ts")).unwrap()
+    );
+    let types_barrel = first.join("generated/typescript/actors/types.ts");
+    assert!(types_barrel.is_file());
+    let types_barrel_source = fs::read_to_string(&types_barrel).unwrap();
+    assert!(types_barrel_source.contains("export * from \"./InvokeActorRequest.js\";"));
+    for entry in fs::read_dir(first.join("generated/typescript/actors")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "ts")
+            && path.file_stem().is_some_and(|stem| stem != "types")
+        {
+            let stem = path.file_stem().unwrap().to_string_lossy();
+            assert!(
+                types_barrel_source.contains(&format!("export * from \"./{stem}.js\";")),
+                "generated module {stem} is missing from the Typescript barrel"
+            );
+        }
+    }
+    assert_eq!(
+        fs::read(&types_barrel).unwrap(),
+        fs::read(second.join("generated/typescript/actors/types.ts")).unwrap()
     );
     let guide_path = root.join("docs/objects-v2-http.md");
     let guide = fs::read(&guide_path).unwrap();
@@ -367,6 +413,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     let _ = fs::remove_dir_all(first);
     let _ = fs::remove_dir_all(second);
     let _ = fs::remove_dir_all(foreign);
+    let _ = fs::remove_dir_all(foreign_docs);
 }
 
 #[test]
@@ -445,7 +492,7 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     ] {
         fs::write(root.join(path), contents).unwrap();
     }
-    copy_compiled_actors_typescript_sources(&root);
+    copy_compiled_generator_sources(&root);
     let lock = Command::new("cargo")
         .args([
             "+1.98.1",
@@ -498,6 +545,11 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     assert!(
         output
             .join("generated/typescript/actors/InvokeActorRequest.ts")
+            .is_file()
+    );
+    assert!(
+        output
+            .join("generated/typescript/actors/types.ts")
             .is_file()
     );
     let drift = run(binary, "drift", &root, None, &output, "release");

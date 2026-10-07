@@ -1,0 +1,8 @@
+{
+  "schema": "acyclic.sdk.descriptor-baseline.v1",
+  "protocol": "acyclic.actors.v1",
+  "source_revision": "b9cb80bc735815166ac23ea43ab6e45cb4753e05",
+  "descriptor_sha256": "sha256:70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c",
+  "normalization": ["source_code_info_only"],
+  "authority": "archived compatibility baseline; never a generation input"
+}

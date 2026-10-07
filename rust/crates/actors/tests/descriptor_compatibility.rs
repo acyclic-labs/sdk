@@ -65,6 +65,19 @@ fn unknown_option_numbers(bytes: &[u8]) -> Vec<u32> {
     options.unknown_fields().map(UnknownField::number).collect()
 }
 
+fn options_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut descriptor_set = DynamicMessage::decode(descriptor_set_message(), bytes)
+        .expect("descriptor set must decode through prost-reflect");
+    let file = first_file(&mut descriptor_set);
+    let options = file
+        .get_field_by_name("options")
+        .expect("FileDescriptorProto.options must exist");
+    let Value::Message(options) = options.as_ref() else {
+        panic!("FileDescriptorProto.options must be a message");
+    };
+    options.encode_to_vec()
+}
+
 #[test]
 fn current_actors_descriptor_matches_archived_wire_contract() {
     assert!(!ARCHIVED_ACTORS_DESCRIPTOR.is_empty());
@@ -88,11 +101,23 @@ fn source_info_normalization_preserves_unknown_custom_option_fields() {
     let normalized = normalize_source_code_info(ADVERSARIAL_DESCRIPTOR);
     assert_ne!(normalized, ADVERSARIAL_DESCRIPTOR);
     assert_eq!(normalize_source_code_info(&normalized), normalized);
-    assert_eq!(unknown_option_numbers(ADVERSARIAL_DESCRIPTOR), vec![50_000]);
-    assert_eq!(unknown_option_numbers(&normalized), vec![50_000]);
+    assert_eq!(
+        unknown_option_numbers(ADVERSARIAL_DESCRIPTOR),
+        vec![50_000, 50_000, 50_001, 50_002, 50_003, 50_004]
+    );
+    assert_eq!(
+        unknown_option_numbers(&normalized),
+        vec![50_000, 50_000, 50_001, 50_002, 50_003, 50_004]
+    );
+    assert_eq!(
+        options_bytes(ADVERSARIAL_DESCRIPTOR),
+        options_bytes(&normalized),
+        "source-info normalization must preserve every option payload and wire type"
+    );
 
-    let mut descriptor_set = DynamicMessage::decode(descriptor_set_message(), &normalized)
-        .expect("normalized adversarial descriptor must decode");
+    let mut descriptor_set =
+        DynamicMessage::decode(descriptor_set_message(), normalized.as_slice())
+            .expect("normalized adversarial descriptor must decode");
     let file = first_file(&mut descriptor_set);
     assert!(
         !file.has_field_by_name("source_code_info"),
@@ -100,3 +125,17 @@ fn source_info_normalization_preserves_unknown_custom_option_fields() {
     );
 }
 
+#[test]
+fn descriptor_comparison_rejects_wire_identity_mutation() {
+    let mut descriptor_set =
+        DynamicMessage::decode(descriptor_set_message(), ARCHIVED_ACTORS_DESCRIPTOR)
+            .expect("archived descriptor must decode");
+    let file = first_file(&mut descriptor_set);
+    file.set_field_by_name("name", Value::String("actors/v1/changed.proto".to_owned()));
+    let mutated = descriptor_set.encode_to_vec();
+    assert_ne!(
+        normalize_source_code_info(ARCHIVED_ACTORS_DESCRIPTOR),
+        normalize_source_code_info(&mutated),
+        "descriptor proof must reject a wire identity mutation"
+    );
+}

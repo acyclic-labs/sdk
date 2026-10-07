@@ -11,10 +11,11 @@ use std::{
     process::Command,
 };
 
-#[path = "../../actors/src/contract.rs"]
-mod contract;
 #[path = "../../actors/src/codegen.rs"]
 mod actors_codegen;
+mod compiled_generator_inputs;
+#[path = "../../actors/src/contract.rs"]
+mod contract;
 
 const MANIFEST: &str = "generation-manifest.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -96,21 +97,10 @@ struct RustdocInput {
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
-const TYPESCRIPT_BINDING_SOURCE: &[&str] = &[
-    "rust/crates/actors/src/codegen.rs",
-    "rust/crates/actors/src/contract.rs",
-    "rust/crates/actors/src/domain.rs",
-    "rust/crates/actors/src/wire.rs",
-    "rust/crates/actors/Cargo.toml",
-    "rust/crates/sdk-generation/Cargo.toml",
-    "rust/crates/sdk-generation/Cargo.lock",
-    "rust/crates/sdk-generation/build.rs",
-    "rust/crates/sdk-generation/src/main.rs",
-];
-
-fn typescript_binding_digest(root: &Path) -> io::Result<String> {
+const ACTORS_TYPESCRIPT_BARREL: &str = "types.ts";
+fn compiled_generator_digest(root: &Path) -> io::Result<String> {
     let mut hasher = Sha256::new();
-    for relative in TYPESCRIPT_BINDING_SOURCE {
+    for relative in compiled_generator_inputs::PATHS {
         let path = root.join(relative);
         hasher.update(relative.as_bytes());
         hasher.update([0]);
@@ -128,12 +118,12 @@ fn typescript_binding_digest(root: &Path) -> io::Result<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
-fn verify_compiled_actors_source(root: &Path) -> io::Result<()> {
-    let configured = typescript_binding_digest(root)?;
-    let compiled = env!("SDK_GENERATION_TYPESCRIPT_BINDING_SHA256");
+fn verify_compiled_generator_source(root: &Path) -> io::Result<()> {
+    let configured = compiled_generator_digest(root)?;
+    let compiled = env!("SDK_GENERATION_COMPILED_SOURCE_SHA256");
     if configured != compiled {
         return Err(io::Error::other(format!(
-            "configured Actors TypeScript source digest {configured} does not match the compiled dependency {compiled}"
+            "compiled generator source digest {configured} does not match the binary dependency {compiled}"
         )));
     }
     Ok(())
@@ -153,11 +143,43 @@ fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
 fn generate_actors_typescript_artifacts(config: &Config) -> io::Result<()> {
     let stage = config.output.join(ACTORS_TYPESCRIPT_ROOT);
     acyclic_actors::domain::export_typescript(&stage).map_err(io::Error::other)?;
-    if !stage.join("actors").is_dir() {
+    let actors = stage.join("actors");
+    if !actors.is_dir() {
         return Err(io::Error::other(
             "Actors TypeScript export did not produce its actors directory",
         ));
     }
+    let mut modules = BTreeSet::new();
+    for entry in fs::read_dir(&actors)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() || is_reparse_point(&metadata) {
+            return Err(io::Error::other(format!(
+                "Actors TypeScript export contains a symlink: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_file() && path.extension().is_some_and(|extension| extension == "ts") {
+            let stem = path
+                .file_stem()
+                .ok_or_else(|| io::Error::other("Actors TypeScript file has no module name"))?
+                .to_string_lossy()
+                .into_owned();
+            if stem != "types" {
+                modules.insert(stem);
+            }
+        }
+    }
+    if modules.is_empty() {
+        return Err(io::Error::other(
+            "Actors TypeScript export did not produce any declaration modules",
+        ));
+    }
+    let mut barrel = String::from("// Generated from Rust-owned Actors semantic declarations.\n");
+    for module in modules {
+        barrel.push_str(&format!("export * from \"./{module}.js\";\n"));
+    }
+    fs::write(actors.join(ACTORS_TYPESCRIPT_BARREL), barrel)?;
     Ok(())
 }
 
@@ -812,8 +834,7 @@ fn clear_rustdoc_output(path: &Path) -> io::Result<()> {
 
 fn generate_rustdoc(config: &Config) -> io::Result<RustdocInput> {
     let json_target = rustdoc_target(config)?;
-    let dep_info_target =
-        rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
+    let dep_info_target = rustdoc_target_named(config, "sdk-generation-rustdoc-dep-info-target")?;
     let manifest = config.root.join("Cargo.toml");
     let tools = pinned_toolchain()?;
     let actors_root = config.root.join("rust/crates/actors");
@@ -821,7 +842,9 @@ fn generate_rustdoc(config: &Config) -> io::Result<RustdocInput> {
     let dep_json = dep_info_target
         .join("doc")
         .join(format!("{ACTORS_CRATE}.json"));
-    let dep_info = dep_info_target.join("doc").join(format!("{ACTORS_CRATE}.d"));
+    let dep_info = dep_info_target
+        .join("doc")
+        .join(format!("{ACTORS_CRATE}.d"));
     clear_rustdoc_output(&json)?;
     clear_rustdoc_output(&dep_json)?;
     clear_rustdoc_output(&dep_info)?;
@@ -929,7 +952,7 @@ fn generate(config: &Config) -> io::Result<()> {
     }
     let revision = git_revision(&config.root)?;
     require_clean_release(&config.root, &config.channel)?;
-    verify_compiled_actors_source(&config.root)?;
+    verify_compiled_generator_source(&config.root)?;
     let source_extras_before = baseline_source_extras(&config.root)?;
     let source_before_stage = collect_sources(&config.root, &source_extras_before)?;
     generate_actors_contract_artifacts(config)?;
@@ -1012,7 +1035,7 @@ fn generate(config: &Config) -> io::Result<()> {
 }
 
 fn drift(config: &Config) -> io::Result<()> {
-    verify_compiled_actors_source(&config.root)?;
+    verify_compiled_generator_source(&config.root)?;
     let manifest: Manifest = serde_json::from_slice(&fs::read(config.output.join(MANIFEST))?)
         .map_err(io::Error::other)?;
     let revision = git_revision(&config.root)?;
@@ -1148,8 +1171,7 @@ mod tests {
     fn dep_info_continuations_are_joined_before_parsing() {
         let crlf = "target: src/lib.rs \\\r\n docs/objects-v2-http.md\n";
         let lf = "target: src/lib.rs \\\n docs/objects-v2-http.md\n";
-        let continuation_without_spacing =
-            "target: src/lib.rs\\\ndocs/objects-v2-http.md\n";
+        let continuation_without_spacing = "target: src/lib.rs\\\ndocs/objects-v2-http.md\n";
         let expected = vec![
             PathBuf::from("src/lib.rs"),
             PathBuf::from("docs/objects-v2-http.md"),
@@ -1173,11 +1195,12 @@ mod tests {
 
     #[test]
     fn make_escaped_markdown_path_is_rejected_with_actionable_diagnostic() {
-        let error = reject_unsupported_make_escapes(Path::new(r"docs\guide\#name.md"))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("unsupported Make-escaped Markdown path"));
+        let error = reject_unsupported_make_escapes(Path::new(r"docs\guide\#name.md")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported Make-escaped Markdown path")
+        );
         assert!(error.to_string().contains("#name.md"));
         assert!(error.to_string().contains("rename the path"));
     }

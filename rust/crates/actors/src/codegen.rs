@@ -14,9 +14,7 @@ pub fn generate(output_root: impl AsRef<Path>) -> io::Result<()> {
     let descriptor = output_root.join("acyclic-actors-v1.bin");
     let mut prost = tonic_prost_build::Config::new();
     prost
-        .protoc_executable(
-            protoc_bin_vendored::protoc_bin_path().map_err(io::Error::other)?,
-        )
+        .protoc_executable(protoc_bin_vendored::protoc_bin_path().map_err(io::Error::other)?)
         .out_dir(&rust_root)
         .file_descriptor_set_path(&descriptor)
         .extern_path(".acyclic.actors.v1", "crate::wire");

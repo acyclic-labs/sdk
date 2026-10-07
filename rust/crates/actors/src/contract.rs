@@ -7,15 +7,11 @@
 use protify::*;
 use ts_rs::TS;
 
-// Protify 0.1.x emits the package marker and builder without Rustdoc.
-#[allow(missing_docs)]
 proto_package!(
     ACTORS_PACKAGE,
     name = "acyclic.actors.v1",
     files = [ACTORS_FILE]
 );
-// Protify 0.1.x emits the file marker and schema helpers without Rustdoc.
-#[allow(missing_docs)]
 define_proto_file!(
     ACTORS_FILE,
     name = "actors/v1/actors.proto",
@@ -71,7 +67,7 @@ pub struct Binding {
     /// Name used to refer to this binding.
     pub name: String,
     #[proto(tag = 2)]
-    /// Capability supplied by this binding.
+    /// Capability name associated with this binding.
     pub capability: String,
     #[proto(tag = 3)]
     /// Resource associated with the capability.
@@ -111,7 +107,7 @@ pub mod subscription_start {
         #[proto(tag = 2)]
         /// Boolean selector for starting at the current stream head.
         CurrentHead(
-            /// Selects the current stream head when `true`.
+            /// Whether to start at the current stream head.
             bool,
         ),
     }
@@ -182,10 +178,10 @@ pub struct SubscriptionObservation {
     /// Whether the subscription uses the placement anchor.
     pub placement_anchor: bool,
     #[proto(tag = 8)]
-    /// Number of delivery retries.
+    /// Number of recorded delivery retries.
     pub retry_count: u32,
     #[proto(tag = 9)]
-    /// Code describing the latest failure.
+    /// Failure code associated with the latest failed delivery, when present.
     pub failure_code: String,
     #[proto(tag = 10)]
     /// Cursor of the failed record, when one is available.
@@ -217,7 +213,7 @@ pub struct ActorObservation {
     /// SHA-256 digest of the actor code.
     pub code_sha256: Bytes,
     #[proto(tag = 3)]
-    /// Region in which the actor is hosted.
+    /// Configured home region for the actor.
     pub home_region: String,
     #[proto(tag = 4, enum_(ActorState))]
     /// Encoded [`ActorState`].
@@ -244,7 +240,7 @@ pub struct CreateActorRequest {
     /// SHA-256 digest of the actor code.
     pub code_sha256: Bytes,
     #[proto(tag = 2)]
-    /// Region in which the actor should be hosted.
+    /// Configured home region for the actor.
     pub home_region: String,
     #[proto(tag = 3, repeated(message))]
     /// Capability bindings for the actor.
@@ -500,7 +496,7 @@ pub struct Error {
     /// Encoded [`ErrorCode`] classification.
     pub code: i32,
     #[proto(tag = 2)]
-    /// Human-readable error message.
+    /// Error message returned by the actor service.
     pub message: String,
 }
 

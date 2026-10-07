@@ -1,10 +1,10 @@
 //! Rust-owned semantic projections for the Actors contract.
 //!
-//! This module is intentionally small while the generator integration is being
-//! wired by the owning generation task. It gives the first complete vertical
-//! operation (`InvokeActor`) a typed Rust boundary and derives its static
-//! TypeScript declaration from the same Rust definitions. Transport behavior
-//! remains in [`crate::grpc`] and [`crate::http`].
+//! This module provides typed semantic boundaries for all eight Actors
+//! operations (create, update, inspect, add/remove/resume subscription,
+//! checkpoint, and invoke), preserving the canonical wire validators and
+//! lossless enum/presence rules. Transport behavior remains in
+//! [`crate::grpc`] and [`crate::http`].
 
 use std::path::Path;
 
@@ -293,11 +293,15 @@ impl From<ActorLimits> for wire::ActorLimits {
 pub enum SubscriptionStart {
     /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
+        /// The exact stream cursor at which delivery begins.
         #[ts(type = "bigint")]
         cursor: u64,
     },
     /// Start at the service's current head, preserving the wire boolean.
-    CurrentHead { current_head: bool },
+    CurrentHead {
+        /// The wire-preserved current-head presence payload.
+        current_head: bool,
+    },
 }
 
 impl SubscriptionStart {
@@ -1607,7 +1611,7 @@ mod tests {
         assert_eq!(decoded, request);
         assert_eq!(decoded.code_sha256(), &digest);
         assert_eq!(decoded.bindings(), &[binding]);
-        assert_eq!(decoded.subscriptions(), &[subscription]);
+        assert_eq!(decoded.subscriptions(), std::slice::from_ref(&subscription));
 
         let duplicate = CreateActorRequest::new(
             digest,
