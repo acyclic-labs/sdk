@@ -174,7 +174,7 @@ export async function PositiveU64(value: bigint): Promise<Semantic.PositiveU64> 
 }
 
 /** The semantic marker is true-only; Rust remains the runtime predicate. */
-export type CurrentHeadMarker = true;
+export type CurrentHeadMarker = Semantic.CurrentHeadMarker;
 
 /** A nominal Rust constructor exposed from the normal package entrypoint. */
 export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker> {

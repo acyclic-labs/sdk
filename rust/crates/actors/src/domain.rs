@@ -1323,6 +1323,7 @@ pub fn export_typescript(path: impl AsRef<Path>) -> Result<(), ExportError> {
     }
 
     export_roots!(
+        subscription_start::CurrentHeadMarker,
         PositiveU64,
         ErrorCode,
         ServiceError,
@@ -1373,6 +1374,9 @@ mod tests {
             std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
         assert!(service_error.contains("from \"./ErrorCode.js\""));
         assert!(output.join("actors/ErrorCode.ts").is_file());
+        let current_head = std::fs::read_to_string(output.join("actors/CurrentHeadMarker.ts"))
+            .expect("CurrentHeadMarker");
+        assert!(current_head.contains("true"));
 
         std::fs::remove_dir_all(output).expect("remove temporary export");
     }

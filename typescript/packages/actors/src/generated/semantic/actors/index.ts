@@ -9,6 +9,7 @@ export * from "./Binding.js";
 export * from "./CheckpointActorRequest.js";
 export * from "./CheckpointActorResponse.js";
 export * from "./CodeSha256.js";
+export * from "./CurrentHeadMarker.js";
 export * from "./CreateActorRequest.js";
 export * from "./CreateActorResponse.js";
 export * from "./ErrorCode.js";
