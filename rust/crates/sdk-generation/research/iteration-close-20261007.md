@@ -25,8 +25,11 @@ this loop.
 - PR259 remote head 1a3ec9481b6d19722bbc23fbef1f34e52657b355 passed local
   installed qualification and CI. Branch protection requires latest-main
   ancestry. Clean signed integration ed2f7c5e0a9e588e6b7559ca1325f0b1d09caf0f
-  is saved remotely; source-bound package metadata is being refreshed before
-  the PR update. Stream source and closure inputs are unchanged by integration.
+  is saved remotely. A subsequent review found lockfile checkout line endings
+  were not pinned. Signed 5c91a9ab5c8fbfd6f50505b01a462d651a4f1d75 adds
+  `*.lock text eol=lf`; fresh `core.autocrlf=true` checkouts of Cargo.lock and
+  bun.lock retain identical LF bytes. Exact package metadata is being refreshed
+  again before the final PR update. Runtime source/closure bytes are unchanged.
 - Filesystem checkpoint 9dd4261da162f6f28225e0c270ffdcb1379ac1c4 is remotely
   preserved but has old parent fd8272d97ffc20fea444e37f100e738d94e0dbc4.
   A current-main candidate and new source/artifact attestation remain required.
@@ -85,6 +88,15 @@ this loop.
 - Three symbolic u64/presence Kani prototype models passed, including a failing
   mutation control. They invoke local model projections, not production
   projection functions; production equivalence is not established.
+- A separately source-snapshotted actual Actors `validate_add_subscription`
+  theorem passes for the full symbolic u64 cursor domain: 0/295 failed. The
+  intentional negative assertion fails (1/295, exit 1). This is a narrow
+  production-validator result; final semantic constructors, limits, digest,
+  enum and oneof proofs still require the final generator-cutover snapshot.
+- The maintained Protify fallible-proxy source patch now passes 17 prototype
+  tests, covering nested conversion, optional messages and oneof presence.
+  Its exact source is preserved in the primary research tree; production
+  cutover and descriptor compatibility remain required before merge.
 - Stream frozen commit 1a3ec9481b6d19722bbc23fbef1f34e52657b355 is clean and
   saved remotely. Its exact installed archive (SHA256
   bce8fb4bb97455ab462607c86cbb6e29522cd5bd66549ba9a39312a050350379)

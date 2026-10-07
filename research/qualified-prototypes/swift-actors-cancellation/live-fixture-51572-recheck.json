@@ -1,6 +1,6 @@
 {
   "qualification": "Swift maintained UniFFI 0.31 live fixture recheck",
-  "status": "REPRODUCED_all8_failure_microprobes_pass",
+  "status": "RECHECKED_stage_isolated",
   "recordedAt": "2026-10-07",
   "fixture": {
     "options": "Q:\\sdk\\work\\swift-actors-live-51572-options.json",
@@ -13,7 +13,8 @@
     "language": "Python",
     "module": "Q:\\sdk\\work\\actors-uniffi-python-A094-current-20261007\\acyclic_actors_uniffi.py",
     "nativeDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
-    "result": "PASS actor=actor-a checkpoint=9"
+    "result": "PASS actor=actor-a checkpoint=9",
+    "resultContext": "Existing positive Python receipt was a separate known-client run; a fresh identical ordered Python sequence against the currently observed live process reaches checkpoint and receives grpc13."
   },
   "swift": {
     "generatedSwiftSha256": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
@@ -21,7 +22,7 @@
     "loadedDllPath": "Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-generated-all8-current-20261007i-consumer\\Native\\windows-x86_64\\acyclic_actors_uniffi.dll",
     "loadedDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
     "originalOrderExecutable": "Q:\\sdk\\work\\swift-original-order-51572-build\\out\\Products\\Debug-windows-x86_64\\ActorsConformanceConsumer.exe",
-    "originalOrderResult": "REPRODUCED grpcCode=13 detail=service rejected operation at first inspectActor; Swift runtime then reports corrupt metadata",
+    "originalOrderResult": "Fresh original-order Swift run reaches inspect/create/update/add/resume; checkpointActor then returns BindingError.Service grpcCode=13 detail=service rejected operation; the later corrupt-metadata report is Swift fatal handling after this service error.",
     "constructorMicroprobes": {
       "plain": "PASS",
       "CodeSha256_only": "PASS",
@@ -31,7 +32,10 @@
       "combined_explicit_reads": "PASS",
       "same_helper_with_typed_requireObservation": "PASS"
     },
-    "conclusion": "The original all8 failure is real and reproducible with the exact live endpoint and loaded A094 DLL, but isolated constructors and the equivalent minimal typed inspect call pass. This recheck does not prove constructor FFI memory corruption or justify reordering/drop changes."
+    "traceLog": "Q:\\sdk\\work\\swift-abi-trace-51572-run6.log",
+    "traceLogSha256": "38BAD2C49D066CC32FEF33E3344914E4B1640D94D208559FA6D83A60F4684692",
+    "sameSequencePythonResult": "inspect/create/update/add/resume PASS; checkpoint BindingError.Service grpc_code=13 detail_message=service rejected operation",
+    "conclusion": "The apparent Swift all8 failure is isolated to the checkpoint service response on this live fixture: the same ordered Python calls receive grpc13. Swift preceding calls complete with status code 0, valid RustBuffer returns, and empty error buffers. Constructor probes pass. This evidence does not prove constructor FFI memory corruption or justify reordering/drop changes."
   },
   "cancellation": {
     "existingWindowsReceipt": "Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-generator-cancel-current-20261007i-receipt.json",
@@ -39,5 +43,20 @@
     "currentPendingOptions": "Q:\\sdk\\work\\root-pending-actors-fixture-options.json",
     "currentPendingEndpointListening": false,
     "macDylibExecutableOnWindows": false
+  },
+  "macosIndependentCheck": {
+    "host": "ivar",
+    "os": "Darwin 24.6.0 arm64",
+    "searchedRoots": [
+      "/Users/var/artifacts/qual-macos-nfs",
+      "/Users/var/acyclic-lab",
+      "/Users/var/acyclic-e2e-codex-0.156.1",
+      "/Users/var/acyclic-e2e-da36f2a5",
+      "/Users/var/sdk-native-process-9086-20261006-2130",
+      "/Users/var/.codex"
+    ],
+    "matchingSwiftAll8Executable": false,
+    "matchingActorsDylib": false,
+    "limitation": "No installed Swift all8 executable or acyclic actors UniFFI dylib was present in searched macOS artifacts, so no independent macOS all8 run was possible."
   }
 }

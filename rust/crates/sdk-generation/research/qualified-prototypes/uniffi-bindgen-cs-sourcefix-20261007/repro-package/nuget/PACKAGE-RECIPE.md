@@ -39,6 +39,10 @@ External receipt:
   `CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6`
 - cross-platform Linux native SHA256:
   `60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEEF2853F2BCE146AC258`
+- the Linux producer was built from foundation revision
+  `371bb4170e16aca973176b6756a261ee5add7297` with Rust `1.98.1` using
+  `cargo build --manifest-path rust/crates/actors-uniffi/Cargo.toml --release --locked`;
+  the producer output and packaged `.so` have the same SHA256 above
 - clean external Linux net8.0 MSBuild restore/build: PASS, 0 warnings, 0 errors
 - clean external Linux net8.0 runtime against a WSL-local fixture: PASS; all
   nine generated Actors methods completed

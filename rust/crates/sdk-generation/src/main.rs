@@ -2,6 +2,10 @@ use depinfo::RustcDepInfo;
 use sdk_docs::{
     BuildInput, Channel, DocsData, GENERATOR_VERSION, GeneratedSource, build_data, write_bundle,
 };
+use sdk_docs::rustdoc_profiles::{
+    OwnedApiItem, ProfileAvailability, ProfileId, ProfileSpec, api_owner_for_package,
+    extract_owned_api_for_crate, load_metadata, observe_rustdoc, project_into_docs,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -17,6 +21,7 @@ mod compiled_generator_inputs;
 mod native_targets;
 
 const MANIFEST: &str = "generation-manifest.json";
+const PROFILE_AVAILABILITY: &str = "sdk-docs-profile-availability.v1.json";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ACTORS_CRATE: &str = "acyclic_actors";
 const SOURCE_PATHS: &[&str] = &[
@@ -1996,9 +2001,60 @@ fn resolve_rustdoc(config: &Config, owners: &[RustdocOwner]) -> io::Result<Rustd
     }
 }
 
-fn write_manifest(path: &Path, value: &impl Serialize) -> io::Result<()> {
+fn profile_availability(
+    root: &Path,
+    data: &DocsData,
+    rustdoc_paths: &[PathBuf],
+) -> io::Result<ProfileAvailability> {
+    let metadata = load_metadata(root.join("Cargo.toml")).map_err(io::Error::other)?;
+    let mut profiles = BTreeMap::<ProfileId, ProfileSpec>::new();
+    let mut items = Vec::<OwnedApiItem>::new();
+
+    for path in rustdoc_paths {
+        let observation = observe_rustdoc(path).map_err(io::Error::other)?;
+        let package = metadata
+            .packages
+            .iter()
+            .find(|package| {
+                package.targets.iter().any(|target| {
+                    target.name.replace('-', "_") == observation.crate_name
+                })
+            })
+            .ok_or_else(|| {
+                io::Error::other(format!(
+                    "Rustdoc crate `{}` has no matching Cargo target",
+                    observation.crate_name
+                ))
+            })?;
+        let package_name = package.name.to_string();
+        let owner = api_owner_for_package(&metadata, &package_name).map_err(io::Error::other)?;
+        let profile = ProfileSpec {
+            package: package_name,
+            target: observation.target,
+            default_features: true,
+            features: BTreeSet::new(),
+        };
+        let profile_id = profile.id();
+        let receipt_items = extract_owned_api_for_crate(
+            path,
+            &owner,
+            profile_id.clone(),
+            &observation.crate_name,
+        )
+        .map_err(io::Error::other)?;
+        profiles.insert(profile_id, profile);
+        items.extend(receipt_items);
+    }
+
+    project_into_docs(data, &metadata, items, &profiles).map_err(io::Error::other)
+}
+
+fn write_immutable_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
     if path.exists() {
-        return Err(io::Error::other("generation manifest already exists"));
+        return Err(io::Error::other(format!(
+            "immutable output already exists: {}",
+            path.display()
+        )));
     }
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut file = OpenOptions::new()
@@ -2011,6 +2067,10 @@ fn write_manifest(path: &Path, value: &impl Serialize) -> io::Result<()> {
     file.sync_all()?;
     drop(file);
     fs::rename(temporary, path)
+}
+
+fn write_manifest(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    write_immutable_json(path, value)
 }
 
 fn collect_outputs(root: &Path) -> io::Result<Vec<FileHash>> {
@@ -2110,6 +2170,11 @@ fn generate(config: &Config) -> io::Result<()> {
             "rustdoc input changed during documentation generation",
         ));
     }
+    let availability = profile_availability(&config.root, &data, &rustdoc_input.paths)?;
+    write_immutable_json(
+        &config.output.join(PROFILE_AVAILABILITY),
+        &availability,
+    )?;
     write_bundle(&data, &config.output, config.channel == "release").map_err(io::Error::other)?;
     write_native_targets(config, &metadata, &revision, &source_sha256)?;
     let artifacts = collect_outputs(&config.output)?;

@@ -295,11 +295,21 @@ describe("Machines simulation", () => {
 
   test("managed transport rejects insecure configuration and malformed contracts", async () => {
     expect(() => new HttpMachinesProvider({ endpoint: "http://example.test", token: "x" })).toThrow(TypeError);
+    for (const endpoint of ["https://user@example.test", "https://example.test?query", "https://example.test#fragment", "not a URL"]) {
+      expect(() => new HttpMachinesProvider({ endpoint, token: "x" })).toThrow(TypeError);
+    }
+    for (const token of ["", " \t\n", "\uFEFF", "bad\rtoken", "bad\ntoken", "bad\u0000token", "x".repeat(8193), "😀".repeat(2049)]) {
+      expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
+    }
+    expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "😀".repeat(2048) })).not.toThrow();
     expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: 0 })).toThrow(RangeError);
+    expect(() => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", maximumResponseBytes: Number.MAX_SAFE_INTEGER + 1 })).toThrow(RangeError);
     const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ id: "machine", state: "imaginary" })) });
     await expect(provider.inspectMachine("machine" as never)).rejects.toBeInstanceOf(MachinesTransportError);
     const invalidUtf8 = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([0xff])) });
     await expect(invalidUtf8.inspectMachine("machine" as never)).rejects.toThrow("valid UTF-8");
+    await expect(provider.events("machine" as never, -1, 1)).rejects.toThrow("afterSequence must be a non-negative safe integer");
+    await expect(provider.usage("machine" as never, Number.MAX_SAFE_INTEGER + 1, 2)).rejects.toThrow("startUnixMs must be a non-negative safe integer");
   });
 
   test("managed transport rejects substituted identities and impossible machine evidence", async () => {

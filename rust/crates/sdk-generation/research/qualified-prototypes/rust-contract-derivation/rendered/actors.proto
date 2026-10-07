@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package acyclic.actors.v1;
+
+
+
+message NestedActor {
+  string actor_id = 1;
+}
+
+message RegisterActor {
+  string actor_id = 1;
+  uint64 max_children = 2;
+  bytes code_sha256 = 3;
+  NestedActor nested = 4;
+}
+
+message SubscriptionStart {
+  oneof start {
+    uint64 cursor = 1;
+    bool current_head = 2;
+  }
+  NestedActor nested = 3;
+}

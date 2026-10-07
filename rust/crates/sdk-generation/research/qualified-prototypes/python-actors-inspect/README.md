@@ -6,7 +6,7 @@ The full vendor copy used during diagnosis is intentionally absent. No binary
 artifact is checked into this research directory.
 
 The primary closure is `minimal-patched-generator-receipt.json`. It records the
-pinned crates.io archive and embedded source files, the three patched generator
+pinned crates.io archive and embedded source files, the five patched generator
 source hashes, the generated Python module, native libraries, wheels, checker
 output hashes, and the current Rust facade checkout hashes. The external
 outputs are retained qualification evidence; the receipt marks them
@@ -45,14 +45,16 @@ language-package model:
 {"schema":"acyclic.language-package.qualification/v1","status":"PASS",
  "operations":["..."],"checks":["..."],
  "source_revision":"...","source_inventory_sha256":"...",
- "toolchain":{"uniffi_bindgen":"0.31.0","uniffi_source_sha256":"..."},
+ "toolchain":{"uniffi_bindgen":"0.31.0","uniffi_source_sha256":"...",
+               "python_patch_sha256":"..."},
  "artifacts":{"wheel":{"path":"...","sha256":"...","bytes":0}}}
 ```
 
 The arrays and status are produced by the executed run; the script does not
 accept caller-supplied success or scope claims. The producer manifest is an
 install-harness output and must contain the exact source revision, source
-inventory hash, UniFFI version, and patched generator source hash. The install
+inventory hash, UniFFI version, uniffi source hash, and exact Python patch
+hash. The install
 check belongs to the harness that actually installs the wheel and must be
 emitted there before the root source-bound model consumes the receipt.
 

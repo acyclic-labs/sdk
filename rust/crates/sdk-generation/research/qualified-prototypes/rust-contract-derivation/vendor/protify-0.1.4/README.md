@@ -1,0 +1,587 @@
+<p align="center">
+<img alt="protify logo" src="https://github.com/Rick-Phoenix/protify/blob/main/assets/logo.jpg?raw=true">
+</p>
+
+<div align="center">
+<div>
+
+[![Crates.io Version](https://img.shields.io/crates/v/protify)](https://crates.io/crates/protify) [![License](https://img.shields.io/github/license/Rick-Phoenix/protify)](https://www.mozilla.org/en-US/MPL/2.0/)
+
+[![Sponsor](https://img.shields.io/badge/GitHub%20Sponsors-30363D?&logo=GitHub-Sponsors&logoColor=EA4AAA)](https://github.com/sponsors/Rick-Phoenix)
+
+<a href="https://docs.rs/protify/latest/protify/">Docs</a> &emsp; <a href="https://docs.rs/protify/latest/protify/guide/index.html">Guide</a>
+</div>
+</div>
+
+<!-- cargo-reedme: start -->
+
+<!-- cargo-reedme: info-start
+
+    Do not edit this region by hand
+    ===============================
+
+    This region was generated from Rust documentation comments by `cargo-reedme` using this command:
+
+        cargo +nightly reedme -p protify
+
+    for more info: https://github.com/nik-rev/cargo-reedme
+
+cargo-reedme: info-end -->
+
+Protify is a Rust-first framework for protobuf that generates packages from rust code, with validation included.
+
+It aims to make working with protobuf feel (almost) as easy as using `serde`. It flips the logic of the typical proto workflow around, so that all the elements of a package can be defined in rust with a rich set of macros and attributes, and the resulting contracts can be generated from the rust code, rather than the other way around.
+
+It also offers a rich validation framework that can be used to programmatically create highly customizable validators that can also be transposed into protobuf options to provide portability to other systems.
+
+>ℹ️ **NOTE**: This readme is generated from the rust documentation with [cargo-reedme](https://crates.io/crates/cargo-reedme) to ensure better maintainability. Most of the links should work on GitHub, but if they don’t, you might want to read this in the [docs.rs](https://docs.rs/protify/latest/protify/index.html) page.
+
+You can visit the [package setup](https://docs.rs/protify/latest/protify/guide/package_setup/index.html) section of the [guide](https://docs.rs/protify/latest/protify/guide/index.html) to learn more about how to set up protify.
+
+# From Rust To Proto
+
+Each element of a protobuf file can be defined with a proc or attribute macro. Options for each element can be composed and assigned programmatically.
+
+Unlike in prost, enums representing protobuf oneofs can be reused for multiple messages (with limitations explained in the [reusing oneofs](https://docs.rs/protify/latest/protify/guide/reusing_oneofs/) section).
+
+```rust
+use protify::*;
+
+// Creates a new package
+proto_package!(MY_PKG, name = "my_pkg");
+// Creates a new file
+define_proto_file!(
+	MY_FILE,
+	name = "my_file.proto",
+	package = MY_PKG,
+	extensions = [MyExt]
+);
+
+fn create_option(value: i32) -> ProtoOption {
+	proto_option!("(my_custom_opt)" => value)
+}
+
+#[proto_extension(target = MessageOptions)]
+pub struct MyExt {
+	#[proto(tag = 5000)]
+	cool_opt: String,
+}
+
+#[proto_service]
+enum MyService {
+	Service1 { request: MyMsg, response: MyMsg },
+}
+
+// We can directly plug this into a tonic handler!
+#[proto_message]
+#[proto(reserved_numbers(22, 23..30))]
+#[proto(reserved_names("name1", "name2"))]
+pub struct MyMsg {
+	// Programmatically creating options
+	#[proto(options = [ create_option(25) ])]
+	pub id: i32,
+	#[proto(oneof(tags(1, 2)))]
+	pub oneof: Option<MyOneof>,
+}
+
+#[proto_oneof]
+pub enum MyOneof {
+	#[proto(tag = 1)]
+	A(i32),
+	#[proto(tag = 2)]
+	B(u32),
+}
+
+#[proto_message]
+pub struct MyMsg2 {
+	pub id: i32,
+	// Reusing the same oneof
+	#[proto(oneof(tags(1, 2)))]
+	pub oneof: Option<MyOneof>,
+}
+
+// Tags are assigned automatically
+// and take the reserved numbers in consideration
+#[proto_enum]
+#[proto(reserved_numbers(20, 25..30))]
+pub enum MyEnum {
+	Unspecified,
+	A,
+	B,
+}
+```
+
+All the messages defined in this snippet can be plugged directly in a tonic handler and work out of the box. All you need to do is to set up tonic so that it doesn’t try to build them from the protos, but rather imports them directly from your models crate. This is explained in detail in the [usage with tonic](https://docs.rs/protify/latest/protify/guide/usage_with_tonic/index.html) section.
+
+For a full guide on how to set up a package, visit the [package setup](https://docs.rs/protify/latest/protify/guide/package_setup/) section.
+
+# Proxies As A Translation Layer
+
+Messages and oneofs can be proxied. Doing so will generate a new struct/enum with the same name, followed by a `Proto` suffix (i.e. MyMsg -> MyMsgProto).
+
+Proxied messages/oneofs unlock the following features:
+
+- A field/variant can be missing from the proto struct, but present in the proxy (akin to the `skip` attribute with `serde`)
+- Enums can be represented with their actual rust enum type, rather than being pure integers
+- Oneofs don’t need to be wrapped in `Option`
+- Messages don’t need to be wrapped in `Option`
+- We can use types that are not supported by prost and map them with custom conversions
+
+By default, the macro will generate a conversion from proxy to proto and vice versa that just calls `.into()` for each field/variant. So if the field’s prost type implements `From` with the proxy field and vice versa, no additional attributes are required.
+
+To provide custom conversions, you can use the `from_proto` and `into_proto` attributes on the container (to replace the automatically generated impl as a whole) or on individual fields/variants.
+
+The proxied structs/enums will also implement [`ProxiedMessage`](https://docs.rs/protify/latest/protify/message_schema/trait.ProxiedMessage.html) or [`ProxiedOneof`](https://docs.rs/protify/latest/protify/oneof_schema/trait.ProxiedOneof.html), whereas the proxies will implement [`MessageProxy`](https://docs.rs/protify/latest/protify/message_schema/trait.MessageProxy.html) and [`OneofProxy`](https://docs.rs/protify/latest/protify/oneof_schema/trait.OneofProxy.html).
+
+```rust
+use protify::*;
+use std::sync::Arc;
+
+proto_package!(MY_PKG, name = "my_pkg");
+define_proto_file!(MY_FILE, name = "my_file.proto", package = MY_PKG);
+
+// Generates a MsgProto struct that is prost-compatible
+#[proto_message(proxied)]
+pub struct Msg {
+	// Requires setting the type manually as the type
+	// is not prost-compatible
+	#[proto(string)]
+	// Must provide a custom `into_proto` impl because `Arc<str>` does not support `Into<String>`
+	#[proto(into_proto = |v| v.as_ref().to_string())]
+	pub name: Arc<str>,
+	// Ignored field. Conversion from proto will use `Default::default()` unless a custom
+	// conversion is specified
+	#[proto(ignore)]
+	pub rust_only: i32,
+	// In proxied messages, we can use `default` for oneofs
+	// so that using `Option` is not required.
+	// The default conversion will call `ProxiedOneofProto::default().into()`
+	// if the field is `None` in the proto struct.
+	#[proto(oneof(proxied, default, tags(1, 2)))]
+	pub oneof: ProxiedOneof,
+	// We can do the same for messages too
+	#[proto(message(default))]
+	pub message_with_default: Msg2,
+	// We can use the enum directly as the type
+	#[proto(enum_)]
+	pub enum_: TestEnum,
+}
+
+#[proto_enum]
+pub enum TestEnum {
+	Unspecified,
+	A,
+	B,
+}
+
+// Direct implementation. The prost attributes will be directly
+// injected in it
+#[proto_message]
+pub struct Msg2 {
+	pub id: i32,
+	// In direct impls, enums are just integers
+	#[proto(enum_(TestEnum))]
+	pub enum_: i32,
+}
+
+// Generates the `ProxiedOneofProto` enum
+#[proto_oneof(proxied)]
+pub enum ProxiedOneof {
+	#[proto(string, tag = 1, into_proto = |v| v.as_ref().to_string())]
+	A(Arc<str>),
+	#[proto(tag = 2)]
+	B(u32),
+}
+
+impl Default for ProxiedOneofProto {
+	fn default() -> Self {
+		Self::B(1)
+	}
+}
+
+fn main() {
+	let msg = MsgProto::default();
+	// Using the `ProxiedMessage` trait
+	let proxy = msg.into_proxy();
+	// Using the `MessageProxy` trait
+	let msg_again = proxy.into_message();
+}
+```
+
+# Interacting With Databases
+
+An important benefit that comes from having a “rust-first” approach when defining our models is that they can easily be used for operations such as db queries, without needing to create separate structs to map to the generated protos, or injecting the attributes as plain text with the `prost-build` helper, which can be unergonomic and brittle.
+
+And with proxies, the interactions with a database becomes even easier, because we can have the proto-facing struct with a certain shape, while the proxy can represent the state of a message after its data has been mapped, for example, to an item queried from the database.
+
+You can take a look at the [test-server](https://github.com/Rick-Phoenix/protify/tree/main/test-server) crate in the repo for an example of database interaction in a `tonic` handler.
+
+```rust
+use diesel::prelude::*;
+use protify::proto_types::Timestamp;
+use protify::*;
+
+proto_package!(DB_TEST, name = "db_test", no_cel_test);
+define_proto_file!(DB_TEST_FILE, name = "db_test.proto", package = DB_TEST);
+
+mod schema {
+	diesel::table! {
+	  users {
+		id -> Integer,
+		name -> Text,
+		created_at -> Timestamp
+	  }
+	}
+}
+
+// If we want to use the message as is for the db model
+#[proto_message]
+#[derive(Queryable, Selectable, Insertable)]
+#[diesel(table_name = schema::users)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct User {
+	#[diesel(skip_insertion)]
+	pub id: i32,
+	pub name: String,
+	#[diesel(skip_insertion)]
+	// We need this to keep `Option` for this field
+	// which is necessary for protobuf
+	#[diesel(select_expression = schema::users::columns::created_at.nullable())]
+	#[proto(timestamp)]
+	pub created_at: Option<Timestamp>,
+}
+
+// If we want to use the proxy as the db model, for example
+// to avoid having `created_at` as `Option`
+#[proto_message(proxied)]
+#[derive(Queryable, Selectable, Insertable)]
+#[diesel(table_name = schema::users)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct ProxiedUser {
+	#[diesel(skip_insertion)]
+	pub id: i32,
+	pub name: String,
+	#[diesel(skip_insertion)]
+	#[proto(timestamp, from_proto = |v| v.unwrap_or_default())]
+	pub created_at: Timestamp,
+}
+
+fn main() {
+	use schema::users::dsl::*;
+
+	let conn = &mut SqliteConnection::establish(":memory:").unwrap();
+
+	let table_query = r"
+    CREATE TABLE users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+    ";
+
+	diesel::sql_query(table_query)
+		.execute(conn)
+		.expect("Failed to create the table");
+
+	let insert_user = User {
+		id: 0,
+		name: "Gandalf".to_string(),
+		created_at: None,
+	};
+
+	diesel::insert_into(users)
+		.values(&insert_user)
+		.execute(conn)
+		.expect("Failed to insert user");
+
+	let queried_user = users
+		.filter(id.eq(1))
+		.select(User::as_select())
+		.get_result(conn)
+		.expect("Failed to query user");
+
+	assert_eq!(queried_user.id, 1);
+	assert_eq!(queried_user.name, "Gandalf");
+	// The timestamp will be populated by the database upon insertion
+	assert_ne!(queried_user.created_at.unwrap(), Timestamp::default());
+
+	let proxied_user = ProxiedUser {
+		id: 0,
+		name: "Aragorn".to_string(),
+		created_at: Default::default(),
+	};
+
+	diesel::insert_into(users)
+		.values(&proxied_user)
+		.execute(conn)
+		.expect("Failed to insert user");
+
+	let queried_proxied_user = users
+		.filter(id.eq(2))
+		.select(ProxiedUser::as_select())
+		.get_result(conn)
+		.expect("Failed to query user");
+
+	assert_eq!(queried_proxied_user.id, 2);
+	assert_eq!(queried_proxied_user.name, "Aragorn");
+
+	// Now we have the message, with the `created_at` field populated
+	let msg = queried_proxied_user.into_message();
+
+	assert_ne!(msg.created_at.unwrap(), Timestamp::default());
+}
+```
+
+# Validating Content
+
+Whenever models or API contracts are defined and used, the need for validation follows close behind.
+
+Because of this, `protify` ships with a validation framework that integrates validation logic with schema definitions.
+
+The implementors of [`Validator`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html) hold two roles at the same time: on the one hand, they handle the validation logic on the rust side, and on the other hand, they can also produce a schema representation, so that their settings can be represented as options in a protobuf file, so that they can be ported between different applications.
+
+All the provided validators map their options to the [protovalidate](https://github.com/bufbuild/protovalidate) options, but you can also create customized validators that map to other custom options.
+
+Because every validator is type-safe and comes with an ergonomic builder methods to be built with, defining validators becomes a vastly superior experience than manual composition in protobuf files, where the process is repetitive, rigid, and lacking essential features of modern programming such as type safety and LSP integration, as well as programmatic composition.
+
+Validators can be assigned to oneofs/messages as a whole or to individual fields/variants to be incorporated in their validation logic.
+
+```rust
+use protify::*;
+use std::collections::HashMap;
+
+proto_package!(MY_PKG, name = "my_pkg");
+define_proto_file!(MY_FILE, name = "my_file.proto", package = MY_PKG);
+
+// We can define logic to programmatically compose validators
+fn prefix_validator(prefix: &'static str) -> StringValidator {
+	StringValidator::builder().prefix(prefix).build()
+}
+
+#[proto_message]
+// Top level validation using a CEL program
+#[proto(validate = |v| v.cel(cel_program!(id = "my_rule", msg = "oopsie", expr = "this.id == 50")))]
+pub struct MyMsg {
+	// Field validator
+	// Type-safe and lsp-friendly!
+	// The argument of the closure is the IntValidator builder,
+	// so we are going to get autocomplete suggestions
+	// for its specific methods.
+	#[proto(validate = |v| v.gt(0))]
+	pub id: i32,
+
+	// Repeated validator
+	#[proto(validate = |v| v.items(|i| i.gt(0)))]
+	pub repeated_nums: Vec<i32>,
+
+	// Map validator
+	#[proto(validate = |m| m.keys(|k| k.gt(0)).values(|v| v.min_len(5)))]
+	pub map_field: HashMap<i32, String>,
+
+	#[proto(oneof(tags(1, 2)))]
+	#[proto(validate = |v| v.required())]
+	pub oneof: Option<MyOneof>,
+}
+
+#[proto_oneof]
+pub enum MyOneof {
+	#[proto(tag = 1)]
+	// Same thing for oneof variants
+	#[proto(validate = |v| v.gt(0))]
+	A(i32),
+	// Multiple validators, including a programmatically built one!
+	#[proto(tag = 2, validate = [ |v| v.min_len(5), prefix_validator("abc") ])]
+	B(String),
+}
+```
+
+ℹ️ **NOTE**: Validators that are provided via closures will be cached in a Lazy struct (normally a [`LazyLock`](https://doc.rust-lang.org/stable/std/sync/lazy_lock/struct.LazyLock.html) or a wrapper for [`OnceBox`](https://docs.rs/once_cell/latest/once_cell/race/once_box/struct.OnceBox.html) in a no_std environment), so they are only initialized once (except for the [`OneofValidator`](https://docs.rs/protify/latest/protify/validators/oneof/struct.OneofValidator.html) which is small enough).
+
+## Custom Validators
+
+The [`Validator`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html) trait allows for the construction of custom validators.
+
+A validator can be a struct (stateful) or just a function, wrapped with the [`from_fn`](https://docs.rs/protify/latest/protify/validators/fn.from_fn.html) helper.
+
+Each validator only needs to implement a single method, [`execute_validation`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html#tymethod.execute_validation), which receives a [`ValidationCtx`](https://docs.rs/protify/latest/protify/validators/field_context/struct.ValidationCtx.html) and an [`Option`](https://doc.rust-lang.org/stable/core/option/enum.Option.html) of the target type. All the other methods are automatically derived.
+
+The [`schema`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html#tymethod.schema) and [`check_consistency`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html#tymethod.check_consistency) methods can be optionally implemented, as described later in this section and in the [`correctness`](https://docs.rs/protify/latest/protify/guide/correctness/) section.
+
+```rust
+use protify::*;
+
+proto_package!(MY_PKG, name = "my_pkg");
+define_proto_file!(MY_FILE, name = "my_file.proto", package = MY_PKG);
+
+// Function validator
+fn validate_number(ctx: &mut ValidationCtx, val: Option<&i32>) -> ValidationResult {
+	let mut is_valid = IsValid::Yes;
+
+	if val.is_none() {
+		// IsValid is a boolean-like enum, so it can be used with
+		// bit operators
+		is_valid &= ctx.add_required_violation(
+			// Optionally, we can provide a custom error message
+			Some("number must be set".to_string()),
+		)?; // Validators use `Result`s to handle `fail-fast` scenarios
+		// and trigger early exit
+	}
+
+	Ok(is_valid)
+}
+
+pub struct CustomValidator;
+
+// If a validator contains some heavy or complex logic,
+// it can be initialized once and then reused.
+// This is done by default for validators defined with closures in attributes.
+static CACHED_VALIDATOR: Lazy<CustomValidator> = Lazy::new(|| CustomValidator);
+
+impl Validator<MyMsg> for CustomValidator {
+	type Target = MyMsg;
+
+	fn execute_validation(
+		&self,
+		ctx: &mut ValidationCtx,
+		val: Option<&Self::Target>,
+	) -> ValidationResult {
+		validate_number(ctx, val.map(|v| &v.id))
+	}
+}
+
+#[proto_message]
+// Using the custom validators at the top level
+#[proto(validate = [ CustomValidator, *CACHED_VALIDATOR ])]
+pub struct MyMsg {
+	// Using a function validator
+	#[proto(validate = from_fn(validate_number))]
+	pub id: i32,
+
+	#[proto(oneof(tags(1, 2)))]
+	// Using a variety of closure and custom validators
+	#[proto(validate = [ |v| v.required(), CustomValidator, *CACHED_VALIDATOR ])]
+	pub oneof: Option<MyOneof>,
+}
+
+impl Validator<MyOneof> for CustomValidator {
+	type Target = MyOneof;
+
+	fn execute_validation(
+		&self,
+		ctx: &mut ValidationCtx,
+		val: Option<&Self::Target>,
+	) -> ValidationResult {
+		if let Some(oneof) = val
+			&& let MyOneof::A(int) = oneof
+		{
+			validate_number(ctx, Some(&int))
+		} else {
+			Ok(IsValid::Yes)
+		}
+	}
+}
+
+#[proto_oneof]
+// Same thing for oneofs
+#[proto(validate = [ CustomValidator, *CACHED_VALIDATOR ])]
+pub enum MyOneof {
+	#[proto(tag = 1, validate = from_fn(validate_number))]
+	A(i32),
+	#[proto(tag = 2)]
+	B(u32),
+}
+```
+
+You can have a look at the testing crates in the [repo](https://github.com/Rick-Phoenix/protify) for more complex examples of custom validator usage.
+
+## Customizing Error Messages
+
+In order to facilitate things like i18n, every provided validator allows for customization of the error messages, without requiring a whole custom validator to be designed purely for this purpose.
+
+Each builder features a method called `with_error_messages`, which accepts a [`BTreeMap`](https://doc.rust-lang.org/stable/alloc/collections/btree/map/struct.BTreeMap.html) that maps the violations that it may produce to error messages.
+
+```rust
+use protify::*;
+use protify::proto_types::{
+  protovalidate::violations_data::*,
+};
+use std::collections::BTreeMap;
+use maplit::btreemap;
+
+let validator = StringValidator::builder().min_len(3).with_error_messages({
+    let locale = std::env::var("LOCALE").unwrap_or("en/GB".to_string());
+    let error_message = if locale == "it/IT" {
+        "il nickname deve contenere almeno 3 caratteri"
+    } else {
+        "the nickname must be at least three characters long"
+    };
+
+    btreemap!{
+        StringViolation::MinLen => error_message
+    }
+}).build();
+
+let violations = validator.validate("a").unwrap_err().into_violations();
+
+assert_eq!(violations[0].message(), "the nickname must be at least three characters long");
+```
+
+## Schema Representation
+
+In order to make validation settings portable, each validator can optionally implement the [`schema`](https://docs.rs/protify/latest/protify/validators/trait.Validator.html#tymethod.schema) method, which outputs a [`ProtoOption`](https://docs.rs/protify/latest/protify/options/struct.ProtoOption.html) that will be added to the receiving message/oneof in the proto file.
+
+All default validators implement this method and output the options in the `protovalidate` format.
+
+```rust
+use indoc::indoc;
+use protify::*;
+
+proto_package!(MY_PKG, name = "my_pkg");
+define_proto_file!(MY_FILE, name = "my_file.proto", package = MY_PKG);
+
+#[proto_message]
+pub struct MyMsg {
+	#[proto(validate = |v| v.min_len(3).max_len(32))]
+	pub name: String,
+}
+
+fn main() {
+	let schema = MyMsg::proto_schema();
+
+	assert_eq!(
+		MyMsg::proto_schema().render_schema().unwrap(),
+		indoc! {"
+            message MyMsg {
+              string name = 1 [
+                (buf.validate.field) = {
+                  string: {
+                    min_len: 3,
+                    max_len: 32
+                  }
+                }
+              ];
+            }"
+		}
+	)
+}
+```
+
+## Protovalidate Support
+
+The best way to use protify is to define a schema from scratch using rust code. However, it is also possible to generate validators that are defined in pre-built proto files using the `protovalidate` syntax. You can learn more about this in the [reflection usage](https://docs.rs/protify/latest/protify/guide/reflection_usage/) section.
+
+# Feature Flags
+
+* **`tonic`** —  Enables direct conversion from validation errors to [`tonic::Status`](https://docs.rs/tonic/latest/tonic/status/struct.Status.html).
+* **`serde`** —  Enables serde for all schema representations.
+* **`inventory`** *(enabled by default)* —  Enables automatic collection for elements of a package. (Required `std`)
+* **`chrono`** *(enabled by default)* —  Enables timestamp `now` features in CEL and timestamp validation.
+* **`chrono-wasm`** —  Enables usage of wasmbind for chrono’s `now` methods.
+* **`std`** *(enabled by default)* —  Enables the std library features.
+* **`common-types`** —  Enables schema features for `google.type` types.
+* **`rpc-types`** —  Enables schema features for `google.rpc` types.
+* **`reflection`** —  Enables usage with reflection, to generate validation logic from pre-built protos with protovalidate annotations.
+* **`cel`** *(enabled by default)* —  Enables CEL validation.
+* **`regex`** *(enabled by default)* —  Enables regex-based validators.
+
+<!-- cargo-reedme: end -->

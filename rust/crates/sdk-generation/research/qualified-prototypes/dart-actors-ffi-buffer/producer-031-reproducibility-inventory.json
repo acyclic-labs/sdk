@@ -1,0 +1,99 @@
+{
+  "artifact": "actors-uniffi-dart-producer-031-reproducibility-inventory",
+  "capturedAt": "2026-10-07",
+  "producer": {
+    "id": "actors-uniffi-dart-ffibuffer-producer-031-20261007",
+    "workspace": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/workspace2",
+    "sourceAuthorityRevision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "domainSourceSha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "gitMetadata": "absent from producer snapshot; snapshot is dirty/uncommitted by construction",
+    "sourceInventory": {
+      "filesOutsideTarget": 28,
+      "aggregateSha256": "a0b5d37f186d39607af2b692bfa7dfb869f082faecade823b14564117995d96b"
+    },
+    "manifests": {
+      "Cargo.toml": {
+        "bytes": 4384,
+        "sha256": "7341BD3F2768C9D9337AE02276A32C31F742C00A8CB32EFF01435687A869825A"
+      },
+      "actors-uniffi/Cargo.toml": {
+        "bytes": 1011,
+        "sha256": "68E27D0EFD21BEDC41EA9EDDCEA451672BC4151D2620129AFECF47F53601D472"
+      },
+      "actors-uniffi/uniffi.toml": {
+        "bytes": 51,
+        "sha256": "950AB29CBC05E20643831B08A16FA5CABB99258FB4E0EACEA1FC78D54718B599"
+      }
+    },
+    "lockfiles": {
+      "Cargo.lock": {
+        "bytes": 81819,
+        "sha256": "9ECA86804D52B3AF30463F88B9F582D3B65D1ADCB92D74CD7C4BD60CFE04F890"
+      },
+      "actors-uniffi/Cargo.lock": {
+        "bytes": 81819,
+        "sha256": "B1E42E6BA03A535A25A1E369AE3BAAE1BCCB3789360D709229C67581FEE5AA11"
+      }
+    }
+  },
+  "installedDartPackage": {
+    "path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007",
+    "archive": "none; isolated directory probe, no published archive",
+    "pubspecSha256": "CEBB5F962B21A01919F0B9B4EF3FCAAA55AA618DB061F1C263A7FD0D2119E483",
+    "pubspecLockSha256": "B7A95295D42EF80157BCC09D6B6F511A1FC4DE7BECD5D0C543DA84D9105108BA",
+    "dartSdk": "3.7.0-209.1.beta",
+    "dependency": "ffi 2.1.3"
+  },
+  "artifactHashes": {
+    "producerDll": {
+      "path": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/workspace2/target/release/acyclic_actors_uniffi.dll",
+      "preQualification": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402",
+      "postQualification": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402"
+    },
+    "generatorPatch": {
+      "previousIteration": "DB405E12CE30D12090B0B4A84A6E2112703656693AF860CD5CAECAB5E371A873",
+      "qualified": "BAC0010C222B7178ED0F086BF1B566D4C01D411AAAC9055F928C42B8AFD28204"
+    },
+    "generatorExe": {
+      "previousIteration": "D0B0EFBFCC7CC84A2E0626477309BF53965576C656D4B0F80573D6F400600417",
+      "qualified": "D63E3655DEB9ACA761DC45A66A71D83CA3416CDE26A88E76D14A524654CC76DA"
+    },
+    "generatedDart": {
+      "path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007/generated-ffibuffer-producer-031-bigint4/acyclic_actors_uniffi.dart",
+      "qualified": "0F7EB32058AAF94B6365780F0A050CCCC1218290BF4FB2965E243E9818B82FA6"
+    }
+  },
+  "crossPlatformQualification": {
+    "windows": {
+      "status": "qualified-installed-probe",
+      "nativeArtifact": "Windows x86_64 DLL",
+      "evidence": "all eight remote operations, BigInt/error/presence, typed cancellation, server abort"
+    },
+    "wslLinux": {
+      "status": "source-qualified-only",
+      "environment": "Ubuntu WSL2; rustc 1.98.1; cargo 1.98.1",
+      "metadata": "cargo metadata --locked passed; 2 workspace members",
+      "tests": "cargo test --locked -p acyclic-actors --lib passed: 67",
+      "runtime": "not attempted: producer artifact is Windows DLL and no Linux .so was built"
+    },
+    "sshMacOS": {
+      "status": "unavailable",
+      "attempt": "ssh -o BatchMode=yes -o ConnectTimeout=10 macos",
+      "result": "Could not resolve hostname macos; no macOS qualification claim"
+    }
+  },
+  "requirements": {
+    "publicUInt64": "Dart BigInt",
+    "internalFFIUInt64": "signed int bit pattern",
+    "typedErrors": true,
+    "nullablePresence": true,
+    "inflightCancellationAndServerAbort": true
+  },
+  "hostCheckout": {
+    "root": "Q:/sdk",
+    "head": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "branch": "codex/workspace-tools-fs-boundary",
+    "dirtyEntries": 1142,
+    "interpretation": "host checkout was dirty and is not used as a clean producer commit; producer identity is the source-authority revision plus snapshot inventory"
+  }
+}

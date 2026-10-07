@@ -51,6 +51,22 @@ MSBuild consumer restores from the local feed and builds with zero warnings and
 errors; the package targets copy the native closure with SHA-256
 `A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241`.
 
+A separate cross-platform cohort is retained at the external package path
+`consumer/installed-cross-platform` and
+`feed-cross-platform/Acyclic.Actors.0.2.0.nupkg` (archive SHA-256
+`CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6`). It
+contains the same managed assembly and Windows native asset plus the Linux
+x64 native asset `libacyclic_actors_uniffi.so` (SHA-256
+`60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEEF2853F2BCE146AC258`). A
+clean external Linux net8.0 MSBuild consumer restored and built with zero
+warnings and errors, copied that `.so`, and ran all nine generated Actors
+methods successfully against a WSL-local fixture; the terminal evidence is
+`corrected-linux-msbuild.terminal.log` and `corrected-linux-runtime.terminal.log`.
+The Linux native library was built from this source revision with Rust
+1.98.1 and the consumer with task-local .NET SDK 8.0.425. The available
+`ivar` macOS host has Rust 1.96.0 and no .NET SDK, so no macOS package claim is
+made.
+
 The generated source and consumers are retained as qualification artifacts;
 no DLL, native binary, Cargo target, or managed build output is persisted in
 this primary research directory.

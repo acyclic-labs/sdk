@@ -22,7 +22,10 @@
       "bindgen/templates/TopLevelFunctionTemplate.cs",
       "bindgen/templates/macros.cs"
     ],
-    "excluded_untracked_staging": [".cargo-ok", "ObjectTemplate.cs.patch"]
+    "excluded_untracked_staging": [
+      ".cargo-ok",
+      "ObjectTemplate.cs.patch"
+    ]
   },
   "rust_input": {
     "foundation_revision": "371bb4170e16aca973176b6756a261ee5add7297",
@@ -68,5 +71,29 @@
       "compile": "EXPECTED FAIL; CS1729 (internal marker constructor is inaccessible externally)"
     }
   },
-  "retained_files": "SHA256SUMS.txt covers every file except receipt.json itself"
+  "retained_files": "SHA256SUMS.txt covers every file except receipt.json itself",
+  "external_package_qualification": {
+    "canonical_windows": {
+      "archive": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\feed\\Acyclic.Actors.0.2.0.nupkg",
+      "archive_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC",
+      "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+      "native_win_x64_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+      "external_net8_msbuild": "PASS; Windows SDK 8.0.425",
+      "all8": "PASS",
+      "cancellation": "PASS",
+      "negative_raw": "EXPECTED FAIL CS1729",
+      "negative_strong": "EXPECTED FAIL CS1503"
+    },
+    "cross_platform": {
+      "archive": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\feed-cross-platform\\Acyclic.Actors.0.2.0.nupkg",
+      "archive_sha256": "CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6",
+      "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+      "native_linux_x64_sha256": "60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEEF2853F2BCE146AC258",
+      "external_linux_msbuild": "PASS; WSL2 Ubuntu, .NET SDK 8.0.425, 0 warnings, 0 errors",
+      "runtime": "PASS; NUPKG_LINUX_X64_ALL8_RUNTIME=PASS",
+      "runtime_log": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-linux-runtime.terminal.log",
+      "rust_toolchain": "1.98.1",
+      "macos": "unqualified; ivar Rust 1.96.0 and no .NET SDK"
+    }
+  }
 }

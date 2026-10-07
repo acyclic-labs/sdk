@@ -271,7 +271,7 @@ fn fixed_docs_stage_binds_git_source_and_rejects_drift() {
     fs::create_dir_all(&rustdoc).unwrap();
     let fixture = json!({
         "root": 0,
-        "crate_version": null,
+        "crate_version": "0.2.0",
         "includes_private": false,
         "index": {
             "0": {"id": 0, "crate_id": 0, "name": "acyclic_actors", "span": null, "visibility": "public", "docs": null, "links": {}, "attrs": [], "deprecation": null, "stability": null, "const_stability": null, "inner": {"module": {"is_crate": true, "items": [1], "is_stripped": false}}},

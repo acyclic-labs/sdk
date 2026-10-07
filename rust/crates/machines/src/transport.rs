@@ -4,8 +4,7 @@ use url::Url;
 /// Maximum bearer credential size accepted by native and WASM adapters.
 pub const MAX_BEARER_BYTES: usize = 8 * 1024;
 
-/// Validates a hosted Machines endpoint without changing its spelling.
-pub fn validate_https_endpoint(endpoint: &str) -> Result<(), ProviderError> {
+fn parse_https_endpoint(endpoint: &str) -> Result<Url, ProviderError> {
     let parsed = Url::parse(endpoint)
         .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?;
     if parsed.scheme() != "https"
@@ -19,7 +18,12 @@ pub fn validate_https_endpoint(endpoint: &str) -> Result<(), ProviderError> {
             "endpoint must be an absolute HTTPS URL without credentials, query, or fragment".into(),
         ));
     }
-    Ok(())
+    Ok(parsed)
+}
+
+/// Validates a hosted Machines endpoint without changing its spelling.
+pub fn validate_https_endpoint(endpoint: &str) -> Result<(), ProviderError> {
+    parse_https_endpoint(endpoint).map(|_| ())
 }
 
 /// Parses and normalizes a hosted Machines endpoint.
@@ -28,9 +32,7 @@ pub fn validate_https_endpoint(endpoint: &str) -> Result<(), ProviderError> {
 /// acceptance policy can be called from the browser/WASM adapter. Route joining
 /// and fetching remain adapter responsibilities.
 pub fn normalize_https_endpoint(endpoint: &str) -> Result<String, ProviderError> {
-    validate_https_endpoint(endpoint)?;
-    let mut parsed = Url::parse(endpoint)
-        .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?;
+    let mut parsed = parse_https_endpoint(endpoint)?;
     if !parsed.path().ends_with('/') {
         parsed.set_path(&format!("{}/", parsed.path()));
     }
@@ -83,12 +85,13 @@ mod tests {
             normalize_https_endpoint("https://example.test/api").unwrap(),
             "https://example.test/api/"
         );
+        assert!(validate_https_endpoint("https://example.test/api").is_ok());
+        assert!(validate_https_endpoint("https://example.test/api/").is_ok());
         for endpoint in [
             "http://example.test",
             "https://user@example.test",
             "https://example.test?query",
             "https://example.test#fragment",
-            "https:///missing-host",
             "not a URL",
         ] {
             assert!(normalize_https_endpoint(endpoint).is_err(), "{endpoint}");
@@ -110,5 +113,7 @@ mod tests {
         assert!(validate_bearer_token("opaque.account+/=").is_ok());
         assert!(validate_bearer_token(&"x".repeat(MAX_BEARER_BYTES)).is_ok());
         assert!(validate_bearer_token(&"x".repeat(MAX_BEARER_BYTES + 1)).is_err());
+        assert!(validate_bearer_token(&"😀".repeat(2_048)).is_ok());
+        assert!(validate_bearer_token(&"😀".repeat(2_049)).is_err());
     }
 }

@@ -1,0 +1,326 @@
+{
+  "schema": 1,
+  "source_commit": "4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41",
+  "source_attestation_before": {
+    "path": "source-attestation-dirty-old-base.json",
+    "sha256": "a048e12f12a4e4c3586f352b123215dc68ce3025d9714791b59598ee72f5e9aa",
+    "source_commit": "4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41",
+    "source_state": "dirty",
+    "source_digest": "sha256:037f1c991acf0c9b79775d28ad0061068d951a5a4e95d1b0c16088b10a0498bf",
+    "file_count": 371
+  },
+  "source_attestation_after": {
+    "path": "source-attestation-dirty-old-base.json",
+    "sha256": "a048e12f12a4e4c3586f352b123215dc68ce3025d9714791b59598ee72f5e9aa",
+    "source_commit": "4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41",
+    "source_state": "dirty",
+    "source_digest": "sha256:037f1c991acf0c9b79775d28ad0061068d951a5a4e95d1b0c16088b10a0498bf",
+    "file_count": 371
+  },
+  "artifacts_before": [
+    {
+      "label": "package_archive",
+      "path": "acyclic-labs-fs-0.2.0.tgz",
+      "sha256": "0d29c4e2baf5d33f9cf11c070506a9f7618544f65808d137bb2ce02a64db5bec",
+      "bytes": 1952412
+    },
+    {
+      "label": "native_archive",
+      "path": "acyclic-fs-0.2.0-win32-x64.node.tgz",
+      "sha256": "092b18769c20f13e433604145847c90fab7419955f5f748bebb52d98a61e5454",
+      "bytes": 10164910
+    },
+    {
+      "label": "wasm_js",
+      "path": "acyclic_fs_wasm.js",
+      "sha256": "258200fe8ccd23eb897a47721b3c5978036c6db1964f1b0f2733e7a37b77c6b1",
+      "bytes": 155386
+    },
+    {
+      "label": "wasm_binary",
+      "path": "acyclic_fs_wasm_bg.wasm",
+      "sha256": "63242635057724d7a293773d00e724bedea429f76bcbc2d2f5e653cbd50972c8",
+      "bytes": 10069684
+    },
+    {
+      "label": "native_binding",
+      "path": "acyclic-fs-0.2.0-win32-x64.node",
+      "sha256": "40124fa4a95c31194214c46a45d12f84ba395f3fa0cd026099e41aaf40ee2df3",
+      "bytes": 42953728
+    }
+  ],
+  "artifacts_after": [
+    {
+      "label": "package_archive",
+      "path": "acyclic-labs-fs-0.2.0.tgz",
+      "sha256": "0d29c4e2baf5d33f9cf11c070506a9f7618544f65808d137bb2ce02a64db5bec",
+      "bytes": 1952412
+    },
+    {
+      "label": "native_archive",
+      "path": "acyclic-fs-0.2.0-win32-x64.node.tgz",
+      "sha256": "092b18769c20f13e433604145847c90fab7419955f5f748bebb52d98a61e5454",
+      "bytes": 10164910
+    },
+    {
+      "label": "wasm_js",
+      "path": "acyclic_fs_wasm.js",
+      "sha256": "258200fe8ccd23eb897a47721b3c5978036c6db1964f1b0f2733e7a37b77c6b1",
+      "bytes": 155386
+    },
+    {
+      "label": "wasm_binary",
+      "path": "acyclic_fs_wasm_bg.wasm",
+      "sha256": "63242635057724d7a293773d00e724bedea429f76bcbc2d2f5e653cbd50972c8",
+      "bytes": 10069684
+    },
+    {
+      "label": "native_binding",
+      "path": "acyclic-fs-0.2.0-win32-x64.node",
+      "sha256": "40124fa4a95c31194214c46a45d12f84ba395f3fa0cd026099e41aaf40ee2df3",
+      "bytes": 42953728
+    }
+  ],
+  "source_attestation": {
+    "path": "source-attestation-dirty-old-base.json",
+    "sha256": "a048e12f12a4e4c3586f352b123215dc68ce3025d9714791b59598ee72f5e9aa",
+    "source_commit": "4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41",
+    "source_state": "dirty",
+    "source_digest": "sha256:037f1c991acf0c9b79775d28ad0061068d951a5a4e95d1b0c16088b10a0498bf",
+    "file_count": 371
+  },
+  "package_archive": {
+    "path": "acyclic-labs-fs-0.2.0.tgz",
+    "sha256": "0d29c4e2baf5d33f9cf11c070506a9f7618544f65808d137bb2ce02a64db5bec",
+    "files": {
+      "wasm_js": {
+        "archive_entry": "package/generated/wasm/acyclic_fs_wasm.js",
+        "sha256": "258200fe8ccd23eb897a47721b3c5978036c6db1964f1b0f2733e7a37b77c6b1",
+        "bytes": 155386
+      },
+      "wasm_binary": {
+        "archive_entry": "package/generated/wasm/acyclic_fs_wasm_bg.wasm",
+        "sha256": "63242635057724d7a293773d00e724bedea429f76bcbc2d2f5e653cbd50972c8",
+        "bytes": 10069684
+      }
+    }
+  },
+  "native_archive": {
+    "path": "acyclic-fs-0.2.0-win32-x64.node.tgz",
+    "sha256": "092b18769c20f13e433604145847c90fab7419955f5f748bebb52d98a61e5454",
+    "binding": {
+      "archive_entry": "acyclic-fs-0.2.0-win32-x64.node",
+      "sha256": "40124fa4a95c31194214c46a45d12f84ba395f3fa0cd026099e41aaf40ee2df3",
+      "bytes": 42953728
+    }
+  },
+  "matrix_sha256": "cb96ae0aaac89cb52ebefaeabc5c793e746152ca0c1d3905a1ced26688c05b98",
+  "runtimes": [
+    {
+      "runtime": "wasm",
+      "artifacts": {
+        "js": {
+          "path": "generated/wasm/acyclic_fs_wasm.js",
+          "sha256": "258200fe8ccd23eb897a47721b3c5978036c6db1964f1b0f2733e7a37b77c6b1"
+        },
+        "wasm": {
+          "path": "generated/wasm/acyclic_fs_wasm_bg.wasm",
+          "sha256": "63242635057724d7a293773d00e724bedea429f76bcbc2d2f5e653cbd50972c8"
+        }
+      },
+      "results": [
+        {
+          "label": "zero",
+          "value": "0",
+          "outcome": "downstream:workspace join exceeds its configured bound"
+        },
+        {
+          "label": "one",
+          "value": "1",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "u32-max",
+          "value": "4294967295",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "negative",
+          "value": "-1",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-half",
+          "value": "0.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-one-and-half",
+          "value": "1.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "u32-overflow",
+          "value": "4294967296",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "nan",
+          "value": "NaN",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "infinity",
+          "value": "Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "negative-infinity",
+          "value": "-Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "null",
+          "value": "null",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "string-one",
+          "value": "\"1\"",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "true",
+          "value": "true",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "false",
+          "value": "false",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "undefined",
+          "value": "undefined",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "bigint-one",
+          "value": "1n",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "boxed-one",
+          "value": "new Number(1)",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "symbol-one",
+          "value": "Symbol(1)",
+          "outcome": "boundary_rejected"
+        }
+      ]
+    },
+    {
+      "runtime": "napi",
+      "artifacts": {
+        "binding": {
+          "path": "acyclic-fs-0.2.0-win32-x64.node",
+          "sha256": "40124fa4a95c31194214c46a45d12f84ba395f3fa0cd026099e41aaf40ee2df3"
+        }
+      },
+      "results": [
+        {
+          "label": "zero",
+          "value": "0",
+          "outcome": "downstream:workspace join exceeds its configured bound"
+        },
+        {
+          "label": "one",
+          "value": "1",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "u32-max",
+          "value": "4294967295",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "negative",
+          "value": "-1",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-half",
+          "value": "0.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-one-and-half",
+          "value": "1.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "u32-overflow",
+          "value": "4294967296",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "nan",
+          "value": "NaN",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "infinity",
+          "value": "Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "negative-infinity",
+          "value": "-Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "null",
+          "value": "null",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "string-one",
+          "value": "\"1\"",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "true",
+          "value": "true",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "false",
+          "value": "false",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "undefined",
+          "value": "undefined",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "bigint-one",
+          "value": "1n",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "boxed-one",
+          "value": "new Number(1)",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "symbol-one",
+          "value": "Symbol(1)",
+          "outcome": "boundary_rejected"
+        }
+      ]
+    }
+  ]
+}

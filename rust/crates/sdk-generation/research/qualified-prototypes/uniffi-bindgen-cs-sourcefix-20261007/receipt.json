@@ -43,7 +43,11 @@
     "stale_assembly_identity": "3b5ctbbe.re3",
     "stale_managed_sha256": "E42833C2D989C647C2302E47F20EB87B0CA8B2A01F22BC8634F1CC3F8E2B985B",
     "prior_archive_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0",
-    "terminal_logs": ["Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-probe.terminal.log", "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-negative.terminal.log", "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-artifact-identity.terminal.log"],
+    "terminal_logs": [
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-probe.terminal.log",
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-negative.terminal.log",
+      "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\corrected-artifact-identity.terminal.log"
+    ],
     "ordinary_all8": {
       "source": "managed/AllEightProgram.cs",
       "compile": "PASS",
@@ -72,7 +76,9 @@
     "assembly_version": "0.2.0.0",
     "assembly_mvid": "f825bea3-9d44-4f3c-a7a8-605fb59691a3",
     "assembly_informational_version": "0.2.0+rust-371bb4170e16",
-    "native_imports": ["acyclic_actors_uniffi"],
+    "native_imports": [
+      "acyclic_actors_uniffi"
+    ],
     "native_closure_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
     "fixtures": {
       "all8_endpoint": "https://localhost:55169",
@@ -100,7 +106,7 @@
       "build": "PASS; net8.0, 0 warnings, 0 errors",
       "managed_output_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
       "native_output_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
-      "platform_capability": "Windows SDK 8.0.425; WSL2 Ubuntu has no dotnet SDK/runtime installed; package native closure is win-x64 only"
+      "platform_capability": "Windows and WSL2 Ubuntu cohorts qualified with .NET SDK 8.0.425; Windows native closure is win-x64 and the cross-platform cohort adds Linux x64; macOS ivar was not qualified (Rust 1.96.0, no .NET SDK)."
     },
     "external_negative_msbuild": {
       "project": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\consumer\\negative-msbuild\\NegativeConsumer.csproj",
@@ -141,6 +147,51 @@
     "native_or_managed_build_outputs_persisted": false,
     "nuget_recipe": "repro-package/nuget/PACKAGE-RECIPE.md",
     "external_package_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json",
-    "external_nupkg_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC"
+    "external_nupkg_sha256": "5A50242B7317018E550EA908487BE8C27D2E1A72A070B139DEC361798F1F2FAC",
+    "cross_platform_external_nupkg_sha256": "CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6"
+  },
+  "cross_platform_cohort": {
+    "qualification_status": "fresh cross-platform extraction; distinct from the canonical Windows archive",
+    "extraction": "consumer/installed-cross-platform",
+    "archive": "feed-cross-platform/Acyclic.Actors.0.2.0.nupkg",
+    "archive_sha256": "CC94B745551B2236561A64DCCA3AC200AB9CCE6CB44AEB0B042CCA63197AECF6",
+    "managed_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+    "assembly_identity": "Acyclic.Actors",
+    "assembly_mvid": "f825bea3-9d44-4f3c-a7a8-605fb59691a3",
+    "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "generator_source_sha256": "1227BF526944F1C1FBDE38115C9FC4CC2EC01435FB9B4CFCBB8A9A16BF200734",
+    "native_assets": {
+      "win_x64": {
+        "path": "runtimes/win-x64/native/acyclic_actors_uniffi.dll",
+        "sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241"
+      },
+      "linux_x64": {
+        "path": "runtimes/linux-x64/native/libacyclic_actors_uniffi.so",
+        "sha256": "60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEEF2853F2BCE146AC258"
+      }
+    },
+    "external_msbuild": {
+      "project": "consumer/clean-msbuild-linux/CleanConsumerLinux.csproj",
+      "terminal_log": "corrected-linux-msbuild.terminal.log",
+      "restore": "PASS; local cross-platform feed only, package version 0.2.0",
+      "build": "PASS; net8.0 under task-local WSL .NET SDK 8.0.425, 0 warnings, 0 errors",
+      "managed_output_sha256": "0CFC7C771B3A5C152FBB95D9B47C130D61DC987754036DDAADEE1CD4ED2B8269",
+      "native_output_sha256": "60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEEF2853F2BCE146AC258",
+      "platform": "linux-x64 WSL2 Ubuntu"
+    },
+    "runtime": {
+      "project": "consumer/linux-runtime/LinuxRuntime.csproj",
+      "fixture": "WSL-local copy of pinned source fixture",
+      "fixture_options_sha256": "7f815ac42b231e894270b6b2d96fff9cd152649a1ea4769612146347af9c55a1",
+      "terminal_log": "corrected-linux-runtime.terminal.log",
+      "build": "PASS; net8.0, 0 warnings, 0 errors",
+      "result": "NUPKG_LINUX_X64_ALL8_RUNTIME=PASS; all nine generated Actors methods",
+      "rust_toolchain": "rustc 1.98.1",
+      "dotnet_sdk": "8.0.425"
+    },
+    "macos_capability": "Not qualified: ivar reports Darwin arm64, Rust 1.96.0, and no .NET SDK",
+    "producer_source": "foundation revision 371bb4170e16aca973176b6756a261ee5add7297 copied into WSL native filesystem",
+    "producer_command": "CARGO_TARGET_DIR=/tmp/acyclic-actors-uniffi-linux-target cargo build --manifest-path /tmp/acyclic-sdk-source/rust/crates/actors-uniffi/Cargo.toml --release --locked",
+    "producer_sha256": "60B22ED3000A996DB97EAF66B8C293649F7C895DFC35AEF2853F2BCE146AC258"
   }
 }

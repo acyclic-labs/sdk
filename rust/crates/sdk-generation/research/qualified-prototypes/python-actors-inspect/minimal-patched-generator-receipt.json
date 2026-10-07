@@ -102,6 +102,7 @@
       "source_inventory_sha256",
       "toolchain.uniffi_bindgen",
       "toolchain.uniffi_source_sha256",
+      "toolchain.python_patch_sha256",
       "artifacts.wheel.path",
       "artifacts.wheel.sha256",
       "artifacts.wheel.bytes"
@@ -147,8 +148,8 @@
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
-      "sha256": "E88CCF6F5BF5F05851506A7448CAE058D54439DE71490B29BABD2298C9208F8C",
-      "bytes": 8624
+      "sha256": "31D5DB668709E984FA02362E968AB60A9225101E4C87A19FF3315B92BE15D49A",
+      "bytes": 8742
     },
     "fixture": {
       "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",

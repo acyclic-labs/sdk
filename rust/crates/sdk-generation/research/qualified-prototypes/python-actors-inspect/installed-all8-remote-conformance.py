@@ -38,6 +38,7 @@ async def main():
             "source_inventory_sha256",
             "uniffi_bindgen",
             "uniffi_source_sha256",
+            "python_patch_sha256",
         )
         missing_manifest_fields = [
             field for field in required_manifest_fields if not producer_manifest.get(field)
@@ -81,8 +82,8 @@ async def main():
     )
     expected = fixture["expectedObservation"]
     for operation, request in (
-        ("create", create),
-        ("update", update),
+        ("create_actor", create),
+        ("update_actor", update),
         ("inspect_actor_request", inspect),
         ("add_subscription", add),
         ("remove_subscription", remove),
@@ -176,6 +177,7 @@ async def main():
             "toolchain": {
                 "uniffi_bindgen": producer_manifest["uniffi_bindgen"],
                 "uniffi_source_sha256": producer_manifest["uniffi_source_sha256"],
+                "python_patch_sha256": producer_manifest["python_patch_sha256"],
             },
         }
         # The language-package model consumes the artifact under its language

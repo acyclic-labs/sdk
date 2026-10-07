@@ -1,0 +1,16 @@
+[package]
+name = "rust-contract-derivation"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+prost = "=0.14.4"
+protify = { path = "vendor/protify-0.1.4", default-features = false, features = ["std"] }
+ts-rs = "=12.0.1"
+
+[patch.crates-io]
+protify-proc-macro = { path = "vendor/protify-proc-macro-0.1.4" }
+
+[workspace]
+

@@ -90,7 +90,10 @@ fn package_by_name<'a>(metadata: &'a Metadata, name: &str) -> Option<&'a Package
 
 /// Read the exact Cargo metadata used by a profile invocation.
 pub fn load_metadata(manifest: impl AsRef<Path>) -> Result<Metadata, ProfileError> {
-    MetadataCommand::new()
+    let mut command = MetadataCommand::new();
+    command.other_options(vec!["--locked".to_owned()]);
+    command
+        .no_deps()
         .manifest_path(manifest.as_ref())
         .exec()
         .map_err(|error| ProfileError::InvalidRustdoc(format!("cargo metadata failed: {error}")))
@@ -430,6 +433,21 @@ pub fn extract_owned_api(
     owner: &ApiOwner,
     profile: ProfileId,
 ) -> Result<Vec<OwnedApiItem>, ProfileError> {
+    let expected_crate_name = owner.rustdoc_package.replace('-', "_");
+    extract_owned_api_for_crate(path, owner, profile, &expected_crate_name)
+}
+
+/// Extract a receipt when the package's library target has a crate name that
+/// differs from its package name (for example the `acyclic-plugin` binary).
+/// The generator resolves this target name from Cargo metadata before calling
+/// this adapter, so ownership remains package exact while the Rustdoc root
+/// remains target exact.
+pub fn extract_owned_api_for_crate(
+    path: impl AsRef<Path>,
+    owner: &ApiOwner,
+    profile: ProfileId,
+    expected_crate_name: &str,
+) -> Result<Vec<OwnedApiItem>, ProfileError> {
     if profile.0.is_empty() {
         return Err(ProfileError::InvalidRustdoc(
             "binding API extraction requires a non-empty profile identity".to_owned(),
@@ -439,8 +457,7 @@ pub fn extract_owned_api(
     let root = receipt.index.get(&receipt.root).ok_or_else(|| {
         ProfileError::InvalidRustdoc("binding receipt root is absent from its index".to_owned())
     })?;
-    let expected_crate_name = owner.rustdoc_package.replace('-', "_");
-    if root.name.as_deref() != Some(expected_crate_name.as_str()) {
+    if root.name.as_deref() != Some(expected_crate_name) {
         return Err(ProfileError::InvalidRustdoc(format!(
             "binding receipt belongs to {:?}, expected {expected_crate_name}",
             root.name
@@ -617,19 +634,19 @@ pub fn project_into_docs(
     profiles: &BTreeMap<ProfileId, ProfileSpec>,
 ) -> Result<ProfileAvailability, ProfileError> {
     let mut lookup = BTreeMap::<(String, ProjectionKey), String>::new();
+    let mut signature_lookup = BTreeMap::<ProjectionKey, BTreeSet<String>>::new();
     for family in &data.families {
         for item in &family.items {
-            lookup.insert(
-                (
-                    family.crate_name.clone(),
-                    ProjectionKey {
-                        path: item.path.clone(),
-                        kind: item.kind.clone(),
-                        signature: item.signature.clone(),
-                    },
-                ),
-                item.id.clone(),
-            );
+            let key = ProjectionKey {
+                path: item.path.clone(),
+                kind: item.kind.clone(),
+                signature: item.signature.clone(),
+            };
+            lookup.insert((family.crate_name.clone(), key.clone()), item.id.clone());
+            signature_lookup
+                .entry(key)
+                .or_default()
+                .insert(item.id.clone());
         }
     }
 
@@ -673,7 +690,14 @@ pub fn project_into_docs(
             )));
         }
         let crate_name = item.rustdoc_package.replace('-', "_");
-        let Some(item_id) = lookup.get(&(crate_name, item.key.clone())) else {
+        let item_id = lookup
+            .get(&(crate_name, item.key.clone()))
+            .or_else(|| {
+                signature_lookup
+                    .get(&item.key)
+                    .and_then(|ids| (ids.len() == 1).then(|| ids.iter().next().unwrap()))
+            });
+        let Some(item_id) = item_id else {
             return Err(ProfileError::InvalidRustdoc(format!(
                 "profile item {} is absent from the generated docs catalog",
                 item.key.path

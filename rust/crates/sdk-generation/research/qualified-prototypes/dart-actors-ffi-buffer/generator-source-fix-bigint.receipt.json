@@ -1,6 +1,11 @@
 {
   "artifact": "maintained-uniffi-bindgen-dart-source-patch",
-  "upstream": {"repository": "https://github.com/nchapman/uniffi-bindgen-dart", "commit": "c2a2ee5", "tag": "v0.1.3", "uniffi_dependency": "0.31.0"},
+  "upstream": {
+    "repository": "https://github.com/nchapman/uniffi-bindgen-dart",
+    "commit": "c2a2ee5",
+    "tag": "v0.1.3",
+    "uniffi_dependency": "0.31.0"
+  },
   "source": "Q:/sdk/work/uniffi-bindgen-dart-013-source",
   "patch": {
     "path": "Q:/sdk/work/uniffi-bindgen-dart-013-source/generator-source-fix-bigint.patch",
@@ -8,21 +13,75 @@
     "scope": "source-only minimal patch; public UInt64 uses Dart BigInt while FFI bit-pattern carriers remain signed int; retained ffibuffer String/Bytes/status handling and opaque object binary support"
   },
   "verification": {
-    "rust_unit_tests": {"command": "CARGO_HOME=Q:/sdk/work/cargo-home-dart CARGO_TARGET_DIR=Q:/sdk/work/uniffi-bindgen-dart-013-source/target-local cargo test -p uniffi-bindgen-dart --lib", "passed": 225, "failed": 0},
-    "dart_analyzer": {"probe": "probe-dart-all8.dart", "result": "No issues found"},
-    "dart_static_negative": {"probe": "probe-dart-negative.dart", "result": "int arguments rejected for BigInt parameters with argument_type_not_assignable"},
-    "dart_local_runtime": {"probe": "probe-dart-local-final.dart", "result": "passed; max=18446744073709551615; checkpoint=18446744073709551615; typed semantic error and cancellation handle"},
-    "dart_installed_inflight": {"probe": "probe-dart-cancel-inflight.dart", "result": "passed; BindingErrorExceptionCancelled"},
-    "server_abort_log": {"path": "Q:/sdk/work/dart-cancel-server.log", "result": "RECEIVED then ABORTED"}
+    "rust_unit_tests": {
+      "command": "CARGO_HOME=Q:/sdk/work/cargo-home-dart CARGO_TARGET_DIR=Q:/sdk/work/uniffi-bindgen-dart-013-source/target-local cargo test -p uniffi-bindgen-dart --lib",
+      "passed": 225,
+      "failed": 0
+    },
+    "dart_analyzer": {
+      "probe": "probe-dart-all8.dart",
+      "result": "No issues found"
+    },
+    "dart_static_negative": {
+      "probe": "probe-dart-negative.dart",
+      "result": "int arguments rejected for BigInt parameters with argument_type_not_assignable"
+    },
+    "dart_local_runtime": {
+      "probe": "probe-dart-local-final.dart",
+      "result": "passed; max=18446744073709551615; checkpoint=18446744073709551615; typed semantic error and cancellation handle"
+    },
+    "dart_installed_inflight": {
+      "probe": "probe-dart-cancel-inflight.dart",
+      "result": "passed; BindingErrorExceptionCancelled"
+    },
+    "server_abort_log": {
+      "path": "Q:/sdk/work/dart-cancel-server.log",
+      "result": "RECEIVED then ABORTED"
+    }
   },
   "qualified_install": {
-    "generator_binary": {"path": "Q:/sdk/work/uniffi-bindgen-dart-013-source/target-local/debug/uniffi-bindgen-dart.exe", "sha256": "D63E3655DEB9ACA761DC45A66A71D83CA3416CDE26A88E76D14A524654CC76DA"},
-    "producer_dll": {"path": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/workspace2/target/release/acyclic_actors_uniffi.dll", "sha256": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402"},
-    "generated_dart": {"path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007/generated-ffibuffer-producer-031-bigint4/acyclic_actors_uniffi.dart", "sha256": "0F7EB32058AAF94B6365780F0A050CCCC1218290BF4FB2965E243E9818B82FA6"},
-    "remote_operations": ["createActor", "updateActor", "inspectActor", "addSubscription", "removeSubscription", "resumeSubscription", "checkpointActor", "invokeActor"],
+    "generator_binary": {
+      "path": "Q:/sdk/work/uniffi-bindgen-dart-013-source/target-local/debug/uniffi-bindgen-dart.exe",
+      "sha256": "D63E3655DEB9ACA761DC45A66A71D83CA3416CDE26A88E76D14A524654CC76DA"
+    },
+    "producer_dll": {
+      "path": "Q:/sdk/work/actors-uniffi-dart-ffibuffer-producer-031-20261007/workspace2/target/release/acyclic_actors_uniffi.dll",
+      "sha256": "9992DD6A21A276321AFD1C3CE9ADDCBC69E93675D4723CE4F5AFD8414FEDE402"
+    },
+    "generated_dart": {
+      "path": "Q:/sdk/work/actors-uniffi-dart-0322-current-20261007/generated-ffibuffer-producer-031-bigint4/acyclic_actors_uniffi.dart",
+      "sha256": "0F7EB32058AAF94B6365780F0A050CCCC1218290BF4FB2965E243E9818B82FA6"
+    },
+    "remote_operations": [
+      "createActor",
+      "updateActor",
+      "inspectActor",
+      "addSubscription",
+      "removeSubscription",
+      "resumeSubscription",
+      "checkpointActor",
+      "invokeActor"
+    ],
     "remote_result": "all eight reached the TLS conformance fixture; successful run printed PASS operation index=1..7 and InvokeActor completed with status 201/location",
-    "u64_presence": ["0", "2^63", "2^64-1", "nullable checkpoint presence"],
+    "u64_presence": [
+      "0",
+      "2^63",
+      "2^64-1",
+      "nullable checkpoint presence"
+    ],
     "typed_error": "invalid fixed bytes produced BindingErrorExceptionSemantic"
   },
-  "generated_surface_checks": ["record UInt64 fields render as BigInt", "plain and ffibuffer UInt64 returns lift through _uniffiU64ToBigInt", "public UInt64 args lower through _uniffiBigIntToU64", "optional presence remains nullable", "callback UInt64 args/returns cross the same BigInt boundary"]
+  "generated_surface_checks": [
+    "record UInt64 fields render as BigInt",
+    "plain and ffibuffer UInt64 returns lift through _uniffiU64ToBigInt",
+    "public UInt64 args lower through _uniffiBigIntToU64",
+    "optional presence remains nullable",
+    "callback UInt64 args/returns cross the same BigInt boundary"
+  ],
+  "reproducibilityInventory": "C:/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/dart-actors-ffi-buffer/producer-031-reproducibility-inventory.json",
+  "crossPlatform": {
+    "windows": "qualified-installed-probe",
+    "wslLinux": "source-qualified-only: cargo metadata --locked and 67 acyclic-actors lib tests passed; no Linux Dart runtime because producer is Windows DLL",
+    "sshMacOS": "unavailable: macos SSH alias did not resolve"
+  }
 }

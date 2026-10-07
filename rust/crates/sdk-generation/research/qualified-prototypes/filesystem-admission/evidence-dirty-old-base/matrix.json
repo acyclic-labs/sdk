@@ -1,0 +1,215 @@
+{
+  "schema": 1,
+  "source_commit": "4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41",
+  "source_state": "dirty",
+  "source_digest": "sha256:037f1c991acf0c9b79775d28ad0061068d951a5a4e95d1b0c16088b10a0498bf",
+  "matrix_sha256": "cb96ae0aaac89cb52ebefaeabc5c793e746152ca0c1d3905a1ced26688c05b98",
+  "runtimes": [
+    {
+      "runtime": "wasm",
+      "artifacts": {
+        "js": {
+          "path": "generated/wasm/acyclic_fs_wasm.js",
+          "sha256": "258200fe8ccd23eb897a47721b3c5978036c6db1964f1b0f2733e7a37b77c6b1"
+        },
+        "wasm": {
+          "path": "generated/wasm/acyclic_fs_wasm_bg.wasm",
+          "sha256": "63242635057724d7a293773d00e724bedea429f76bcbc2d2f5e653cbd50972c8"
+        }
+      },
+      "results": [
+        {
+          "label": "zero",
+          "value": "0",
+          "outcome": "downstream:workspace join exceeds its configured bound"
+        },
+        {
+          "label": "one",
+          "value": "1",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "u32-max",
+          "value": "4294967295",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "negative",
+          "value": "-1",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-half",
+          "value": "0.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-one-and-half",
+          "value": "1.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "u32-overflow",
+          "value": "4294967296",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "nan",
+          "value": "NaN",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "infinity",
+          "value": "Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "negative-infinity",
+          "value": "-Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "null",
+          "value": "null",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "string-one",
+          "value": "\"1\"",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "true",
+          "value": "true",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "false",
+          "value": "false",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "undefined",
+          "value": "undefined",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "bigint-one",
+          "value": "1n",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "boxed-one",
+          "value": "new Number(1)",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "symbol-one",
+          "value": "Symbol(1)",
+          "outcome": "boundary_rejected"
+        }
+      ]
+    },
+    {
+      "runtime": "napi",
+      "artifacts": {
+        "binding": {
+          "path": "acyclic-fs-0.2.0-win32-x64.node",
+          "sha256": "40124fa4a95c31194214c46a45d12f84ba395f3fa0cd026099e41aaf40ee2df3"
+        }
+      },
+      "results": [
+        {
+          "label": "zero",
+          "value": "0",
+          "outcome": "downstream:workspace join exceeds its configured bound"
+        },
+        {
+          "label": "one",
+          "value": "1",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "u32-max",
+          "value": "4294967295",
+          "outcome": "downstream:workspace is not a fork"
+        },
+        {
+          "label": "negative",
+          "value": "-1",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-half",
+          "value": "0.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "fractional-one-and-half",
+          "value": "1.5",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "u32-overflow",
+          "value": "4294967296",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "nan",
+          "value": "NaN",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "infinity",
+          "value": "Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "negative-infinity",
+          "value": "-Infinity",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "null",
+          "value": "null",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "string-one",
+          "value": "\"1\"",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "true",
+          "value": "true",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "false",
+          "value": "false",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "undefined",
+          "value": "undefined",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "bigint-one",
+          "value": "1n",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "boxed-one",
+          "value": "new Number(1)",
+          "outcome": "boundary_rejected"
+        },
+        {
+          "label": "symbol-one",
+          "value": "Symbol(1)",
+          "outcome": "boundary_rejected"
+        }
+      ]
+    }
+  ]
+}\n

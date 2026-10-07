@@ -564,9 +564,19 @@ if (
 ) {
   throw new Error("source checkout changed during qualification");
 }
+const receiptArtifacts = artifacts => artifacts.map(({ label, path, sha256, bytes }) => ({
+  label,
+  path: basename(path),
+  sha256,
+  bytes,
+}));
 const receipt = {
   schema: 1,
   source_commit: sourceCommit,
+  source_attestation_before: sourceBefore,
+  source_attestation_after: attestation,
+  artifacts_before: receiptArtifacts(artifactsBefore),
+  artifacts_after: receiptArtifacts(artifactsAfter),
   source_attestation: attestation,
   package_archive: {
     path: basename(archivePath),

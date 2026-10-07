@@ -91,9 +91,17 @@ cmake --build "$work/external-build" --config Release
 # after observing the server-side HTTP/2 abort.
 fixture_json="$work/fixture.json"
 fixture_ca="$work/fixture-ca.pem"
+# The checkout's pnpm junctions may point at another worktree. Copy only the
+# three runtime packages needed by the canonical Actors adapter into /tmp and
+# resolve them through the qualification loader.
+node_dep_root="$work/node-deps"
+mkdir -p "$node_dep_root/@bufbuild" "$node_dep_root/@connectrpc"
+cp -R "$root/node_modules/.bun/@bufbuild+protobuf@2.15.0/node_modules/@bufbuild/protobuf" "$node_dep_root/@bufbuild/"
+cp -R "$root/node_modules/.bun/@connectrpc+connect@2.1.1+432d72b9ceda49ac/node_modules/@connectrpc/connect" "$node_dep_root/@connectrpc/"
+cp -R "$root/node_modules/.bun/@connectrpc+connect-node@2.1.1+362e60f3a5b2a079/node_modules/@connectrpc/connect-node" "$node_dep_root/@connectrpc/"
 # Reuse the workspace target, offline, so Cargo can launch the already-built
 # conformance certificate without touching the registry while other jobs run.
-ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" \
+ACYCLIC_SDK_ROOT="$root" ACYCLIC_DEP_ROOT="$node_dep_root" ACYCLIC_CA_PATH="$fixture_ca" \
   NODE_OPTIONS="--experimental-loader=$cxx_path/consumer/qualification-loader.mjs" \
   RUSTUP_TOOLCHAIN=1.98.1 CARGO_TARGET_DIR="$root/target" CARGO_NET_OFFLINE=true \
   node "$cxx_path/consumer/live-cancel-fixture.mjs" >"$fixture_json" \
