@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,31 +11,13 @@ for (const [source, packaged] of packagedSourceCopies) {
   copyFileSync(join(root, source), destination);
 }
 
-for (const [relative, packaged] of packagedRustBindings) {
-  const source = join(root, "generated/rust", relative);
-  const destination = join(root, packaged);
-  if (!existsSync(source)) throw new Error(`Rust generation path is missing: ${relative}`);
-  const normalized = normalizeGeneratedRust(relative, readFileSync(source, "utf8"));
-  mkdirSync(dirname(destination), { recursive: true });
-  writeFileSync(source, normalized);
-  writeFileSync(destination, normalized);
-}
-
-// Every generated Rust file is kept normalized, packaged into a crate or not,
-// so the committed tree matches what check:generated regenerates.
+// Crates own the only copies of the Rust bindings they compile.
 const generatedRust = join(root, "generated/rust");
-const normalizeTree = directory => {
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      normalizeTree(path);
-    } else if (entry.name.endsWith(".rs")) {
-      const relative = path.slice(generatedRust.length + 1).replaceAll("\\", "/");
-      writeFileSync(path, normalizeGeneratedRust(relative, readFileSync(path, "utf8")));
-    }
-  }
-};
-normalizeTree(generatedRust);
+for (const [relative, packaged] of packagedRustBindings) {
+  const source = join(generatedRust, relative);
+  if (!existsSync(source)) throw new Error(`Rust generation path is missing: ${relative}`);
+  writeFileSync(join(root, packaged), normalizeGeneratedRust(relative, readFileSync(source, "utf8")));
+}
 
 // Buf's TypeScript output is an intermediate: packages own the only copies.
 const generatedTypeScript = join(root, "generated/typescript");
@@ -66,7 +48,8 @@ for (const [stem, packages] of packagedTypeScriptBindings) {
     }
   }
 }
-rmSync(generatedTypeScript, { recursive: true, force: true });
+// Both Buf output trees are intermediates; nothing under generated/ is committed.
+rmSync(join(root, "generated"), { recursive: true, force: true });
 
 const digest = path =>
   `sha256:${createHash("sha256").update(readFileSync(join(root, path))).digest("hex")}`;

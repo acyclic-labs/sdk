@@ -107,18 +107,16 @@ export const packagedSourceCopies = [
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
 
+// Objects and Machines compile their tonic glue only under the `grpc` feature.
+/** @type {Record<string, string | undefined>} */
+const grpcGatedRust = {
+  "acyclic/objects/v2/acyclic.objects.v2.rs": 'include!("acyclic.objects.v2.tonic.rs");',
+  "acyclic/machines/v1/acyclic.machines.v1.rs": 'include!("acyclic.machines.v1.tonic.rs");',
+};
 export const normalizeGeneratedRust = (relative, source) => {
-  let normalized = `${source.trimEnd()}\n`;
-  if (relative === "acyclic/objects/v1/acyclic.objects.v1.rs" ||
-      relative === "acyclic/objects/v2/acyclic.objects.v2.rs" ||
-      relative === "acyclic/machines/v1/acyclic.machines.v1.rs") {
-    const service = relative.includes("objects/v2") ? "acyclic.objects.v2" : relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
-    normalized = normalized.replace(
-      new RegExp(`(?:#\\[cfg\\(feature = "grpc"\\)\\]\\r?\\n)?include!\\("${service.replaceAll(".", "\\.")}\\.tonic\\.rs"\\);`),
-      `#[cfg(feature = "grpc")]\ninclude!("${service}.tonic.rs");`,
-    );
-  }
-  return normalized;
+  const normalized = `${source.trimEnd()}\n`;
+  const include = grpcGatedRust[relative];
+  return include ? normalized.replace(include, `#[cfg(feature = "grpc")]\n${include}`) : normalized;
 };
 
 export const normalizeGeneratedTypeScript = source => `${source.trimEnd()}\n`;
