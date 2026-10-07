@@ -34,10 +34,23 @@
     "sourcePatchApplied": "PASS: exact maintained-generator patch applies to pinned source commit",
     "sourceRebuild": "PASS: release generator rebuilt from patched source with rustc 1.98.1",
     "generatedAllEight": "PASS: generated ActorsClient exposes all eight operations with context.Context and cancel hooks",
-    "contextCancellation": "PENDING_EXTERNAL_GO_RUNTIME: generated helper calls cancel, waits ready, and maps RustCallStatus code 3; Go runtime unavailable in this host",
-    "serverAbortCleanupAuth": "PENDING_EXTERNAL_GO_RUNTIME",
-    "u64MaxAnd2Pow53": "PASS_STATIC: generated uint64 converters preserve full uint64 values; no float64 conversion",
-    "strongTypeNegatives": "PASS_STATIC: ActorId, CodeSha256, and PositiveU64 constructors retain typed error returns"
+    "contextCancellation": "PASS_RUNTIME: GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil; pending InspectActor released and fixture closed cleanly",
+    "serverAbortCleanupAuth": "PASS_RUNTIME: GO_SOURCE_REGENERATED_ALL8_PASS included an aborted TLS socket followed by authenticated InspectActor on the same client",
+    "u64MaxAnd2Pow53": "PASS_RUNTIME: GO_SOURCE_REGENERATED_ALL8_PASS cursor=9007199254740993 u64_max=18446744073709551615",
+    "strongTypeNegatives": "PASS_COMPILE: GO_STRONG_TYPE_NEGATIVES_PASS rejected ActorId int, CodeSha256 string, and PositiveU64 float64 at compile time"
+  },
+  "runtime": {
+    "go": "go1.25.1 linux/amd64",
+    "goArchiveSha256": "7716A0D940A0F6AE8E1F3B3F4F36299DC53E31B16840DBD171254312C41CA12E",
+    "goQualificationCommand": "CGO_CFLAGS=-I<generated-package> CGO_LDFLAGS=-L<native> go build/run",
+    "nativeSharedObjectSha256": "AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24",
+    "fixtureEndpoint": "https://localhost:55119",
+    "fixtureCaSha256": "35D7575DB0B2098D4C4E546475E4929B0D2FDBD99948F009569F28ABAC692064",
+    "fixtureTransport": "canonical Windows grpc-conformance-fixture via WSL TCP relay with localhost SNI",
+    "allEightTerminal": "probe/go-runtime-all8-terminal.txt sha256=9E0F51B1174595F2566183797C7C4A2D2903DDC1B439ED39AD3AB2DAC4891C08",
+    "contextTerminal": "probe/go-runtime-context-terminal.txt sha256=AF127DE3F6C9592C62A4F5711D34CF355502D95314BCA5D97D27EE9F107C64B8",
+    "strongNegativeTerminal": "probe/go-runtime-strong-negative-terminal.txt sha256=69AF96B67FCE0DB8AAA7F67028A256F5C955B9BBF7ED6ECABCEC05316FBA99E7",
+    "allEightProbeSourceSha256": "0ED67B6404C515D5A24E9C63E1327138ADA4F8761158DF3324F17B8D1E9317DC"
   },
   "fixture": {
     "server": "canonical grpc-conformance-fixture.mjs",
@@ -65,7 +78,6 @@
   },
   "limitations": [
     "Generated package was external research output; not copied into production.",
-    "The generated Go file includes the same shared status-code-3 mapping as the recorded source patch; a release rebuild should regenerate it before upstream use.",
-    "This receipt proves one current Actors InspectActor async call plus generic generated wrapper mechanics, not full all-eight semantic qualification."
+    "The generated Go file includes the shared status-code-3 mapping emitted by the recorded source patch; a release rebuild should regenerate it before upstream use."
   ]
 }

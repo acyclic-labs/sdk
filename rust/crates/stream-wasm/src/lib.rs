@@ -240,6 +240,7 @@ mod browser {
                 Either::Left((None, _)) | Either::Right((_, _)) => Ok(None),
             }
         }
+        /// WebAssembly binding fn for close.
         pub fn close(&self) {
             self.closed.send_replace(true);
         }
@@ -254,6 +255,7 @@ mod browser {
     #[wasm_bindgen]
     impl MemoryStreamBinding {
         #[wasm_bindgen(constructor)]
+        /// WebAssembly binding fn for new.
         pub fn new() -> Self {
             Self {
                 inner: MemoryStream::default(),

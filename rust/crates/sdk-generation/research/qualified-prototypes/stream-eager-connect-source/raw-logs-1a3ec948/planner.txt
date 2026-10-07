@@ -1,0 +1,26 @@
+✔ every lane names a known input set and a Blacksmith runner (1.2401ms)
+✔ root documentation changes reuse every lane (1.9182ms)
+✔ full qualification has a separate cache identity from the core gate (1.9247ms)
+✔ crate documentation reaches rustdoc and every lane (0.7789ms)
+✔ TypeScript sources execute only TypeScript-observing lanes (0.4795ms)
+✔ the filesystem package manifest reaches native binding lanes (0.3739ms)
+✔ unrelated workflows reach only policy and repository lanes (0.3591ms)
+✔ the qualification workflow reaches every lane (0.4212ms)
+✔ recorded lanes are reused with their retained artifact (0.3892ms)
+✔ full qualification rebuilds source-bound packages after a README-only change (0.574ms)
+✔ a lane whose artifact expired executes again (0.2042ms)
+✔ ordinary main pushes keep downstream qualification off the routine path (0.1694ms)
+✔ forced runs execute every lane (0.1347ms)
+✔ forced reusable release calls keep the full lane scope (0.208ms)
+✔ routine pull requests qualify only the core gate and policy lanes (0.1833ms)
+✔ release, manual, and scheduled events are full qualification events (0.143ms)
+✔ the workflow keeps full qualification off routine pull requests (4.8533ms)
+✔ the fast gate covers the Rust workspace and standalone docs crate (2.7316ms)
+ℹ tests 18
+ℹ suites 0
+ℹ pass 18
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 223.7933

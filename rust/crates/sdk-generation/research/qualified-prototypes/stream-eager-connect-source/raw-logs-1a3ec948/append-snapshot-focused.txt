@@ -1,0 +1,16 @@
+bun test v1.3.14 (0d9b296a)
+
+test\stream.test.ts:
+(pass) website Stream contract > allows a follow cursor exactly at the Rust tail and resumes after the next append [73.25ms]
+(pass) website Stream contract > appends, forks an exact prefix, and follows typed JSON [21.76ms]
+(pass) website Stream contract > keeps the complete committed prefix readable after later appends and a fork [9.91ms]
+(pass) website Stream contract > does not create a path when its first conditional append conflicts [2.83ms]
+(pass) website Stream contract > removes cancelled memory followers without waiting for a later append [3.88ms]
+(pass) website Stream contract > hosted append sends the bytes and key validated at call time [9.77ms]
+(pass) website Stream contract > default transport snapshots append inputs before delayed provider selection [3.02ms]
+
+ 7 pass
+ 48 filtered out
+ 0 fail
+ 16 expect() calls
+Ran 7 tests across 1 file. [472.00ms]

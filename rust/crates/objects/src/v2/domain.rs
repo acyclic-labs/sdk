@@ -961,7 +961,9 @@ impl TryFrom<wire::ListObjectsRequest> for ListObjectsRequest {
             bucket: BucketName::try_from(bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?,
             prefix: (!prefix.is_empty()).then_some(prefix),
             delimiter: (!delimiter.is_empty()).then_some(delimiter),
-            page_size: (page_size != 0).then(|| PageSize::new(page_size)).transpose()?,
+            page_size: (page_size != 0)
+                .then(|| PageSize::new(page_size))
+                .transpose()?,
             continuation_token: (!continuation_token.is_empty()).then_some(continuation_token),
         })
     }
@@ -1062,7 +1064,9 @@ impl TryFrom<wire::ListPartsRequest> for ListPartsRequest {
             after_part_number: (after_part_number != 0)
                 .then(|| PartNumber::new(after_part_number))
                 .transpose()?,
-            page_size: (page_size != 0).then(|| PageSize::new(page_size)).transpose()?,
+            page_size: (page_size != 0)
+                .then(|| PageSize::new(page_size))
+                .transpose()?,
         })
     }
 }
@@ -1288,8 +1292,7 @@ impl TryFrom<wire::GetObjectRequest> for GetObjectRequest {
             object_key: ObjectKey::from_validated(object_key),
             range: range.map(ByteSelection::try_from).transpose()?,
             if_match: (!if_match.is_empty()).then(|| Etag::from_validated(if_match)),
-            if_none_match: (!if_none_match.is_empty())
-                .then(|| Etag::from_validated(if_none_match)),
+            if_none_match: (!if_none_match.is_empty()).then(|| Etag::from_validated(if_none_match)),
         })
     }
 }
@@ -1381,8 +1384,7 @@ impl TryFrom<wire::HeadObjectRequest> for HeadObjectRequest {
             bucket,
             object_key: ObjectKey::from_validated(object_key),
             if_match: (!if_match.is_empty()).then(|| Etag::from_validated(if_match)),
-            if_none_match: (!if_none_match.is_empty())
-                .then(|| Etag::from_validated(if_none_match)),
+            if_none_match: (!if_none_match.is_empty()).then(|| Etag::from_validated(if_none_match)),
         })
     }
 }
@@ -1468,10 +1470,7 @@ impl TryFrom<wire::DeleteObjectRequest> for DeleteObjectRequest {
             .preconditions
             .map(Precondition::try_from)
             .transpose()?;
-        let mutation = value
-            .mutation
-            .map(IdempotencyKey::try_from)
-            .transpose()?;
+        let mutation = value.mutation.map(IdempotencyKey::try_from).transpose()?;
         Ok(Self {
             bucket,
             object_key,
@@ -1534,10 +1533,7 @@ impl TryFrom<wire::CreateBucketRequest> for CreateBucketRequest {
     fn try_from(value: wire::CreateBucketRequest) -> Result<Self, Self::Error> {
         request::create_bucket_digest(&value)?;
         let name = BucketName::try_from(value.name)?;
-        let mutation = value
-            .mutation
-            .map(IdempotencyKey::try_from)
-            .transpose()?;
+        let mutation = value.mutation.map(IdempotencyKey::try_from).transpose()?;
         Ok(Self { name, mutation })
     }
 }
@@ -1626,10 +1622,7 @@ impl TryFrom<wire::DeleteBucketRequest> for DeleteBucketRequest {
     fn try_from(value: wire::DeleteBucketRequest) -> Result<Self, Self::Error> {
         request::delete_bucket_digest(&value)?;
         let bucket = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
-        let mutation = value
-            .mutation
-            .map(IdempotencyKey::try_from)
-            .transpose()?;
+        let mutation = value.mutation.map(IdempotencyKey::try_from).transpose()?;
         Ok(Self { bucket, mutation })
     }
 }
@@ -1791,9 +1784,7 @@ impl ObjectInfo {
     /// Validates and owns one wire representation metadata response.
     pub fn try_from_wire(value: wire::ObjectInfo) -> Result<Self, Error> {
         response::object_info(&value)?;
-        let metadata = value
-            .metadata
-            .map(ObjectMetadata::from_validated);
+        let metadata = value.metadata.map(ObjectMetadata::from_validated);
         let last_modified = ValidatedTimestamp::from_validated(
             value
                 .last_modified
@@ -1873,9 +1864,7 @@ impl DownloadedObject {
         let content_range = match value.header.content_range {
             Some(range) => Some(ContentRange::try_from_wire(
                 range,
-                request
-                    .range()
-                    .ok_or_else(response::invalid)?,
+                request.range().ok_or_else(response::invalid)?,
                 value
                     .header
                     .object
@@ -1885,12 +1874,7 @@ impl DownloadedObject {
             )?),
             None => None,
         };
-        let info = ObjectInfo::try_from(
-            value
-                .header
-                .object
-                .ok_or_else(response::invalid)?,
-        )?;
+        let info = ObjectInfo::try_from(value.header.object.ok_or_else(response::invalid)?)?;
         Ok(Self {
             info,
             content_range,
@@ -1941,7 +1925,10 @@ impl ListObjectsPage {
             .into_iter()
             .map(|entry| {
                 let object = entry.object.ok_or_else(response::invalid)?;
-                Ok((ObjectKey::try_from(entry.object_key)?, ObjectInfo::try_from(object)?))
+                Ok((
+                    ObjectKey::try_from(entry.object_key)?,
+                    ObjectInfo::try_from(object)?,
+                ))
             })
             .collect::<Result<_, Error>>()?;
         Ok(Self {
@@ -2044,8 +2031,7 @@ impl ByteSelection {
 
     /// Constructs a nonzero suffix selection.
     pub fn suffix(length: u64) -> Result<Self, Error> {
-        let length = NonZeroU64::new(length)
-            .ok_or(wire::ErrorCode::RangeNotSatisfiable)?;
+        let length = NonZeroU64::new(length).ok_or(wire::ErrorCode::RangeNotSatisfiable)?;
         let selection = Self(ByteSelectionKind::Suffix(length));
         request::range(&Some(selection.to_wire()), u64::MAX)?;
         Ok(selection)
@@ -2188,19 +2174,14 @@ pub struct Bucket {
 
 impl Bucket {
     /// Validates a wire response against the bucket named by its request.
-    pub fn try_from_wire(
-        value: wire::Bucket,
-        expected: &BucketName,
-    ) -> Result<Self, Error> {
+    pub fn try_from_wire(value: wire::Bucket, expected: &BucketName) -> Result<Self, Error> {
         let expected_ref = wire::BucketRef {
             name: expected.as_str().to_owned(),
         };
         response::bucket(&value, &expected_ref)?;
         let name = BucketName::try_from(value.bucket.ok_or(wire::ErrorCode::InvalidArgument)?)?;
         let created_at = ValidatedTimestamp::try_from(
-            value
-                .created_at
-                .ok_or(wire::ErrorCode::InvalidArgument)?,
+            value.created_at.ok_or(wire::ErrorCode::InvalidArgument)?,
         )?;
         Ok(Self { name, created_at })
     }
@@ -2391,33 +2372,39 @@ mod tests {
 
     #[test]
     fn typed_object_requests_reject_invalid_wire_values() {
-        assert!(PutObjectHeader::try_from(wire::PutObjectHeader {
-            bucket: None,
-            object_key: "artifact".into(),
-            metadata: None,
-            preconditions: None,
-            mutation: None,
-        })
-        .is_err());
-        assert!(GetObjectRequest::try_from(wire::GetObjectRequest {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            object_key: "artifact".into(),
-            range: Some(wire::ByteRange { selection: None }),
-            if_match: String::new(),
-            if_none_match: String::new(),
-        })
-        .is_err());
-        assert!(HeadObjectRequest::try_from(wire::HeadObjectRequest {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            object_key: "artifact".into(),
-            if_match: "etag\0bad".into(),
-            if_none_match: String::new(),
-        })
-        .is_err());
+        assert!(
+            PutObjectHeader::try_from(wire::PutObjectHeader {
+                bucket: None,
+                object_key: "artifact".into(),
+                metadata: None,
+                preconditions: None,
+                mutation: None,
+            })
+            .is_err()
+        );
+        assert!(
+            GetObjectRequest::try_from(wire::GetObjectRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                object_key: "artifact".into(),
+                range: Some(wire::ByteRange { selection: None }),
+                if_match: String::new(),
+                if_none_match: String::new(),
+            })
+            .is_err()
+        );
+        assert!(
+            HeadObjectRequest::try_from(wire::HeadObjectRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                object_key: "artifact".into(),
+                if_match: "etag\0bad".into(),
+                if_none_match: String::new(),
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2460,36 +2447,44 @@ mod tests {
 
     #[test]
     fn typed_multipart_requests_reject_invalid_wire_values() {
-        assert!(CreateMultipartRequest::try_from(wire::CreateMultipartRequest {
-            bucket: None,
-            object_key: "artifact".into(),
-            metadata: None,
-            mutation: None,
-        })
-        .is_err());
-        assert!(UploadPartHeader::try_from(wire::UploadPartHeader {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            object_key: "artifact".into(),
-            upload_id: "upload-1".into(),
-            part_number: 0,
-            mutation: None,
-        })
-        .is_err());
-        assert!(AbortMultipartRequest::try_from(wire::AbortMultipartRequest {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            object_key: "artifact".into(),
-            upload_id: String::new(),
-            mutation: None,
-        })
-        .is_err());
-        assert!(MultipartUpload::try_from(wire::MultipartUpload {
-            upload_id: String::new(),
-        })
-        .is_err());
+        assert!(
+            CreateMultipartRequest::try_from(wire::CreateMultipartRequest {
+                bucket: None,
+                object_key: "artifact".into(),
+                metadata: None,
+                mutation: None,
+            })
+            .is_err()
+        );
+        assert!(
+            UploadPartHeader::try_from(wire::UploadPartHeader {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                object_key: "artifact".into(),
+                upload_id: "upload-1".into(),
+                part_number: 0,
+                mutation: None,
+            })
+            .is_err()
+        );
+        assert!(
+            AbortMultipartRequest::try_from(wire::AbortMultipartRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                object_key: "artifact".into(),
+                upload_id: String::new(),
+                mutation: None,
+            })
+            .is_err()
+        );
+        assert!(
+            MultipartUpload::try_from(wire::MultipartUpload {
+                upload_id: String::new(),
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2523,20 +2518,26 @@ mod tests {
         assert_eq!(wire.continuation_token, "opaque-token");
         assert_eq!(ListObjectsRequest::try_from(wire), Ok(request));
 
-        assert!(ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
-            .with_prefix("bad\0prefix")
-            .is_err());
-        assert!(ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
-            .with_continuation_token("x".repeat(8193))
-            .is_err());
-        assert!(ListObjectsRequest::try_from(wire::ListObjectsRequest {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            page_size: 1001,
-            ..Default::default()
-        })
-        .is_err());
+        assert!(
+            ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
+                .with_prefix("bad\0prefix")
+                .is_err()
+        );
+        assert!(
+            ListObjectsRequest::new(BucketName::try_from("customer.inputs").unwrap())
+                .with_continuation_token("x".repeat(8193))
+                .is_err()
+        );
+        assert!(
+            ListObjectsRequest::try_from(wire::ListObjectsRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                page_size: 1001,
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2552,7 +2553,10 @@ mod tests {
         let defaults_wire = wire::ListPartsRequest::from(defaults.clone());
         assert_eq!(defaults_wire.after_part_number, 0);
         assert_eq!(defaults_wire.page_size, 0);
-        assert_eq!(ListPartsRequest::try_from(defaults_wire), Ok(defaults.clone()));
+        assert_eq!(
+            ListPartsRequest::try_from(defaults_wire),
+            Ok(defaults.clone())
+        );
 
         let request = defaults
             .with_after_part_number(PartNumber::try_from(3).unwrap())
@@ -2562,16 +2566,18 @@ mod tests {
         assert_eq!(wire.page_size, 2);
         assert_eq!(ListPartsRequest::try_from(wire), Ok(request));
 
-        assert!(ListPartsRequest::try_from(wire::ListPartsRequest {
-            bucket: Some(wire::BucketRef {
-                name: "customer.inputs".into(),
-            }),
-            object_key: "artifact".into(),
-            upload_id: "upload-1".into(),
-            after_part_number: PartNumber::MAX + 1,
-            ..Default::default()
-        })
-        .is_err());
+        assert!(
+            ListPartsRequest::try_from(wire::ListPartsRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "customer.inputs".into(),
+                }),
+                object_key: "artifact".into(),
+                upload_id: "upload-1".into(),
+                after_part_number: PartNumber::MAX + 1,
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2591,15 +2597,11 @@ mod tests {
             8,
         )
         .unwrap();
-        let request = CompleteMultipartRequest::new(
-            bucket,
-            object_key,
-            upload_id,
-            vec![part_one, part_two],
-        )
-        .unwrap()
-        .with_precondition(Precondition::IfAbsent)
-        .with_idempotency_key(IdempotencyKey::try_from("complete-1").unwrap());
+        let request =
+            CompleteMultipartRequest::new(bucket, object_key, upload_id, vec![part_one, part_two])
+                .unwrap()
+                .with_precondition(Precondition::IfAbsent)
+                .with_idempotency_key(IdempotencyKey::try_from("complete-1").unwrap());
         let wire = wire::CompleteMultipartRequest::from(request.clone());
         assert_eq!(wire.parts.len(), 2);
         assert!(wire.preconditions.is_some());
@@ -2612,19 +2614,23 @@ mod tests {
             9,
         )
         .unwrap();
-        assert!(CompleteMultipartRequest::new(
-            BucketName::try_from("customer.inputs").unwrap(),
-            ObjectKey::try_from("artifact").unwrap(),
-            UploadId::try_from("upload-1").unwrap(),
-            vec![duplicate.clone(), duplicate],
-        )
-        .is_err());
-        assert!(CompletedPart::try_from(wire::UploadedPart {
-            part_number: 1,
-            etag: String::new(),
-            size: 1,
-        })
-        .is_err());
+        assert!(
+            CompleteMultipartRequest::new(
+                BucketName::try_from("customer.inputs").unwrap(),
+                ObjectKey::try_from("artifact").unwrap(),
+                UploadId::try_from("upload-1").unwrap(),
+                vec![duplicate.clone(), duplicate],
+            )
+            .is_err()
+        );
+        assert!(
+            CompletedPart::try_from(wire::UploadedPart {
+                part_number: 1,
+                etag: String::new(),
+                size: 1,
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2647,17 +2653,23 @@ mod tests {
 
     #[test]
     fn typed_bucket_requests_reject_invalid_wire_values() {
-        assert!(CreateBucketRequest::try_from(wire::CreateBucketRequest {
-            name: "UPPERCASE".into(),
-            mutation: None,
-        })
-        .is_err());
+        assert!(
+            CreateBucketRequest::try_from(wire::CreateBucketRequest {
+                name: "UPPERCASE".into(),
+                mutation: None,
+            })
+            .is_err()
+        );
         assert!(HeadBucketRequest::try_from(wire::HeadBucketRequest { bucket: None }).is_err());
-        assert!(DeleteBucketRequest::try_from(wire::DeleteBucketRequest {
-            bucket: Some(wire::BucketRef { name: "bad..name".into() }),
-            mutation: None,
-        })
-        .is_err());
+        assert!(
+            DeleteBucketRequest::try_from(wire::DeleteBucketRequest {
+                bucket: Some(wire::BucketRef {
+                    name: "bad..name".into()
+                }),
+                mutation: None,
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -2711,8 +2723,14 @@ mod tests {
         let info = ObjectInfo::try_from(wire.clone()).unwrap();
         assert_eq!(info.etag().as_str(), "etag-1");
         assert_eq!(info.size(), 42);
-        assert_eq!(info.metadata().map(ObjectMetadata::content_type), Some("application/octet-stream"));
-        assert_eq!(info.metadata().map(ObjectMetadata::expires_unix_seconds), Some(Some(1_700_000_000)));
+        assert_eq!(
+            info.metadata().map(ObjectMetadata::content_type),
+            Some("application/octet-stream")
+        );
+        assert_eq!(
+            info.metadata().map(ObjectMetadata::expires_unix_seconds),
+            Some(Some(1_700_000_000))
+        );
         assert_eq!(info.last_modified().seconds(), 1_700_000_000);
         assert_eq!(wire::ObjectInfo::from(info), wire);
 
@@ -2794,29 +2812,32 @@ mod tests {
             expected
         );
 
-        let mismatched = wire::ContentRange {
-            end: 4,
-            ..wire
-        };
+        let mismatched = wire::ContentRange { end: 4, ..wire };
         assert!(ContentRange::try_from_wire(mismatched, selection, 8).is_err());
     }
 
     #[test]
     fn validated_timestamp_rejects_noncanonical_values() {
-        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
-            seconds: -62_135_596_801,
-            nanos: 0,
-        })
-        .is_err());
-        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
-            seconds: 0,
-            nanos: -1,
-        })
-        .is_err());
-        assert!(ValidatedTimestamp::try_from(prost_types::Timestamp {
-            seconds: 0,
-            nanos: 1_000_000_000,
-        })
-        .is_err());
+        assert!(
+            ValidatedTimestamp::try_from(prost_types::Timestamp {
+                seconds: -62_135_596_801,
+                nanos: 0,
+            })
+            .is_err()
+        );
+        assert!(
+            ValidatedTimestamp::try_from(prost_types::Timestamp {
+                seconds: 0,
+                nanos: -1,
+            })
+            .is_err()
+        );
+        assert!(
+            ValidatedTimestamp::try_from(prost_types::Timestamp {
+                seconds: 0,
+                nanos: 1_000_000_000,
+            })
+            .is_err()
+        );
     }
 }

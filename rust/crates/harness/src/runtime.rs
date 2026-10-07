@@ -1819,20 +1819,19 @@ impl<O> RuntimeTask<O> {
     /// Live tasks have no durable scheduler history. Durable providers retain
     /// owner authentication; this wrapper validates their filtered cursor
     /// before exposing records to a binding.
-    pub async fn scheduler_events(
-        &self,
-        after_revision: u64,
-        limit: u32,
-    ) -> Result<TaskEventPage> {
+    pub async fn scheduler_events(&self, after_revision: u64, limit: u32) -> Result<TaskEventPage> {
         if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
-            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+            return Err(Error::Invalid(
+                "task event page limit is out of bounds".into(),
+            ));
         }
         let Self::Durable {
             task_id,
             operation_id,
             host,
             ..
-        } = self else {
+        } = self
+        else {
             return Err(Error::Unsupported(
                 "live task event replay is not durable".into(),
             ));
@@ -7970,7 +7969,9 @@ mod tests {
         let task_id = TaskId::from_bytes([31; 16]);
         let operation_id = OperationId::from_bytes([32; 16]);
 
-        let events = provider.scheduler_events_for(task_id, operation_id, 0, 1).await;
+        let events = provider
+            .scheduler_events_for(task_id, operation_id, 0, 1)
+            .await;
         assert!(matches!(
             events,
             Err(Error::Unsupported(message))
@@ -7990,7 +7991,9 @@ mod tests {
         ));
 
         let same_id = TaskId::from_bytes([33; 16]);
-        let delegated = provider.cancel_for(same_id, OperationId::from_bytes([33; 16])).await;
+        let delegated = provider
+            .cancel_for(same_id, OperationId::from_bytes([33; 16]))
+            .await;
         assert!(matches!(
             delegated,
             Err(Error::Unsupported(message)) if message == "state-only test provider"

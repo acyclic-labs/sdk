@@ -977,12 +977,8 @@ mod tests {
         assert_eq!(observation.crate_name, "acyclic_fs_wasm");
         assert_eq!(observation.crate_version.as_deref(), Some("0.2.0"));
         assert_eq!(observation.target, "wasm32-unknown-unknown");
-        let items = extract_owned_api(
-            path,
-            &owner,
-            ProfileId("wasm-binding-no-defaults".into()),
-        )
-        .unwrap();
+        let items =
+            extract_owned_api(path, &owner, ProfileId("wasm-binding-no-defaults".into())).unwrap();
         assert!(!items.is_empty());
         assert!(items.iter().all(|item| {
             item.rustdoc_package == "acyclic-fs-wasm" && item.published_owner == "acyclic-fs"

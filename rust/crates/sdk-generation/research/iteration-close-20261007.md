@@ -6,7 +6,7 @@ this loop.
 
 ## Authoritative state
 
-- Remote main after coordinator merge: 03bbf867c32ab61dfb262ab20fdf9d31a4e6dae1.
+- Remote main after PR261: 0324cb1fb55a2e902e42eebd853bf092f2fd148f.
   PR262 changes binding conversions, dependencies and generation scripts. Every
   pending port must preserve these fixes rather than overwrite newer main files.
 - Coordinator merged PR252, PR254 and PR258. PR258 merged at
@@ -19,11 +19,14 @@ this loop.
   transport and page-size checks now execute in Rust before custom providers;
   TypeScript retains thin error-class adapters and removes duplicate policy.
 - Verified remote WIP checkpoint refs before this update:
-  foundation 9de8af97151c3243c45b04c2eefb5b6f36584922;
-  Actors generation 5c4925ea96427e17efcf20ebeb50f70a9a7f73c1.
+  foundation 8a8f1fa8e2c20ca916dd6b2b3f2500c2c3c9ae43;
+  Actors generation 7e5c2fe42f6e7342da08d3a93e251f4db6cd0a12.
   These preserve source; they do not establish release qualification.
-- PR259 remote head 018ef828b8ecf6d98844791f3c218b2f0c85de46 lacks the latest
-  locally qualified fixes. It must not be merged in that state.
+- PR259 remote head 1a3ec9481b6d19722bbc23fbef1f34e52657b355 passed local
+  installed qualification and CI. Branch protection requires latest-main
+  ancestry. Clean signed integration ed2f7c5e0a9e588e6b7559ca1325f0b1d09caf0f
+  is saved remotely; source-bound package metadata is being refreshed before
+  the PR update. Stream source and closure inputs are unchanged by integration.
 - Filesystem checkpoint 9dd4261da162f6f28225e0c270ffdcb1379ac1c4 is remotely
   preserved but has old parent fd8272d97ffc20fea444e37f100e738d94e0dbc4.
   A current-main candidate and new source/artifact attestation remain required.

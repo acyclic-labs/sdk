@@ -32,6 +32,7 @@ tonic = { workspace = true, optional = true }
 tonic-prost = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 uuid.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 rcgen = "0.14.10"

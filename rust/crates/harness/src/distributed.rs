@@ -260,14 +260,13 @@ impl TaskEventPage {
             return Err(Error::Invalid("task event identity is empty".into()));
         }
         if requested_limit == 0 || requested_limit > MAX_TASK_EVENT_PAGE {
-            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+            return Err(Error::Invalid(
+                "task event page limit is out of bounds".into(),
+            ));
         }
         if self.after_revision != requested_after_revision
             || self.next_revision < self.after_revision
-            || self
-                .next_revision
-                .saturating_sub(self.after_revision)
-                > u64::from(requested_limit)
+            || self.next_revision.saturating_sub(self.after_revision) > u64::from(requested_limit)
             || self.events.len() > requested_limit as usize
         {
             return Err(Error::Conflict(
@@ -296,9 +295,7 @@ fn filter_task_event_page(
     task_id: OperationId,
     page: Vec<CommittedSchedulerEvent>,
 ) -> TaskEventPage {
-    let next_revision = page
-        .last()
-        .map_or(after_revision, |event| event.revision);
+    let next_revision = page.last().map_or(after_revision, |event| event.revision);
     let events = page
         .into_iter()
         .filter(|event| event.operation_id == task_id)
@@ -1710,12 +1707,16 @@ mod tests {
         assert_eq!(filtered.next_revision, 2);
         assert_eq!(filtered.events.len(), 1);
         assert_eq!(filtered.events[0].operation_id, operation_id);
-        assert!(read_task_event_page(&client, operation_id, 2, 0)
-            .await
-            .is_err());
-        assert!(read_task_event_page(&client, OperationId::from_bytes([0; 16]), 0, 1)
-            .await
-            .is_err());
+        assert!(
+            read_task_event_page(&client, operation_id, 2, 0)
+                .await
+                .is_err()
+        );
+        assert!(
+            read_task_event_page(&client, OperationId::from_bytes([0; 16]), 0, 1)
+                .await
+                .is_err()
+        );
         let next = read_coordinator_event_page(&client, 1, 1).await?;
         assert_eq!(next.len(), 1);
         assert!(next[0].committed_at_ms > page[0].committed_at_ms);

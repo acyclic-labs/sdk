@@ -16,6 +16,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, "run.mjs");
 const ROOT = execFileSync("git", ["-C", HERE, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 const COMMIT = execFileSync("git", ["-C", ROOT, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).trim();
+const CONSUMED_SOURCE = "rust/crates/filesystem/src/numeric.rs";
 
 const run = (arguments_, options = {}) => new Promise((resolveResult, reject) => {
   const child = spawn(process.execPath, [SCRIPT, ...arguments_], {
@@ -40,7 +41,12 @@ const writeManifest = async (manifestPath) => {
   ]);
   assert.equal(result.status, 0, result.output);
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-  assert.equal(manifest.file_count, 372, "the authoritative selector must cover the complete 372-file closure");
+  assert.equal(manifest.inventory_complete, true, "the source inventory must be complete");
+  assert.equal(manifest.file_count, manifest.files.length, "the manifest file count must match its inventory");
+  const paths = manifest.files.map(entry => entry.path);
+  assert.equal(new Set(paths).size, paths.length, "the source inventory must not contain duplicate paths");
+  assert.deepEqual(paths, [...paths].sort(), "the source inventory must be canonically sorted");
+  assert.match(manifest.source_digest, /^sha256:[0-9a-f]{64}$/);
   return manifest;
 };
 
@@ -116,6 +122,7 @@ function workspace() {
   return { async liveRebase(_base, value) {
     const invalid = typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > 4294967295;
     if (invalid) {
+      if (mode === "napi-type" && value === null) throw new Error("Failed to convert napi value Null into rust type " + String.fromCharCode(96) + "f64" + String.fromCharCode(96));
       if (mode === "unknown" && value === null) throw new Error("unknown: " + admission);
       throw new Error(admission);
     }
@@ -162,7 +169,10 @@ const selectedSourceLabel = "Cargo.toml";
   const selectedOriginal = await readFile(selectedSource);
   try {
     progress("write manifest");
-    await writeManifest(manifestPath);
+    const manifest = await writeManifest(manifestPath);
+    const repeatManifestPath = join(temporary, "source-attestation-repeat.json");
+    const repeatManifest = await writeManifest(repeatManifestPath);
+    assert.deepEqual(repeatManifest, manifest, "the source inventory and digest must be deterministic");
 
     progress("attestation");
     const valid = await run(attestationArgs(manifestPath));
@@ -175,11 +185,12 @@ const selectedSourceLabel = "Cargo.toml";
 
     progress("missing selector");
     const missingSelector = await withManifest(manifestPath, manifest => {
-      manifest.files.pop();
+      assert.ok(manifest.files.some(entry => entry.path === CONSUMED_SOURCE), `manifest must include ${CONSUMED_SOURCE}`);
+      manifest.files = manifest.files.filter(entry => entry.path !== CONSUMED_SOURCE);
       manifest.file_count -= 1;
     }, async () => await run(attestationArgs(manifestPath)));
     assert.notEqual(missingSelector.status, 0);
-    assert.match(missingSelector.output, /source manifest does not match required source selector; missing=/);
+    assert.match(missingSelector.output, /source manifest does not match required source selector; missing=.*rust\/crates\/filesystem\/src\/numeric\.rs/);
 
     progress("source mutation");
     const sourceMutation = await (async () => {
@@ -231,6 +242,16 @@ const selectedSourceLabel = "Cargo.toml";
       assert.match(result.output, /wasm accepted null: downstream:unknown: expected a finite integer in the u32 range/);
     } finally {
       await rm(unknown.fixture, { recursive: true, force: true });
+    }
+
+    progress("exact N-API decoder fixture");
+    const napiType = await makeFixture({ mode: "napi-type" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, napiType));
+      assert.equal(result.status, 0, result.output);
+      assert.ok(await readFile(napiType.receipt));
+    } finally {
+      await rm(napiType.fixture, { recursive: true, force: true });
     }
 
     progress("artifact mutation fixture");

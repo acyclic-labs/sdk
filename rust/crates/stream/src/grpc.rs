@@ -22,11 +22,11 @@ use tonic::{
 
 use crate::wire_codec;
 use crate::wire_codec::{
-    append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
-    commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
-    fork_receipt_wire, mutation_from_wire, mutation_wire, observation_from_wire, observation_wire,
-    optional_key, path, record, record_wire, checked_children_page, response_path,
-    validate_children_page_request,
+    append_outcome_from_wire, append_outcome_wire, checked_children_page, commit_id,
+    commit_outcome_from_wire, commit_outcome_wire, condition_from_wire, condition_wire,
+    envelope_from_wire, envelope_wire, fork_receipt_wire, mutation_from_wire, mutation_wire,
+    observation_from_wire, observation_wire, optional_key, path, record, record_wire,
+    response_path, validate_children_page_request,
 };
 use crate::{
     AppendOutcome, AppendRequest, Child, ChildStream, ChildrenPage, ChildrenPageRequest,
@@ -672,19 +672,22 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        checked_children_page(&request, ChildrenPage {
-            hierarchy_version: commit_id(&response.hierarchy_version)?,
-            children: response
-                .children
-                .into_iter()
-                .map(|child| {
-                    Ok(Child {
-                        path: response_path(child.path)?,
+        checked_children_page(
+            &request,
+            ChildrenPage {
+                hierarchy_version: commit_id(&response.hierarchy_version)?,
+                children: response
+                    .children
+                    .into_iter()
+                    .map(|child| {
+                        Ok(Child {
+                            path: response_path(child.path)?,
+                        })
                     })
-                })
-                .collect::<Result<_, StreamError>>()?,
-            next_after: response.next_after.map(response_path).transpose()?,
-        })
+                    .collect::<Result<_, StreamError>>()?,
+                next_after: response.next_after.map(response_path).transpose()?,
+            },
+        )
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -1138,11 +1141,7 @@ mod tests {
                 .map(|record| stream::once(async move { Ok(record) }).boxed())
                 .ok_or(StreamError::Unsupported)
         }
-        async fn follow(
-            &self,
-            _path: StreamPath,
-            _from: u64,
-        ) -> Result<RecordStream, StreamError> {
+        async fn follow(&self, _path: StreamPath, _from: u64) -> Result<RecordStream, StreamError> {
             Err(StreamError::Unsupported)
         }
         async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {
@@ -1152,9 +1151,7 @@ mod tests {
             &self,
             _request: ChildrenPageRequest,
         ) -> Result<ChildrenPage, StreamError> {
-            self.children_page
-                .clone()
-                .ok_or(StreamError::Unsupported)
+            self.children_page.clone().ok_or(StreamError::Unsupported)
         }
         async fn commit(&self, _request: CommitRequest) -> Result<CommitOutcome, StreamError> {
             Err(StreamError::Unsupported)
@@ -1293,10 +1290,7 @@ mod tests {
     #[tokio::test]
     async fn grpc_rejects_an_invalid_children_page_request_before_transport()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let transport = Client::from_channels(
-            Arc::from([unavailable_channel()]),
-            "fixture",
-        )?;
+        let transport = Client::from_channels(Arc::from([unavailable_channel()]), "fixture")?;
         assert_eq!(
             transport
                 .children_page(ChildrenPageRequest {

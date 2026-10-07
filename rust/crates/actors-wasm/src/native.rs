@@ -4,6 +4,7 @@
 //! endpoint, credential, TLS, and error handling stay identical for every
 //! Rust-owned facade.
 
+/// Native Actors client re-exported for the WebAssembly transport boundary.
 pub use acyclic_actors::client::{Client, ConnectError};
 
 /// Connect using the canonical authenticated native Actors client.

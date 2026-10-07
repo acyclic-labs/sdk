@@ -22,6 +22,7 @@ fn frames(value: &impl Message) -> js_sys::Array {
 }
 
 #[wasm_bindgen]
+/// WebAssembly binding fn for validate_objects_v2_request.
 pub fn validate_objects_v2_request(
     route: &str,
     bytes: &[u8],
@@ -30,6 +31,7 @@ pub fn validate_objects_v2_request(
     request::validate_binary(route, bytes, body_length).map_err(error)
 }
 #[wasm_bindgen]
+/// WebAssembly binding fn for encode_objects_v2_json.
 pub fn encode_objects_v2_json(
     name: &str,
     bytes: &[u8],
@@ -38,6 +40,7 @@ pub fn encode_objects_v2_json(
     json::encode_binary(name, bytes, maximum).map_err(error)
 }
 #[wasm_bindgen]
+/// WebAssembly binding fn for decode_objects_v2_json.
 pub fn decode_objects_v2_json(
     name: &str,
     bytes: &[u8],
@@ -46,6 +49,7 @@ pub fn decode_objects_v2_json(
     json::decode_binary(name, bytes, maximum).map_err(error)
 }
 #[wasm_bindgen]
+/// WebAssembly binding fn for objects_v2_http_type.
 pub fn objects_v2_http_type(route: &str, output: bool) -> Result<String, JsValue> {
     let (_, input, response) = acyclic_objects::v2::HTTP_ROUTES
         .iter()
@@ -54,6 +58,7 @@ pub fn objects_v2_http_type(route: &str, output: bool) -> Result<String, JsValue
     Ok(if output { *response } else { *input }.to_owned())
 }
 #[wasm_bindgen]
+/// WebAssembly binding fn for validate_objects_v2_response.
 pub fn validate_objects_v2_response(
     route: &str,
     query: &[u8],
@@ -63,6 +68,7 @@ pub fn validate_objects_v2_response(
     acyclic_objects::v2::response::validate_binary(route, query, bytes, body_length).map_err(error)
 }
 #[wasm_bindgen]
+/// WebAssembly binding fn for validate_objects_v2_get_header.
 pub fn validate_objects_v2_get_header(
     query: &[u8],
     bytes: &[u8],
@@ -72,12 +78,14 @@ pub fn validate_objects_v2_get_header(
 }
 
 #[wasm_bindgen]
+/// WebAssembly binding struct for ObjectsV2Memory.
 pub struct ObjectsV2Memory {
     inner: MemoryObjects,
 }
 #[wasm_bindgen]
 impl ObjectsV2Memory {
     #[wasm_bindgen(constructor)]
+    /// WebAssembly binding fn for new.
     pub fn new(maximum_bytes: u64, maximum_entries: usize) -> Result<Self, JsValue> {
         Ok(Self {
             inner: MemoryObjects::new(MemoryOptions {

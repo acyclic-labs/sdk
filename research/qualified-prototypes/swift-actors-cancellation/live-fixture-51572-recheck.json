@@ -1,0 +1,43 @@
+{
+  "qualification": "Swift maintained UniFFI 0.31 live fixture recheck",
+  "status": "REPRODUCED_all8_failure_microprobes_pass",
+  "recordedAt": "2026-10-07",
+  "fixture": {
+    "options": "Q:\\sdk\\work\\swift-actors-live-51572-options.json",
+    "endpoint": "https://localhost:51572",
+    "process": "node packages/actors/test/grpc-conformance-fixture-server.mjs",
+    "pidObserved": 29084,
+    "tlsOptionsRetrievedFromLivePeer": true
+  },
+  "knownClient": {
+    "language": "Python",
+    "module": "Q:\\sdk\\work\\actors-uniffi-python-A094-current-20261007\\acyclic_actors_uniffi.py",
+    "nativeDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "result": "PASS actor=actor-a checkpoint=9"
+  },
+  "swift": {
+    "generatedSwiftSha256": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B",
+    "generatedHeaderSha256": "A840ACE58A5D895D1E166A0F98311C2F71D90C7F53DC40DA6E56A918809D5578",
+    "loadedDllPath": "Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-generated-all8-current-20261007i-consumer\\Native\\windows-x86_64\\acyclic_actors_uniffi.dll",
+    "loadedDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "originalOrderExecutable": "Q:\\sdk\\work\\swift-original-order-51572-build\\out\\Products\\Debug-windows-x86_64\\ActorsConformanceConsumer.exe",
+    "originalOrderResult": "REPRODUCED grpcCode=13 detail=service rejected operation at first inspectActor; Swift runtime then reports corrupt metadata",
+    "constructorMicroprobes": {
+      "plain": "PASS",
+      "CodeSha256_only": "PASS",
+      "ActorLimits_only": "PASS",
+      "CodeSha256_then_ActorLimits": "PASS",
+      "ActorLimits_then_CodeSha256": "PASS",
+      "combined_explicit_reads": "PASS",
+      "same_helper_with_typed_requireObservation": "PASS"
+    },
+    "conclusion": "The original all8 failure is real and reproducible with the exact live endpoint and loaded A094 DLL, but isolated constructors and the equivalent minimal typed inspect call pass. This recheck does not prove constructor FFI memory corruption or justify reordering/drop changes."
+  },
+  "cancellation": {
+    "existingWindowsReceipt": "Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-generator-cancel-current-20261007i-receipt.json",
+    "existingWindowsResult": "PASS CancellationError; active 1 before cancel, active 0 and aborted incremented after",
+    "currentPendingOptions": "Q:\\sdk\\work\\root-pending-actors-fixture-options.json",
+    "currentPendingEndpointListening": false,
+    "macDylibExecutableOnWindows": false
+  }
+}

@@ -935,11 +935,7 @@ mod committed_envelope_tests {
         async fn read(&self, _request: ReadRequest) -> Result<RecordStream, StreamError> {
             Err(StreamError::Unsupported)
         }
-        async fn follow(
-            &self,
-            _path: StreamPath,
-            _from: u64,
-        ) -> Result<RecordStream, StreamError> {
+        async fn follow(&self, _path: StreamPath, _from: u64) -> Result<RecordStream, StreamError> {
             Err(StreamError::Unsupported)
         }
         async fn children(&self, _request: ChildrenRequest) -> Result<ChildStream, StreamError> {

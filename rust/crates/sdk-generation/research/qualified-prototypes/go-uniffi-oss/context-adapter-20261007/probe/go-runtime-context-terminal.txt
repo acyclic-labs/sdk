@@ -1,0 +1,3 @@
+GO_CURRENT_ACTORS_CONTEXT_CANCEL_PASS error=ErrBindingErrorCancelled manual_handle=nil endpoint=https://localhost:55119
+go version go1.25.1 linux/amd64
+fixture transport: pending InspectActor held by canonical fixture; context cancellation released the request and fixture closed cleanly

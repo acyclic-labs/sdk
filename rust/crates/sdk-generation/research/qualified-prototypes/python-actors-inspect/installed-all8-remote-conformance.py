@@ -21,9 +21,31 @@ async def main():
         Path(receipt_path).unlink(missing_ok=True)
     artifact_identity = None
     artifact_path = os.environ.get("ACYCLIC_ARTIFACT_PATH")
+    producer_manifest_path = os.environ.get("ACYCLIC_PRODUCER_MANIFEST")
+    producer_manifest = None
     if receipt_path:
         if not artifact_path:
             raise AssertionError("ACYCLIC_ARTIFACT_PATH is required when emitting a qualification receipt")
+        if not producer_manifest_path:
+            raise AssertionError(
+                "ACYCLIC_PRODUCER_MANIFEST is required when emitting a qualification receipt"
+            )
+        producer_manifest = json.loads(
+            Path(producer_manifest_path).read_text(encoding="utf-8")
+        )
+        required_manifest_fields = (
+            "source_revision",
+            "source_inventory_sha256",
+            "uniffi_bindgen",
+            "uniffi_source_sha256",
+        )
+        missing_manifest_fields = [
+            field for field in required_manifest_fields if not producer_manifest.get(field)
+        ]
+        if missing_manifest_fields:
+            raise AssertionError(
+                "producer manifest is missing: " + ", ".join(missing_manifest_fields)
+            )
         artifact = Path(artifact_path)
         artifact_identity = {
             "path": str(artifact),
@@ -149,8 +171,17 @@ async def main():
             "operations": operations,
             "checks": checks,
             "fixture_options_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
+            "source_revision": producer_manifest["source_revision"],
+            "source_inventory_sha256": producer_manifest["source_inventory_sha256"],
+            "toolchain": {
+                "uniffi_bindgen": producer_manifest["uniffi_bindgen"],
+                "uniffi_source_sha256": producer_manifest["uniffi_source_sha256"],
+            },
         }
-        receipt["artifact"] = artifact_identity
+        # The language-package model consumes the artifact under its language
+        # key.  Keep the producer's measured identity; never copy a caller's
+        # hash into a different output record.
+        receipt["artifacts"] = {"wheel": artifact_identity}
         Path(receipt_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print("Installed all-eight Python wheel remote conformance: PASS")
 

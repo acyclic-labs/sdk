@@ -90,6 +90,7 @@ tower = "0.5.3"
 tower-http = { version = "0.6.8", features = ["cors"] }
 unicode-normalization = "0.1.25"
 uuid = { version = "1.25.0", features = ["js", "serde", "v4", "v7"] }
+url = "2.5.8"
 zeroize = "1.8.2"
 wasm-bindgen = "=0.2.117"
 wasm-bindgen-futures = "0.4.67"

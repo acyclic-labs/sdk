@@ -1,0 +1,1 @@
+{"schema":"acyclic.stream.native-check.v1","status":"passed","output":"Q:\\sdk\\work\\stream-main-port\\typescript\\packages\\stream\\generated\\native"}

@@ -18,13 +18,15 @@
     },
     "patch": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/uniffi-python-typing.patch",
-      "sha256": "7D61A970CAF75CF684E6B5EEA4CEF46C60D0392F258CC8C78F19054853F763B3",
-      "bytes": 5628
+      "sha256": "E373C20E5BC88636118840F4AA19ADDAE14AD85B75FE6A4D0CDC48B57AF7D642",
+      "bytes": 7178
     },
     "changed_files": {
       "src/bindings/python/pipeline/types.rs": "D6435ECE1A9031BD7DA82D20FE6BB6B0AB7798744F2D5A0696C644F5D19F15F1",
       "src/bindings/python/pipeline/modules.rs": "68EED062E3B295E2258D0395B96A1612D6895B526F85F31A9DECBE9BE3A49C72",
-      "src/bindings/python/templates/EnumTemplate.py": "6DF470CE51EC90E457D3E7D39785432476536F646F92441CF4C9E0F017899217"
+      "src/bindings/python/templates/EnumTemplate.py": "860D0E44F7D47BA1EE5B3F18562D174A003A8629DFAACE16DFC3BD43B99C7551",
+      "src/bindings/python/templates/Async.py": "7866EFE6AB436733ED83AAE51C1D06CADAF21077F48BF35C4E8E86F32D0F7F74",
+      "src/bindings/python/templates/CallableBody.py": "49CC9989F34624991A95A8DD3C49D515D08ECDCD46459C566A735657B910E7CF"
     },
     "runner": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/run-uniffi-python-typing-patch.sh"
   },
@@ -52,10 +54,10 @@
   },
   "generated_outputs": {
     "python_module": {
-      "windows_path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\acyclic_actors_uniffi.py",
-      "linux_path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors_uniffi.py",
-      "sha256": "1BD8903E188767D88BB66E880FFB94D9B2896AD92E0BC9374EED9B7DFBB62FE0",
-      "bytes": 167761
+      "windows_path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-rerun2-20261007\\acyclic_actors_uniffi.py",
+      "linux_path": "Q:\\sdk\\work\\actors-uniffi-python-generator-linux-patched-rerun2-20261007\\acyclic_actors_uniffi.py",
+      "sha256": "20B3EEDB5FAD183ACED6DB4660B28B9738D16344B4DC652D37A3E90B47C0849A",
+      "bytes": 169322
     },
     "windows_native": {
       "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-wheel-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors_uniffi.dll",
@@ -73,14 +75,14 @@
       "bytes": 5122144
     },
     "windows_wheel": {
-      "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-wheel-20261007\\dist-patched\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
-      "sha256": "76BA00E4561C4425424562385962F9AD37EBDE724473BB28E5B1512A1E7D553B",
-      "bytes": 3016231
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-wheel-rerun2-20261007\\dist-rerun2\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+      "sha256": "4D59F1E5142BD45F64D3433294AD61D30476E4E2493D7F8442B785CA53F6DF98",
+      "bytes": 3016389
     },
     "linux_wheel": {
-      "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
-      "sha256": "447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761",
-      "bytes": 2302453
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-wheel-rerun2-20261007\\dist-rerun2\\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+      "sha256": "4FCBB057A56D24558F6C37AF31FFEF1D9B6BEAC04EA897DFBCBDB66327C16526",
+      "bytes": 2302612
     },
     "macos_wheel": {
       "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
@@ -96,16 +98,20 @@
       "operations",
       "checks",
       "fixture_options_sha256",
-      "artifact.path",
-      "artifact.sha256",
-      "artifact.bytes"
+      "source_revision",
+      "source_inventory_sha256",
+      "toolchain.uniffi_bindgen",
+      "toolchain.uniffi_source_sha256",
+      "artifacts.wheel.path",
+      "artifacts.wheel.sha256",
+      "artifacts.wheel.bytes"
     ],
     "typing": {
       "mypy": "1.17.1",
       "pyright": "1.1.404",
       "positive": {
         "mypy": "PASS",
-        "pyright": "FAIL: two constructor diagnostics for CURRENT_HEAD in all-fields-positive.py"
+        "pyright": "PASS: zero diagnostics"
       },
       "negative": {
         "mypy": "PASS: six deliberate invalid cases rejected",
@@ -113,22 +119,22 @@
       },
       "evidence": {
         "mypy_positive": {
-          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-positive.mypy.txt",
-          "sha256": "5D4B6D285B77932E3D08212C3B4974D0A803F98EC60408AC6CCF6A063FA6C19E",
-          "bytes": 42
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-rerun2-20261007\\all-fields-positive.mypy.txt",
+          "sha256": "A7EA75C2AD1C10D13A1C5D746B56C081FA2CD68B7196A5291E30F08D517791FA",
+          "bytes": 291
         },
         "mypy_negative": {
-          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-negative.mypy.txt",
-          "sha256": "5D4B6D285B77932E3D08212C3B4974D0A803F98EC60408AC6CCF6A063FA6C19E",
-          "bytes": 42
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-rerun2-20261007\\all-fields-negative.mypy.txt",
+          "sha256": "7EEDA13CCE59AEF3023AEBD53DAF0EC1124B1127FE2A80E4B2D6900B06D6815B",
+          "bytes": 473
         },
         "pyright_positive": {
-          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-positive.pyright.txt",
-          "sha256": "76CD247FB2EABF845221EC7612643471441276FA15A7FFA08E3F00D93A4A6D43",
-          "bytes": 614
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-rerun2-20261007\\all-fields-positive.pyright.txt",
+          "sha256": "6D88A1B220ADB7A3D62092B6E38431F0B3FE8BABE9864FAB90E5849766260332",
+          "bytes": 37
         },
         "pyright_negative": {
-          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\all-fields-negative.pyright.txt",
+          "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-rerun2-20261007\\all-fields-negative.pyright.txt",
           "sha256": "7495789D70CF323B0CBC68E8CF7C43760319997210AC25F9F69188CEEDA96E65",
           "bytes": 567
         }
@@ -141,8 +147,8 @@
     },
     "consumer_source": {
       "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
-      "sha256": "9CA06E9E9247DD16C4776F9FFB2D970A149E275A03896D26C83B9ECBC0FD2707",
-      "bytes": 4838
+      "sha256": "E88CCF6F5BF5F05851506A7448CAE058D54439DE71490B29BABD2298C9208F8C",
+      "bytes": 8624
     },
     "fixture": {
       "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",

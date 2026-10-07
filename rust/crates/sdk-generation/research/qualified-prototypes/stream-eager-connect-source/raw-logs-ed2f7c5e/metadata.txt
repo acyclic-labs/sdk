@@ -1,0 +1,1 @@
+{"source_revision":"ed2f7c5e0a9e588e6b7559ca1325f0b1d09caf0f","source_sha256":"sha256:f1cd7e8afe02172fd8dfeb340c5632f1a6e0684ccbbb79c50914eb27a5dcf72d","artifact_sha256":"sha256:55dfb24987637ffee791dcf5fcad0b5a89ab5fd8c2a51c584b7d11b6350a147f","artifact_bytes":5358080,"archive_sha256":"3755aff57297942591a60d69e8e9576530df079e6adb5af902dbb181700427d4"}

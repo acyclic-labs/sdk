@@ -1,0 +1,1 @@
+{"schema":"acyclic.stream.native.installed-connect-cancellation.v3","defaultEntry":"Stream.fromEnv","nativeGrpcAttempted":true,"stalledTlsAbortSettled":true,"acceptedSocketsClosed":true,"activeSocketCount":0,"elapsedMs":262,"socketClosedByAbort":true,"invalidBearerRejectedBeforeNetwork":true,"unhandledRejections":0}

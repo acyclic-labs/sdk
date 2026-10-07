@@ -26,8 +26,10 @@ macro_rules! define_http_routes {
 
             $(pub const $name: &str = $route;)+
 
+            /// WebAssembly binding const for ALL:.
             pub const ALL: &[&str] = &[$($name),+];
 
+            /// WebAssembly binding fn for canonical.
             pub fn canonical(value: &str) -> Result<&'static str, JsValue> {
                 ALL.iter()
                     .copied()
@@ -41,6 +43,7 @@ macro_rules! define_http_routes {
             js_name = httpRoutes,
             unchecked_return_type = "MachinesHttpRoutes"
         )]
+        /// WebAssembly binding fn for http_routes.
         pub fn http_routes() -> JsValue {
             let routes = js_sys::Object::new();
             $(js_sys::Reflect::set(
@@ -110,6 +113,7 @@ define_http_routes!(
     clippy::indexing_slicing,
     reason = "wasm-bindgen exports owned JavaScript strings and SHA-256 output is fixed-width"
 )]
+/// WebAssembly binding fn for normalize_identity.
 pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue> {
     if let Ok(parsed) = Uuid::parse_str(&value)
         && !parsed.is_nil()
@@ -140,6 +144,48 @@ pub fn http_route(
     #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
 ) -> Result<String, JsValue> {
     Ok(http_route::canonical(&route)?.to_owned())
+}
+
+/// Validates and normalizes a hosted HTTPS Machines endpoint using the shared
+/// Rust transport policy. URL construction for individual routes remains in
+/// the TypeScript fetch adapter.
+#[wasm_bindgen(js_name = normalizeEndpoint)]
+pub fn normalize_endpoint(
+    #[wasm_bindgen(unchecked_param_type = "string")] endpoint: String,
+) -> Result<String, JsValue> {
+    acyclic_machines::normalize_https_endpoint(&endpoint)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Validates one opaque bearer credential before the fetch adapter formats it.
+#[wasm_bindgen(js_name = validateBearerToken)]
+pub fn validate_bearer_token(
+    #[wasm_bindgen(unchecked_param_type = "string")] token: String,
+) -> Result<(), JsValue> {
+    acyclic_machines::validate_bearer_token(&token)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Validates the response bound using the same safe-number rule as DTO inputs.
+#[wasm_bindgen(js_name = validateMaximumResponseBytes)]
+pub fn validate_maximum_response_bytes(
+    #[wasm_bindgen(unchecked_param_type = "number")] maximum: JsValue,
+) -> Result<(), JsValue> {
+    let maximum = maximum
+        .as_f64()
+        .ok_or_else(|| JsValue::from_str("maximumResponseBytes must be a positive safe integer"))?;
+    if !public::is_safe_integer(maximum) || maximum <= 0.0 {
+        return Err(JsValue::from_str(
+            "maximumResponseBytes must be a positive safe integer",
+        ));
+    }
+    Ok(())
+}
+
+/// Validates one JavaScript number before it is used as a Rust u64 input.
+#[wasm_bindgen(js_name = validateSafeU64)]
+pub fn validate_safe_u64(value: JsValue) -> Result<(), JsValue> {
+    public::validate_safe_u64(value)
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical
@@ -390,6 +436,7 @@ impl WasmSimulatedMachines {
         clippy::needless_pass_by_value,
         reason = "wasm-bindgen exports owned JavaScript strings"
     )]
+    /// WebAssembly binding fn for validate_http_response.
     pub fn validate_http_response(
         #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
         response_json: String,
@@ -408,6 +455,7 @@ impl WasmSimulatedMachines {
         clippy::needless_pass_by_value,
         reason = "wasm-bindgen exports owned JavaScript strings"
     )]
+    /// WebAssembly binding fn for decode_http_response.
     pub fn decode_http_response(
         #[wasm_bindgen(unchecked_param_type = "MachinesHttpRoute")] route: String,
         response_json: String,

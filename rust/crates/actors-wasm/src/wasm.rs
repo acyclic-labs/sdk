@@ -95,6 +95,7 @@ fn validate_add(request: &wire::AddSubscriptionRequest) -> Result<(), JsValue> {
     js_name = ActorId,
     unchecked_return_type = "ActorId"
 )]
+/// WebAssembly binding fn for actor_id.
 pub fn actor_id(
     #[wasm_bindgen(unchecked_param_type = "string")] value: String,
 ) -> Result<String, JsValue> {
@@ -109,6 +110,7 @@ pub fn actor_id(
     js_name = CodeSha256,
     unchecked_return_type = "CodeSha256"
 )]
+/// WebAssembly binding fn for code_sha256.
 pub fn code_sha256(
     #[wasm_bindgen(unchecked_param_type = "Uint8Array")] value: JsValue,
 ) -> Result<JsValue, JsValue> {
@@ -124,6 +126,7 @@ pub fn code_sha256(
     js_name = PositiveU64,
     unchecked_return_type = "PositiveU64"
 )]
+/// WebAssembly binding fn for positive_u64.
 pub fn positive_u64(
     #[wasm_bindgen(unchecked_param_type = "bigint")] value: JsValue,
 ) -> Result<JsValue, JsValue> {
@@ -277,16 +280,19 @@ pub struct CancellationHandle {
 #[wasm_bindgen]
 impl CancellationHandle {
     #[wasm_bindgen(constructor)]
+    /// WebAssembly binding fn for new.
     pub fn new() -> Self {
         Self {
             token: CancellationToken::new(),
         }
     }
 
+    /// WebAssembly binding fn for cancel.
     pub fn cancel(&self) {
         self.token.cancel();
     }
 
+    /// WebAssembly binding fn for cancelled.
     pub fn cancelled(&self) -> bool {
         self.token.is_cancelled()
     }
@@ -353,16 +359,19 @@ impl ActorsClient {
     }
 
     #[wasm_bindgen(js_name = validateCreateActor)]
+    /// WebAssembly binding fn for validate_create_actor.
     pub fn validate_create_actor(request: JsValue) -> Result<(), JsValue> {
         validate_create(&decode(&request_bytes(request)?)?)
     }
 
     #[wasm_bindgen(js_name = validateUpdateActor)]
+    /// WebAssembly binding fn for validate_update_actor.
     pub fn validate_update_actor(request: JsValue) -> Result<(), JsValue> {
         validate_update(&decode(&request_bytes(request)?)?)
     }
 
     #[wasm_bindgen(js_name = validateAddSubscription)]
+    /// WebAssembly binding fn for validate_add_subscription.
     pub fn validate_add_subscription(request: JsValue) -> Result<(), JsValue> {
         validate_add(&decode(&request_bytes(request)?)?)
     }
@@ -371,7 +380,8 @@ impl ActorsClient {
     pub async fn create_actor(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CreateActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::CreateActorRequest::try_from(request)
@@ -388,7 +398,8 @@ impl ActorsClient {
     pub async fn update_actor(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::UpdateActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::UpdateActorRequest::try_from(request)
@@ -405,7 +416,8 @@ impl ActorsClient {
     pub async fn inspect_actor(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InspectActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::InspectActorRequest::try_from(request)
@@ -422,7 +434,8 @@ impl ActorsClient {
     pub async fn add_subscription(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::AddSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::AddSubscriptionRequest::try_from(request)
@@ -439,7 +452,8 @@ impl ActorsClient {
     pub async fn remove_subscription(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::RemoveSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::RemoveSubscriptionRequest::try_from(request)
@@ -456,7 +470,8 @@ impl ActorsClient {
     pub async fn resume_subscription(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::ResumeSubscriptionRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::ResumeSubscriptionRequest::try_from(request)
@@ -473,7 +488,8 @@ impl ActorsClient {
     pub async fn checkpoint_actor(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::CheckpointActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::CheckpointActorRequest::try_from(request)
@@ -490,7 +506,8 @@ impl ActorsClient {
     pub async fn invoke_actor(
         &self,
         #[wasm_bindgen(unchecked_param_type = "ActorsWireBytes")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")] cancellation: &CancellationHandle,
+        #[wasm_bindgen(unchecked_param_type = "CancellationHandle")]
+        cancellation: &CancellationHandle,
     ) -> Result<JsValue, JsValue> {
         let request = decode::<wire::InvokeActorRequest>(&request_bytes(request)?)?;
         let request = acyclic_actors::domain::InvokeActorRequest::try_from(request)

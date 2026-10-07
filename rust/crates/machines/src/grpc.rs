@@ -26,11 +26,8 @@ struct BearerAuth(Option<MetadataValue<Ascii>>);
 
 impl BearerAuth {
     fn new(token: &str) -> Result<Self, ProviderError> {
-        if token.trim().is_empty() {
-            return Err(ProviderError::Invalid(
-                "invalid Machines bearer credential".into(),
-            ));
-        }
+        crate::validate_bearer_token(token)
+            .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))?;
         let mut value: MetadataValue<Ascii> = format!("Bearer {token}")
             .parse()
             .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))?;
@@ -142,11 +139,7 @@ impl Machines {
         tls: Tls<'_>,
         auth: BearerAuth,
     ) -> Result<Self, ProviderError> {
-        if !uri.starts_with("https://") {
-            return Err(ProviderError::Invalid(
-                "remote Machines endpoint must use https".into(),
-            ));
-        }
+        crate::validate_https_endpoint(uri)?;
         let endpoint = TonicEndpoint::from_shared(uri.to_owned())
             .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
             .connect_timeout(CONNECT_TIMEOUT)

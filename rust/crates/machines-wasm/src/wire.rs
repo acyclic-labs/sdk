@@ -223,6 +223,7 @@ fn event(value: &domain::MachineEvent) -> wire::MachineEvent {
     }
 }
 
+/// WebAssembly binding fn for qualification.
 pub fn qualification(value: ImageQualification) -> Vec<u8> {
     wire::ImageQualification {
         image: Some(image(&value.image)),
@@ -232,10 +233,12 @@ pub fn qualification(value: ImageQualification) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// WebAssembly binding fn for machine.
 pub fn machine(value: MachineObservation) -> Result<Vec<u8>, ProviderError> {
     Ok(machine_state(&value)?.encode_to_vec())
 }
 
+/// WebAssembly binding fn for machines.
 pub fn machines(value: domain::MachinePage) -> Result<Vec<u8>, ProviderError> {
     Ok(wire::MachinePage {
         machines: value
@@ -248,10 +251,12 @@ pub fn machines(value: domain::MachinePage) -> Result<Vec<u8>, ProviderError> {
     .encode_to_vec())
 }
 
+/// WebAssembly binding fn for checkpoint.
 pub fn checkpoint(value: CheckpointObservation) -> Result<Vec<u8>, ProviderError> {
     Ok(checkpoint_state(&value)?.encode_to_vec())
 }
 
+/// WebAssembly binding fn for mutation.
 pub fn mutation(value: MutationOutcome) -> Result<Vec<u8>, ProviderError> {
     use wire::mutation_outcome::Result as Outcome;
     let result = match value {
@@ -294,6 +299,7 @@ pub fn mutation(value: MutationOutcome) -> Result<Vec<u8>, ProviderError> {
     .encode_to_vec())
 }
 
+/// WebAssembly binding fn for events.
 pub fn events(value: domain::EventPage) -> Vec<u8> {
     wire::EventPage {
         events: value.events.iter().map(event).collect(),
@@ -306,6 +312,7 @@ pub fn events(value: domain::EventPage) -> Vec<u8> {
     deprecated,
     reason = "v1 protobuf requires the zero-valued wire tombstone"
 )]
+/// WebAssembly binding fn for usage.
 pub fn usage(value: UsageReceipt) -> Vec<u8> {
     wire::UsageReceipt {
         machine: Some(machine_id(value.machine)),
@@ -322,10 +329,12 @@ pub fn usage(value: UsageReceipt) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// WebAssembly binding fn for operation.
 pub fn operation(value: OperationObservation) -> Vec<u8> {
     operation_state(value).encode_to_vec()
 }
 
+/// WebAssembly binding fn for operations.
 pub fn operations(values: Vec<OperationObservation>) -> Vec<u8> {
     wire::OperationPage {
         operations: values.into_iter().map(operation_state).collect(),
@@ -333,6 +342,7 @@ pub fn operations(values: Vec<OperationObservation>) -> Vec<u8> {
     .encode_to_vec()
 }
 
+/// WebAssembly binding fn for recovered_operation.
 pub fn recovered_operation(value: OperationId) -> Vec<u8> {
     operation_id(value).encode_to_vec()
 }

@@ -27,24 +27,24 @@ The fixture used the maintained Connect TLS server and the package-name resolver
 
 This receipt proves the Windows package fixture only. It does not claim native qualification for other operating systems or architectures.
 
-## Production package integration audit
+## Production package integration audit (initial gap)
 
-The installed fixture exercises the current Rust N-API artifact and generated declarations, but the production Stream package still has no native companion loader. The current gap is bounded to these files:
+At the initial audit point, the installed fixture exercised the Rust N-API artifact and generated declarations, but the production Stream package had no native loader. The gap was bounded to these files:
 
 - `typescript/packages/stream/generated/native/binding.d.ts` exists, while `binding.cjs` and a checked-in or staged `.node` artifact do not.
 - `scripts/stream-napi-types.mjs` generates declarations only; it does not build or stage an installable native package.
 - `typescript/packages/stream/package.json` has no `./native` export or platform optional dependencies.
 - `typescript/packages/stream/src/index.ts` and `src/client.ts` expose memory, HTTP, and Connect gRPC entry points only; no native loader or default native selection is wired.
 
-The minimal future integration surface is a new `typescript/packages/stream/src/native.ts` loader/provider, a `./native` package export and platform companion metadata in `typescript/packages/stream/package.json`, and an explicit async native entry point in `src/client.ts` or `src/index.ts`. The existing synchronous `StreamClient.fromEnv` contract should not be silently changed until that async loading decision is coordinated. The current receipt therefore establishes the Windows artifact and cancellation behavior without asserting production package integration or support for unqualified platforms.
+The coordinated integration below closes that gap while preserving the synchronous `Stream.fromEnv` construction contract. The receipt continues to establish Windows x64 evidence only.
 
 ## Production integration update
 
 The package now contains the coordinated thin integration surface:
 
 - `typescript/packages/stream/src/native.ts` loads the maintained N-API `binding.cjs`, adapts canonical protobuf requests, projects unary responses through the existing Rust/WASM `projectMemoryResponse`, and maps Rust error metadata to the public Stream error codes. Follow cancellation calls the Rust-owned `NativeStreamFollow.close()` and preserves the existing `AbortSignal` provider contract.
-- `typescript/packages/stream/src/default.ts` selects the installed native provider lazily for Node/Bun and retains the existing WASM-backed HTTP provider for browsers or when the optional native companion is absent. `Stream.fromEnv` keeps its synchronous construction API.
-- `typescript/packages/stream/package.json` exports `./native`, declares the qualified Windows x64 companion, and exposes the Windows-only native staging script `scripts/build-stream-native.mjs`.
+- `typescript/packages/stream/src/default.ts` selects the staged native provider lazily for Node/Bun and retains the existing WASM-backed HTTP provider for browsers or when the staged binding is absent. `Stream.fromEnv` keeps its synchronous construction API.
+- `typescript/packages/stream/package.json` exports `./native` and exposes the Windows-only native staging script `scripts/build-stream-native.mjs`; the staged artifact is selected from Rust-owned target metadata rather than an unrepresented package dependency.
 
 The staging script rejects every target except `x86_64-pc-windows-msvc`; no other platform or architecture is claimed. TypeScript compilation passed with `bunx tsc -p typescript/packages/stream/tsconfig.json --pretty false --noEmit`. The installed Windows fixture receipt above remains the runtime evidence for the native artifact and follow release behavior.
 
@@ -91,18 +91,40 @@ The consumer sources are preserved as [stream-native-installed-default.mjs](stre
 
 ## Metadata and lockfile audit
 
-`cargo metadata --locked --no-deps --format-version 1` passed. `Cargo.lock` records the current `acyclic-stream-napi` dependency set, including the qualification-only `rcgen` and `tonic` dev dependencies. The current `rust/crates/stream-napi/Cargo.toml` does not yet contain a Rust-owned `[package.metadata.napi] targets` declaration; the parent Rust coordination step must add the qualified `x86_64-pc-windows-msvc` target before release metadata is treated as complete.
+`cargo metadata --locked --no-deps --format-version 1` passed. `Cargo.lock` records the current `acyclic-stream-napi` dependency set, including the qualification-only `rcgen` and `tonic` dev dependencies. The initial audit found the Rust-owned target declaration missing; the correction below adds the qualified `x86_64-pc-windows-msvc` target before release metadata is treated as complete.
 
 ## Review corrections and release metadata
 
 The Rust manifest now owns the qualified target declaration, and `scripts/build-stream-native.mjs` reads it through `cargo metadata --locked`; the builder rejects targets absent from that manifest. A release build generated `typescript/packages/stream/generated/native/native-targets.json` with schema `acyclic.stream.native-targets.v1`, source revision, manifest digest, selected Rust target, and native artifact digest. The release package no longer declares an unrepresented optional companion dependency; the generated loader first loads the staged qualified artifact from the package itself.
 
+The native release path now follows the maintained generation-bundle pattern: `build --target <rust-triple>` requires a clean source closure and emits `generation-manifest.json` plus the native target receipt with exact source-file and bundle hashes; `stage --bundle <native-bundle>` copies only the attested native files into the package; and `check` performs the cheap no-compile closure, target, and artifact verification used before TypeScript package assembly. Linux, macOS, and additional Windows targets remain unqualified until their target-specific bundles are built and consumed.
+
 Native follow installs its abort listener before `openFollowResult`, so cancellation during a delayed open cancels the Rust token and suppresses the expected cancellation result. The preserved delayed-open regression is [stream-native-delayed-open-abort.mjs](stream-native-delayed-open-abort.mjs), which passed with `opened: true`, `cancellationObserved: true`, and `completed: true`.
 
 The browser entry now uses an opaque fixed dynamic import for the Node-only native facade. A real browser-target bundle completed with `bun build ... --target=browser` and contained no `node:buffer`, `node:module`, or `node:url` references. Native availability fallback only recognizes a missing production `generated/native/binding.cjs`; transitive native loader failures propagate.
 
-The release-staged package was repacked after these corrections. Its SHA-256 values are:
+The fallback boundary was also probed against the installed package shape after the loader correction. A missing `generated/native/binding.cjs` returned `available: false`, while a present binding whose first-line `MODULE_NOT_FOUND` named a transitive dependency propagated the error. The predicate checks the Node module error code and first error line, so the binding path in Node's appended require stack cannot hide a transitive failure.
 
-- package tarball `acyclic-labs-stream-0.2.0.tgz`: `9224D1922D229AC5DD0BF4BE0CF8368A483A69CFA603DA47551CD072B16A2E39`
+The release-staged package was repacked after these corrections, including the first-line `MODULE_NOT_FOUND` fallback boundary fix. Its SHA-256 values are:
+
+- package tarball `acyclic-labs-stream-0.2.0.tgz`: `2C51B22F634D6F288F085E4D4889C3C083BB5F1A2039B0DFB615889EB9454753`
+- package tarball SHA-512 SRI: `sha512-3wt+GLDWo2ElLwf0ggMbKuf8s0Qm6esieblf/h8/sfjQFfnq+pVl0sD9hJuJCmFVhRkmaGdZ0tH+kmlXgbTP6Q==`
 - `generated/native/native-targets.json`: `C9C351EE3F868AFFCB9EA0037502E1515A4F8CEDAC5423827495DEC0EDFC5FB4`
 - release Windows artifact `generated/native/index.win32-x64-msvc.node`: `F32E3A6D26EBDCC158B074D651A8A5624EAB0F114CCFB1D25C1F7541973C28D2`
+
+The older installed-fixture receipt above predates the complete generation-bundle
+attestation. On this shared dirty checkout, `node scripts/build-stream-native.mjs
+check` intentionally fails because `generation-manifest.json` has not yet been
+emitted for the current source closure. A release or manual Windows qualification
+must first run the clean-target build and stage sequence, then run `check`:
+
+```text
+node scripts/build-stream-native.mjs build --target x86_64-pc-windows-msvc --output <native-bundle> --target-dir <cargo-target-dir>
+node scripts/build-stream-native.mjs stage --bundle <native-bundle>
+node scripts/build-stream-native.mjs check
+```
+
+The build rejects a dirty source closure; it records the exact source file/tree
+hash, Rust target metadata, generation-manifest digest, and native artifact hashes.
+Linux, macOS, and other Windows targets require their own target-specific bundle
+qualification.

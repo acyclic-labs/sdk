@@ -8,6 +8,15 @@ import { pathToFileURL } from "node:url";
 
 const ADMISSION_ERROR = "expected a finite integer in the u32 range";
 const WASM_NUMBER_ERROR = "expected a JavaScript number";
+const NAPI_NUMBER_TYPE_ERRORS = new Set([
+  "Failed to convert napi value Null into rust type `f64`",
+  "Failed to convert napi value String into rust type `f64`",
+  "Failed to convert napi value Boolean into rust type `f64`",
+  "Failed to convert napi value Undefined into rust type `f64`",
+  "Failed to convert napi value BigInt into rust type `f64`",
+  "Failed to convert napi value Object into rust type `f64`",
+  "Failed to convert napi value Symbol into rust type `f64`",
+]);
 const REQUIRED_SOURCE_ROOTS = [
   "Cargo.toml",
   "Cargo.lock",
@@ -343,6 +352,7 @@ const classify = (error, runtime) => {
   const message = String(error?.message ?? error);
   if (message === ADMISSION_ERROR) return "boundary_rejected";
   if (message === WASM_NUMBER_ERROR) return "boundary_rejected";
+  if (runtime === "napi" && NAPI_NUMBER_TYPE_ERRORS.has(message)) return "boundary_rejected";
   // This accepts only the exact typed-decoder message emitted by the
   // maintained WASM and N-API bindings. Other conversion strings remain
   // downstream errors so stale or coercing native artifacts fail the matrix.

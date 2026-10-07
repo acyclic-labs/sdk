@@ -29,34 +29,13 @@ pub fn render_proto_files(root: impl AsRef<std::path::Path>) -> std::io::Result<
 
 #[allow(unused_imports)]
 pub use generated::{
-    subscription_start,
-    Binding,
-    ActorLimits,
-    SubscriptionStart,
-    SubscriptionSpec,
-    SubscriptionState,
-    SubscriptionObservation,
-    ActorState,
-    ActorObservation,
-    CreateActorRequest,
-    CreateActorResponse,
-    UpdateActorRequest,
-    UpdateActorResponse,
-    InspectActorRequest,
-    InspectActorResponse,
-    AddSubscriptionRequest,
-    AddSubscriptionResponse,
-    RemoveSubscriptionRequest,
-    RemoveSubscriptionResponse,
-    ResumeSubscriptionRequest,
-    ResumeSubscriptionResponse,
-    CheckpointActorRequest,
-    CheckpointActorResponse,
-    Header,
-    InvokeActorRequest,
-    InvokeActorResponse,
-    ErrorCode,
-    Error
+    ActorLimits, ActorObservation, ActorState, AddSubscriptionRequest, AddSubscriptionResponse,
+    Binding, CheckpointActorRequest, CheckpointActorResponse, CreateActorRequest,
+    CreateActorResponse, Error, ErrorCode, Header, InspectActorRequest, InspectActorResponse,
+    InvokeActorRequest, InvokeActorResponse, RemoveSubscriptionRequest, RemoveSubscriptionResponse,
+    ResumeSubscriptionRequest, ResumeSubscriptionResponse, SubscriptionObservation,
+    SubscriptionSpec, SubscriptionStart, SubscriptionState, UpdateActorRequest,
+    UpdateActorResponse, subscription_start,
 };
 
 /// Actors service operations generated from the protobuf contract.
@@ -111,4 +90,3 @@ mod tests {
         fs::remove_dir_all(root).expect("remove deterministic-render fixture");
     }
 }
-

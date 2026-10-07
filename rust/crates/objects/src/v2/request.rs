@@ -316,8 +316,7 @@ pub fn complete_multipart_digest(
     upload_id(&value.upload_id)?;
     preconditions(&value.preconditions)?;
     identity(&value.mutation)?;
-    if value.parts.is_empty()
-        || value.parts.len() > wire::ObjectsLimit::MaxMultipartParts as usize
+    if value.parts.is_empty() || value.parts.len() > wire::ObjectsLimit::MaxMultipartParts as usize
     {
         return Err(InvalidArgument.into());
     }
@@ -704,12 +703,10 @@ mod kani_proofs {
         let has_end: bool = kani::any();
         let requested_end: u64 = kani::any();
         let value = Some(wire::ByteRange {
-            selection: Some(wire::byte_range::Selection::Bytes(
-                wire::InclusiveRange {
-                    start,
-                    end: has_end.then_some(requested_end),
-                },
-            )),
+            selection: Some(wire::byte_range::Selection::Bytes(wire::InclusiveRange {
+                start,
+                end: has_end.then_some(requested_end),
+            })),
         });
 
         let result = range(&value, size);

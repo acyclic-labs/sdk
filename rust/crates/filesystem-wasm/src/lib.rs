@@ -10,9 +10,11 @@ mod indexed_db;
 mod opfs;
 
 #[cfg(target_arch = "wasm32")]
+/// IndexedDB browser stores re-exported by the filesystem binding.
 pub use indexed_db::{IndexedDbAuthorityStore, IndexedDbObjectStore, IndexedDbOpenError};
 
 #[cfg(target_arch = "wasm32")]
+/// OPFS browser stores re-exported by the filesystem binding.
 pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
 #[cfg(target_arch = "wasm32")]
@@ -311,6 +313,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserWorkspaceCommit
     pub struct BrowserWorkspaceCommit {
         #[tsify(
             type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
@@ -348,6 +351,7 @@ mod bindings {
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi)]
+    /// Browser-facing binding type for BrowserWorkspaceName
     pub struct BrowserWorkspaceName {
         #[tsify(type = "\"utf8\" | \"posix-bytes\" | \"windows-utf16le\"")]
         encoding: String,
@@ -360,6 +364,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserWorkspaceMetadata
     pub struct BrowserWorkspaceMetadata {
         posix_mode: Option<u32>,
         posix_uid: Option<u32>,
@@ -379,6 +384,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserWorkspaceStat
     pub struct BrowserWorkspaceStat {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -395,6 +401,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserWorkspaceDirectoryEntry
     pub struct BrowserWorkspaceDirectoryEntry {
         name: BrowserWorkspaceName,
         #[serde(with = "serde_bytes")]
@@ -409,6 +416,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserWorkspaceDirectoryPage
     pub struct BrowserWorkspaceDirectoryPage {
         entries: Vec<BrowserWorkspaceDirectoryEntry>,
         has_more: bool,
@@ -418,6 +426,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserWorkspaceExtentSpan
     pub struct BrowserWorkspaceExtentSpan {
         offset: u64,
         length: u64,
@@ -429,6 +438,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserWorkspaceExtentPlan
     pub struct BrowserWorkspaceExtentPlan {
         spans: Vec<BrowserWorkspaceExtentSpan>,
     }
@@ -546,6 +556,7 @@ mod bindings {
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi)]
+    /// Browser-facing binding type for BrowserJoinOptions
     pub struct BrowserJoinOptions {
         history: String,
         maximum_generations: u32,
@@ -556,6 +567,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserJoinResult
     pub struct BrowserJoinResult {
         #[tsify(
             type = "\"applied\" | \"already-applied\" | \"no-changes\" | \"stale-target\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
@@ -570,6 +582,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserWorkspaceRebaseResult
     pub struct BrowserWorkspaceRebaseResult {
         #[tsify(
             type = "\"rebased\" | \"already-rebased\" | \"current\" | \"stale\" | \"conflicted\" | \"fenced\" | \"idempotency-conflict\""
@@ -2160,6 +2173,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserAdmissionResult
     pub struct BrowserAdmissionResult {
         #[tsify(type = "\"admitted\" | \"rejected\"")]
         status: &'static str,
@@ -2170,6 +2184,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserResidencyExecution
     pub struct BrowserResidencyExecution {
         object_bytes: u64,
         work: BrowserWorkCounters,
@@ -2178,6 +2193,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserPromotionAdmission
     pub struct BrowserPromotionAdmission {
         #[tsify(type = "\"satisfied\" | \"planned\" | \"rejected\"")]
         status: &'static str,
@@ -2197,6 +2213,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserSpeculationPreemption
     pub struct BrowserSpeculationPreemption {
         #[tsify(type = "Uint8Array[]")]
         residency_operation_ids: Vec<serde_bytes::ByteBuf>,
@@ -2207,6 +2224,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserResidencyMetrics
     pub struct BrowserResidencyMetrics {
         candidates: u64,
         admitted: u64,
@@ -2224,6 +2242,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserPromotionMetrics
     pub struct BrowserPromotionMetrics {
         candidates: u64,
         satisfied: u64,
@@ -2238,6 +2257,7 @@ mod bindings {
 
     #[derive(Serialize, Tsify)]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserSpeculationMetrics
     pub struct BrowserSpeculationMetrics {
         residency: BrowserResidencyMetrics,
         promotion: BrowserPromotionMetrics,
@@ -2282,6 +2302,7 @@ mod bindings {
     #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserVolumeOptions
     pub struct BrowserVolumeOptions {
         #[tsify(type = "\"portable\" | \"posix\" | \"windows\" | \"browser\"")]
         profile: Profile,
@@ -2343,6 +2364,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi, large_number_types_as_bigints)]
     #[allow(clippy::struct_field_names)]
+    /// Browser-facing binding type for BrowserVolumeLimits
     pub struct BrowserVolumeLimits {
         maximum_path_bytes: u32,
         maximum_component_bytes: u32,
@@ -2362,6 +2384,7 @@ mod bindings {
     #[derive(Deserialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(from_wasm_abi)]
+    /// Browser-facing binding type for BrowserCheckoutOptions
     pub struct BrowserCheckoutOptions {
         #[tsify(type = "\"read-only\" | \"read-write\"")]
         access: CheckoutAccess,
@@ -2400,6 +2423,7 @@ mod bindings {
     #[derive(Deserialize, Serialize, Tsify)]
     #[serde(transparent)]
     #[allow(dead_code)]
+    /// Browser-facing binding type for BrowserPathBatch
     pub struct BrowserPathBatch(Vec<String>);
 
     #[derive(Deserialize, Serialize, Tsify)]
@@ -2409,6 +2433,7 @@ mod bindings {
         rename_all_fields = "camelCase"
     )]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for TransactionOperation
     pub enum TransactionOperation {
         CreateFile {
             path: String,
@@ -2498,6 +2523,7 @@ mod bindings {
     // narrows them to the established public number surface after checking
     // that each counter is representable as a safe integer.
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserWorkCounters
     pub struct BrowserWorkCounters {
         authority_records_read: u64,
         authority_records_appended: u64,
@@ -2529,6 +2555,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserLookupResult
     pub struct BrowserLookupResult {
         exists: bool,
         #[tsify(type = "Uint8Array | undefined")]
@@ -2542,6 +2569,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserBatchLookupEntryResult
     pub struct BrowserBatchLookupEntryResult {
         exists: bool,
         #[tsify(type = "Uint8Array | undefined")]
@@ -2555,6 +2583,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserBatchLookupResult
     pub struct BrowserBatchLookupResult {
         entries: Vec<BrowserBatchLookupEntryResult>,
         retained_allocation_bytes: u64,
@@ -2565,6 +2594,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserStatResult
     pub struct BrowserStatResult {
         exists: bool,
         record: Option<BrowserFileRecordResult>,
@@ -2577,6 +2607,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserFileReadResult
     pub struct BrowserFileReadResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2588,6 +2619,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserExtentSeekResult
     pub struct BrowserExtentSeekResult {
         offset: Option<u64>,
         work: BrowserWorkCounters,
@@ -2597,6 +2629,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserExtentSpanResult
     pub struct BrowserExtentSpanResult {
         #[tsify(type = "\"hole\" | \"allocated-zero\" | \"content\"")]
         kind: &'static str,
@@ -2616,6 +2649,7 @@ mod bindings {
     )]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserExtentPlanResult
     pub enum BrowserExtentPlanResult {
         Inline {
             work: BrowserWorkCounters,
@@ -2630,6 +2664,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserDirectoryEntryResult
     pub struct BrowserDirectoryEntryResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2645,6 +2680,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserDirectoryPageResult
     pub struct BrowserDirectoryPageResult {
         entries: Vec<BrowserDirectoryEntryResult>,
         has_more: bool,
@@ -2654,6 +2690,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserDirectoryRecordEntryResult
     pub struct BrowserDirectoryRecordEntryResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2668,6 +2705,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserDirectoryRecordPageResult
     pub struct BrowserDirectoryRecordPageResult {
         entries: Vec<BrowserDirectoryRecordEntryResult>,
         has_more: bool,
@@ -2678,6 +2716,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserFileRecordReadResult
     pub struct BrowserFileRecordReadResult {
         record: BrowserFileRecordResult,
         work: BrowserWorkCounters,
@@ -2687,6 +2726,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserMutationResult
     pub struct BrowserMutationResult {
         #[tsify(type = "Uint8Array | undefined")]
         file_id: Option<serde_bytes::ByteBuf>,
@@ -2697,6 +2737,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserTransactionResult
     pub struct BrowserTransactionResult {
         #[tsify(type = "(Uint8Array | undefined)[]")]
         created_file_ids: Vec<Option<serde_bytes::ByteBuf>>,
@@ -2707,6 +2748,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserCheckpointResult
     pub struct BrowserCheckpointResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2718,6 +2760,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserCommitResult
     pub struct BrowserCommitResult {
         #[tsify(
             type = "\"committed\" | \"already-committed\" | \"conflict\" | \"fenced\" | \"idempotency-conflict\""
@@ -2736,6 +2779,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserRebaseResult
     pub struct BrowserRebaseResult {
         #[tsify(type = "\"safe\" | \"conflicted\"")]
         status: &'static str,
@@ -2750,6 +2794,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserLiveMutationResult
     pub struct BrowserLiveMutationResult {
         #[tsify(
             type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
@@ -2770,6 +2815,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserLiveTransactionResult
     pub struct BrowserLiveTransactionResult {
         #[tsify(
             type = "\"committed\" | \"already-committed\" | \"conflicted\" | \"retry-limit\" | \"fenced\" | \"idempotency-conflict\""
@@ -2792,6 +2838,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserExportManifestResult
     pub struct BrowserExportManifestResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2805,6 +2852,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserFileRecordResult
     pub struct BrowserFileRecordResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2830,6 +2878,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserMetadataResult
     pub struct BrowserMetadataResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2841,6 +2890,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserNamedAttributeResult
     pub struct BrowserNamedAttributeResult {
         exists: bool,
         #[tsify(type = "Uint8Array | undefined")]
@@ -2852,6 +2902,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserNamedAttributePageResult
     pub struct BrowserNamedAttributePageResult {
         entries: Vec<BrowserNamedAttributeNameResult>,
         has_more: bool,
@@ -2861,6 +2912,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserNamedAttributeNameResult
     pub struct BrowserNamedAttributeNameResult {
         #[tsify(type = "\"posix-xattr\" | \"windows-stream\" | \"mac-resource-fork\"")]
         attribute_class: &'static str,
@@ -2872,6 +2924,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserFileRecordChangeResult
     pub struct BrowserFileRecordChangeResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2883,6 +2936,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for NameComponentResult
     pub struct NameComponentResult {
         #[tsify(type = "\"utf8\" | \"posix-bytes\" | \"windows-utf16le\"")]
         encoding: &'static str,
@@ -2894,6 +2948,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserTreeEntryResult
     pub struct BrowserTreeEntryResult {
         name: NameComponentResult,
         #[serde(with = "serde_bytes")]
@@ -2906,6 +2961,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for BrowserBindingChangeResult
     pub struct BrowserBindingChangeResult {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
@@ -2919,6 +2975,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserGenerationDiffResult
     pub struct BrowserGenerationDiffResult {
         files: Vec<BrowserFileRecordChangeResult>,
         bindings: Vec<BrowserBindingChangeResult>,
@@ -2929,6 +2986,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
+    /// Browser-facing binding type for MergeConflictResult
     pub struct MergeConflictResult {
         #[tsify(type = "\"file\" | \"binding\"")]
         kind: &'static str,
@@ -2943,6 +3001,7 @@ mod bindings {
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi)]
     #[tsify(large_number_types_as_bigints)]
+    /// Browser-facing binding type for BrowserMergePreparationResult
     pub struct BrowserMergePreparationResult {
         #[tsify(type = "\"prepared\" | \"conflicted\"")]
         status: &'static str,
@@ -2977,6 +3036,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for GenerationTransferBatchResult
     pub struct GenerationTransferBatchResult {
         first_object: u64,
         next_object: Option<u64>,
@@ -2988,6 +3048,7 @@ mod bindings {
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(into_wasm_abi, large_number_types_as_bigints)]
+    /// Browser-facing binding type for GenerationTransferCursorResult
     pub struct GenerationTransferCursorResult {
         next_object: u64,
         work: BrowserWorkCounters,
@@ -7967,6 +8028,7 @@ mod bindings {
 }
 
 #[cfg(target_arch = "wasm32")]
+/// Public browser filesystem binding types and operations.
 pub use bindings::{
     BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserVolume,
     BrowserWorkspaceContextRegistry, decode_merge_candidate_json, decode_merge_plan_json,

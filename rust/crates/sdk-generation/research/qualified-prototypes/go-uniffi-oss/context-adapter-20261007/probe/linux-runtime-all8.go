@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -60,11 +62,18 @@ func main() {
 	run("checkpoint", func() (*actors.ActorObservation, error) { return client.CheckpointActor(checkpoint, nil, ctx) })
 	response, err := client.InvokeActor(invoke, nil, ctx)
 	if err != nil || response.Status != 201 || len(response.Headers) != 1 || response.Headers[0].Value != "/result" { panic(fmt.Sprintf("invoke failed: %+v %v", response, err)) }
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) { panic("fixture CA parse failed") }
+	conn, err := tls.Dial("tcp", "localhost:50780", &tls.Config{RootCAs: pool, ServerName: "localhost", MinVersion: tls.VersionTLS12})
+	if err != nil { panic(fmt.Sprintf("server-abort TLS setup: %v", err)) }
+	_, _ = conn.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00"))
+	_ = conn.Close()
+	if _, err := client.InspectActor(actor, nil, ctx); err != nil { panic(fmt.Sprintf("authenticated call after server abort failed: %v", err)) }
 	if currentHead.SubscriptionId() != "sub-head" || !currentHead.PlacementAnchor() || cursor.SubscriptionId() != "sub-a" { panic("subscription presence failed") }
 	max := must(actors.NewPositiveU64(math.MaxUint64))
 	if max.Value() != math.MaxUint64 { panic("u64 max failed") }
 	if _, err := actors.NewActorId(""); err == nil || !errors.Is(err, actors.ErrBindingErrorSemantic) { panic(fmt.Sprintf("empty actor id error: %v", err)) }
 	if _, err := actors.NewCodeSha256(make([]byte, 31)); err == nil { panic("short sha accepted") }
 	if _, err := actors.NewPositiveU64(0); err == nil { panic("zero positive accepted") }
-	fmt.Printf("GO_SOURCE_REGENERATED_ALL8_PASS inspect=create=update=add=remove=resume=checkpoint invoke_status=%d cursor=9007199254740993 u64_max=%d semantic_typed=true\n", response.Status, max.Value())
+	fmt.Printf("GO_SOURCE_REGENERATED_ALL8_PASS inspect=create=update=add=remove=resume=checkpoint invoke_status=%d cursor=9007199254740993 u64_max=%d semantic_typed=true server_abort_cleanup_auth=true\n", response.Status, max.Value())
 }

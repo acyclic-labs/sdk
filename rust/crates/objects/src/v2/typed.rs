@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use prost::Message;
 
-use super::{domain, response, wire, Error, ObjectsProvider};
+use super::{Error, ObjectsProvider, domain, response, wire};
 
 /// Typed Objects operations layered over any existing wire provider.
 #[async_trait]
@@ -39,9 +39,11 @@ pub trait TypedObjectsProvider: ObjectsProvider {
         &self,
         request: domain::DeleteBucketRequest,
     ) -> Result<bool, Error> {
-        Ok(<Self as ObjectsProvider>::delete_bucket(self, request.into())
-            .await?
-            .existed)
+        Ok(
+            <Self as ObjectsProvider>::delete_bucket(self, request.into())
+                .await?
+                .existed,
+        )
     }
 
     /// Publishes one complete object with a validated typed header.
@@ -75,10 +77,7 @@ pub trait TypedObjectsProvider: ObjectsProvider {
     }
 
     /// Deletes an object after converting its validated request.
-    async fn typed_delete(
-        &self,
-        request: domain::DeleteObjectRequest,
-    ) -> Result<bool, Error> {
+    async fn typed_delete(&self, request: domain::DeleteObjectRequest) -> Result<bool, Error> {
         Ok(<Self as ObjectsProvider>::delete(self, request.into())
             .await?
             .existed)
@@ -135,8 +134,7 @@ pub trait TypedObjectsProvider: ObjectsProvider {
         &self,
         request: domain::CompleteMultipartRequest,
     ) -> Result<domain::ObjectInfo, Error> {
-        let result =
-            <Self as ObjectsProvider>::complete_multipart(self, request.into()).await?;
+        let result = <Self as ObjectsProvider>::complete_multipart(self, request.into()).await?;
         domain::ObjectInfo::try_from(result)
     }
 
@@ -145,9 +143,11 @@ pub trait TypedObjectsProvider: ObjectsProvider {
         &self,
         request: domain::AbortMultipartRequest,
     ) -> Result<bool, Error> {
-        Ok(<Self as ObjectsProvider>::abort_multipart(self, request.into())
-            .await?
-            .existed)
+        Ok(
+            <Self as ObjectsProvider>::abort_multipart(self, request.into())
+                .await?
+                .existed,
+        )
     }
 }
 
@@ -155,8 +155,8 @@ impl<P> TypedObjectsProvider for P where P: ObjectsProvider + ?Sized {}
 
 #[cfg(test)]
 mod tests {
+    use super::super::{MemoryObjects, MemoryOptions, domain};
     use super::*;
-    use super::super::{domain, MemoryObjects, MemoryOptions};
 
     fn bucket() -> domain::BucketName {
         domain::BucketName::try_from("typed.bucket").expect("test bucket is valid")
@@ -231,14 +231,12 @@ mod tests {
             .await?;
         assert_eq!(parts.parts(), &[part.clone()]);
         let completed = provider
-            .typed_complete_multipart(
-                domain::CompleteMultipartRequest::new(
-                    bucket.clone(),
-                    upload_key.clone(),
-                    upload.upload_id().clone(),
-                    vec![part],
-                )?,
-            )
+            .typed_complete_multipart(domain::CompleteMultipartRequest::new(
+                bucket.clone(),
+                upload_key.clone(),
+                upload.upload_id().clone(),
+                vec![part],
+            )?)
             .await?;
         assert_eq!(completed.size(), 4);
 
@@ -249,23 +247,31 @@ mod tests {
                 aborted_key.clone(),
             ))
             .await?;
-        assert!(provider
-            .typed_abort_multipart(domain::AbortMultipartRequest::new(
-                bucket.clone(),
-                aborted_key,
-                aborted.upload_id().clone(),
-            ))
-            .await?);
+        assert!(
+            provider
+                .typed_abort_multipart(domain::AbortMultipartRequest::new(
+                    bucket.clone(),
+                    aborted_key,
+                    aborted.upload_id().clone(),
+                ))
+                .await?
+        );
 
-        assert!(provider
-            .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), object_key))
-            .await?);
-        assert!(provider
-            .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), upload_key))
-            .await?);
-        assert!(provider
-            .typed_delete_bucket(domain::DeleteBucketRequest::new(bucket))
-            .await?);
+        assert!(
+            provider
+                .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), object_key))
+                .await?
+        );
+        assert!(
+            provider
+                .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), upload_key))
+                .await?
+        );
+        assert!(
+            provider
+                .typed_delete_bucket(domain::DeleteBucketRequest::new(bucket))
+                .await?
+        );
         Ok(())
     }
 
@@ -283,43 +289,49 @@ mod tests {
             }),
             content_range: None,
         };
-        assert!(domain::DownloadedObject::try_from_wire(
-            super::super::Object {
-                header,
-                body: Bytes::from_static(b"bad"),
-            },
-            &request,
-            5,
-        )
-        .is_err());
+        assert!(
+            domain::DownloadedObject::try_from_wire(
+                super::super::Object {
+                    header,
+                    body: Bytes::from_static(b"bad"),
+                },
+                &request,
+                5,
+            )
+            .is_err()
+        );
 
         let list_request = domain::ListObjectsRequest::new(bucket.clone());
-        assert!(domain::ListObjectsPage::try_from_wire(
-            wire::ListObjectsResponse {
-                continuation_token: "unexpected".into(),
-                ..Default::default()
-            },
-            &list_request,
-        )
-        .is_err());
+        assert!(
+            domain::ListObjectsPage::try_from_wire(
+                wire::ListObjectsResponse {
+                    continuation_token: "unexpected".into(),
+                    ..Default::default()
+                },
+                &list_request,
+            )
+            .is_err()
+        );
 
         let parts_request = domain::ListPartsRequest::new(
             bucket,
             domain::ObjectKey::try_from("typed-multipart")?,
             domain::UploadId::try_from("upload-1")?,
         );
-        assert!(domain::ListPartsPage::try_from_wire(
-            wire::ListPartsResponse {
-                parts: vec![wire::UploadedPart {
-                    part_number: 1,
-                    etag: String::new(),
-                    size: 1,
-                }],
-                ..Default::default()
-            },
-            &parts_request,
-        )
-        .is_err());
+        assert!(
+            domain::ListPartsPage::try_from_wire(
+                wire::ListPartsResponse {
+                    parts: vec![wire::UploadedPart {
+                        part_number: 1,
+                        etag: String::new(),
+                        size: 1,
+                    }],
+                    ..Default::default()
+                },
+                &parts_request,
+            )
+            .is_err()
+        );
         Ok(())
     }
 }

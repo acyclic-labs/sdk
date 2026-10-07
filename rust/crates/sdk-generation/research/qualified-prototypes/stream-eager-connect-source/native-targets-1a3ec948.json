@@ -1,0 +1,323 @@
+{
+  "schema": "acyclic.stream.native-targets.v1",
+  "package": "acyclic-stream-napi",
+  "version": "0.2.0",
+  "source_path": "rust/crates/stream-napi/Cargo.toml",
+  "source_revision": "1a3ec9481b6d19722bbc23fbef1f34e52657b355",
+  "source_sha256": "sha256:f1cd7e8afe02172fd8dfeb340c5632f1a6e0684ccbbb79c50914eb27a5dcf72d",
+  "source_files": [
+    {
+      "path": "Cargo.lock",
+      "sha256": "sha256:8d4fcccf1705db67559a1473185a2ff1f2d38b5f2961921cb38814cade31ae20",
+      "bytes": 125002
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "sha256:9359c98320557cb5392ceb2a99284758cf5ed9e6b598c62f25f9ef1d667d9789",
+      "bytes": 4974
+    },
+    {
+      "path": "bun.lock",
+      "sha256": "sha256:9eacd1c79f819091fd70c2cadcfc564c378cde02244cb1a4f29333e2442d5193",
+      "bytes": 49340
+    },
+    {
+      "path": "package.json",
+      "sha256": "sha256:970c16a66cb9afd74d317115b4a55cb674399a77586c91bb2803d97a1134c1f9",
+      "bytes": 2557
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "sha256:85db324345b7937c49ea2ac8b962d741f710719f4f751cab809985cbe6afbe3c",
+      "bytes": 86
+    },
+    {
+      "path": "rust/crates/native-runtime/Cargo.toml",
+      "sha256": "sha256:c568f31163e8224121d18bbcb2105c0f5dfc58641af44664d7a6c390c279c273",
+      "bytes": 1286
+    },
+    {
+      "path": "rust/crates/native-runtime/README.md",
+      "sha256": "sha256:4d19b585952e47f49abfc909001213880796a1605f320082d1238184c796727b",
+      "bytes": 10220
+    },
+    {
+      "path": "rust/crates/native-runtime/src/apple.rs",
+      "sha256": "sha256:05fc5ff9013a606fce2682ba017d93e59218fa8c854a90e236ec0d2d4f5b343f",
+      "bytes": 3398
+    },
+    {
+      "path": "rust/crates/native-runtime/src/lib.rs",
+      "sha256": "sha256:ef3e4173443095eb644c3ae257f2d9287361dc88596e747bc55f4a77472875cb",
+      "bytes": 147161
+    },
+    {
+      "path": "rust/crates/native-runtime/src/linux.rs",
+      "sha256": "sha256:0b268263ff3a3a6f324ec30f1cfe4ff53e8e027e21d2f9a2dff31dfd9e8fb3f8",
+      "bytes": 41039
+    },
+    {
+      "path": "rust/crates/native-runtime/src/process_tree.rs",
+      "sha256": "sha256:9daa8a825ebd67869b7c8a4f17ab1fbb14e49e3c867d5acfe741e69e3591a7ff",
+      "bytes": 44765
+    },
+    {
+      "path": "rust/crates/native-runtime/src/windows.rs",
+      "sha256": "sha256:7aef4e195e1bcef2ea42c7565b9985f61d561a4e243385e17f958e2f5dad9532",
+      "bytes": 51526
+    },
+    {
+      "path": "rust/crates/stream-napi/Cargo.toml",
+      "sha256": "sha256:943191f5c52cf817fe617bcc3ef8d8d05e6483ad9e4ffca97c5126a6f91024b2",
+      "bytes": 941
+    },
+    {
+      "path": "rust/crates/stream-napi/build.rs",
+      "sha256": "sha256:b0bc7d68347eee69d22fb089a35d340b7efd27f72c3b3a7d2c585aa95b08d68b",
+      "bytes": 167
+    },
+    {
+      "path": "rust/crates/stream-napi/src/lib.rs",
+      "sha256": "sha256:b6634bd648ce6544891fcbc7ac560bd01f404a873801b808c4edc89576f7a7c0",
+      "bytes": 45205
+    },
+    {
+      "path": "rust/crates/stream/Cargo.toml",
+      "sha256": "sha256:cff91a8475c99898d483ae9d1b817e1b4d026665850e43557517d4a464e66840",
+      "bytes": 2602
+    },
+    {
+      "path": "rust/crates/stream/README.md",
+      "sha256": "sha256:46298061f33e591f640604d3d78aab99595eeb070c7f2af1c10e4ab06d5d24aa",
+      "bytes": 5137
+    },
+    {
+      "path": "rust/crates/stream/build.rs",
+      "sha256": "sha256:9a5c50cd05f6fb88ccc093faaceca1be01f791c031e1b10e8edba71e714a35ee",
+      "bytes": 1004
+    },
+    {
+      "path": "rust/crates/stream/conformance/stream.json",
+      "sha256": "sha256:230c14bfd9afde7f9ab6e9f8b69769c8b2a06cc7dc3ec6a51dc8964321984d08",
+      "bytes": 770
+    },
+    {
+      "path": "rust/crates/stream/examples/http-conformance.rs",
+      "sha256": "sha256:af0b9103ab3dc2efab9cc9dfb1c1cf90192b71bf89c7c5c60e8684b085f5cd7c",
+      "bytes": 4759
+    },
+    {
+      "path": "rust/crates/stream/examples/local-contention.rs",
+      "sha256": "sha256:2eccd4a9075fb7cf60bd99af4823ba0361258a36bfdccfec3339f29f9add18e4",
+      "bytes": 8966
+    },
+    {
+      "path": "rust/crates/stream/examples/token-operations.rs",
+      "sha256": "sha256:83f4f9fda8e0ce981fe8a5e3848509c226e09c7bc09f2388c0111bef1aece497",
+      "bytes": 363
+    },
+    {
+      "path": "rust/crates/stream/proto/stream/v2/stream.proto",
+      "sha256": "sha256:b7463189ba964e193d5ebd517af7b609462f1bf84b6bad9dcae216389196d5b9",
+      "bytes": 5575
+    },
+    {
+      "path": "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+      "sha256": "sha256:f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e",
+      "bytes": 14991
+    },
+    {
+      "path": "rust/crates/stream/src/bin/stream-http-contract.rs",
+      "sha256": "sha256:7f9233f2e41593ed3ebd897b6217a22ad949233e385712782233a16a4d714c17",
+      "bytes": 313
+    },
+    {
+      "path": "rust/crates/stream/src/conformance.rs",
+      "sha256": "sha256:1c1d60cbf8e1b3ec203f143d1b24c2dbd6c538201b1eb73a697dde3b4735b964",
+      "bytes": 16447
+    },
+    {
+      "path": "rust/crates/stream/src/grpc.rs",
+      "sha256": "sha256:a30b72bca52a9f001ff4302dd5566728d5c6609bcf94d740ae05b461813f3480",
+      "bytes": 68789
+    },
+    {
+      "path": "rust/crates/stream/src/http.rs",
+      "sha256": "sha256:6733a954a9a6c258a21ace47476955ddc7c0f3f4803d92ed133040e1c891de25",
+      "bytes": 23000
+    },
+    {
+      "path": "rust/crates/stream/src/http_codec.rs",
+      "sha256": "sha256:6dcdc0c286329336f539e840a0a140bf9e2a4dbdcd5b48dc85cd7135f30b9729",
+      "bytes": 12469
+    },
+    {
+      "path": "rust/crates/stream/src/http_response.rs",
+      "sha256": "sha256:30b1c0d799e51a74c78e6cfccdff8fa2bc75d8dd79e7ae4d602a1ff6426af776",
+      "bytes": 11446
+    },
+    {
+      "path": "rust/crates/stream/src/http_validation.rs",
+      "sha256": "sha256:4121ce6b1cff9d800a50edf1c8fe76e9c88992bb609ecd00f121525e922a8391",
+      "bytes": 15056
+    },
+    {
+      "path": "rust/crates/stream/src/lib.rs",
+      "sha256": "sha256:81a6ac8fe804e1522fe99ac8fedf60a9a1b3fc06fe9a5aba140946b6849923da",
+      "bytes": 37836
+    },
+    {
+      "path": "rust/crates/stream/src/local.rs",
+      "sha256": "sha256:be911c2b2dd6ac9a03cb09fbf60b61db9669e2b6d60e00f69cc061b792593826",
+      "bytes": 101421
+    },
+    {
+      "path": "rust/crates/stream/src/memory.rs",
+      "sha256": "sha256:4e66eb86c634aeac5f3fb98b7795017e64a44b80a0b34a9b887803babee96a29",
+      "bytes": 75458
+    },
+    {
+      "path": "rust/crates/stream/src/memory/snapshot.rs",
+      "sha256": "sha256:53b308f7ef1567820e6679e258deec2d510d8f78a4b399003a417aec77cdabd0",
+      "bytes": 14214
+    },
+    {
+      "path": "rust/crates/stream/src/persistence.rs",
+      "sha256": "sha256:1a0aea03d0163ba11be8e7e6d8311348b35fda2fa18f056a6416bc0b94a98591",
+      "bytes": 7075
+    },
+    {
+      "path": "rust/crates/stream/src/persistence/tests.rs",
+      "sha256": "sha256:a328d195bb51ae4fa051651ff76eff86af0b0919ff50b492cbe3bc1f45b60e37",
+      "bytes": 7029
+    },
+    {
+      "path": "rust/crates/stream/src/preparation.rs",
+      "sha256": "sha256:73b7607f21ae8241ad13c25de328876a0a8f2cf6d0a78104bfe7c4b1d500170f",
+      "bytes": 14801
+    },
+    {
+      "path": "rust/crates/stream/src/request.rs",
+      "sha256": "sha256:d617c5d97159e1d04090e00a8b2eae649a65061f0eabd29079cf7676d77f7156",
+      "bytes": 2560
+    },
+    {
+      "path": "rust/crates/stream/src/wasm.rs",
+      "sha256": "sha256:6a0c1864619e4bd722d172492459e19fa19d122883d4aaed1d2f413575566e17",
+      "bytes": 44323
+    },
+    {
+      "path": "rust/crates/stream/src/wire_codec.rs",
+      "sha256": "sha256:e2923bcf83ef5e4c711ac8d3b380cb0300c29cf80a2d0644c3aeb8ed1970f3db",
+      "bytes": 24650
+    },
+    {
+      "path": "rust/crates/stream/tests/http_response_core.rs",
+      "sha256": "sha256:45682461384ee2f09ce11a350359f2a29e7c939540ebdc0ef3302674b35b397d",
+      "bytes": 2823
+    },
+    {
+      "path": "scripts/build-stream-native.mjs",
+      "sha256": "sha256:1f18e07d399cd9ef88c7664a8709eda3953073ee1b5c82efac74a7515d5d57c2",
+      "bytes": 18175
+    },
+    {
+      "path": "typescript/packages/stream/generated/proto/stream/v2/stream_pb.d.ts",
+      "sha256": "sha256:8a51d521c545007fbbb890fd96de716d9277c3bddfb5e8def215bd7b99b19544",
+      "bytes": 28697
+    },
+    {
+      "path": "typescript/packages/stream/generated/proto/stream/v2/stream_pb.js",
+      "sha256": "sha256:21ee1cbc484eccfc95e3f0c82b5c271a7fbaba2ebee17d3030c9803f213f66f8",
+      "bytes": 16409
+    },
+    {
+      "path": "typescript/packages/stream/package.json",
+      "sha256": "sha256:9ddd5e9ee512712c2345bc7bb0db2a3d6edb41e610d6aa3b36fe02bc052acb12",
+      "bytes": 1897
+    },
+    {
+      "path": "typescript/packages/stream/src/client.ts",
+      "sha256": "sha256:4f40bff82599a47c10f531690a164d97ef66a1eda0f6dc537beee7374dd3c424",
+      "bytes": 16033
+    },
+    {
+      "path": "typescript/packages/stream/src/contract.ts",
+      "sha256": "sha256:6c68ce1241626ae7baa1d9d4aafd01daf34153382fce674f4a5a44bbfec96ecd",
+      "bytes": 15857
+    },
+    {
+      "path": "typescript/packages/stream/src/default.ts",
+      "sha256": "sha256:b6c96ca2eb7a3bdf6425049e78e3c880135013c92e750156b818c35eb01d1be6",
+      "bytes": 6799
+    },
+    {
+      "path": "typescript/packages/stream/src/grpc.ts",
+      "sha256": "sha256:b4985c460a25fa52fffe2f9ce2f159bac187ca53ebe6758098167384e818ad15",
+      "bytes": 10419
+    },
+    {
+      "path": "typescript/packages/stream/src/http-contract.ts",
+      "sha256": "sha256:8ce4e0f83a463ec0d71c98c2c4f619b177326b4adaa6bdd7cc621fceede51a12",
+      "bytes": 1862
+    },
+    {
+      "path": "typescript/packages/stream/src/http.ts",
+      "sha256": "sha256:09ff9b7e3b109b9120aea868a4fc3b6a659c65922d5397b6b9139c56eb75f3bf",
+      "bytes": 13598
+    },
+    {
+      "path": "typescript/packages/stream/src/index.ts",
+      "sha256": "sha256:5e081c77b0e82ba8cb9f2256c540c5fc850ee6167dc2ccdbcc8559f9d1a28a20",
+      "bytes": 166
+    },
+    {
+      "path": "typescript/packages/stream/src/memory.ts",
+      "sha256": "sha256:d2534813715364a49e33fa5db797741edced585d696875ccd4f402671a96ffae",
+      "bytes": 8808
+    },
+    {
+      "path": "typescript/packages/stream/src/native.ts",
+      "sha256": "sha256:13ded25dec3edf666f7a469bad9453e20c904baf1d158385ad15af4041a628b5",
+      "bytes": 16731
+    },
+    {
+      "path": "typescript/packages/stream/src/token-operations.ts",
+      "sha256": "sha256:0e67839c7fcbfe63a63ffb45144da36017e3d0d0eaf72ed5e0f75095a90db3fa",
+      "bytes": 248
+    },
+    {
+      "path": "typescript/packages/stream/src/types.ts",
+      "sha256": "sha256:8818ecc0068f7ae671d894acee0a656f26227aa5429345c81d8c25abf8484c90",
+      "bytes": 10766
+    }
+  ],
+  "targets": [
+    "x86_64-pc-windows-msvc"
+  ],
+  "selected_target": "x86_64-pc-windows-msvc",
+  "generation_manifest": "generated/native/generation-manifest.json",
+  "generation_sha256": "sha256:6499cc4ff7ad6e9a75baaab11f54686798c41c80f9ec0035c762ef1c416ddd39",
+  "artifacts": [
+    {
+      "path": "generated/native/binding.cjs",
+      "sha256": "sha256:2f42da4093d32b527f8f6d0af4d8676f93ccb0f4c9f4b89622b659a0a9ec809d",
+      "bytes": 33525
+    },
+    {
+      "path": "generated/native/binding.d.ts",
+      "sha256": "sha256:ca35185d8e8bf34cbec4d867d4da8be116d7703fe4e27cb68c529919c735d50f",
+      "bytes": 6426
+    },
+    {
+      "path": "generated/native/index.win32-x64-msvc.node",
+      "sha256": "sha256:d02a33d19a87bab3226d1113dc7e63eb921bd869bfb9570a50a9d398c5bce4d6",
+      "bytes": 5358080
+    }
+  ],
+  "artifact": {
+    "path": "generated/native/index.win32-x64-msvc.node",
+    "sha256": "sha256:d02a33d19a87bab3226d1113dc7e63eb921bd869bfb9570a50a9d398c5bce4d6",
+    "bytes": 5358080
+  }
+}

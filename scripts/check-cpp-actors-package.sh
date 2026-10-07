@@ -94,6 +94,7 @@ fixture_ca="$work/fixture-ca.pem"
 # Reuse the workspace target, offline, so Cargo can launch the already-built
 # conformance certificate without touching the registry while other jobs run.
 ACYCLIC_SDK_ROOT="$root" ACYCLIC_CA_PATH="$fixture_ca" \
+  NODE_OPTIONS="--experimental-loader=$cxx_path/consumer/qualification-loader.mjs" \
   RUSTUP_TOOLCHAIN=1.98.1 CARGO_TARGET_DIR="$root/target" CARGO_NET_OFFLINE=true \
   node "$cxx_path/consumer/live-cancel-fixture.mjs" >"$fixture_json" \
   2>"$work/fixture.log" &

@@ -1,5 +1,5 @@
 /** Browser and Node simulator backed by the canonical Rust Machines provider. */
-import { WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { validateSafeU64, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
   CheckpointOut, EventsOut, MutationOut, ObservationOut, OperationOut, PageOut,
   QualificationOut, UsageOut,
@@ -23,6 +23,20 @@ import { machineId, operationId } from "./index.js";
  */
 export function asPublic<Generated, Public extends Generated>(value: Generated): Public {
   return value as unknown as Public;
+}
+
+/**
+ * Rust u64 request fields stay `number` in the public API; the predicate is
+ * executed by the generated WASM boundary while this wrapper preserves the
+ * package's historical named RangeError contract.
+ */
+export function u64Number(value: number, name: string): number {
+  try {
+    validateSafeU64(value);
+  } catch {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
 }
 
 /** Keep byte fields detached from the generated result object. */
@@ -62,8 +76,8 @@ export class SimulatedMachines implements MachinesProvider {
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, policy, idempotencyKey }, (inner, authored) => inner.setSuspensionPolicy(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ machineId, idempotencyKey }, (inner, authored) => inner.destroyMachine(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#run({ checkpointId, idempotencyKey }, (inner, authored) => inner.destroyCheckpoint(authored)).then(asPublic<MutationOut, MutationOutcome>); }
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence, limit }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs, endUnixMs }, (inner, authored) => inner.usage(authored)).then(usageOut); }
+  async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#run({ machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit }, (inner, authored) => inner.events(authored)).then(asPublic<EventsOut, MachineEventPage>); }
+  async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#run({ machineId, startUnixMs: u64Number(startUnixMs, "startUnixMs"), endUnixMs: u64Number(endUnixMs, "endUnixMs") }, (inner, authored) => inner.usage(authored)).then(usageOut); }
   recover(key: IdempotencyKey): Promise<MutationOutcome> { return this.#run(key, (inner, authored) => inner.recover(authored)).then(asPublic<MutationOut, MutationOutcome>); }
   recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored)).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored)).then(asPublic<OperationOut, OperationObservation>); }

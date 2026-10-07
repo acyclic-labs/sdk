@@ -81,6 +81,7 @@ fn suspension(value: wire::SuspensionPolicy) -> Result<SuspensionPolicy, Provide
 }
 
 #[cfg(target_arch = "wasm32")]
+/// WebAssembly binding fn for suspension_bytes.
 pub fn suspension_bytes(bytes: &[u8]) -> Result<SuspensionPolicy, ProviderError> {
     let value = wire::SuspensionPolicy::decode(bytes)
         .map_err(|_| invalid("suspension protobuf is invalid"))?;
@@ -126,10 +127,12 @@ fn image(value: wire::Image) -> Result<Image, ProviderError> {
 }
 
 #[cfg(target_arch = "wasm32")]
+/// WebAssembly binding fn for image_bytes.
 pub fn image_bytes(bytes: &[u8]) -> Result<Image, ProviderError> {
     image(wire::Image::decode(bytes).map_err(|_| invalid("image protobuf is invalid"))?)
 }
 
+/// WebAssembly binding fn for create.
 pub fn create(bytes: &[u8]) -> Result<CreateMachine, ProviderError> {
     let value = wire::CreateMachineRequest::decode(bytes)
         .map_err(|_| invalid("create protobuf is invalid"))?;

@@ -22,29 +22,39 @@ runtime nested constructors and dynamic reparenting. Source revision, archive,
 license, and changed-file provenance are in
 `uniffi-python-typing-patch-provenance.md`.
 
-The retained checker outputs show mypy 1.17.1 passing the positive fixture and
-both mypy and Pyright rejecting the six deliberate negative cases. The retained
-Pyright positive output contains two `CURRENT_HEAD` constructor diagnostics;
-this prototype therefore does not claim a zero-diagnostic Pyright positive
-run. The runtime and cross-platform install results remain recorded as
-external receipts, with no producer log retained beside the patched Linux and
-macOS wheels.
+The fresh checker outputs show mypy 1.17.1 and Pyright 1.1.404 passing the
+positive fixture and both checkers rejecting the six deliberate negative cases.
+The generator patch now emits static narrow constructor classes for data enum
+variants, so the `CURRENT_HEAD` diagnostics are gone while the runtime nested
+constructors remain unchanged. The runtime and cross-platform install results
+remain recorded as external receipts until an install harness emits a
+source-bound producer manifest beside the patched wheel.
 
-`installed-all8-remote-conformance.py` is the actual remote receipt producer.
-It appends each operation only after its response assertions pass and appends
-`remote`, `service_error`, and `cancellation` only after their checks pass.
-When `ACYCLIC_QUALIFICATION_RECEIPT` is set, it writes the minimal producer
-schema consumed by the language-package model:
+`installed-all8-remote-conformance.py` is the remote receipt producer. It
+appends each operation only after its response assertions pass and appends
+`remote`, `service_error`, and `pre-cancelled` only after their checks pass.
+When `ACYCLIC_PENDING_FIXTURE_OPTIONS` is supplied, it additionally appends
+`in-flight-task-cancellation` and `server-abort-cleanup` only after a pending
+request is cancelled through a real `asyncio.Task` and the server observes the
+stream close. When `ACYCLIC_QUALIFICATION_RECEIPT` is set, the script requires
+`ACYCLIC_PRODUCER_MANIFEST` and the wheel path, measures the wheel before and
+after execution, and writes the source-bound schema consumed by the
+language-package model:
 
 ```json
 {"schema":"acyclic.language-package.qualification/v1","status":"PASS",
- "operations":["..."],"checks":["..."],"fixture_options_sha256":"..."}
+ "operations":["..."],"checks":["..."],
+ "source_revision":"...","source_inventory_sha256":"...",
+ "toolchain":{"uniffi_bindgen":"0.31.0","uniffi_source_sha256":"..."},
+ "artifacts":{"wheel":{"path":"...","sha256":"...","bytes":0}}}
 ```
 
 The arrays and status are produced by the executed run; the script does not
-accept caller-supplied success or scope claims. The install check belongs to
-the harness that actually installs the wheel and must be emitted there before
-the root source-bound model consumes the receipt.
+accept caller-supplied success or scope claims. The producer manifest is an
+install-harness output and must contain the exact source revision, source
+inventory hash, UniFFI version, and patched generator source hash. The install
+check belongs to the harness that actually installs the wheel and must be
+emitted there before the root source-bound model consumes the receipt.
 
 The older `all8-qualification-receipt.json` and
 `cross-platform-qualification-receipt.json` are historical context. Their

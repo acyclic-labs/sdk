@@ -52,10 +52,11 @@ byte change during qualification fails the receipt. It also validates the
 source attestation before and after execution. The runner invokes `liveRebase` through the generated WASM module and through
 the installed N-API binding. Each call uses the same Rust-owned boundary
 parameter. A value is classified as `boundary_rejected` only when the runtime
-returns one of the two exact typed-boundary messages: `expected a finite integer
-in the u32 range` or `expected a JavaScript number`. The latter is emitted by
-the maintained WASM and N-API decoders for non-number JavaScript values. Any
-other conversion or policy string remains a downstream error, so stale or
+returns an exact typed-boundary message: `expected a finite integer in the u32
+range`, `expected a JavaScript number`, or one of the seven exact N-API
+`Failed to convert napi value <Type> into rust type \`f64\`` messages for
+`Null`, `String`, `Boolean`, `Undefined`, `BigInt`, `Object`, and `Symbol`.
+Any other conversion or policy string remains a downstream error, so stale or
 coercing native artifacts cannot be mistaken for a typed boundary rejection.
 
 The required matrix is:
@@ -91,6 +92,11 @@ rejects symlinks, and re-hashes every selected file. Removing a manifest entry
 fails with a missing-selector error; mutating a selected source file fails with
 a source-hash or byte-count mismatch before any receipt is written.
 
+Generated declarations and runtime bytes are package identity rather than
+source-closure inputs: the whole package and native archives are hashed, while
+the generated WASM JavaScript, WASM binary, and native `.node` entry are each
+compared byte-for-byte with their installed counterparts.
+
 Release assembly must fail if any source-closure or package-owned byte differs
 from the bytes used to create the receipt, or if either runtime has a non-number
 that reaches downstream policy.
@@ -115,13 +121,15 @@ Run the regression harness from the repository root with:
 node rust/crates/sdk-generation/research/qualified-prototypes/filesystem-admission/test.mjs
 ```
 
-The harness invokes the real runner against the authoritative 372-file source
-selector. It checks wrong commits, omitted selector entries, a selected-source
-mutation, a fresh Git-state mismatch, a package archive/install mismatch, an
-unknown error that merely contains the canonical admission phrase, and
-mutations of source or package bytes during qualification. Runtime cases use
-temporary package fixtures only to exercise those failure paths; they still run
-the complete edge and reject matrix before a receipt could be written.
+The harness invokes the real runner against the authoritative source selector
+and requires a complete, canonically sorted, duplicate-free inventory whose
+second write is byte-for-byte deterministic. It checks wrong commits, omitted
+selector entries, a selected-source mutation, a fresh Git-state mismatch, a
+package archive/install mismatch, an unknown error that merely contains the
+canonical admission phrase, and mutations of source or package bytes during
+qualification. Runtime cases use temporary package fixtures only to exercise
+those failure paths; they still run the complete edge and reject matrix before
+a receipt could be written.
 
 This is a qualification input and receipt format. It intentionally contains no
 generated WASM, native binary, or duplicated numeric validation logic.

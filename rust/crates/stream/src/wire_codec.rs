@@ -3,11 +3,10 @@
 use bytes::Bytes;
 
 use crate::{
-    AppendOutcome, AppendReceipt, CommitCondition, CommitConflict, CommitId,
+    AppendOutcome, AppendReceipt, ChildrenPageRequest, CommitCondition, CommitConflict, CommitId,
     CommitMutation, CommitOutcome, CommittedAppend, CommittedEnvelope, CommittedFork,
-    CommittedMutation, ChildrenPageRequest, ForkReceipt, IdempotencyKey,
-    IdempotencyObservation,
-    IdempotencyOutcome, Record, StreamError, StreamPath, MAX_ITEMS, MAX_RECORD_BYTES, wire,
+    CommittedMutation, ForkReceipt, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome,
+    MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire,
 };
 
 #[cfg(any(feature = "grpc", feature = "http", test))]
@@ -241,12 +240,12 @@ pub(crate) fn checked_record(value: Record) -> Result<Record, StreamError> {
 pub(crate) fn validate_children_page_request(
     request: &ChildrenPageRequest,
 ) -> Result<(), StreamError> {
-    if request.limit == 0 || usize::try_from(request.limit).map_or(true, |limit| limit > MAX_ITEMS) {
+    if request.limit == 0 || usize::try_from(request.limit).map_or(true, |limit| limit > MAX_ITEMS)
+    {
         return Err(StreamError::LimitExceeded);
     }
     if request.after.as_ref().is_some_and(|after| {
-        request.hierarchy_version.is_none()
-            || !is_direct_child(request.parent.as_ref(), after)
+        request.hierarchy_version.is_none() || !is_direct_child(request.parent.as_ref(), after)
     }) {
         return Err(StreamError::InvalidArgument);
     }
@@ -285,7 +284,11 @@ pub(crate) fn checked_children_page(
         previous = Some(&child.path);
     }
     if let Some(next_after) = &page.next_after {
-        if page.children.last().is_none_or(|child| child.path != *next_after) {
+        if page
+            .children
+            .last()
+            .is_none_or(|child| child.path != *next_after)
+        {
             return Err(StreamError::Unavailable);
         }
     }
@@ -339,9 +342,7 @@ pub fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
 }
 
 /// Converts an append request using the canonical Stream validation rules.
-pub fn append_from_wire(
-    value: wire::AppendRequest,
-) -> Result<crate::AppendRequest, StreamError> {
+pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
         path: path(value.path)?,
         records: value.records,
@@ -425,9 +426,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
 }
 
 /// Converts a commit request using the canonical Stream validation rules.
-pub fn commit_from_wire(
-    value: wire::CommitRequest,
-) -> Result<crate::CommitRequest, StreamError> {
+pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
         conditions: value
             .conditions
@@ -616,14 +615,12 @@ pub(crate) fn observation_to_wire(
 
 #[cfg(test)]
 mod tests {
-    use crate::Child;
     use super::*;
+    use crate::Child;
 
     #[test]
     fn checked_cursor_increment_rejects_u64_max() {
-        let next = u64::MAX
-            .checked_add(1)
-            .ok_or(StreamError::Unavailable);
+        let next = u64::MAX.checked_add(1).ok_or(StreamError::Unavailable);
         assert_eq!(next, Err(StreamError::Unavailable));
     }
 

@@ -150,9 +150,7 @@ pub fn actor_id(#[napi(ts_arg_type = "string")] value: String) -> Result<String>
     js_name = "CodeSha256",
     ts_return_type = "import('@acyclic-labs/actors/types').CodeSha256"
 )]
-pub fn code_sha256(
-    #[napi(ts_arg_type = "Uint8Array")] value: Uint8Array,
-) -> Result<Uint8Array> {
+pub fn code_sha256(#[napi(ts_arg_type = "Uint8Array")] value: Uint8Array) -> Result<Uint8Array> {
     acyclic_actors::domain::CodeSha256::new(value.as_ref().to_vec())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
         .map_err(|error| napi_error(domain_error_metadata(error)))
@@ -266,13 +264,27 @@ fn domain_error_metadata(error: acyclic_actors::domain::DomainError) -> ErrorMet
             message: error.to_string(),
             semantic_code: Some(match error {
                 acyclic_actors::domain::DomainError::EmptyActorId => String::from("empty_actor_id"),
-                acyclic_actors::domain::DomainError::InvalidCodeSha256 => String::from("invalid_code_sha256"),
-                acyclic_actors::domain::DomainError::UnknownActorState(_) => String::from("unknown_actor_state"),
-                acyclic_actors::domain::DomainError::UnknownSubscriptionState(_) => String::from("unknown_subscription_state"),
-                acyclic_actors::domain::DomainError::UnknownErrorCode(_) => String::from("unknown_error_code"),
-                acyclic_actors::domain::DomainError::MissingMessage => String::from("missing_message"),
-                acyclic_actors::domain::DomainError::InvalidSubscription => String::from("invalid_subscription"),
-                acyclic_actors::domain::DomainError::InvalidBinding => String::from("invalid_binding"),
+                acyclic_actors::domain::DomainError::InvalidCodeSha256 => {
+                    String::from("invalid_code_sha256")
+                }
+                acyclic_actors::domain::DomainError::UnknownActorState(_) => {
+                    String::from("unknown_actor_state")
+                }
+                acyclic_actors::domain::DomainError::UnknownSubscriptionState(_) => {
+                    String::from("unknown_subscription_state")
+                }
+                acyclic_actors::domain::DomainError::UnknownErrorCode(_) => {
+                    String::from("unknown_error_code")
+                }
+                acyclic_actors::domain::DomainError::MissingMessage => {
+                    String::from("missing_message")
+                }
+                acyclic_actors::domain::DomainError::InvalidSubscription => {
+                    String::from("invalid_subscription")
+                }
+                acyclic_actors::domain::DomainError::InvalidBinding => {
+                    String::from("invalid_binding")
+                }
                 acyclic_actors::domain::DomainError::Contract(_) => unreachable!(),
             }),
             semantic_value: match error {
@@ -780,9 +792,8 @@ mod tests {
 
     #[test]
     fn semantic_metadata_preserves_category_raw_value_and_contract_code() -> Result<()> {
-        let unknown = domain_error_metadata(
-            acyclic_actors::domain::DomainError::UnknownActorState(99),
-        );
+        let unknown =
+            domain_error_metadata(acyclic_actors::domain::DomainError::UnknownActorState(99));
         let unknown = serde_json::to_value(unknown)
             .map_err(|error| napi_error(native_metadata("semantic metadata test", error)))?;
         assert_eq!(unknown["code"], "semantic_error");
@@ -797,11 +808,9 @@ mod tests {
         assert_eq!(through_client["semanticCode"], "unknown_error_code");
         assert_eq!(through_client["semanticValue"], 7);
 
-        let contract = domain_error_metadata(
-            acyclic_actors::domain::DomainError::Contract(
-                acyclic_actors::ContractError::LimitExceeded,
-            ),
-        );
+        let contract = domain_error_metadata(acyclic_actors::domain::DomainError::Contract(
+            acyclic_actors::ContractError::LimitExceeded,
+        ));
         let contract = serde_json::to_value(contract)
             .map_err(|error| napi_error(native_metadata("semantic metadata test", error)))?;
         assert_eq!(contract["code"], "limit_exceeded");
@@ -863,23 +872,21 @@ mod tests {
     async fn connect_result_returns_structured_configuration_error() -> Result<()> {
         let result = connect_result_metadata(
             async {
-                Err::<client::Client, client::Error>(client::Error::Configuration(
-                    String::from("endpoint is missing"),
-                ))
+                Err::<client::Client, client::Error>(client::Error::Configuration(String::from(
+                    "endpoint is missing",
+                )))
             },
             None,
         )
         .await;
 
         assert!(result.client.is_none());
-        let error = result
-            .error
-            .ok_or_else(|| {
-                napi_error(native_metadata(
-                    "connect result test",
-                    "missing error metadata",
-                ))
-            })?;
+        let error = result.error.ok_or_else(|| {
+            napi_error(native_metadata(
+                "connect result test",
+                "missing error metadata",
+            ))
+        })?;
         assert_eq!(error.code, "invalid_argument");
         assert_eq!(error.message, "endpoint is missing");
         Ok(())
@@ -898,14 +905,12 @@ mod tests {
             .await
             .map_err(|join| napi_error(native_metadata("connect cancellation test", join)))?;
         assert!(result.client.is_none());
-        let error = result
-            .error
-            .ok_or_else(|| {
-                napi_error(native_metadata(
-                    "connect cancellation test",
-                    "missing error metadata",
-                ))
-            })?;
+        let error = result.error.ok_or_else(|| {
+            napi_error(native_metadata(
+                "connect cancellation test",
+                "missing error metadata",
+            ))
+        })?;
         assert_eq!(error.code, "cancelled");
         assert_eq!(error.grpc_code, Some(1));
         assert_eq!(error.grpc_name.as_deref(), Some("cancelled"));

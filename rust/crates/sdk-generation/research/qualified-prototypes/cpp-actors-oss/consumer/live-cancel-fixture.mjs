@@ -4,7 +4,7 @@ import { writeFile } from "node:fs/promises";
 
 const sdkRoot = process.env.ACYCLIC_SDK_ROOT;
 if (!sdkRoot) throw new Error("ACYCLIC_SDK_ROOT must name the authoritative SDK checkout");
-const fixturePath = join(sdkRoot, "typescript", "packages", "actors", "test", "grpc-conformance-fixture.mjs");
+const fixturePath = join(import.meta.dirname, "actors-live-fixture.mjs");
 const { startConformanceFixture } = await import(pathToFileURL(fixturePath));
 
 let inspectStarted = false;

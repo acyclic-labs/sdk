@@ -134,17 +134,23 @@ impl PositiveU64 {
 
     /// Returns the exact unsigned wire value.
     #[must_use]
-    pub fn get(self) -> u64 { self.0.get() }
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
 }
 
 impl TryFrom<u64> for PositiveU64 {
     type Error = DomainError;
 
-    fn try_from(value: u64) -> Result<Self, Self::Error> { Self::new(value) }
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
 }
 
 impl From<PositiveU64> for u64 {
-    fn from(value: PositiveU64) -> Self { value.get() }
+    fn from(value: PositiveU64) -> Self {
+        value.get()
+    }
 }
 
 /// The shared digest predicate used by the existing Actor validators.
@@ -315,7 +321,9 @@ impl From<ActorLimits> for wire::ActorLimits {
 /// boolean payload of `CurrentHead`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
 #[ts(export_to = "actors/SubscriptionStart.ts")]
-#[ts(type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }")]
+#[ts(
+    type = "{ start: { value: bigint; case: \"cursor\" } | { value: true; case: \"currentHead\" } }"
+)]
 pub enum SubscriptionStart {
     /// Start at the exact u64 cursor, including cursor zero.
     Cursor {
@@ -430,9 +438,7 @@ impl SubscriptionSpec {
             || !matches!(
                 start,
                 SubscriptionStart::Cursor { .. }
-                    | SubscriptionStart::CurrentHead {
-                        current_head: true
-                    }
+                    | SubscriptionStart::CurrentHead { current_head: true }
             )
         {
             return Err(DomainError::InvalidSubscription);
@@ -724,34 +730,54 @@ pub struct SubscriptionObservation {
 impl SubscriptionObservation {
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the stream path.
     #[must_use]
-    pub fn stream_path(&self) -> &str { &self.stream_path }
+    pub fn stream_path(&self) -> &str {
+        &self.stream_path
+    }
     /// Returns the typed subscription state.
     #[must_use]
-    pub fn state(&self) -> SubscriptionState { self.state }
+    pub fn state(&self) -> SubscriptionState {
+        self.state
+    }
     /// Returns the delivered cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn delivered_cursor(&self) -> u64 { self.delivered_cursor }
+    pub fn delivered_cursor(&self) -> u64 {
+        self.delivered_cursor
+    }
     /// Returns the completed cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn completed_cursor(&self) -> u64 { self.completed_cursor }
+    pub fn completed_cursor(&self) -> u64 {
+        self.completed_cursor
+    }
     /// Returns the recoverable cursor without narrowing its `u64` range.
     #[must_use]
-    pub fn recoverable_cursor(&self) -> u64 { self.recoverable_cursor }
+    pub fn recoverable_cursor(&self) -> u64 {
+        self.recoverable_cursor
+    }
     /// Returns whether this subscription is the placement anchor.
     #[must_use]
-    pub fn placement_anchor(&self) -> bool { self.placement_anchor }
+    pub fn placement_anchor(&self) -> bool {
+        self.placement_anchor
+    }
     /// Returns the number of recorded retries.
     #[must_use]
-    pub fn retry_count(&self) -> u32 { self.retry_count }
+    pub fn retry_count(&self) -> u32 {
+        self.retry_count
+    }
     /// Returns the lossless failure code spelling.
     #[must_use]
-    pub fn failure_code(&self) -> &str { &self.failure_code }
+    pub fn failure_code(&self) -> &str {
+        &self.failure_code
+    }
     /// Returns the optional failed cursor.
     #[must_use]
-    pub fn failed_cursor(&self) -> Option<u64> { self.failed_cursor }
+    pub fn failed_cursor(&self) -> Option<u64> {
+        self.failed_cursor
+    }
 }
 
 impl TryFrom<wire::SubscriptionObservation> for SubscriptionObservation {
@@ -811,28 +837,44 @@ pub struct ActorObservation {
 impl ActorObservation {
     /// Returns the validated Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the validated code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns the home region spelling.
     #[must_use]
-    pub fn home_region(&self) -> &str { &self.home_region }
+    pub fn home_region(&self) -> &str {
+        &self.home_region
+    }
     /// Returns the typed Actor state.
     #[must_use]
-    pub fn state(&self) -> ActorState { self.state }
+    pub fn state(&self) -> ActorState {
+        self.state
+    }
     /// Returns the observed subscriptions in wire order.
     #[must_use]
-    pub fn subscriptions(&self) -> &[SubscriptionObservation] { &self.subscriptions }
+    pub fn subscriptions(&self) -> &[SubscriptionObservation] {
+        &self.subscriptions
+    }
     /// Returns the optional checkpoint timestamp in Unix milliseconds.
     #[must_use]
-    pub fn checkpoint_unix_millis(&self) -> Option<u64> { self.checkpoint_unix_millis }
+    pub fn checkpoint_unix_millis(&self) -> Option<u64> {
+        self.checkpoint_unix_millis
+    }
     /// Returns the checkpoint epoch.
     #[must_use]
-    pub fn checkpoint_epoch(&self) -> u64 { self.checkpoint_epoch }
+    pub fn checkpoint_epoch(&self) -> u64 {
+        self.checkpoint_epoch
+    }
     /// Returns the configuration revision.
     #[must_use]
-    pub fn configuration_revision(&self) -> u64 { self.configuration_revision }
+    pub fn configuration_revision(&self) -> u64 {
+        self.configuration_revision
+    }
 }
 
 impl TryFrom<wire::ActorObservation> for ActorObservation {
@@ -958,22 +1000,34 @@ impl CreateActorRequest {
 
     /// Returns the code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns the home region.
     #[must_use]
-    pub fn home_region(&self) -> &str { &self.home_region }
+    pub fn home_region(&self) -> &str {
+        &self.home_region
+    }
     /// Returns bindings in their request order.
     #[must_use]
-    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    pub fn bindings(&self) -> &[Binding] {
+        &self.bindings
+    }
     /// Returns the validated resource limits.
     #[must_use]
-    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    pub fn limits(&self) -> &ActorLimits {
+        &self.limits
+    }
     /// Returns subscriptions in their request order.
     #[must_use]
-    pub fn subscriptions(&self) -> &[SubscriptionSpec] { &self.subscriptions }
+    pub fn subscriptions(&self) -> &[SubscriptionSpec] {
+        &self.subscriptions
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::CreateActorRequest> for CreateActorRequest {
@@ -1049,16 +1103,24 @@ impl UpdateActorRequest {
 
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the code digest.
     #[must_use]
-    pub fn code_sha256(&self) -> &CodeSha256 { &self.code_sha256 }
+    pub fn code_sha256(&self) -> &CodeSha256 {
+        &self.code_sha256
+    }
     /// Returns bindings in their request order.
     #[must_use]
-    pub fn bindings(&self) -> &[Binding] { &self.bindings }
+    pub fn bindings(&self) -> &[Binding] {
+        &self.bindings
+    }
     /// Returns the validated resource limits.
     #[must_use]
-    pub fn limits(&self) -> &ActorLimits { &self.limits }
+    pub fn limits(&self) -> &ActorLimits {
+        &self.limits
+    }
     /// Returns the expected compare-and-replace revision.
     #[must_use]
     pub fn expected_configuration_revision(&self) -> u64 {
@@ -1066,7 +1128,9 @@ impl UpdateActorRequest {
     }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::UpdateActorRequest> for UpdateActorRequest {
@@ -1114,10 +1178,14 @@ pub struct InspectActorRequest {
 impl InspectActorRequest {
     /// Creates an inspect request for a validated Actor identity.
     #[must_use]
-    pub fn new(actor_id: ActorId) -> Self { Self { actor_id } }
+    pub fn new(actor_id: ActorId) -> Self {
+        Self { actor_id }
+    }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
 }
 
 impl TryFrom<wire::InspectActorRequest> for InspectActorRequest {
@@ -1164,13 +1232,19 @@ impl AddSubscriptionRequest {
 
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the validated subscription.
     #[must_use]
-    pub fn subscription(&self) -> &SubscriptionSpec { &self.subscription }
+    pub fn subscription(&self) -> &SubscriptionSpec {
+        &self.subscription
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::AddSubscriptionRequest> for AddSubscriptionRequest {
@@ -1221,13 +1295,19 @@ impl RemoveSubscriptionRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::RemoveSubscriptionRequest> for RemoveSubscriptionRequest {
@@ -1274,13 +1354,19 @@ impl ResumeSubscriptionRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the subscription identifier.
     #[must_use]
-    pub fn subscription_id(&self) -> &str { &self.subscription_id }
+    pub fn subscription_id(&self) -> &str {
+        &self.subscription_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::ResumeSubscriptionRequest> for ResumeSubscriptionRequest {
@@ -1326,10 +1412,14 @@ impl CheckpointActorRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the idempotency key.
     #[must_use]
-    pub fn idempotency_key(&self) -> &str { &self.idempotency_key }
+    pub fn idempotency_key(&self) -> &str {
+        &self.idempotency_key
+    }
 }
 
 impl TryFrom<wire::CheckpointActorRequest> for CheckpointActorRequest {
@@ -1387,19 +1477,29 @@ impl InvokeActorRequest {
     }
     /// Returns the Actor identity.
     #[must_use]
-    pub fn actor_id(&self) -> &ActorId { &self.actor_id }
+    pub fn actor_id(&self) -> &ActorId {
+        &self.actor_id
+    }
     /// Returns the invocation method.
     #[must_use]
-    pub fn method(&self) -> &str { &self.method }
+    pub fn method(&self) -> &str {
+        &self.method
+    }
     /// Returns the invocation URL.
     #[must_use]
-    pub fn url(&self) -> &str { &self.url }
+    pub fn url(&self) -> &str {
+        &self.url
+    }
     /// Returns the invocation body bytes.
     #[must_use]
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
     #[must_use]
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }
 
 impl TryFrom<wire::InvokeActorRequest> for InvokeActorRequest {
@@ -1443,13 +1543,19 @@ pub struct InvokeActorResponse {
 impl InvokeActorResponse {
     /// Returns the HTTP-like status code.
     #[must_use]
-    pub fn status(&self) -> u32 { self.status }
+    pub fn status(&self) -> u32 {
+        self.status
+    }
     /// Returns the response body bytes.
     #[must_use]
-    pub fn body(&self) -> &[u8] { &self.body }
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
     /// Returns headers in their original order.
     #[must_use]
-    pub fn headers(&self) -> &[Header] { &self.headers }
+    pub fn headers(&self) -> &[Header] {
+        &self.headers
+    }
 }
 
 impl From<wire::InvokeActorResponse> for InvokeActorResponse {
@@ -1767,7 +1873,9 @@ mod tests {
             SubscriptionSpec::new(
                 "events".into(),
                 "agents/a/events".into(),
-                SubscriptionStart::CurrentHead { current_head: false },
+                SubscriptionStart::CurrentHead {
+                    current_head: false
+                },
                 false,
             ),
             Err(DomainError::InvalidSubscription)

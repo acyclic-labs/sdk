@@ -5,6 +5,7 @@
 //! validation remain inside Rust; the JavaScript adapter only receives typed
 //! operation methods and a cancellation handle.
 
+/// WebAssembly binding re-export for wire.
 pub use acyclic_actors::wire;
 
 /// Maximum encoded message accepted by this boundary.

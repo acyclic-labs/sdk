@@ -153,9 +153,10 @@ impl Client {
                 "invalid Actors bearer credential".into(),
             ));
         }
-        let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = format!("Bearer {token}")
-            .parse()
-            .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
+        let mut authorization: tonic::metadata::MetadataValue<tonic::metadata::Ascii> =
+            format!("Bearer {token}")
+                .parse()
+                .map_err(|_| Error::Configuration("invalid Actors bearer credential".into()))?;
         authorization.set_sensitive(true);
         let transport = tonic_web_wasm_client::Client::new(endpoint.to_string());
         let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(

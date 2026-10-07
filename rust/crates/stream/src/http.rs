@@ -405,15 +405,18 @@ impl StreamProvider for HttpStream {
             )
             .await?;
         let children = parse_children(field(&value, "children")?)?;
-        wire_codec::checked_children_page(&request, ChildrenPage {
-            hierarchy_version: parse_id(field(&value, "hierarchyVersion")?)?,
-            children,
-            next_after: value
-                .get("nextAfter")
-                .filter(|value| !value.is_null())
-                .map(parse_path)
-                .transpose()?,
-        })
+        wire_codec::checked_children_page(
+            &request,
+            ChildrenPage {
+                hierarchy_version: parse_id(field(&value, "hierarchyVersion")?)?,
+                children,
+                next_after: value
+                    .get("nextAfter")
+                    .filter(|value| !value.is_null())
+                    .map(parse_path)
+                    .transpose()?,
+            },
+        )
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.commit_request(request, None).await
@@ -607,7 +610,10 @@ mod tests {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
             .expect("bind HTTP fixture");
-        let endpoint = format!("http://{}/", listener.local_addr().expect("fixture address"));
+        let endpoint = format!(
+            "http://{}/",
+            listener.local_addr().expect("fixture address")
+        );
         let responses = VecDeque::from(responses);
         let task = tokio::spawn(async move {
             for (route, body) in responses {
@@ -633,8 +639,12 @@ mod tests {
     }
 
     fn provider(endpoint: &str) -> HttpStream {
-        HttpStream::new(endpoint, "fixture-token", MAX_RECORD_BYTES.saturating_mul(2))
-            .expect("create HTTP fixture provider")
+        HttpStream::new(
+            endpoint,
+            "fixture-token",
+            MAX_RECORD_BYTES.saturating_mul(2),
+        )
+        .expect("create HTTP fixture provider")
     }
 
     fn read_request() -> ReadRequest {
@@ -651,8 +661,7 @@ mod tests {
             ("tail", r#""0""#.to_owned()),
             (
                 "read",
-                r#"[{"sequence":"0","value":"AAAA","committedAtMicros":"0"}]"#
-                    .to_owned(),
+                r#"[{"sequence":"0","value":"AAAA","committedAtMicros":"0"}]"#.to_owned(),
             ),
         ])
         .await;

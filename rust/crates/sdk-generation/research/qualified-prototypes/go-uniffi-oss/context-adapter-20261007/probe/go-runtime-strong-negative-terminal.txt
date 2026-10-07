@@ -1,0 +1,5 @@
+FAIL command-line-arguments [build failed]
+./negative.go:4:28: cannot use 7 (untyped int constant) as string value in argument to actors.NewActorId
+./negative.go:5:31: cannot use "wrong" (untyped string constant) as []byte value in argument to actors.NewCodeSha256
+./negative.go:6:32: cannot use 1.5 (untyped float constant) as uint64 value in argument to actors.NewPositiveU64 (truncated)
+GO_STRONG_TYPE_NEGATIVES_PASS

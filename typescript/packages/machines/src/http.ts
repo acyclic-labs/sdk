@@ -1,12 +1,12 @@
 import type { CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, Image, ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome, OperationId, OperationObservation, SuspensionPolicy, UsageReceipt, MachinePage, MachineEventPage } from "./index.js";
-import { httpRoutes, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { httpRoutes, normalizeEndpoint, validateBearerToken, validateMaximumResponseBytes, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
   CheckpointOut, EventsOut, MachinesHttpRequest, MachinesHttpResponse, MachinesHttpRoute,
   MachinesHttpRoutes, MutationOut, ObservationOut, OperationOut, PageOut, QualificationOut,
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { ensureMachinesWasm } from "./wasm-runtime.js";
 import { operationId } from "./index.js";
-import { asPublic, usageOut } from "./simulator.js";
+import { asPublic, u64Number, usageOut } from "./simulator.js";
 
 export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -14,7 +14,7 @@ export interface HttpMachinesOptions { readonly endpoint: string; readonly token
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
   readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number;
-  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); if (!options.token.trim()) throw new TypeError("token is required"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("maximumResponseBytes must be a positive safe integer"); this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
+  constructor(options: HttpMachinesOptions) { const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; try { this.#endpoint = normalizeEndpoint(options.endpoint); } catch (error) { throw new TypeError(error instanceof Error ? error.message : String(error)); } try { validateBearerToken(options.token); } catch (error) { throw new TypeError(error instanceof Error ? error.message : String(error)); } try { validateMaximumResponseBytes(maximum); } catch (error) { throw new RangeError(error instanceof Error ? error.message : String(error)); } this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#call("MACHINES_INSPECT", { machineId }).then(asPublic<ObservationOut, MachineObservation>); }
@@ -28,8 +28,8 @@ export class HttpMachinesProvider implements MachinesProvider {
   setSuspensionPolicy(machineId: MachineId, policy: SuspensionPolicy, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_SUSPENSION_POLICY", { machineId, policy, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   destroyMachine(machineId: MachineId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("MACHINES_DESTROY", { machineId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   destroyCheckpoint(checkpointId: CheckpointId, idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("CHECKPOINTS_DESTROY", { checkpointId, idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
-  events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#call("MACHINES_EVENTS", { machineId, afterSequence, limit }).then(asPublic<EventsOut, MachineEventPage>); }
-  usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#call("MACHINES_USAGE", { machineId, startUnixMs, endUnixMs }).then(usageOut); }
+  async events(machineId: MachineId, afterSequence: number | null, limit: number): Promise<MachineEventPage> { return this.#call("MACHINES_EVENTS", { machineId, afterSequence: afterSequence === null ? null : u64Number(afterSequence, "afterSequence"), limit }).then(asPublic<EventsOut, MachineEventPage>); }
+  async usage(machineId: MachineId, startUnixMs: number, endUnixMs: number): Promise<UsageReceipt> { return this.#call("MACHINES_USAGE", { machineId, startUnixMs: u64Number(startUnixMs, "startUnixMs"), endUnixMs: u64Number(endUnixMs, "endUnixMs") }).then(usageOut); }
   recover(idempotencyKey: IdempotencyKey): Promise<MutationOutcome> { return this.#call("OPERATIONS_RECOVER", { idempotencyKey }).then(asPublic<MutationOut, MutationOutcome>); }
   recoverOperation(idempotencyKey: IdempotencyKey): Promise<OperationId> { return this.#call("OPERATIONS_RECOVER_ID", { idempotencyKey }).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_INSPECT", { operationId }).then(asPublic<OperationOut, OperationObservation>); }

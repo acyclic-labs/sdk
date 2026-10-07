@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.65s
+     Running unittests src\lib.rs (target\debug\deps\acyclic_stream-44b43e3abfa6b8d5.exe)
+
+running 1 test
+test grpc::tests::dropping_eager_connect_releases_a_stalled_tls_socket ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 48 filtered out; finished in 0.49s
+

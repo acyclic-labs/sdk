@@ -1,0 +1,4 @@
+GO_SOURCE_REGENERATED_ALL8_PASS inspect=create=update=add=remove=resume=checkpoint invoke_status=201 cursor=9007199254740993 u64_max=18446744073709551615 semantic_typed=true server_abort_cleanup_auth=true
+go version go1.25.1 linux/amd64
+native runtime: libacyclic_actors_uniffi.so sha256=AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
+fixture transport: Windows canonical fixture via WSL relay, localhost SNI, authenticated token conformance

@@ -5,9 +5,9 @@
 //! been consumed by its first observation. Scheduling, admission, cancellation,
 //! and outcome semantics remain in `runtime.rs`.
 
-use crate::{Error, OperationId, Outcome, Result, TaskId};
 use crate::distributed::{MAX_TASK_EVENT_PAGE, TaskEventPage};
 use crate::runtime::{RuntimeTask, TaskCancellation, TaskStateProvider};
+use crate::{Error, OperationId, Outcome, Result, TaskId};
 use futures::future::{BoxFuture, FutureExt, Shared};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -93,7 +93,9 @@ where
                         "persistent runtime task has no result future".into(),
                     )));
                 };
-                let pending = async move { Arc::new(task.result().await) }.boxed().shared();
+                let pending = async move { Arc::new(task.result().await) }
+                    .boxed()
+                    .shared();
                 state.pending = Some(pending.clone());
                 pending
             }
@@ -126,13 +128,11 @@ where
     ///
     /// The page cursor is the coordinator revision. Live tasks have no
     /// durable event source and return `Unsupported`.
-    pub async fn scheduler_events(
-        &self,
-        after_revision: u64,
-        limit: u32,
-    ) -> Result<TaskEventPage> {
+    pub async fn scheduler_events(&self, after_revision: u64, limit: u32) -> Result<TaskEventPage> {
         if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
-            return Err(Error::Invalid("task event page limit is out of bounds".into()));
+            return Err(Error::Invalid(
+                "task event page limit is out of bounds".into(),
+            ));
         }
         let Some((task_id, operation_id, host)) = &self.event_source else {
             return Err(Error::Unsupported(
@@ -218,10 +218,9 @@ mod tests {
             let _ = started_rx.await;
             let _ = release.send(());
         });
-        let observed = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            async { tokio::join!(handle.result(), handle.result()) },
-        )
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::join!(handle.result(), handle.result())
+        })
         .await;
         assert!(observed.is_ok(), "concurrent observers did not complete");
         if let Ok((first, second)) = observed {
@@ -255,15 +254,17 @@ mod tests {
 
         assert!(started_rx.await.is_ok(), "task did not start");
         first.abort();
-        assert!(first.await.is_err(), "aborted observer unexpectedly completed");
+        assert!(
+            first.await.is_err(),
+            "aborted observer unexpectedly completed"
+        );
         assert!(release.send(()).is_ok(), "task release failed");
 
-        let second = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            handle.result(),
-        )
-        .await;
-        assert!(second.is_ok(), "task was lost when its first observer dropped");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), handle.result()).await;
+        assert!(
+            second.is_ok(),
+            "task was lost when its first observer dropped"
+        );
         if let Ok(second) = second {
             assert!(matches!(
                 second.as_ref(),
@@ -288,14 +289,13 @@ mod tests {
 
         assert!(started_rx.await.is_ok(), "task did not start");
         first.abort();
-        assert!(first.await.is_err(), "aborted observer unexpectedly completed");
+        assert!(
+            first.await.is_err(),
+            "aborted observer unexpectedly completed"
+        );
         assert!(handle.cancel().await.is_ok(), "cancellation request failed");
 
-        let second = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            handle.result(),
-        )
-        .await;
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), handle.result()).await;
         assert!(second.is_ok(), "cancelled task was not observable");
         if let Ok(second) = second {
             assert!(matches!(second.as_ref(), Ok(Outcome::Cancelled)));

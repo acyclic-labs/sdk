@@ -25,7 +25,11 @@ use std::{collections::BTreeSet, num::NonZeroU32};
 use tsify_next::Tsify;
 use wasm_bindgen::prelude::*;
 
-const MAX_SAFE: u64 = 9_007_199_254_740_991;
+pub(crate) const MAX_SAFE: u64 = 9_007_199_254_740_991;
+
+pub(crate) fn is_safe_integer(value: f64) -> bool {
+    value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= MAX_SAFE as f64
+}
 
 /// A public JavaScript number accepted only when it is an exact safe integer.
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -63,11 +67,7 @@ impl<'de> Deserialize<'de> for SafeInput {
                 reason = "finite integral values bounded by MAX_SAFE convert exactly"
             )]
             fn visit_f64<E: de::Error>(self, value: f64) -> Result<Self::Value, E> {
-                if value.is_finite()
-                    && value >= 0.0
-                    && value.fract() == 0.0
-                    && value <= MAX_SAFE as f64
-                {
+                if is_safe_integer(value) {
                     Ok(SafeInput(value as u64))
                 } else {
                     Err(E::custom("number must be an exact JavaScript safe integer"))
@@ -79,6 +79,7 @@ impl<'de> Deserialize<'de> for SafeInput {
 }
 
 #[derive(Clone, Copy, Debug)]
+/// WebAssembly binding struct for SafeNumber.
 pub struct SafeNumber(u64);
 impl Serialize for SafeNumber {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -106,6 +107,11 @@ fn invalid(message: impl Into<String>) -> Result<JsValue, JsValue> {
 
 fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
     serde_wasm_bindgen::from_value(value).map_err(|e| err(e.to_string()))
+}
+
+/// WebAssembly binding fn for validate_safe_u64.
+pub fn validate_safe_u64(value: JsValue) -> Result<(), JsValue> {
+    from_js::<SafeInput>(value).map(|_| ())
 }
 
 fn reject_retired_mode(value: &JsValue) -> Result<(), JsValue> {
@@ -174,6 +180,7 @@ fn digest_out(value: [u8; 32]) -> String {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for ImageIn.
 pub enum ImageIn {
     ManagedOci {
         #[serde(rename = "digestHex")]
@@ -207,6 +214,7 @@ pub(crate) fn managed_oci(reference: String) -> Result<JsValue, JsValue> {
 
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for ImageOut.
 pub enum ImageOut {
     ManagedOci {
         #[serde(rename = "digestHex")]
@@ -238,6 +246,7 @@ fn image_out(value: &Image) -> ImageOut {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+/// WebAssembly binding enum for CompatibilityIn.
 pub enum CompatibilityIn {
     BestEffort {},
     Require {
@@ -247,6 +256,7 @@ pub enum CompatibilityIn {
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, Tsify)]
 #[serde(rename_all = "kebab-case")]
+/// WebAssembly binding enum for CapabilityIn.
 pub enum CapabilityIn {
     ElasticCpu,
     ElasticMemory,
@@ -298,6 +308,7 @@ fn capability_out(value: &Capability) -> CapabilityIn {
 }
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for CompatibilityOut.
 pub enum CompatibilityOut {
     BestEffort,
     Require {
@@ -317,6 +328,7 @@ fn compatibility_out(value: &CompatibilityPolicy) -> CompatibilityOut {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+/// WebAssembly binding enum for SuspensionIn.
 pub enum SuspensionIn {
     Manual {},
     AfterIdle {
@@ -341,6 +353,7 @@ fn suspension_in(value: SuspensionIn) -> Result<SuspensionPolicy, JsValue> {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+/// WebAssembly binding enum for ExpirationIn.
 pub enum ExpirationIn {
     Never {},
     MaxAge {
@@ -388,6 +401,7 @@ fn expiration_in(value: ExpirationIn) -> Result<ExpirationPolicy, JsValue> {
 }
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for TimedOut.
 pub enum TimedOut {
     Manual,
     AfterIdle {
@@ -437,6 +451,7 @@ fn expiration_out(value: &ExpirationPolicy) -> TimedOut {
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
+/// WebAssembly binding struct for BudgetsIn.
 pub struct BudgetsIn {
     spend_micros: u64,
     concurrency: u32,
@@ -444,6 +459,7 @@ pub struct BudgetsIn {
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 #[tsify(large_number_types_as_bigints)]
+/// WebAssembly binding struct for BudgetsOut.
 pub struct BudgetsOut {
     spend_micros: u64,
     concurrency: u32,
@@ -463,6 +479,7 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// WebAssembly binding struct for CreateIn.
 pub struct CreateIn {
     idempotency_key: String,
     image: ImageIn,
@@ -486,6 +503,7 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
 
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for ContractOut.
 pub struct ContractOut {
     image: ImageOut,
     #[tsify(type = "readonly CapabilityIn[]")]
@@ -511,6 +529,7 @@ fn contract_out(value: &MachineContract) -> ContractOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for QualificationOut.
 pub struct QualificationOut {
     image: ImageOut,
     #[tsify(type = "readonly CapabilityIn[]")]
@@ -539,12 +558,14 @@ fn state_out(value: MachineState) -> &'static str {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for EndpointOut.
 pub struct EndpointOut {
     name: String,
     uri: String,
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for ObservationOut.
 pub struct ObservationOut {
     id: String,
     #[tsify(
@@ -578,6 +599,7 @@ fn observation_out(value: MachineObservation) -> ObservationOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for CheckpointOut.
 pub struct CheckpointOut {
     id: String,
     source: String,
@@ -597,6 +619,7 @@ fn checkpoint_out(value: CheckpointObservation) -> CheckpointOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for PageOut.
 pub struct PageOut {
     #[tsify(type = "readonly ObservationOut[]")]
     machines: Vec<ObservationOut>,
@@ -612,6 +635,7 @@ fn page_out(value: MachinePage) -> PageOut {
 
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for EventOut.
 pub struct EventOut {
     machine: String,
     #[tsify(type = "number")]
@@ -622,6 +646,7 @@ pub struct EventOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for FactOut.
 pub enum FactOut {
     State {
         #[tsify(
@@ -662,6 +687,7 @@ fn event_out(value: MachineEvent) -> EventOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for EventsOut.
 pub struct EventsOut {
     #[tsify(type = "readonly EventOut[]")]
     events: Vec<EventOut>,
@@ -676,6 +702,7 @@ fn events_out(value: EventPage) -> EventsOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for UsageOut.
 pub struct UsageOut {
     machine: String,
     #[tsify(type = "number")]
@@ -715,6 +742,7 @@ fn usage_out(value: UsageReceipt) -> UsageOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for OperationOut.
 pub struct OperationOut {
     id: String,
     #[tsify(type = "\"pending\" | \"succeeded\" | \"cancelled\" | \"indeterminate\" | \"failed\"")]
@@ -723,6 +751,7 @@ pub struct OperationOut {
 
 #[derive(Clone, Copy, Serialize, Tsify)]
 #[serde(rename_all = "kebab-case")]
+/// WebAssembly binding enum for ForkFidelityOut.
 pub enum ForkFidelityOut {
     MemoryAndDisk,
     DiskOnly,
@@ -741,6 +770,7 @@ fn operation_out(value: OperationObservation) -> OperationOut {
 }
 #[derive(Serialize, Tsify)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
+/// WebAssembly binding enum for MutationOut.
 pub enum MutationOut {
     Created {
         machine: ObservationOut,
@@ -828,6 +858,7 @@ fn mutation_out(value: MutationOutcome) -> MutationOut {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for MachineKey.
 pub struct MachineKey {
     machine_id: String,
     idempotency_key: String,
@@ -835,6 +866,7 @@ pub struct MachineKey {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for CheckpointKey.
 pub struct CheckpointKey {
     checkpoint_id: String,
     idempotency_key: String,
@@ -842,6 +874,7 @@ pub struct CheckpointKey {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// WebAssembly binding struct for ForkIn.
 pub struct ForkIn {
     checkpoint_id: String,
     count: u32,
@@ -851,6 +884,7 @@ pub struct ForkIn {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for MachineForkIn.
 pub struct MachineForkIn {
     machine_id: String,
     count: u32,
@@ -859,6 +893,7 @@ pub struct MachineForkIn {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for PolicyIn.
 pub struct PolicyIn {
     machine_id: String,
     policy: SuspensionIn,
@@ -867,6 +902,7 @@ pub struct PolicyIn {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for ListIn.
 pub struct ListIn {
     #[tsify(type = "string | null")]
     after: Option<String>,
@@ -875,6 +911,7 @@ pub struct ListIn {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for EventsIn.
 pub struct EventsIn {
     machine_id: String,
     #[tsify(type = "number | null")]
@@ -884,6 +921,7 @@ pub struct EventsIn {
 #[derive(Deserialize, Serialize, Tsify)]
 #[tsify(from_wasm_abi)]
 #[serde(rename_all = "camelCase")]
+/// WebAssembly binding struct for UsageIn.
 pub struct UsageIn {
     machine_id: String,
     #[tsify(type = "number")]

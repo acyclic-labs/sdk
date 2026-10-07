@@ -3,7 +3,7 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -1553,15 +1553,14 @@ mod tests {
     #[test]
     fn generated_source_spans_require_attestation_and_preserve_lines() {
         let suffix = std::process::id();
-        let repository_root = std::env::temp_dir().join(format!(
-            "sdk-docs-generated-source-root-{suffix}"
-        ));
-        let external_root = std::env::temp_dir().join(format!(
-            "sdk-docs-generated-source-external-{suffix}"
-        ));
+        let repository_root =
+            std::env::temp_dir().join(format!("sdk-docs-generated-source-root-{suffix}"));
+        let external_root =
+            std::env::temp_dir().join(format!("sdk-docs-generated-source-external-{suffix}"));
         let _ = fs::remove_dir_all(&repository_root);
         let _ = fs::remove_dir_all(&external_root);
-        fs::create_dir_all(repository_root.join("src")).expect("repository root should be writable");
+        fs::create_dir_all(repository_root.join("src"))
+            .expect("repository root should be writable");
         fs::create_dir_all(&external_root).expect("external source root should be writable");
 
         let inside = repository_root.join("src/inside.rs");
@@ -1602,12 +1601,8 @@ mod tests {
             .expect("checkout source should take precedence over generated mappings");
         assert_eq!(checkout_projection.path, "src/inside.rs");
 
-        let error = source_span_at_root(
-            &repository_root,
-            &HashMap::new(),
-            &external_span,
-        )
-        .expect_err("unattested external source must be rejected");
+        let error = source_span_at_root(&repository_root, &HashMap::new(), &external_span)
+            .expect_err("unattested external source must be rejected");
         assert!(error
             .to_string()
             .contains("without an attested generated source"));
@@ -1622,9 +1617,7 @@ mod tests {
         escaping.logical_path = PathBuf::from("../wire.rs");
         let error = attest_generated_sources(&[escaping])
             .expect_err("escaping generated logical path must be rejected");
-        assert!(error
-            .to_string()
-            .contains("escapes its bundle root"));
+        assert!(error.to_string().contains("escapes its bundle root"));
 
         let mut duplicate = generated.clone();
         duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
@@ -1685,11 +1678,9 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("publication must reject stale or incomplete navigation");
-        assert!(
-            error
-                .to_string()
-                .contains("navigation entries must exactly match")
-        );
+        assert!(error
+            .to_string()
+            .contains("navigation entries must exactly match"));
         assert!(!output.exists());
     }
 
@@ -2010,12 +2001,10 @@ mod tests {
                 end_column: 43,
             })
         );
-        assert!(
-            family
-                .items
-                .iter()
-                .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
-        );
+        assert!(family
+            .items
+            .iter()
+            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
 
         let mut external_trait = fixture;
         external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);
@@ -2033,8 +2022,7 @@ mod tests {
 
     #[test]
     fn build_data_projects_authored_links_to_array_receiver_methods() {
-        let root =
-            std::env::temp_dir().join(format!("sdk-docs-array-link-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("sdk-docs-array-link-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
         fs::write(
@@ -2209,11 +2197,9 @@ mod tests {
         };
         let error = write_bundle(&data, &output, true)
             .expect_err("directory at the index path must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("version index is not a regular file")
-        );
+        assert!(error
+            .to_string()
+            .contains("version index is not a regular file"));
         assert!(output.join("sdk-docs-versions.v1.json").is_dir());
         assert!(!output.join("releases").exists());
         fs::remove_dir_all(output).expect("test output should be removable");
@@ -2417,11 +2403,9 @@ mod tests {
         let before = fs::read(&index_path).expect("index should remain readable");
         let error = write_bundle(&data, &output, true)
             .expect_err("bundle revision mismatch must block publication");
-        assert!(
-            error
-                .to_string()
-                .contains("data revision does not match the index")
-        );
+        assert!(error
+            .to_string()
+            .contains("data revision does not match the index"));
         assert_eq!(
             before,
             fs::read(&index_path).expect("index should be unchanged")
@@ -2827,12 +2811,10 @@ mod tests {
             .expect("the public alias should be projected");
         assert!(alias.parent_id.is_some());
         assert_eq!(alias.docs.as_deref(), Some("hidden"));
-        assert!(
-            alias
-                .links
-                .get("target link")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(alias
+            .links
+            .get("target link")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         assert!(!alias.links.contains_key("alias-only"));
         let linked = family
             .items
@@ -2842,12 +2824,10 @@ mod tests {
         // Rustdoc resolves the alias reference to definition id 3; the
         // public occurrence map still exposes the reachable `demo::Visible`
         // use path rather than confusing the use item id with the definition.
-        assert!(
-            linked
-                .links
-                .get("alias target")
-                .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned()))
-        );
+        assert!(linked
+            .links
+            .get("alias target")
+            .is_some_and(|paths| paths.contains(&"demo::Visible".to_owned())));
         let associated_paths = linked
             .links
             .get("associated target")
@@ -2890,12 +2870,10 @@ mod tests {
             .iter()
             .find(|guide| guide.path == "demo::nested")
             .expect("the public module guide should be projected");
-        assert!(
-            guide
-                .links
-                .get("associated target")
-                .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned()))
-        );
+        assert!(guide
+            .links
+            .get("associated target")
+            .is_some_and(|paths| paths.contains(&"demo::associated_target".to_owned())));
         let linked_roundtrip: ApiItem = serde_json::from_value(
             serde_json::to_value(linked).expect("non-empty links should serialize"),
         )

@@ -1,6 +1,6 @@
 # Rust source-of-truth goal completion ledger
 
-Snapshot: current main 4f9447472ad3288ef51cd9d7e5dbc9e7d8785c41
+Snapshot: current main 0324cb1fb55a2e902e42eebd853bf092f2fd148f (2026-10-07).
 Review rule: evidence is labeled by its actual source. Main-tree facts,
 C-worktree research, and external qualification receipts are not interchangeable.
 
@@ -9,16 +9,16 @@ goal can be called. A row closes only with reproducible current-main evidence.
 
 ## Current-main facts
 
-| Area | What is actually present on 4f944 | State |
+| Area | What is actually present on current main | State |
 | --- | --- | --- |
 | Rust workspace | Cargo lists the published family crates, including Actors, Filesystem, Harness, Inference, Machines, Objects, Stream, Workers, their WASM/native companions, and the plugin. | Existing Rust packages; a unified generation authority is not present in the main tree. |
 | Inference authority | Main contains rust/crates/inference and rust/crates/inference-wasm, including the consolidated Rust contract, build script, descriptors, and WASM schema. | This family has a Rust-owned contract surface. |
 | Actors authority | Main contains generated Actors proto/tonic sources plus grpc/http adapters. The Rust domain/contract source used in the C foundation worktree is not present on this main snapshot. | Existing generated/runtime surface; Rust semantic authority migration remains open. |
-| Rust documentation | Main contains rust/crates/sdk-docs, its versioned data/index implementation, public API projection code, and the safe-version proof. | Generated data producer exists; its complete Rustdoc source bundle is not established. |
+| Rust documentation | PR258 supplies Cargo-bound package/search metadata, versioned immutable bundles, public API projection and the safe-version proof. | Complete Rustdoc profile coverage and executable language snippets remain open. |
 | SDK generation | Main has docs/rust-source-generation.md as an architecture record. It does not contain the sdk-generation crate or a completed all-owner generation bundle. | Open. |
-| TypeScript | Main contains checked-in generated proto and package sources for the families. The main tree does not prove that all public TypeScript contracts, snippets, and behavior are regenerated from Rust semantic exports. | Open. |
+| TypeScript | PR263 moves Machines primitive transport/page-size admission into Rust. Inference has a Rust-owned shared contract. PR264 independently qualifies Machines generated-domain aliases but is not merged. | Broad family contract/behavior replacement remains open. |
 | Website data handoff | Main documents versioned release/preview data and catalog concepts. No website/Svelte consumer tree is present in this repository snapshot. | The Rust-generated data contract is in scope; website presentation and deployment are outside this goal. |
-| CI policy | Main has source and qualification workflows and release/manual qualification intent. | Release-only downstream wiring needs current-main verification. |
+| CI policy | PR262 supplies cheap ordinary qualification policy and cache reuse. PR259/264 ordinary runs pass without downstream language matrices. | Release/manual downstream coverage still requires the final generated pipeline. |
 
 The main snapshot has ten published owners in the current generation inventory.
 The eleven-owner generation fixtures and their partial receipts belong to the
@@ -26,15 +26,21 @@ C foundation research worktree; they are not main-tree completion evidence.
 
 ## Evidence outside current main
 
-- The C foundation worktree contains the newer Rust semantic/domain and
-  sdk-generation work. Its clean generation attempts built the owner inputs but
-  have not produced a complete source-provenant all-owner bundle and drift pass.
+- The primary foundation worktree and Q:/sdk/work/sdkgen-main-actual03bb contain
+  newer semantic/domain work. Historical all-owner generation fixtures passed,
+  but the actual-main cutover has not produced its final complete source-bound
+  bundle and drift pass. Actors still has an independently authored schema
+  declaration awaiting the maintained generator's nested/presence cutover.
+- Stream PR259 exact head 1a3ec948 passed source-bound installed qualification,
+  independent review and CI. Strict latest-main ancestry requires integrated
+  ed2f7c5e metadata/package refresh before merge. This is not current-main
+  completion evidence yet.
 - The external Inference receipt at
   Q:/sdk/work/inference-installed-bac48c3-linux-nativepath-20261007 is a real
   installed-package qualification for source
   bac48c3432038bed318103f5ebeeed62d3fe6e6c. The 71-input closure comparison
   shows unchanged package inputs through the 9bc docs/workflow restack, but it
-  does not retag the artifact or qualify current main 4f944.
+  does not retag the artifact or qualify the current main revision.
 - Native UniFFI, N-API, and browser prototypes demonstrate maintained OSS
   mechanisms and focused behavior. They are not current-main installable SDK
   qualifications unless their receipt names this source revision and package.
