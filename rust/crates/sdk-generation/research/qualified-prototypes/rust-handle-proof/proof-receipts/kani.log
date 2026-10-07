@@ -1,0 +1,102 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+   Compiling rust-handle-proof-prototype v0.1.0 (/mnt/q/sdk/work/rust-handle-proof-prototype)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | ...re(register_tool)]
+  |       ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+warning: Found the following unsupported constructs:
+             - caller_location (1)
+             - foreign function (1)
+         
+         Verification will fail if one or more of these constructs is reachable.
+         See https://model-checking.github.io/kani/rust-feature-support.html for more details.
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.55s
+Checking harness proofs::drop_witness_emits_once_at_final_release...
+
+VERIFICATION RESULT:
+ ** 0 of 532 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 6.8693s
+
+Checking harness proofs::clone_active_count_overflow_is_atomic...
+
+VERIFICATION RESULT:
+ ** 0 of 704 failed (13 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 3.5344634s
+
+Checking harness proofs::clone_capacity_failure_is_atomic...
+
+VERIFICATION RESULT:
+ ** 0 of 686 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 5.7139335s
+
+Checking harness proofs::lease_id_exhaustion_does_not_mutate_live_state...
+
+VERIFICATION RESULT:
+ ** 0 of 697 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 6.9193215s
+
+Checking harness proofs::generation_neighbor_boundaries_retire_without_reuse...
+
+VERIFICATION RESULT:
+ ** 0 of 578 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 2.6650643s
+
+Checking harness proofs::generation_exhaustion_retires_without_reuse...
+
+VERIFICATION RESULT:
+ ** 0 of 540 failed (3 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 3.247998s
+
+Checking harness proofs::moves_and_clones_have_distinct_release_tokens...
+
+VERIFICATION RESULT:
+ ** 0 of 616 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 8.901191s
+
+Checking harness proofs::copied_token_is_idempotent_and_drops_once...
+
+VERIFICATION RESULT:
+ ** 0 of 492 failed (6 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 3.118862s
+
+Checking harness proofs::distinct_registry_domains_reject_cross_registry_handles...
+
+VERIFICATION RESULT:
+ ** 0 of 382 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 1.7625785s
+
+Checking harness proofs::stale_and_unissued_handles_reject...
+
+VERIFICATION RESULT:
+ ** 0 of 561 failed (5 unreachable)
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 4.000442s
+
+Manual Harness Summary:
+Complete - 10 successfully verified harnesses, 0 failures, 10 total.
+CARGO_KANI_EXIT=0

@@ -26,14 +26,12 @@ unauthorized call and a pre-cancelled operation. The run passed against the
 Rust-backed fixture. The full source and result are retained in
 `installed-all8-remote-conformance.py` and `all8-qualification-receipt.json`.
 
-`typing/positive.py` is the positive generated-annotation fixture. It covers
-nominal IDs, fixed bytes, unsigned values, opaque bindings, optional record
-fields, enums, request constructors, headers, and invoke responses.
-`typing/negative.py` contains deliberate wrong-type cases that a maintained
-checker must reject. Both fixtures compile as Python syntax. `mypy` and
-`pyright` were not installed in the local or isolated environments, so the
-static-checker result remains pending while generated annotation and runtime
-results are recorded separately.
+`typing/positive.py` and `typing/negative.py` are maintained-checker fixtures.
+Mypy 1.17.1 and Pyright 1.1.404 both reject all six deliberate negative cases.
+The positive fixture exposes one generated enum typing gap: `SubscriptionStart.CURSOR(1)` is emitted as the nested `CURSOR` class, while
+`SubscriptionSpec` annotates the parameter as `SubscriptionStart`. The runtime
+value is valid, but the generated Python type relationship needs correction in
+the binding-generation path. Full diagnostics are retained beside the fixtures.
 
 The generated Kotlin and Swift artifact hashes and the shared fixture identity
 are recorded in `all8-qualification-receipt.json`. No binary artifacts are

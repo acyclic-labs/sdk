@@ -1,8 +1,8 @@
-import asyncio, json
+import asyncio, json, os
 from pathlib import Path
 import acyclic_actors_uniffi as m
 
-FIXTURE = Path(r"Q:\sdk\work\go-remote-primitive-current\fixture-options.json")
+FIXTURE = Path(os.environ.get("ACYCLIC_FIXTURE_OPTIONS", r"Q:\sdk\work\go-remote-primitive-current\fixture-options.json"))
 
 def check_actor(value, expected):
     assert value is not None
@@ -75,6 +75,8 @@ async def main():
     print("Installed all-eight Python wheel remote conformance: PASS")
 
 asyncio.run(main())
+
+
 
 
 

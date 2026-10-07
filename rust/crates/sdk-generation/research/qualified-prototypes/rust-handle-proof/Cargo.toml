@@ -1,0 +1,21 @@
+[package]
+name = "rust-handle-proof-prototype"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+# Keep arithmetic checked in ordinary runs as well as in the proof model. The
+# implementation still uses checked transitions and never relies on wrapping.
+[profile.dev]
+overflow-checks = true
+
+[profile.release]
+overflow-checks = true
+
+[lints.rust]
+unexpected_cfgs = { level = "allow", check-cfg = ["cfg(kani)"] }

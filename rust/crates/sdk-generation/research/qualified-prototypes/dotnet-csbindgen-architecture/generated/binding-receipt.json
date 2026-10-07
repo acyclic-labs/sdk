@@ -1,0 +1,10 @@
+{
+  "schema": "csbindgen-architecture-receipt-v1",
+  "generator": "csbindgen=1.9.8",
+  "source_sha256": "sha256:6c64ef5e40f166fdd0c7268ebc7b906fad8695f107ff4ed4048ad66fc28b2152",
+  "manifest_sha256": "sha256:aae28d64afbc94259adaa8a8a5ebd8aefc2059eb87c5a9aca62a98a42e8780bd",
+  "lock_sha256": "sha256:32c38e48f9ab9df73f9448be3d4e825526191b11b6634ae97cd5cdc258c3275d",
+  "generated_sha256": "sha256:eb441394a46a19b0f516f8abe663f91cb51c4fec4c638e5ceffb12b15ee8b86d",
+  "managed_facade_sha256": "sha256:3db1a51e5b536fd62e6fb63529294d758b7b58fbb02721a2698a430490bc8d73",
+  "conventions": ["u64", "explicit-presence", "status-int", "opaque-safehandle"]
+}

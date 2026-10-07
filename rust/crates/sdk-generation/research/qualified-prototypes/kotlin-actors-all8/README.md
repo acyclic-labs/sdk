@@ -19,7 +19,8 @@ Generate the Kotlin binding from the pinned Rust cdylib with the pinned 0.31.0 b
 - coroutine cancellation forwarding through a thin package adapter;
 - structured service errors (`grpcCode`, optional `serviceCode`, and `detailMessage`).
 
-`CANCELLATION-DESIGN.md` describes the adapter boundary. The adapter forwards coroutine cancellation to the Rust-owned `CancellationHandle`; it does not implement transport, retries, validation, or response mapping.
+`CANCELLATION-DESIGN.md` describes the adapter boundary. The Rust-owned generator emits no-handle overloads that pass `null`; maintained UniFFI 0.31.0 coroutine future cleanup cancels the pending Rust future. The adapter does not install duplicate hooks or implement transport, retries, validation, or response mapping.
 
 The external receipt records a successful installed consumer run against the shared TLS fixture. The live fixture endpoint and certificate are intentionally not checked into this source-only directory.
-The automatic cancellation prototype consists of `consumer/ActorsCancellationAdapter.kt` and `consumer/AutomaticCancellationAdapterProbe.kt`. The adapter provides overloads that omit `CancellationHandle`, while the probe covers pending-operation normal completion, cancellation, and a 200-iteration completion/cancellation race before a live generated `inspectActor` call. It is compiled alongside the regenerated Kotlin source; no generated file is edited.
+The maintained-runtime cancellation reproduction consists of `consumer/ActorsCancellationAdapter.kt`, `consumer/NativePendingCancellationProbe.kt`, and the test-only `consumer/NativePendingContinuationMapProbe.kt`. The adapter is emitted from Rust-owned metadata and only passes `null` to generated methods. The pending probe observes a real native abort; the same-package map probe observes continuation-map size 0→1→0 across three cancellations. Both compile alongside regenerated Kotlin source; no generated file is edited.
+

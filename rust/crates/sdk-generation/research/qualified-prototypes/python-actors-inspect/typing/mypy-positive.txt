@@ -1,0 +1,4 @@
+acyclic_actors_uniffi.py:349: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+positive.py:24: error: Incompatible types in assignment (expression has type "CURSOR", variable has type "SubscriptionStart")  [assignment]
+Found 1 error in 1 file (checked 1 source file)
+exit=0

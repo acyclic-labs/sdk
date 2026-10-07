@@ -75,3 +75,36 @@ Automatic generated-package cancellation adapter receipt (2026-10-07):
 - probe: normal completion left handle uncancelled; pending cancellation forwarded; 200 race iterations observed normal=100 and cancelled=100 with matching handle state
 - live adapter call: inspect actor-a returned ACTIVE epoch=9
 - terminal marker: KOTLIN_AUTOMATIC_CANCELLATION_ADAPTER_PASS
+
+Rust-owned thin cancellation adapter generator and real pending receipt (2026-10-07):
+- metadata/template source: rust/crates/actors-uniffi/src/cancellation_metadata.rs, SHA-256 D13CE8677FC302E5414B3E6B611770B7AAC3EA931CBCBE01D84B58D0BA778389
+- generator binary source: rust/crates/actors-uniffi/src/bin/actors-uniffi-cancellation-adapter.rs, SHA-256 C90C46EA9AD541E815443D03C35C551343BD8BEACD77F171D23028608F4FF730
+- Cargo.toml SHA-256: 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377
+- generator check: cargo check --locked --features bindgen --bin actors-uniffi-cancellation-adapter PASS
+- generated adapter: Q:\sdk\work\actors-uniffi-all8-kotlin-immutable-20261007\consumer\src\main\kotlin\adapter\ActorsCancellationAdapter.kt, SHA-256 A9B66B35D25EE7700E4EBD349710DCD97BBE747E3F81327A233EFE5A59D047BE
+- generated adapter behavior: no custom coroutine hook or CancellationHandle allocation; all overloads pass null to maintained UniFFI async methods
+- pending probe: Q:\sdk\work\actors-uniffi-all8-kotlin-immutable-20261007\consumer\src\main\kotlin\probe\NativePendingCancellationProbe.kt, SHA-256 8D5E6819D54F47E7A6A5A79E292CF4C89288C4BCB2B9BFD1003F547FCDAA05C6
+- fixture: https://localhost:60389, control http://127.0.0.1:60391, CA Q:\sdk\work\root-pending-actors-fixture-ca.pem; fixture was not restarted
+- real pending receipt: started=2, aborted=1, active=0 after coroutine cancellation; terminal marker KOTLIN_NATIVE_PENDING_CANCELLATION_PASS
+- installed consumer JAR SHA-256: 1880B7988D246CDFA47FDF5EA6083E31D28C774BED8EF1B753E11E1AC2D7134C
+- design SHA-256: 23F446AB74BD43A48FD445C654838D714AC6B88789E05A038B933A16C5445B04
+
+Maintained-runtime repeated pending cancellation and continuation cleanup receipt (2026-10-07):
+- test-only same-package probe: consumer/NativePendingContinuationMapProbe.kt, SHA-256 ECDED301F0078F58C8BB88AA7FBF7D4B70D369208A1C235AEEFFB65ECC7BBB2E
+- generated package was unmodified; probe read the existing internal continuation map only for evidence
+- map observations: baseline=0; during=1; after=0 for each of 3 cancellations
+- gated fixture observations: started=4,5,6; aborted=3,4,5; active=1 during and 0 after each cancellation
+- fixture: https://localhost:60389, control http://127.0.0.1:60391, CA Q:\sdk\work\root-pending-actors-fixture-ca.pem; fixture was not restarted
+- terminal marker: KOTLIN_NATIVE_PENDING_CONTINUATION_MAP_PASS
+- installed consumer JAR SHA-256 after probe compilation: 7E95B99D5918D02D75712EC63FE4EEE0DB28EF2F399E8E2FEA2F9F84BC2A08E7
+- design SHA-256 after this receipt: 66A7814C8C96F61A02C427B4A00FC9037B1989D4EEE8B4A7436EFE159E7A81CE
+- source-only README current maintained-runtime wording SHA-256: C8FB6756D8589C638643B9E2B9CBB8D2126E8E16AD2C7AF962C1D098FEB01634
+
+
+Portability and installability matrix (2026-10-07):
+- source-only matrix: PORTABILITY-MATRIX.md, SHA-256 E5DEF1513A4A4F000786482CFA2D0FFA92C2C0B457AF03BD0A86F8DAFE0234D2
+- maintained Linux wheel: Q:\sdk\work\actors-uniffi-python-linux-wheel-current-20261007\dist\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl, SHA-256 0D96809BE41C62DC893EDA16CB8DC1A1F1602F7227622EF1A167BDDA5288D154
+- packaged native `.so` SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
+- WSL installed wheel probe: LINUX_WHEEL_INSTALLED_NOMINAL_TYPES_PASS; transport fixture was unavailable for this bounded rerun
+- Python typing evidence: valid `SubscriptionStart.CURSOR(1)` rejected by both mypy and pyright; nominal negative cases rejected correctly
+- external Ruby cohort: UniFFI/bindgen 0.32.2 installed-gem all-eight receipt remains at Q:\sdk\work\actors-uniffi-ruby-0322-all8-current-20261007\receipt.json, gem SHA BE90127FFA88D1A647930B4492B1A7C026ED9B23EE90AC3D71B2B466068E70FA

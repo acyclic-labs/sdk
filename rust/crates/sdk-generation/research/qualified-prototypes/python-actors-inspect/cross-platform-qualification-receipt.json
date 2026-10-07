@@ -1,0 +1,49 @@
+{
+  "schema": "acyclic.rust-uniffi.python.cross-platform.v1",
+  "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+  "adapter_source_sha256": "BF538948EBB787EE3D69DA0F8110526E901724D88AAD57B65CF5E8F84EFB5743",
+  "packaging_source": {
+    "setup_py": "79D71C9938B8FBC4ABAD1A4FA1D5942651B33E058006C50BB634841EA7030B5A",
+    "pyproject_toml": "6CB0CE20DAD8F335AB64DCE0A26CDED1E9CE6E3BBB733C2587F10C0BCF566676",
+    "manifest": "494BD6C5AB279A27423F2ECD0A16C5A7E2476943252EB826EF533C8541A6829D",
+    "readme": "37AEB81D6C45C08F8A957E85FAE0F212E3ECE140EC83FFC16A7F09A2754C1FCF"
+  },
+  "linux": {
+    "toolchain": "WSL Ubuntu; rustc 1.98.1; Python 3.10.12; setuptools 80.9.0; wheel 0.37.1",
+    "native": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-linux-build-current-20261007\\release\\libacyclic_actors_uniffi.so",
+      "sha256": "AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24",
+      "bytes": 6566744
+    },
+    "wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-wheel-current-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+      "sha256": "0D96809BE41C62DC893EDA16CB8DC1A1F1602F7227622EF1A167BDDA5288D154",
+      "bytes": 2302199
+    },
+    "constructor_probe": "PASS",
+    "remote_conformance": "BLOCKED: Windows fixture loopback is not reachable from WSL (https localhost:55755 returned code 000)"
+  },
+  "windows": {
+    "wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-windows-wheel-current-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+      "sha256": "340984D8F57F154BDFEEB4F017D0AA07628626978B0A4932625BF165AB36B571",
+      "bytes": 3016134
+    },
+    "metadata": "PASS: README metadata, py.typed, and Windows DLL present"
+  },
+  "macos": {
+    "host": "ivar",
+    "platform": "Darwin 24.6.0 arm64",
+    "rustup_toolchain": "1.98.1-aarch64-apple-darwin installed",
+    "native_artifact": "UNAVAILABLE: no current Actors checkout or dylib on host",
+    "qualification": "PENDING"
+  },
+  "typing": {
+    "mypy": "1.17.1",
+    "pyright": "1.1.404",
+    "negative_cases": "PASS: both checkers reject all six deliberate errors",
+    "positive_cases": "FAIL: generated non-flat enum variant subclass relationship is dynamic and not recognized by either checker",
+    "upstream_assessment": "UniFFI 0.32.2 template has the same behavior"
+  },
+  "scope": "Platform packaging and typing evidence; all-eight remote behavior remains qualified by the Windows wheel receipt"
+}

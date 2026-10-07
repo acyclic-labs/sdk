@@ -1,11 +1,11 @@
-pub mod cancellation_metadata;
-
 //! Rust-owned UniFFI metadata for the Actors client.
 //!
 //! This facade exposes nominal semantic values, an explicit cancellation
 //! handle, client connection, and all eight Actors operations. All request
 //! construction, validation, transport selection, response conversion, and
 //! cancellation remain in `acyclic-actors`.
+pub mod cancellation_metadata;
+
 
 use std::sync::Arc;
 

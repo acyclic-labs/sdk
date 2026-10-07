@@ -7,21 +7,23 @@ Date: 2026-10-07
 
 ## Current receipt
 
-The external prototype is at
-`Q:\\sdk\\work\\rust-handle-proof-prototype`. Its source-bound receipt is
-`proof-receipts/kani-receipt.json` and records:
+The source bundle is checked in at
+`rust/crates/sdk-generation/research/qualified-prototypes/rust-handle-proof`.
+Its source-bound receipt is `proof-receipts/kani-receipt.json`; the same
+source snapshot was executed from the external WSL prototype at
+`Q:\\sdk\\work\\rust-handle-proof-prototype`. The receipt records:
 
 - source SHA-256:
-  `186d82171e4cc89b8e5c3ee1d3b0fe4495b1c93dd25d63e8f040ad63b86bcd60`;
+  `675cb5835014b566cc5009579cb122ce1657ffc1a9afc9c2320c1eb2060b00b6`;
 - Kani 0.68.0 with CBMC 6.11.0;
 - one verifier job and unwind bound 8; and
-- eight successful harnesses, with zero failed checks.
+- ten successful harnesses, with zero failed checks.
 
 The reproducible command is:
 
 ```text
 wsl.exe -d Ubuntu --user root -- bash -lc \
-  'cd /mnt/q/sdk/work/rust-handle-proof-prototype && \
+  'cd /mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/rust-handle-proof && \
    export CARGO_HOME=/mnt/q/sdk/work/foundation-kani-068/cargo-home \
           RUSTUP_HOME=/mnt/q/sdk/work/foundation-kani-068/rustup-home \
           CARGO_KANI=/mnt/q/sdk/work/foundation-kani-068/cargo-home/bin/cargo-kani \
@@ -29,14 +31,14 @@ wsl.exe -d Ubuntu --user root -- bash -lc \
    bash proofs/run-kani.sh'
 ```
 
-The receipt is evidence about that exact source snapshot and those eight
+The receipt is evidence about that exact source snapshot and those ten
 finite harness executions. It is not a proof receipt for a production ABI.
 
-## What the eight harnesses establish
+## What the ten harnesses establish
 
 The model has const-generic slot and lease arrays. The receipt instantiates
 `Registry<2, 4>`, `Registry<1, 4>`, `Registry<1, 2>`, and `Registry<1, 1>`
-through the eight harnesses. Those executions establish the checked
+through the ten harnesses. Those executions establish the checked
 transitions in those bounded states:
 
 1. an old released token, changed-generation token, changed-domain token, and
@@ -52,7 +54,9 @@ transitions in those bounded states:
    `u64::MAX` creation attempt is rejected;
 7. issuing lease ID `u64::MAX - 1` succeeds, the following `u64::MAX` attempt
    is rejected, and both existing leases remain usable; and
-8. lease-table capacity failure leaves the live lease usable.
+8. lease-table capacity failure leaves the live lease usable;
+9. active-lease counter overflow is rejected before ledger mutation; and
+10. a real `Drop` witness is emitted only at the final release.
 
 The symbolic tuple check is deliberately conditional on exact equality with
 the current live tuple. A bitwise copy of a live token is the same token; the
@@ -100,7 +104,7 @@ error cannot leave an active lease uncounted.
 proves the state transition’s final-drop count only. A future model should add
 a Rust-owned drop witness and specify whether destructor failure is possible.
 
-All eight harnesses use exclusive `&mut Registry` access. They prove no
+All ten harnesses use exclusive `&mut Registry` access. They prove no
 concurrent-release property. The ABI layer needs a separate synchronization
 design and tests for two simultaneous releases, clone-versus-release,
 shutdown-versus-lookup, and callback re-entry. Those tests must assert one
@@ -120,9 +124,10 @@ errors without attempting to manufacture a Rust reference.
 
 The remaining follow-up is:
 
-1. make `clone_lease` failure-atomic for the active-lease count;
-2. replace the abstract drop counter with a test-only drop witness while
-   retaining the pure transition counter; and
+1. retain the checked active-count preflight when moving the model into a
+   production registry;
+2. replace the model's boolean drop witness with the production-owned drop
+   object while retaining the pure transition counter; and
 3. add a separate mutex/consumer test lane for concurrent release and C ABI
    opaque-handle transport.
 

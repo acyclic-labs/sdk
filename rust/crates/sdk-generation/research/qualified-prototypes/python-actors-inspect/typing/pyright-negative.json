@@ -1,0 +1,110 @@
+{
+    "version": "1.1.404",
+    "time": "1791354945496",
+    "generalDiagnostics": [
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal[42]\" cannot be assigned to parameter \"value\" of type \"str\" in function \"__init__\"\n  \"Literal[42]\" is not assignable to \"str\"",
+            "range": {
+                "start": {
+                    "line": 14,
+                    "character": 32
+                },
+                "end": {
+                    "line": 14,
+                    "character": 34
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['not bytes']\" cannot be assigned to parameter \"value\" of type \"bytes\" in function \"__init__\"\n  \"Literal['not bytes']\" is not assignable to \"bytes\"",
+            "range": {
+                "start": {
+                    "line": 15,
+                    "character": 36
+                },
+                "end": {
+                    "line": 15,
+                    "character": 47
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['one']\" cannot be assigned to parameter \"handler_timeout_millis\" of type \"int\" in function \"__init__\"\n  \"Literal['one']\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 16,
+                    "character": 38
+                },
+                "end": {
+                    "line": 16,
+                    "character": 43
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Type \"list[tuple[str, str]]\" is not assignable to declared type \"list[Header]\"\n  \"tuple[str, str]\" is not assignable to \"Header\"",
+            "range": {
+                "start": {
+                    "line": 17,
+                    "character": 29
+                },
+                "end": {
+                    "line": 17,
+                    "character": 65
+                }
+            },
+            "rule": "reportAssignmentType"
+        },
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Argument of type \"Literal['not bytes']\" cannot be assigned to parameter \"body\" of type \"bytes\" in function \"__init__\"\n  \"Literal['not bytes']\" is not assignable to \"bytes\"",
+            "range": {
+                "start": {
+                    "line": 22,
+                    "character": 4
+                },
+                "end": {
+                    "line": 22,
+                    "character": 15
+                }
+            },
+            "rule": "reportArgumentType"
+        },
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/negative.py",
+            "severity": "error",
+            "message": "Type \"InvokeActorResponse\" is not assignable to declared type \"int\"\n  \"InvokeActorResponse\" is not assignable to \"int\"",
+            "range": {
+                "start": {
+                    "line": 25,
+                    "character": 20
+                },
+                "end": {
+                    "line": 25,
+                    "character": 73
+                }
+            },
+            "rule": "reportAssignmentType"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 6,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 0.908
+    }
+}
+

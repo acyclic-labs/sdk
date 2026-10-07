@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acyclic-actors-uniffi"
+dynamic = ["version"]
+description = "Rust-owned Actors UniFFI Python facade"
+requires-python = ">=3.9"
+license = "Apache-2.0"
+readme = "README.md"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+acyclic_actors_uniffi = ["*.dll", "*.so", "*.dylib", "py.typed"]
+

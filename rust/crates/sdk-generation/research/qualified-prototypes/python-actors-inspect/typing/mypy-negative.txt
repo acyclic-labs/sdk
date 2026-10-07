@@ -1,0 +1,9 @@
+acyclic_actors_uniffi.py:349: note: By default the bodies of untyped functions are not checked, consider using --check-untyped-defs  [annotation-unchecked]
+negative.py:15: error: Argument 1 to "ActorId" has incompatible type "int"; expected "str"  [arg-type]
+negative.py:16: error: Argument 1 to "CodeSha256" has incompatible type "str"; expected "bytes"  [arg-type]
+negative.py:17: error: Argument 1 to "ActorLimits" has incompatible type "str"; expected "int"  [arg-type]
+negative.py:18: error: List item 0 has incompatible type "tuple[str, str]"; expected "Header"  [list-item]
+negative.py:23: error: Argument 4 to "InvokeActorRequest" has incompatible type "str"; expected "bytes"  [arg-type]
+negative.py:26: error: Incompatible types in assignment (expression has type "InvokeActorResponse", variable has type "int")  [assignment]
+Found 6 errors in 1 file (checked 1 source file)
+exit=0

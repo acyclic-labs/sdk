@@ -1,0 +1,14 @@
+[package]
+name = "dotnet-csbindgen-architecture-probe"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[build-dependencies]
+csbindgen = "=1.9.8"
+sha2 = "=0.10.9"
+
+[workspace]

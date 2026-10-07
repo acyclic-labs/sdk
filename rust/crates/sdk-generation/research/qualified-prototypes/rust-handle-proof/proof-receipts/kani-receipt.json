@@ -1,0 +1,24 @@
+{
+  "schema": "rust-handle-proof-prototype/kani-receipt-v1",
+  "status": "verified",
+  "source_sha256": "675cb5835014b566cc5009579cb122ce1657ffc1a9afc9c2320c1eb2060b00b6",
+  "manifest_sha256": "45f92e13db35cc12363f686b72118c029af9871d6ba3da118df6b51cf56e945c",
+  "lock_sha256": "138d4618a2a96f6d9cc6de67630952ed850fb7ea1c4a7a46c6e8d8c7a0f81b01",
+  "kani": "Kani Rust Verifier 0.68.0 (cargo plugin)",
+  "cbmc": "6.11.0",
+  "jobs": 1,
+  "default_unwind": 8,
+  "harnesses": [
+    "proofs::stale_and_unissued_handles_reject",
+    "proofs::distinct_registry_domains_reject_cross_registry_handles",
+    "proofs::copied_token_is_idempotent_and_drops_once",
+    "proofs::moves_and_clones_have_distinct_release_tokens",
+    "proofs::generation_exhaustion_retires_without_reuse",
+    "proofs::generation_neighbor_boundaries_retire_without_reuse",
+    "proofs::lease_id_exhaustion_does_not_mutate_live_state",
+    "proofs::clone_capacity_failure_is_atomic",
+    "proofs::clone_active_count_overflow_is_atomic",
+    "proofs::drop_witness_emits_once_at_final_release"
+  ],
+  "log": "proof-receipts/kani.log"
+}

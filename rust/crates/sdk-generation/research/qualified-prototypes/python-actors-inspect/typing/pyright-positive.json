@@ -1,0 +1,30 @@
+{
+    "version": "1.1.404",
+    "time": "1791354943917",
+    "generalDiagnostics": [
+        {
+            "file": "/mnt/q/sdk/work/actors-uniffi-python-typing-linux-current-20261007/positive.py",
+            "severity": "error",
+            "message": "Type \"CURSOR\" is not assignable to declared type \"SubscriptionStart\"\n  \"CURSOR\" is not assignable to \"SubscriptionStart\"",
+            "range": {
+                "start": {
+                    "line": 23,
+                    "character": 27
+                },
+                "end": {
+                    "line": 23,
+                    "character": 54
+                }
+            },
+            "rule": "reportAssignmentType"
+        }
+    ],
+    "summary": {
+        "filesAnalyzed": 1,
+        "errorCount": 1,
+        "warningCount": 0,
+        "informationCount": 0,
+        "timeInSec": 0.966
+    }
+}
+

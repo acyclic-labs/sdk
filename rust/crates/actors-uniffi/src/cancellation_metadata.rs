@@ -75,7 +75,6 @@ const KOTLIN_IMPORTS: &[&str] = &[
     "ActorObservation",
     "ActorsClient",
     "AddSubscriptionRequest",
-    "CancellationHandle",
     "CheckpointActorRequest",
     "CreateActorRequest",
     "InspectActorRequest",
@@ -86,66 +85,15 @@ const KOTLIN_IMPORTS: &[&str] = &[
     "UpdateActorRequest",
 ];
 
-const KOTLIN_HELPER: &str = r#"/**
- * Generated package adapter for Rust async metadata carrying an optional
- * CancellationHandle. Callers never allocate or pass a handle.
- *
- * UniFFI 0.31.0 generated Kotlin has no Job.invokeOnCancellation hook, so
- * this adapter supplies only the cancellation bridge. It does not implement
- * transport, retries, request construction, validation, or response mapping.
- */
- suspend fun <T> automaticRustCancellation(
-    operation: suspend (CancellationHandle) -> T,
-): T {
-    check(currentCoroutineContext()[Job] != null) {
-        "automatic Rust cancellation requires a coroutine Job"
-    }
-    val job = currentCoroutineContext()[Job]!!
-    val handle = CancellationHandle()
-    val completionLock = Any()
-    var operationCompleted = false
-    val registration = job.invokeOnCompletion { cause ->
-        if (cause is CancellationException) {
-            synchronized(completionLock) {
-                if (!operationCompleted) {
-                    handle.cancel()
-                }
-            }
-        }
-    }
-    try {
-        val result = operation(handle)
-        synchronized(completionLock) {
-            operationCompleted = true
-        }
-        registration.dispose()
-        return result
-    } catch (error: Throwable) {
-        if (error !is CancellationException) {
-            synchronized(completionLock) {
-                operationCompleted = true
-            }
-            registration.dispose()
-        }
-        throw error
-    }
-}
-"#;
-
 /// Renders the package-level Kotlin adapter from the Rust-owned export table.
 pub fn render_kotlin_adapter() -> String {
     let mut output = String::new();
     output.push_str("package adapter\n\n");
-    output.push_str("import kotlinx.coroutines.CancellationException\n");
-    output.push_str("import kotlinx.coroutines.Job\n");
-    output.push_str("import kotlinx.coroutines.currentCoroutineContext\n");
     for import in KOTLIN_IMPORTS {
         writeln!(output, "import uniffi.acyclic_actors_uniffi.{import}").unwrap();
     }
     output.push_str("import uniffi.acyclic_actors_uniffi.connectActors as generatedConnectActors\n");
     output.push_str("import uniffi.acyclic_actors_uniffi.connectActorsWithCa as generatedConnectActorsWithCa\n\n");
-    output.push_str(KOTLIN_HELPER);
-    output.push('\n');
 
     for method in KOTLIN_TOP_LEVEL_METHODS {
         write!(output, "suspend fun {}(", method.wrapper_name).unwrap();
@@ -155,20 +103,20 @@ pub fn render_kotlin_adapter() -> String {
             }
             write!(output, "{}: {}", parameter.name, parameter.ty).unwrap();
         }
-        write!(output, "): {} = automaticRustCancellation {{ handle ->\n    {}(", method.return_type, method.generated_alias).unwrap();
+        write!(output, "): {} = {}(", method.return_type, method.generated_alias).unwrap();
         for (index, parameter) in method.parameters.iter().enumerate() {
             if index > 0 {
                 output.push_str(", ");
             }
             output.push_str(parameter.name);
         }
-        output.push_str(", handle)\n}\n\n");
+        output.push_str(", null)\n\n");
     }
 
     for method in KOTLIN_CLIENT_METHODS {
         writeln!(
             output,
-            "suspend fun ActorsClient.{}({}: {}): {} = automaticRustCancellation {{ handle -> {}({}, handle) }}\n",
+            "suspend fun ActorsClient.{}({}: {}): {} = {}({}, null)\n",
             method.wrapper_name,
             method.argument.name,
             method.argument.ty,
