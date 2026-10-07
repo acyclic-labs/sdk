@@ -1,0 +1,50 @@
+{
+  "actors": {
+    "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+    "scenario": "actors/typescript-consumer",
+    "packageVersion": "0.2.0",
+    "rustOutputHash": "6140CD4FA38BF36917D263E40A5AE09036DC4F234D739D26A06EF0BCFE19EDCE",
+    "snippetHash": "20E6473C87DD885E863132A40C42F69D7C4F8E8D4195B7CAEA63CBCBAF38DAA3",
+    "packageHashes": {
+      "typescript/packages/actors/dist/grpc.d.ts": "E183A74A3BB3C29928D5D05EBA12CBC20B18305849E3133FA73DD2BB2783C5F3",
+      "typescript/packages/actors/dist/grpc.js": "A4A627969F3EA1F45DD516DAEBD9A1B8F196CD203F3417EE972818FC19C24670",
+      "typescript/packages/actors/dist/http.d.ts": "17500E0E44D0952FD077D7E38CC8CD41C9071A8014F2266B2FB4775751659755",
+      "typescript/packages/actors/dist/http.js": "08CEC5C9DA58EAA14D30D9998C60B7D86FC80442D90B72441E6FA3755DA9612B",
+      "typescript/packages/actors/dist/index.d.ts": "A36C38A3558FD5B46BBE3F5597764FEA4F31499DD38CA176EE3602A743460C7F",
+      "typescript/packages/actors/dist/index.js": "629A5E6369CCA606E6C613930026D2AF2C94AF8E19CAFEDCFEFF497BE09971DA",
+      "typescript/packages/actors/dist/observe.d.ts": "778A66AE6CA07E432825B144E6AEDE07F7D4D46490FDAB7B8C67EE450D5076CB",
+      "typescript/packages/actors/dist/observe.js": "C796047C8B5FD2728FB3D275BE6E4CA186CC3AFC67B3CC76F6D9C14CDECB17FA",
+      "typescript/packages/actors/dist/routes.d.ts": "C8D294871D94E236B87E98059C626DAA72E5C00159FDEB89A782594ED447D02F",
+      "typescript/packages/actors/dist/routes.js": "FC01ED578C3C1E2D287F2B2FDA89A8831EDCF246648096A7BB8B4036A697EB49",
+      "typescript/packages/actors/package.json": "C0223A7212485DF9B70AAB5F46FE6AE5FA21C375887AEE8F7158BA221920CBDE"
+    },
+    "runtime": "{\"homeRegion\":\"eu\",\"encodedBytes\":139}",
+    "qualification": "tsc strict + node runtime against copied exact c8 package"
+  },
+  "machines": {
+    "checkout": "c8bef0be476cbfd5d4fa30d1f8d017fa5336d964",
+    "scenario": "machines/typescript-consumer",
+    "packageVersion": "0.2.0",
+    "rustOutputHash": "B7C948C63B2C33ABFECDA273931442550ADCECCC4C6319E1CC98A2F12DD80A28",
+    "snippetHash": "41704FC95D7D4724DCECAE7B21258301B5F328D0A0052D96974A6F70677911A0",
+    "packageHashes": {
+      "typescript/packages/machines/dist/client.d.ts": "D77A6CB7024C277D5776B9D1CBA8D1555C16707BE38071EA315B3514A08EE1D7",
+      "typescript/packages/machines/dist/client.js": "AFC3D0594525C6FD2DACDC2EAFCC32FC4BB5040B7DF0DA50E089AE1A5E8E4124",
+      "typescript/packages/machines/dist/http.d.ts": "36E0598D0520D22E83D90C7C42A3837422BFBC51E3A096C6434B7E1BD3B68D65",
+      "typescript/packages/machines/dist/http.js": "8B1F4A5EC021704D2040C1318D0CF56FED97B0B54D44ACDC052FAAC5C1E2C7DD",
+      "typescript/packages/machines/dist/index.d.ts": "2785069FCBB56C11E3C541649BB28780D006B37BA746679FE6FF2F2DCE80FE64",
+      "typescript/packages/machines/dist/index.js": "0FA39CCE63E4F87471DAD29112E77708957C01E918376B0C04AC5FC58CAC6401",
+      "typescript/packages/machines/dist/managed-oci-contract.d.ts": "56000B550F47B2FB362D71D293D93EFD8D079E3F749BD9BA128D427F3DC424EE",
+      "typescript/packages/machines/dist/managed-oci-contract.js": "78892C639A4FA407BFE4422E0F2767A42A76893A61655845AD931E8E376D9194",
+      "typescript/packages/machines/dist/observe.d.ts": "778A66AE6CA07E432825B144E6AEDE07F7D4D46490FDAB7B8C67EE450D5076CB",
+      "typescript/packages/machines/dist/observe.js": "C796047C8B5FD2728FB3D275BE6E4CA186CC3AFC67B3CC76F6D9C14CDECB17FA",
+      "typescript/packages/machines/dist/simulator.d.ts": "BE92B87123945FD3FADBFCB4B193E6B05EED1A62A24CC1C0A8B9AD4E7B8DDA3A",
+      "typescript/packages/machines/dist/simulator.js": "2F5C6E701899656765C1D17F7646B675D7E571B1541DCE37272C4781B2D805FF",
+      "typescript/packages/machines/dist/wasm-runtime.d.ts": "0FFF63B5CC91A16C1E648D821A707A80E7EE2A640E955284F250B1211703BD29",
+      "typescript/packages/machines/dist/wasm-runtime.js": "688179F111DD9092828FDDA09391A12E9240B951C78D752501E0578A8E2D16B3",
+      "typescript/packages/machines/package.json": "4964AF821F3229484A9D6B569365DB3DBA2863CDDACC751811E19D0C70DC5E1B"
+    },
+    "runtime": "{\"kind\":\"created\",\"pageSize\":1,\"suspension\":\"after-idle\"}",
+    "qualification": "tsc strict + node runtime against copied exact c8 package"
+  }
+}

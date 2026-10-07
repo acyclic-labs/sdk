@@ -14,6 +14,10 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 mod public_api;
+/// Cargo/Rustdoc-owned profile projections.
+pub mod rustdoc_profiles;
+/// Rust-owned executable examples and generated consumer projections.
+pub mod scenarios;
 
 pub const DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v2";
 pub const LEGACY_DATA_SCHEMA_VERSION: &str = "sdk-docs-data.v1";

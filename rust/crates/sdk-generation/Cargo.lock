@@ -314,6 +314,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sdk-generation"
+version = "0.1.0"
+dependencies = [
+ "cargo_metadata",
+ "sdk-docs",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
