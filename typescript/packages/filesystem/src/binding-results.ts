@@ -2,11 +2,25 @@ import type {
   BatchLookupEntry, DirectoryBindingChange, DirectoryPage, DirectoryRecordPage, FileRecordSnapshot,
   GenerationDiff, NamedAttributePage, NamedAttributeResult, StatResult, TreeEntrySnapshot, WorkCounters,
   WasmRawFileRecordSnapshot,
+  WorkspaceFileKind,
 } from "./contracts.js";
 
-export function copyFileRecord(record: FileRecordSnapshot | WasmRawFileRecordSnapshot): FileRecordSnapshot {
+type RawFileRecord = WasmRawFileRecordSnapshot;
+type RawTreeEntry = TreeEntrySnapshot;
+
+/**
+ * File-kind values are validated and emitted as finite Rust-owned types at
+ * each native/WASM boundary. Keep this projection as a type-preserving seam
+ * for the shared adapters; do not duplicate the Rust domain list here.
+ */
+export function projectFileKind<Value extends string>(value: Value): WorkspaceFileKind {
+  return value as unknown as WorkspaceFileKind;
+}
+
+export function copyFileRecord(record: FileRecordSnapshot | RawFileRecord): FileRecordSnapshot {
   return {
     ...record,
+    fileKind: projectFileKind(record.fileKind),
     fileId: Uint8Array.from(record.fileId),
     linkCount: BigInt(record.linkCount),
     metadataObject: Uint8Array.from(record.metadataObject),
@@ -55,10 +69,13 @@ export function copyNamedAttributePage(value: {
   }), hasMore: value.hasMore, work };
 }
 
-export function copyDirectoryPage(value: Pick<DirectoryPage, "entries" | "hasMore">,
+export function copyDirectoryPage(value: {
+  readonly entries: readonly { readonly name: Uint8Array; readonly fileId: Uint8Array; readonly fileKind: WorkspaceFileKind }[];
+  readonly hasMore: boolean;
+},
   work: WorkCounters): DirectoryPage {
   return { entries: value.entries.map(entry => ({ name: Uint8Array.from(entry.name),
-    fileId: Uint8Array.from(entry.fileId), fileKind: entry.fileKind })), hasMore: value.hasMore, work };
+    fileId: Uint8Array.from(entry.fileId), fileKind: projectFileKind(entry.fileKind) })), hasMore: value.hasMore, work };
 }
 
 export function copyDirectoryRecordPage(value: {
@@ -74,15 +91,21 @@ export function copyDirectoryRecordPage(value: {
     hasMore: value.hasMore, work };
 }
 
-function copyTreeEntry(entry: TreeEntrySnapshot): TreeEntrySnapshot {
+function copyTreeEntry(entry: RawTreeEntry): TreeEntrySnapshot {
   return {
     ...entry,
+    fileKind: projectFileKind(entry.fileKind),
     fileId: Uint8Array.from(entry.fileId),
     name: { ...entry.name, bytes: Uint8Array.from(entry.name.bytes) },
   };
 }
 
-export function copyBindingChange(change: DirectoryBindingChange): DirectoryBindingChange {
+export function copyBindingChange(change: {
+  readonly directoryId: Uint8Array;
+  readonly name: TreeEntrySnapshot["name"];
+  readonly before: RawTreeEntry | undefined;
+  readonly after: RawTreeEntry | undefined;
+}): DirectoryBindingChange {
   return {
     ...change,
     directoryId: Uint8Array.from(change.directoryId),
@@ -95,10 +118,15 @@ export function copyBindingChange(change: DirectoryBindingChange): DirectoryBind
 export function copyGenerationDiff(value: {
   readonly files: readonly {
     readonly fileId: Uint8Array;
-    readonly before: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
-    readonly after: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
+    readonly before: FileRecordSnapshot | RawFileRecord | undefined;
+    readonly after: FileRecordSnapshot | RawFileRecord | undefined;
   }[];
-  readonly bindings: readonly DirectoryBindingChange[];
+  readonly bindings: readonly {
+    readonly directoryId: Uint8Array;
+    readonly name: TreeEntrySnapshot["name"];
+    readonly before: RawTreeEntry | undefined;
+    readonly after: RawTreeEntry | undefined;
+  }[];
   readonly truncated: boolean;
 }, work: WorkCounters): GenerationDiff {
   return {

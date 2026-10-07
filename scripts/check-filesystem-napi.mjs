@@ -210,10 +210,11 @@ async function qualifyAdapter(bindingPath, engineRoot) {
     }
     if (
       Object.keys(read.work).length !== 24
-      || Object.values(read.work).some((value) => typeof value !== "number")
+      || Object.values(read.work).some((value) => typeof value !== "bigint")
       || Object.keys(checkout.acquisitionWork).length !== 24
+      || Object.values(checkout.acquisitionWork).some((value) => typeof value !== "bigint")
     ) {
-      throw new Error("native adapter lost the generated work-counter object");
+      throw new Error("native adapter lost the exact generated work-counter object");
     }
     const transactionBytes = new Uint8Array([9]);
     const transactionPromise = checkout.applyTransaction([{

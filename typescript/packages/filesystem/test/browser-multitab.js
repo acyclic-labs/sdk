@@ -80,7 +80,7 @@ function post(channel, value) {
 function emptyAccounting() {
   return {
     operations: 0,
-    work: Object.fromEntries(workFields.map((field) => [field, 0])),
+    work: Object.fromEntries(workFields.map((field) => [field, 0n])),
   };
 }
 
@@ -92,14 +92,12 @@ function record(accounting, receipt) {
 function recordWork(accounting, work) {
   accounting.operations += 1;
   for (const field of workFields) {
-    const value = Number(work[field]);
-    assert(Number.isSafeInteger(value) && value >= 0, `invalid work counter ${field}`);
+    const value = BigInt(work[field]);
+    assert(value >= 0n, `invalid work counter ${field}`);
     if (field === "peakAllocationBytes") {
       accounting.work[field] = Math.max(accounting.work[field], value);
     } else {
-      const sum = accounting.work[field] + value;
-      assert(Number.isSafeInteger(sum), `work counter ${field} overflowed`);
-      accounting.work[field] = sum;
+      accounting.work[field] += value;
     }
   }
 }
@@ -235,9 +233,7 @@ function mergeAccounting(target, source) {
     if (field === "peakAllocationBytes") {
       target.work[field] = Math.max(target.work[field], source.work[field]);
     } else {
-      const sum = target.work[field] + source.work[field];
-      assert(Number.isSafeInteger(sum), `work counter ${field} overflowed`);
-      target.work[field] = sum;
+      target.work[field] += source.work[field];
     }
   }
 }
@@ -703,7 +699,7 @@ async function runCoordinator() {
     abruptTabRecoveryVerified: true,
     workspaceProfiles,
     targetedCases,
-  });
+  }, (_key, value) => typeof value === "bigint" ? value.toString() : value);
 }
 
 (actor === null ? runCoordinator() : runActor()).catch((error) => {

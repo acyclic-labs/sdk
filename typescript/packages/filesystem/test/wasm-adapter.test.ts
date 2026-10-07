@@ -319,7 +319,7 @@ describe("WASM adapter canonical boundaries", () => {
     }
   });
 
-  test("normalizes generated work counters at the public adapter boundary", async () => {
+  test("preserves exact generated work counters at the public adapter boundary", async () => {
     const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
     const fs = adaptWasmFs(rawFs);
     try {
@@ -327,11 +327,11 @@ describe("WASM adapter canonical boundaries", () => {
       const checkout = await volume.checkout({
         access: "read-write", consistency: "pinned", mutationMode: "private-cow",
       });
-      expect(typeof checkout.acquisitionWork.bytesCopied).toBe("number");
-      expect(typeof checkout.acquisitionWork.sourcePathComponents).toBe("number");
+      expect(typeof checkout.acquisitionWork.bytesCopied).toBe("bigint");
+      expect(typeof checkout.acquisitionWork.sourcePathComponents).toBe("bigint");
       const mutation = await checkout.createFile("/adapter-dto", Uint8Array.of(4));
-      expect(typeof mutation.work.bytesCopied).toBe("number");
-      expect(typeof mutation.work.sourcePathComponents).toBe("number");
+      expect(typeof mutation.work.bytesCopied).toBe("bigint");
+      expect(typeof mutation.work.sourcePathComponents).toBe("bigint");
     } finally {
       fs.close();
     }

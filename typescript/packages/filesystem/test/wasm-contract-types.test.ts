@@ -18,6 +18,14 @@ import type {
   WasmBindings,
 } from "../src/contracts.js";
 import type * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
+import type * as GeneratedNative from "../generated/native/binding.js";
+import type {
+  PromotionAdmissionStatus,
+  ResidencyAdmissionStatus,
+  Speculation,
+  WorkCounters,
+  WorkspaceFileKind,
+} from "../src/contracts.js";
 
 type IsAny<Value> = 0 extends (1 & Value) ? true : false;
 type AnyMethodNames<Value> = {
@@ -200,6 +208,35 @@ export type _ResidencyUsesGeneratedDtos = AssertExtends<
 > & AssertExtends<
   ReturnType<WasmRawSpeculation["preemptForForeground"]>,
   GeneratedWasm.BrowserSpeculationPreemption
+>;
+
+type AllWorkCountersAreBigint = {
+  [Key in keyof WorkCounters]: WorkCounters[Key] extends bigint ? true : never
+}[keyof WorkCounters];
+export type _WorkCountersPreserveU64 = AssertExtends<AllWorkCountersAreBigint, true>;
+export type _FileKindsComeFromGeneratedRust = AssertExtends<WorkspaceFileKind, GeneratedWasm.BrowserWorkspaceDirectoryEntry["kind"]>;
+export type _SpeculationStatusesComeFromGeneratedRust = AssertExtends<
+  Awaited<ReturnType<Speculation["observe"]>>["status"], ResidencyAdmissionStatus
+> & AssertExtends<
+  Awaited<ReturnType<Speculation["planPromotion"]>>["status"], PromotionAdmissionStatus
+>;
+
+type NativeFileKindOutputs =
+  | NonNullable<GeneratedNative.NativeLookup["fileKind"]>
+  | NonNullable<GeneratedNative.NativeBatchLookupEntry["fileKind"]>
+  | GeneratedNative.NativeDirectoryEntry["fileKind"]
+  | GeneratedNative.NativeFileRecord["fileKind"]
+  | GeneratedNative.NativeTreeEntry["fileKind"]
+  | GeneratedNative.NativeResolvedFile["kind"]
+  | GeneratedNative.NativeWorkspaceStat["kind"]
+  | GeneratedNative.NativeWorkspaceDirectoryEntry["kind"];
+export type _NativeFileKindOutputsAreGeneratedFinite = AssertExtends<
+  NativeFileKindOutputs, GeneratedNative.NativeFileKind
+>;
+export type _NativeAdmissionStatusesAreGeneratedFinite = AssertExtends<
+  GeneratedNative.NativeResidencyAdmission["status"], GeneratedNative.NativeResidencyStatus
+> & AssertExtends<
+  GeneratedNative.NativePromotionAdmission["status"], GeneratedNative.NativePromotionStatus
 >;
 
 type GeneratedFactoryExports = Pick<

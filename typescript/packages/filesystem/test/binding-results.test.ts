@@ -30,6 +30,15 @@ describe("filesystem binding byte results", () => {
       .toEqual([1, 2, 3, 4]);
   });
 
+  test("preserves the generated Rust-owned file kind", () => {
+    const record = copyFileRecord({
+      fileId: id(1), fileKind: "regular", linkCount: "0", metadataObject: id(2),
+      payloadKind: "inline-regular", logicalBytes: undefined, payloadObject: undefined,
+      inlineBytes: undefined, deviceMajor: undefined, deviceMinor: undefined,
+    });
+    expect(record.fileKind).toBe("regular");
+  });
+
   test("batch lookup entries own their file identities", () => {
     const fileId = id(1);
     const [entry] = copyBatchLookupEntries([

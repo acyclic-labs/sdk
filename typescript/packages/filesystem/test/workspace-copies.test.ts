@@ -3,8 +3,9 @@ import type { TransactionRebaseResult, WorkCounters, WorkspaceStat } from "../sr
 import {
   copyCheckoutCommit, copyFileExtentPlan, copyLiveMutation, copyLiveTransaction,
   copyRebaseResult, copyTransactionRebase, copyTransactionResult,
-  copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyWorkspaceStat,
+  copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyWorkspaceStat, copyWork,
 } from "../src/workspace-copies.js";
+import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
 
 describe("workspace binding result copies", () => {
   test("normalizes wire integers and copies stat and directory bytes", () => {
@@ -159,5 +160,19 @@ describe("workspace binding result copies", () => {
     expect(() => copyRebaseResult({ status: "invalid", generationId: undefined,
       conflictCount: 0, truncated: false } as unknown as Parameters<typeof copyRebaseResult>[0], work))
       .toThrow("invalid status");
+  });
+
+  test("preserves full-width generated work counters", () => {
+    const max = (1n << 64n) - 1n;
+    const work = Object.fromEntries([
+      "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
+      "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
+      "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
+      "sourceBytesRead", "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined",
+      "itemsReturned", "allocationOperations", "peakAllocationBytes", "materializations",
+    ].map((key) => [key, max])) as BrowserWorkCounters;
+    const copied = copyWork(work);
+    expect(copied.bytesCopied).toBe(max);
+    expect(copied.materializations).toBe(max);
   });
 });
