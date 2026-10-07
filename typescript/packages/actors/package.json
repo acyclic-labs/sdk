@@ -28,6 +28,7 @@
   "files": [
     "dist",
     "generated/proto",
+    "generated/wasm",
     "CHANGELOG.md"
   ],
   "scripts": {

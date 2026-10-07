@@ -36,6 +36,21 @@ export interface ActorsOptions {
   readonly observer?: AcyclicObserver;
 }
 
+/**
+ * The Rust declarations are generated as structural TypeScript types. Keep
+ * the public client view immutable, including nested records and collections,
+ * while retaining the brands and presence unions emitted by ts-rs.
+ */
+export type ReadonlySemantic<T> = T extends Uint8Array
+  ? T
+  : T extends (...args: never[]) => unknown
+    ? T
+    : T extends readonly (infer Item)[]
+      ? readonly ReadonlySemantic<Item>[]
+      : T extends object
+        ? { readonly [K in keyof T]: ReadonlySemantic<T[K]> }
+        : T;
+
 /** Errors raised after Rust has returned a structured operation failure. */
 export class ActorsTransportError extends Error {
   constructor(message: string, readonly code = "actors_error") { super(message); }
@@ -52,14 +67,14 @@ export class ActorsClient {
   }
 
   get transport(): Promise<string | undefined> { return this.#client.then(client => client.transport); }
-  createActor(request: Semantic.CreateActorRequest): Promise<Semantic.CreateActorResponse> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema); }
-  updateActor(request: Semantic.UpdateActorRequest): Promise<Semantic.UpdateActorResponse> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema); }
-  inspectActor(request: Semantic.InspectActorRequest): Promise<Semantic.InspectActorResponse> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema); }
-  addSubscription(request: Semantic.AddSubscriptionRequest): Promise<Semantic.AddSubscriptionResponse> { return this.#call("addSubscription", AddSubscriptionRequestSchema, request, AddSubscriptionResponseSchema); }
-  removeSubscription(request: Semantic.RemoveSubscriptionRequest): Promise<Semantic.RemoveSubscriptionResponse> { return this.#call("removeSubscription", RemoveSubscriptionRequestSchema, request, RemoveSubscriptionResponseSchema); }
-  resumeSubscription(request: Semantic.ResumeSubscriptionRequest): Promise<Semantic.ResumeSubscriptionResponse> { return this.#call("resumeSubscription", ResumeSubscriptionRequestSchema, request, ResumeSubscriptionResponseSchema); }
-  checkpointActor(request: Semantic.CheckpointActorRequest): Promise<Semantic.CheckpointActorResponse> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema); }
-  invokeActor(request: Semantic.InvokeActorRequest): Promise<Semantic.InvokeActorResponse> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema); }
+  createActor(request: ReadonlySemantic<Semantic.CreateActorRequest>): Promise<ReadonlySemantic<Semantic.CreateActorResponse>> { return this.#call("createActor", CreateActorRequestSchema, request, CreateActorResponseSchema); }
+  updateActor(request: ReadonlySemantic<Semantic.UpdateActorRequest>): Promise<ReadonlySemantic<Semantic.UpdateActorResponse>> { return this.#call("updateActor", UpdateActorRequestSchema, request, UpdateActorResponseSchema); }
+  inspectActor(request: ReadonlySemantic<Semantic.InspectActorRequest>): Promise<ReadonlySemantic<Semantic.InspectActorResponse>> { return this.#call("inspectActor", InspectActorRequestSchema, request, InspectActorResponseSchema); }
+  addSubscription(request: ReadonlySemantic<Semantic.AddSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.AddSubscriptionResponse>> { return this.#call("addSubscription", AddSubscriptionRequestSchema, request, AddSubscriptionResponseSchema); }
+  removeSubscription(request: ReadonlySemantic<Semantic.RemoveSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.RemoveSubscriptionResponse>> { return this.#call("removeSubscription", RemoveSubscriptionRequestSchema, request, RemoveSubscriptionResponseSchema); }
+  resumeSubscription(request: ReadonlySemantic<Semantic.ResumeSubscriptionRequest>): Promise<ReadonlySemantic<Semantic.ResumeSubscriptionResponse>> { return this.#call("resumeSubscription", ResumeSubscriptionRequestSchema, request, ResumeSubscriptionResponseSchema); }
+  checkpointActor(request: ReadonlySemantic<Semantic.CheckpointActorRequest>): Promise<ReadonlySemantic<Semantic.CheckpointActorResponse>> { return this.#call("checkpointActor", CheckpointActorRequestSchema, request, CheckpointActorResponseSchema); }
+  invokeActor(request: ReadonlySemantic<Semantic.InvokeActorRequest>): Promise<ReadonlySemantic<Semantic.InvokeActorResponse>> { return this.#call("invokeActor", InvokeActorRequestSchema, request, InvokeActorResponseSchema); }
 
   async #call<I extends DescMessage, O extends DescMessage, Request, Response>(operation: Operation, input: I, request: Request, output: O): Promise<Response> {
     const client = await this.#client;
@@ -74,9 +89,10 @@ export class ActorsClient {
 }
 
 /** Buf's message objects are the wire boundary; Rust has already validated the
- * response before this normalization exposes the generated semantic shape. */
+ * response before this exposes the generated semantic shape. Presence remains
+ * `undefined` when the Rust declaration marks an optional field as absent. */
 function normalizeSemantic(value: unknown): unknown {
-  if (value === undefined) return null;
+  if (value === undefined) return undefined;
   if (value === null || typeof value !== "object") return value;
   if (value instanceof Uint8Array) return value;
   if (Array.isArray(value)) return value.map(normalizeSemantic);
@@ -100,7 +116,18 @@ function nativeBinding(): ActorsRustBinding {
       if (platform === undefined || arch === undefined) {
         throw new ActorsTransportError("native Actors binding requires Node.js", "configuration");
       }
-      const module = await import(`@acyclic-labs/actors-${platform}-${arch}`) as unknown as NativeActorsModule;
+      let module: NativeActorsModule;
+      try {
+        module = await import(`@acyclic-labs/actors-${platform}-${arch}`) as unknown as NativeActorsModule;
+      } catch (error) {
+        // The browser-compatible WASM bridge is shipped with this package. A
+        // native companion is preferred on Node, but a package install remains
+        // usable when the optional platform artifact is not present.
+        if (error instanceof Error && /module|package|import/i.test(error.message)) {
+          return wasmBinding().connect(endpoint, token);
+        }
+        throw error;
+      }
       const Client = module.NativeActorsClient ?? module.default?.NativeActorsClient;
       if (Client === undefined) {
         throw new ActorsTransportError("native Actors companion did not export NativeActorsClient", "configuration");
@@ -148,13 +175,22 @@ function wasmBinding(): ActorsRustBinding {
       const module = await import("../generated/wasm/acyclic_actors_wasm.js");
       await module.default();
       const inner = await module.ActorsClient.connect(endpoint, token);
+      const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = snakeCase(operation);
-        return [operation, (request: Uint8Array) => inner[method](request)];
+        return [operation, async (request: Uint8Array) => {
+          const invoke = (wasm as unknown as Record<string, unknown>)[method];
+          if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
+          return invoke.call(wasm, request) as Promise<Uint8Array>;
+        }];
       }));
-      return { ...client, transport: inner.transport } as ActorsRustClient;
+      return { ...client, transport: wasm.transport } as ActorsRustClient;
     },
   };
+}
+
+interface WasmActorsClient {
+  readonly transport: string;
 }
 
 function snakeCase(value: string): string {
