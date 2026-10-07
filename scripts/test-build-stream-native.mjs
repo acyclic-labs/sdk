@@ -257,22 +257,28 @@ test("native qualification preserves Windows separators in plain Rustflags", () 
 test("native qualification restores Rustflags when setup fails", async () => {
   const priorRustflags = process.env.RUSTFLAGS;
   const priorEncoded = process.env.CARGO_ENCODED_RUSTFLAGS;
+  const priorIncremental = process.env.CARGO_INCREMENTAL;
   process.env.RUSTFLAGS = "-C opt-level=2";
   delete process.env.CARGO_ENCODED_RUSTFLAGS;
+  process.env.CARGO_INCREMENTAL = "1";
   await assert.rejects(
     withDeterministicRustflags("C:/src", "C:/target", undefined, async () => {
       assert.equal(process.env.RUSTFLAGS, undefined);
       assert.match(process.env.CARGO_ENCODED_RUSTFLAGS, /__acyclic_stream_source/u);
+      assert.equal(process.env.CARGO_INCREMENTAL, "0");
       throw new Error("capture setup failed");
     }),
     /capture setup failed/,
   );
   assert.equal(process.env.RUSTFLAGS, "-C opt-level=2");
   assert.equal(process.env.CARGO_ENCODED_RUSTFLAGS, undefined);
+  assert.equal(process.env.CARGO_INCREMENTAL, "1");
   if (priorRustflags === undefined) delete process.env.RUSTFLAGS;
   else process.env.RUSTFLAGS = priorRustflags;
   if (priorEncoded === undefined) delete process.env.CARGO_ENCODED_RUSTFLAGS;
   else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncoded;
+  if (priorIncremental === undefined) delete process.env.CARGO_INCREMENTAL;
+  else process.env.CARGO_INCREMENTAL = priorIncremental;
 });
 
 test("native qualification forwards spaces and shell metacharacters through its Windows wrapper", async () => {
@@ -426,6 +432,11 @@ test("native builds create a Cargo cache tag only for an empty producer target d
     const tag = (await readFile(resolve(empty, "CACHEDIR.TAG"))).toString("utf8");
     assert.match(tag, /^Signature: 8a477f597d28d172789f06886806bc55\n/u);
     await ensureCargoTargetDirectory(empty);
+    await writeFile(resolve(empty, "CACHEDIR.TAG"), `${tag}# harmless producer comment\n`);
+    await ensureCargoTargetDirectory(empty);
+    await writeFile(resolve(empty, "CACHEDIR.TAG"), `Invalid: 8a477f597d28d172789f06886806bc55\n${tag}`);
+    await assert.rejects(ensureCargoTargetDirectory(empty), /invalid .*CACHEDIR\.TAG/u);
+    await writeFile(resolve(empty, "CACHEDIR.TAG"), tag);
     await writeFile(resolve(populated, "foreign.txt"), "foreign");
     await assert.rejects(ensureCargoTargetDirectory(populated), /pre-existing without a valid CACHEDIR\.TAG/u);
   } finally {

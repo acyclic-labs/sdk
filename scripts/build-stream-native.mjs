@@ -16,7 +16,8 @@ const buildInputsSchema = "acyclic.stream.native-build-inputs.v3";
 const buildInputsReceiptSchema = "acyclic.stream.native-build-inputs-receipt.v1";
 const generationManifestName = "generation-manifest.json";
 const buildInputsReceiptName = "stream-native-build-inputs.receipt.json";
-const cargoCacheTag = "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n";
+const cargoCacheTagSignature = "Signature: 8a477f597d28d172789f06886806bc55";
+const cargoCacheTag = `${cargoCacheTagSignature}\n# This file is a cache directory tag created by cargo.\n# For information about cache directory tags see https://bford.info/cachedir/\n`;
 const require = createRequire(import.meta.url);
 const sourceRoots = [
   "Cargo.toml",
@@ -166,7 +167,7 @@ export async function ensureCargoTargetDirectory(targetDir) {
   const tagPath = resolve(targetDir, "CACHEDIR.TAG");
   try {
     const existing = (await readFile(tagPath)).toString("utf8");
-    if (existing !== cargoCacheTag) throw new Error(`native target directory has an invalid ${tagPath}`);
+    if (existing.split(/\r?\n/u, 1)[0] !== cargoCacheTagSignature) throw new Error(`native target directory has an invalid ${tagPath}`);
     return;
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
@@ -230,7 +231,9 @@ export function deterministicRustflags(sourceRoot, targetDir, target, { plain = 
 export async function withDeterministicRustflags(sourceRoot, targetDir, target, operation) {
   const priorRustflags = envValue("RUSTFLAGS");
   const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
+  const priorCargoIncremental = envValue("CARGO_INCREMENTAL");
   try {
+    process.env.CARGO_INCREMENTAL = "0";
     process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(sourceRoot, targetDir, target, { plain: priorRustflags, encoded: priorEncodedRustflags });
     delete process.env.RUSTFLAGS;
     return await operation();
@@ -239,6 +242,8 @@ export async function withDeterministicRustflags(sourceRoot, targetDir, target, 
     else process.env.RUSTFLAGS = priorRustflags;
     if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
     else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
+    if (priorCargoIncremental === null) delete process.env.CARGO_INCREMENTAL;
+    else process.env.CARGO_INCREMENTAL = priorCargoIncremental;
   }
 }
 
