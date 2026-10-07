@@ -504,50 +504,29 @@ impl StockExecutor {
                 "tool prefix has another execution identity".into(),
             ));
         }
-        let (digest, file) = records
-            .iter()
-            .find_map(|record| match &record.event {
-                ExecutionEvent::ModelStarted {
-                    step: recorded,
-                    request_digest,
-                    request,
-                } if *recorded == step => Some((*request_digest, request)),
-                _ => None,
-            })
+        let retained = retained_model_step(journal, &records, step, self.limits).await?;
+        let prepared = retained
+            .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let prepared = load_model_request(journal, file, self.limits).await?;
-        if prepared.manifest().request_digest != digest {
-            return Err(Error::Conflict("tool prefix request digest differs".into()));
-        }
         let mut request = prepared.request().clone();
-        let mut admission = ModelEventAdmission::default();
         let mut calls = Vec::new();
-        for record in &records {
-            if let ExecutionEvent::Model {
-                step: recorded,
-                event,
-            } = &record.event
-                && *recorded == step
+        for event in retained.events {
+            if let ModelEvent::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } = event
             {
-                let event = load_json::<ModelEvent>(journal, event).await?;
-                admission.observe(&event, self.limits)?;
-                if let ModelEvent::ToolCall {
+                calls.push(ToolInvocation::for_model_call(
+                    input.operation_id,
+                    step,
                     call_id,
                     name,
                     arguments,
-                } = event
-                {
-                    calls.push(ToolInvocation::for_model_call(
-                        input.operation_id,
-                        step,
-                        call_id,
-                        name,
-                        arguments,
-                    ));
-                }
+                ));
             }
         }
-        if !admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
+        if !retained.admission.completed || !calls.iter().any(|call| call.call_id == call_id) {
             return Err(Error::Indeterminate(input.operation_id));
         }
         for invocation in calls {
@@ -703,40 +682,13 @@ impl StockExecutor {
         let (_, records) = self
             .model_records(journal, input.operation_id, step)
             .await?;
-        let mut replayed_model = Vec::new();
-        let mut admission = ModelEventAdmission::default();
-        for record in &records {
-            if let ExecutionEvent::Model {
-                step: event_step,
-                event,
-            } = &record.event
-                && *event_step == step
-            {
-                let event = load_json::<ModelEvent>(journal, event).await?;
-                admission.observe(&event, self.limits)?;
-                replayed_model.push(event);
-            }
-        }
-        let started = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                step: event_step,
-                request_digest,
-                request,
-            } if *event_step == step => Some((*request_digest, request)),
-            _ => None,
-        });
-        if started.is_none() && !replayed_model.is_empty() {
-            return Err(Error::Storage(
-                "model observations exist without an admitted attempt".into(),
-            ));
-        }
-        let request = if let Some((digest, reference)) = started {
-            let recorded = load_model_request(journal, reference, self.limits).await?;
-            if recorded.manifest().request_digest != digest {
-                return Err(Error::Conflict(
-                    "recorded model request digest differs from admission".into(),
-                ));
-            }
+        let RetainedModelStep {
+            request: retained_request,
+            mut admission,
+            events: replayed_model,
+        } = retained_model_step(journal, &records, step, self.limits).await?;
+        let started = retained_request.is_some();
+        let request = if let Some(recorded) = retained_request {
             recorded
         } else {
             let context = self
@@ -787,7 +739,7 @@ impl StockExecutor {
         let replay_completed = admission.completed;
         let model_events = if replay_completed {
             replayed_model
-        } else if started.is_some() {
+        } else if started {
             let Some(mut continuation) = self
                 .provider
                 .reconcile(ModelAttempt {
@@ -1610,6 +1562,65 @@ async fn stage_bytes(
         ));
     }
     Ok(reference)
+}
+
+/// Validated retained model artifacts without provider dispatch.
+pub(crate) struct RetainedModelStep {
+    pub(crate) request: Option<crate::model::PreparedModelRequest>,
+    pub(crate) admission: ModelEventAdmission,
+    pub(crate) events: Vec<ModelEvent>,
+}
+
+/// Reads only durable artifacts; never evaluates context, policy or providers.
+pub(crate) async fn retained_model_step(
+    journal: &dyn ExecutionJournal,
+    records: &[ExecutionRecord],
+    step: u32,
+    limits: Limits,
+) -> Result<RetainedModelStep> {
+    let mut events = Vec::new();
+    let mut admission = ModelEventAdmission::default();
+    for record in records {
+        if let ExecutionEvent::Model {
+            step: event_step,
+            event,
+        } = &record.event
+            && *event_step == step
+        {
+            let event = load_json::<ModelEvent>(journal, event).await?;
+            admission.observe(&event, limits)?;
+            events.push(event);
+        }
+    }
+    let started = records.iter().find_map(|record| match &record.event {
+        ExecutionEvent::ModelStarted {
+            step: event_step,
+            request_digest,
+            request,
+        } if *event_step == step => Some((*request_digest, request)),
+        _ => None,
+    });
+    if started.is_none() && !events.is_empty() {
+        return Err(Error::Storage(
+            "model observations exist without an admitted attempt".into(),
+        ));
+    }
+    let request = if let Some((digest, reference)) = started {
+        let recorded = load_model_request(journal, reference, limits).await?;
+        if recorded.manifest().request_digest != digest {
+            return Err(Error::Conflict(
+                "recorded model request digest differs from admission".into(),
+            ));
+        }
+        Some(recorded)
+    } else {
+        None
+    };
+    Ok(RetainedModelStep {
+        request,
+        admission,
+        events,
+    })
 }
 
 async fn load_model_request(

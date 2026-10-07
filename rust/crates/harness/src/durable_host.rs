@@ -298,38 +298,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         records: &[crate::executor::ExecutionRecord],
     ) -> Result<()> {
-        if !records.iter().any(|record| {
-            matches!(
-                record.event,
-                crate::executor::ExecutionEvent::ModelStarted { .. }
-            )
-        }) {
-            return Ok(());
-        }
-        let mut coordinator = self.host.coordinator.lock().await;
-        coordinator.refresh().await?;
-        coordinator.observe_operation(
-            &self.host.owner,
-            &self.host.owner_scope,
-            &self.host.verifier,
-            self.operation_id(),
-        )?;
-        for record in records {
-            if let crate::executor::ExecutionEvent::ModelStarted {
-                step,
-                request_digest,
-                ..
-            } = &record.event
-            {
-                coordinator.scheduler().require_model_claim(
-                    self.operation_id(),
-                    operation,
-                    *step,
-                    request_digest,
-                )?;
-            }
-        }
-        Ok(())
+        self.host
+            .verify_model_history(self.task_id, operation, records)
+            .await
     }
 
     pub(crate) async fn append_interaction(
@@ -480,6 +451,50 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Authenticates retained model claims without requiring an execution lease.
+    /// Passive readers gain no publication or provider-dispatch authority.
+    #[cfg(feature = "filesystem")]
+    pub(crate) async fn verify_model_history(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        records: &[crate::executor::ExecutionRecord],
+    ) -> Result<()> {
+        if !records.iter().any(|record| {
+            matches!(
+                record.event,
+                crate::executor::ExecutionEvent::ModelStarted { .. }
+            )
+        }) {
+            return Ok(());
+        }
+        let task_operation = OperationId::from_bytes(task.into_bytes());
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        coordinator.observe_operation(
+            &self.owner,
+            &self.owner_scope,
+            &self.verifier,
+            task_operation,
+        )?;
+        for record in records {
+            if let crate::executor::ExecutionEvent::ModelStarted {
+                step,
+                request_digest,
+                ..
+            } = &record.event
+            {
+                coordinator.scheduler().require_model_claim(
+                    task_operation,
+                    operation,
+                    *step,
+                    request_digest,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     /// Claims through the same coordinator, restricted to this signed owner.
     pub async fn pull_work(
         &self,
