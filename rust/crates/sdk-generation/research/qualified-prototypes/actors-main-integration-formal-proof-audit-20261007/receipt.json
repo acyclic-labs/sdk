@@ -94,9 +94,70 @@
   "verification": {
     "current_snapshot": "PASS_CURRENT_CANDIDATE; all three retained harnesses ran against exact ec0496 source mirror",
     "cargo_fmt_check": "PASS; cargo fmt --check --manifest-path rust/crates/actors/Cargo.toml exit 0",
-    "negative_controls": "NONE in this retained three-harness source; no negative result is implied",
+    "negative_controls": "Three task-local mutation controls preserved; production mirror restored and verified to domain.rs 532556... and formal_proofs.rs A221B0... hashes. Enum mapping sensitivity uses a temporary proof-only assertion harness and is explicitly not folded into the retained PASS claim.",
     "historical_receipts": "not reused; prior receipts bind different source hashes",
     "terminal_solver_state": "Original long Actors solver handles were preserved and not restarted; this receipt covers only the three independent small runs"
   },
-  "claim_scope": "Exactly three direct production properties: PositiveU64 nonzero admission/value preservation, ActorLimits all-three-positive admission/accessor preservation, and SubscriptionState/ActorState/ErrorCode i32 forward/reverse identity including unknown raw preservation. No transport, whole-request, arbitrary-string, digest-length, presence/oneof, expected-revision, or whole-crate claim."
+  "claim_scope": "Exactly three direct production properties: PositiveU64 nonzero admission/value preservation, ActorLimits all-three-positive admission/accessor preservation, and SubscriptionState/ActorState/ErrorCode i32 forward/reverse identity including unknown raw preservation. No transport, whole-request, arbitrary-string, digest-length, presence/oneof, expected-revision, or whole-crate claim.",
+  "mutation_controls": [
+    {
+      "name": "PositiveU64 predicate mutation",
+      "fixture_change": "Task-local domain.rs only: NonZeroU64::new(value) -> NonZeroU64::new(value.wrapping_sub(1)); proof harness unchanged.",
+      "result": "EXPECTED_FAILURE",
+      "observed": "3 of 100 failed; VERIFICATION:- FAILED; failed value==0, value!=0, and get()==value assertions.",
+      "raw_log": "audit/negative-controls/positive-u64-mutated.raw.txt",
+      "raw_log_sha256": "0BDAC92C1B1629D01D35159ED7C5D41EE1EAEB10F6D3C145A83E5EC29658C4ED"
+    },
+    {
+      "name": "ActorLimits predicate mutation",
+      "fixture_change": "Task-local domain.rs only: handler_timeout_millis.try_into()? -> handler_timeout_millis.wrapping_sub(1).try_into(); proof harness unchanged.",
+      "result": "EXPECTED_FAILURE",
+      "observed": "3 of 127 failed; VERIFICATION:- FAILED; failed nonzero, accessor preservation, and all-positive admission assertions.",
+      "raw_log": "audit/negative-controls/actor-limits-mutated.raw.txt",
+      "raw_log_sha256": "AD1B6AC8C62E2B5BED12851AFB96F80314D1699CAD1C56BC60A76BA7304CDCFC"
+    },
+    {
+      "name": "Published enum mapping mutation control",
+      "fixture_change": "Task-local domain.rs only: SubscriptionState::Active discriminant 1 -> 4. A temporary proof-only harness asserted every published discriminant; production proof source was restored unchanged afterward.",
+      "baseline": "0 of 18 failed; VERIFICATION:- SUCCESSFUL",
+      "mutated_result": "1 of 18 failed (16 unreachable); VERIFICATION:- FAILED at SubscriptionState::Active == 1.",
+      "baseline_raw_log": "audit/negative-controls/enum-published-mapping-baseline.raw.txt",
+      "baseline_raw_log_sha256": "4B8608F8B0A936DACE602E9EC5E948811D38C77DFFEA75BD926870F1D4FCE9EB",
+      "mutated_raw_log": "audit/negative-controls/enum-published-mapping-mutated.raw.txt",
+      "mutated_raw_log_sha256": "8441523D1666BA996B70D959FAE43D6E8FB69C9A3308AA57682EB942164A9404",
+      "scope_note": "The retained enum theorem proves inverse/lossless behavior and unknown raw preservation; it does not by itself assert the published numeric constants. The temporary mapping harness supplies that missing sensitivity control without changing production source."
+    }
+  ],
+  "remaining_pure_property_inventory": [
+    {
+      "property": "ActorId::new / TryFrom<String>",
+      "required_claim": "accepts exactly nonempty strings and preserves arbitrary admitted string bytes through as_str/String conversion",
+      "status": "NOT_COVERED_BY_THIS_RECEIPT"
+    },
+    {
+      "property": "CodeSha256::new",
+      "required_claim": "accepts exactly 32-byte values with at least one nonzero byte and preserves all 32 bytes",
+      "status": "NOT_COVERED_BY_THIS_RECEIPT"
+    },
+    {
+      "property": "SubscriptionStart CurrentHead oneof",
+      "required_claim": "valid CurrentHead marker roundtrip, missing oneof rejection, false marker rejection, and exact oneof identity",
+      "status": "NOT_COVERED_BY_THIS_RECEIPT"
+    },
+    {
+      "property": "Derived Actors ingress conversions",
+      "required_claim": "u64 losslessness, nested presence/oneof identity, and expected_configuration_revision preservation for actual production TryFrom paths",
+      "status": "SEPARATE_LONG_SOLVERS_OR_FOLLOWUP_REQUIRED"
+    },
+    {
+      "property": "Filesystem exact_u32_from_f64",
+      "required_claim": "finite integral f64 in [0,u32::MAX] accepted with exact value; fractions, negatives, overflow, NaN, infinity rejected",
+      "status": "SEPARATE_FILESYSTEM_RECEIPT"
+    },
+    {
+      "property": "Transport behavior",
+      "required_claim": "wire/HTTP/gRPC behavior",
+      "status": "OUT_OF_SCOPE_FOR_FORMAL_DOMAIN_RECEIPT"
+    }
+  ]
 }

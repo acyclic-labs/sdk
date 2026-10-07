@@ -1,0 +1,591 @@
+Kani Rust Verifier 0.68.0 (cargo plugin)
+CBMC 6.11.0
+warning: unused import: `oneof_validator_impl::*`
+ --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:8:9
+  |
+8 | pub use oneof_validator_impl::*;
+  |         ^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `consistency_checks::*`
+  --> rust/vendor/protify-proc-macro-0.1.4/src/impls/mod.rs:12:9
+   |
+12 | pub use consistency_checks::*;
+   |         ^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling acyclic-actors v0.2.0 (/tmp/actors-fcd-proof-20261007/rust/crates/actors)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.05s
+Checking harness contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /tmp/actors-fcd-proof-20261007/target/kani/x86_64-unknown-linux-gnu/debug/build/acyclic-actors/6283289a052e54aa/out/acyclic_actors-6283289a052e54aa__RNvNtNtNtNtCssTLU9RkkbP_14acyclic_actors8contract9generated6domain13formal_proofs55positive_u64_constructor_accepts_exactly_nonzero_values.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs line 1162 column 15 function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}> thread 0
+aborting path on assume(false) at file /home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs line 1334 column 15 function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError> thread 0
+aborting path on assume(false) at file rust/crates/actors/src/domain/formal_proofs.rs line 39 column 11 function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values thread 0
+Runtime Symex: 0.0346272s
+size of program expression: 1109 steps
+slicing removed 734 assignments
+Generated 80 VCC(s), 11 remaining after simplification
+Runtime Postprocess Equation: 0.000563923s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.00667772s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 7.456e-06s
+Solving with CaDiCaL 3.0.0
+2166 variables, 4770 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000209861s
+Runtime decision procedure: 0.00707084s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+2167 variables, 4771 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.00025654s
+Runtime decision procedure: 0.000376037s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+2168 variables, 4772 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000198716s
+Runtime decision procedure: 0.00030536s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+2169 variables, 4773 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.000355046s
+Runtime decision procedure: 0.00045806s
+
+RESULTS:
+Check 1: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 2: contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: rust/crates/actors/src/domain/formal_proofs.rs:39:11 in function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 3: contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.1
+	 - Status: FAILURE
+	 - Description: "assertion failed: value == 0"
+	 - Location: rust/crates/actors/src/domain/formal_proofs.rs:45:13 in function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 4: contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.2
+	 - Status: UNREACHABLE
+	 - Description: "assertion failed: error == DomainError::Contract(crate::ContractError::InvalidArgument)"
+	 - Location: rust/crates/actors/src/domain/formal_proofs.rs:46:13 in function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 5: contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.3
+	 - Status: FAILURE
+	 - Description: "assertion failed: value != 0"
+	 - Location: rust/crates/actors/src/domain/formal_proofs.rs:41:13 in function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 6: contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values.assertion.4
+	 - Status: FAILURE
+	 - Description: "assertion failed: positive.get() == value"
+	 - Location: rust/crates/actors/src/domain/formal_proofs.rs:42:13 in function contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+Check 7: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 8: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1162:15 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 9: std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1164:21 in function std::option::Option::<std::num::NonZero<u64>>::map::<contract::generated::domain::PositiveU64, fn(std::num::NonZero<u64>) -> contract::generated::domain::PositiveU64 {contract::generated::domain::PositiveU64}>
+
+Check 10: std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/option.rs:1334:15 in function std::option::Option::<contract::generated::domain::PositiveU64>::ok_or::<contract::generated::domain::DomainError>
+
+Check 11: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 12: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 13: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 14: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 15: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 16: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 17: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 18: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 19: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 20: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 21: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 22: <ContractError as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/lib.rs:75:34 in function <ContractError as std::cmp::PartialEq>::eq
+
+Check 23: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 24: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 25: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 26: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 27: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 28: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 29: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 30: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 31: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 32: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 33: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 34: std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &ContractError>::eq
+
+Check 35: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 36: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 37: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 38: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 39: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 40: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 41: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 42: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 43: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 44: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 45: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 46: std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &i32>::eq
+
+Check 47: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 48: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 49: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 50: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 51: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 52: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 53: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 54: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 55: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 56: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 57: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 58: std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for i32>::eq
+
+Check 59: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 60: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 61: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 62: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 63: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 64: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 65: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 66: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 67: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 68: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 69: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 70: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 71: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 72: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 73: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 74: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 75: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 76: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 77: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 78: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.20
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 79: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.21
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 80: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.22
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 81: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.23
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 82: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.24
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 83: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.25
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 84: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.26
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 85: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.27
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 86: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.28
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 87: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.29
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 88: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.30
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 89: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.31
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 90: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.32
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 91: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.33
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 92: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.34
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 93: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.35
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 94: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.36
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 95: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.37
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 96: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.38
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 97: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.39
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 98: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.40
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 99: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.41
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+Check 100: <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq.pointer_dereference.42
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: rust/crates/actors/src/domain.rs:45:43 in function <contract::generated::domain::DomainError as std::cmp::PartialEq>::eq
+
+
+SUMMARY:
+ ** 3 of 100 failed (1 unreachable)
+Failed Checks: assertion failed: value == 0
+ File: "rust/crates/actors/src/domain/formal_proofs.rs", line 45, in contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+Failed Checks: assertion failed: value != 0
+ File: "rust/crates/actors/src/domain/formal_proofs.rs", line 41, in contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+Failed Checks: assertion failed: positive.get() == value
+ File: "rust/crates/actors/src/domain/formal_proofs.rs", line 42, in contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+
+VERIFICATION:- FAILED
+Verification Time: 0.17983794s
+
+Manual Harness Summary:
+Verification failed for - contract::generated::domain::formal_proofs::positive_u64_constructor_accepts_exactly_nonzero_values
+Complete - 0 successfully verified harnesses, 1 failures, 1 total.
