@@ -48,6 +48,9 @@ use std::collections::BTreeSet;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+#[cfg(target_arch = "wasm32")]
+mod context_discovery;
+
 #[derive(Deserialize, Tsify)]
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
@@ -2553,6 +2556,88 @@ pub fn prepare_model_request(request: JsValue, limits: JsValue) -> Result<Vec<u8
     Ok(prepared.bytes().to_vec())
 }
 
+/// Parses a bounded frontmatter prefix without fetching or interpreting a skill body.
+#[wasm_bindgen(js_name = parseSkillMetadata, unchecked_return_type = "SkillMetadata")]
+pub fn parse_skill_metadata(
+    prefix: &[u8],
+    #[wasm_bindgen(unchecked_param_type = "PinnedContextPath")] source: JsValue,
+) -> Result<JsValue, JsValue> {
+    let metadata =
+        crate::context::parse_skill_metadata(prefix, from_js(source)?).map_err(js_error)?;
+    to_js(&metadata)
+}
+
+/// Projects a discovered revision using the native messages, placement and bounds.
+/// Discovery/body reads and their authority remain in ordinary provider bindings.
+#[wasm_bindgen(js_name = projectDiscoveredContext, unchecked_return_type = "Context")]
+pub fn project_discovered_context(
+    #[wasm_bindgen(unchecked_param_type = "DiscoveredContext")] snapshot: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "Context")] context: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "ContextPlacement")] placement: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let snapshot: crate::context::DiscoveredContext = from_js(snapshot)?;
+    let context: crate::context::Context = from_js(context)?;
+    let placement: crate::context::ContextPlacement = from_js(placement)?;
+    let context = crate::context::apply_context_projection(
+        context,
+        snapshot.messages().map_err(js_error)?,
+        crate::context::ContextRenderMode::Prompt,
+        placement,
+        from_js(limits)?,
+    )
+    .map_err(js_error)?;
+    context_to_js(&context)
+}
+
+// Only typed model file parts use the admitted descriptor wire representation.
+// Tool JSON may contain similar keys without being descriptors.
+fn context_to_js(context: &crate::context::Context) -> Result<JsValue, JsValue> {
+    let result = to_js(context)?;
+    let metadata = js_sys::Array::new();
+    for (name, file) in &context.metadata {
+        let entry = js_sys::Array::new();
+        entry.push(&JsValue::from_str(name));
+        entry.push(&to_js_admitted(file)?);
+        metadata.push(&entry);
+    }
+    js_sys::Reflect::set(
+        &result,
+        &JsValue::from_str("metadata"),
+        &js_sys::Object::from_entries(&metadata)?.into(),
+    )?;
+    let messages: js_sys::Array =
+        js_sys::Reflect::get(&result, &JsValue::from_str("messages"))?.dyn_into()?;
+    for (index, message) in context.messages.iter().enumerate() {
+        let index =
+            u32::try_from(index).map_err(|_| JsValue::from_str("context index exceeds u32"))?;
+        let content = js_sys::Reflect::get(&messages.get(index), &JsValue::from_str("content"))?;
+        match &message.content {
+            ModelContent::Text(_) => {}
+            ModelContent::Part(part) => context_part_to_js(&content, part)?,
+            ModelContent::Parts(parts) => {
+                let content: js_sys::Array = content.dyn_into()?;
+                for (index, part) in parts.iter().enumerate() {
+                    let index = u32::try_from(index)
+                        .map_err(|_| JsValue::from_str("context part index exceeds u32"))?;
+                    context_part_to_js(&content.get(index), part)?;
+                }
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn context_part_to_js(
+    part: &JsValue,
+    native: &crate::model::ModelContentPart,
+) -> Result<(), JsValue> {
+    if let crate::model::ModelContentPart::File { file, .. } = native {
+        js_sys::Reflect::set(part, &JsValue::from_str("file"), &to_js_admitted(file)?)?;
+    }
+    Ok(())
+}
+
 /// Validates a host-approved pinned selection without granting read authority.
 #[wasm_bindgen(js_name = validateContextSelection)]
 pub fn validate_context_selection(
@@ -2581,7 +2666,7 @@ pub fn apply_context_projection(
         from_js(limits)?,
     )
     .map_err(js_error)?;
-    to_js(&context)
+    context_to_js(&context)
 }
 
 /// Validates provider-neutral model content under the exact native limits.

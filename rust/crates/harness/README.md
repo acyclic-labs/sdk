@@ -2,6 +2,13 @@
 
 Rust-first, provider-neutral agent runtime. Harness owns typed conversation, task, effect, interaction, and fork semantics; providers own byte storage, history, execution checkpoints, and model-specific projection. A Rust future is not automatically a durable operation.
 
+Declared instructions and skill frontmatter use the ordinary context pipeline.
+An authorized caller captures a `ContextDiscovery` revision with finite limits,
+then binds it through `HarnessBuilder::declared_context`. Skill bodies stay lazy
+and `PinnedContextPath::read` uses the existing owner-authorized retained path
+read. Explicit refresh is the default; next-request refresh is opt-in at the
+caller's admitted boundary. See [discovery and reload](../../../docs/instruction-skill-composition.md).
+
 `HarnessBuilder::limits` centralizes file size, path, attachment, direct-rendering, selected-history, model-step, per-step stream-event, and tool-call ceilings; `StreamAggregate::with_limits` applies content bounds before publishing a conversation message. Physical providers may impose tighter upload and rendering bounds.
 
 At event admission, the content resolver must return the exact bytes of every primary file, inline attachment, extension, and manifest member. Harness checks each pinned descriptor itself and decodes manifests from their canonical pinned bytes; a provider's metadata-only `verify` or pre-parsed `load_manifest` response cannot authorize publication. Uploads may remain staged after a failed admission, but no event is published with a dangling or substituted ref.

@@ -35,6 +35,15 @@ Initialize Rust admission once with `const contracts = await NativeContracts.cre
 
 `HarnessBuilder.bindings({ ... })` groups independently replaceable runtime providers and delegates to the same checked builder methods. It introduces neither a second task/tool registry nor implicit capability grants.
 
+For declared instructions and skills, capture an immutable snapshot with
+`contracts.captureDiscoveredContext(declaration, reader)`, then bind it with
+`Harness.builder(contracts).declaredContext(snapshot)`. The owner-bound reader
+authenticates pages, bounded frontmatter prefixes and pinned body reads. Bodies
+stay lazy; `contextForRequest` selects explicit or next-request refresh at the
+caller-controlled admission boundary. Invalid replacements leave the prior
+snapshot intact. See [discovery and reload](../../../docs/instruction-skill-composition.md)
+for bounds, grants and restart behavior.
+
 After an uncertain durable admission, `AgentHarness.reconcileAdmission(operationId)` asks the owner host for the original committed task without resending the input. A confirmed absence returns `null`; a recovered task is checked against the currently pinned definition and output schema before observation or attachment.
 
 Group `race`, `firstSuccess`, and `quorum` observe early outcomes without cancelling or closing remaining members. `cancelOnFailure` is opt-in for both live and durable groups; durable admission requires an owner `cancelBatch` binding and pins the policy in the batch manifest. On a definitive failure, `join` asks the owner to retain one cancellation declaration before requesting accepted members; an uncertain request is exposed as an incomplete group outcome. After restart, `cancelBatchId` loads the exact retained batch and makes the same owner request. The owner must reject later unadmitted members and report each slot separately. A cancellation request is not a terminal outcome; observe the children to learn whether they stopped.

@@ -11,12 +11,12 @@ function nativeBoundary<T>(value: unknown): T {
 }
 
 type RawOperations = Pick<WasmRawWorkspace,
-  "head" | "sync" | "checkpoint" | "pin" | "delete" |
+  "head" | "generation" | "sync" | "checkpoint" | "pin" | "delete" |
   "read" | "readRange" | "stat" | "readSymbolicLink" |
   "planExtents" | "write" | "remove" | "liveRebase"
 >;
 type WorkspaceOperations = Pick<FsWorkspace,
-  "head" | "sync" | "checkpoint" | "pin" | "delete" |
+  "head" | "generation" | "sync" | "checkpoint" | "pin" | "delete" |
   "read" | "readRange" | "stat" | "readSymbolicLink" |
   "planExtents" | "write" | "remove" | "liveRebase"
 >;
@@ -28,6 +28,10 @@ export function workspaceOperations(
 ): WorkspaceOperations {
   return {
     async head() { return Uint8Array.from(await raw.head()); },
+    async generation(id) {
+      requireGenerationIdentity(id);
+      return adaptGeneration(await raw.generation(Uint8Array.from(id)));
+    },
     async sync() { return adaptGeneration(await raw.sync()); },
     async checkpoint(label) {
       requireName(label);
