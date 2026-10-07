@@ -358,7 +358,6 @@ fn authenticated_generation_counts_hardlinked_inline_file_once()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -978,7 +977,6 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -1194,7 +1192,6 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let root_file_id = FileId::from_bytes([1; 16]);
@@ -1698,7 +1695,6 @@ fn shared_metadata_is_authenticated_once() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
 -> Result<(), Box<dyn std::error::Error>> {

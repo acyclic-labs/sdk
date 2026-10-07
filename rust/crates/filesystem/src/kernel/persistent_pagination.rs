@@ -137,7 +137,10 @@ where
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the root, start key, inclusivity, value bound, decode limits, budget, and cancellation are independent page inputs"
+)]
 async fn paginate_async_with_bound<S, F>(
     store: &S,
     root: ObjectId,

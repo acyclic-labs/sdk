@@ -686,7 +686,6 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_total()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -1467,7 +1466,6 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 #[test]
 fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -1811,7 +1809,6 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn generated_regular_file_histories_match_independent_logical_and_physical_model()
 -> Result<(), Box<dyn std::error::Error>> {
     for history in 0..192_u64 {
@@ -1960,7 +1957,6 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
 -> Result<(), Box<dyn std::error::Error>> {
     let prior = WorkCounters {
@@ -2095,7 +2091,6 @@ fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();

@@ -209,7 +209,6 @@ struct SparseProbeFixture {
     regular_name: LogicalName,
 }
 
-#[allow(clippy::too_many_lines)]
 fn sparse_probe_fixture(
     store: &MemoryObjectStore,
 ) -> Result<SparseProbeFixture, Box<dyn std::error::Error>> {
@@ -862,7 +861,6 @@ fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn non_regular_dependency_regions_use_authenticated_record_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
@@ -953,7 +951,6 @@ fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
 }
 
 #[test]
-#[allow(clippy::too_many_lines)]
 fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
