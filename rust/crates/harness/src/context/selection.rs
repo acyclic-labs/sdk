@@ -14,7 +14,7 @@ use std::sync::Arc;
 /// An authoritative attribute state, shared by prompt rebuilds and updates.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextAttribute {
     /// Registered, namespaced application type (roles are ordinary attributes).
     pub type_name: String,
@@ -70,7 +70,7 @@ impl ContextAttribute {
 /// A pinned input; a file reference conveys no read authority.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextSourceValue {
     /// History, instructions, skills, catalogs or resources in immutable storage.
     File {
@@ -88,7 +88,7 @@ pub enum ContextSourceValue {
 /// A declared representation; summary creation remains an admitted model operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextRepresentation {
     /// Render the selected content.
     Full,
@@ -101,7 +101,7 @@ pub enum ContextRepresentation {
 /// Explicit bounded selection from a pinned source.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextExtent {
     /// The complete source.
     Whole,
@@ -117,7 +117,7 @@ pub enum ContextExtent {
 /// Host-approved selection and representation. Model suggestions need host policy approval.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ContextSelection {
     /// Pinned authoritative input.
     pub source: ContextSourceValue,
@@ -159,7 +159,7 @@ impl ContextSelection {
 /// Rendering mode for the same immutable source state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "wasm", derive(tsify_next::Tsify))]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub enum ContextRenderMode {
     /// Rebuild the component in its configured prompt position.
     Prompt,
