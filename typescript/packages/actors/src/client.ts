@@ -24,7 +24,7 @@ export type ActorsRustClient = {
 
 /** Bridge factory supplied by the generated WASM or native package. */
 export interface ActorsRustBinding {
-  connect(endpoint: string, token: string, signal?: AbortSignal): Promise<ActorsRustClient>;
+  connect(endpoint: string, token: string, signal?: AbortSignal, caCertificate?: Uint8Array): Promise<ActorsRustClient>;
 }
 
 export interface ActorsCallOptions {
@@ -34,6 +34,8 @@ export interface ActorsCallOptions {
 export interface ActorsOptions {
   readonly endpoint: string;
   readonly token: string;
+  /** Optional native trust root for private or test endpoints. */
+  readonly caCertificate?: Uint8Array;
   /** Native callers may inject the built N-API binding. */
   readonly binding?: ActorsRustBinding;
   /** Optional secret-free per-operation observer. */
@@ -64,14 +66,18 @@ export class ActorsTransportError extends Error {
 export class ActorsClient {
   readonly #endpoint: string;
   readonly #token: string;
+  readonly #caCertificate: Uint8Array | undefined;
   readonly #binding: ActorsRustBinding;
   #client: Promise<ActorsRustClient> | undefined;
+  #connectAbort: AbortController | undefined;
+  #connectWaiters = 0;
   readonly #observer: AcyclicObserver | undefined;
 
   constructor(options: ActorsOptions) {
     this.#observer = resolveObserver(options.observer);
     this.#endpoint = options.endpoint;
     this.#token = options.token;
+    this.#caCertificate = options.caCertificate;
     this.#binding = options.binding ?? defaultBinding();
   }
 
@@ -98,13 +104,43 @@ export class ActorsClient {
   }
 
   #connection(signal?: AbortSignal): Promise<ActorsRustClient> {
+    throwIfAborted(signal);
     if (this.#client === undefined) {
-      this.#client = this.#binding.connect(this.#endpoint, this.#token, signal).catch(error => {
-        this.#client = undefined;
-        throw error;
-      });
+      const controller = new AbortController();
+      let pending!: Promise<ActorsRustClient>;
+      pending = this.#binding.connect(this.#endpoint, this.#token, controller.signal, this.#caCertificate)
+        .then(client => {
+          if (this.#client === pending) this.#connectAbort = undefined;
+          return client;
+        })
+        .catch(error => {
+          if (this.#client === pending) {
+            this.#client = undefined;
+            this.#connectAbort = undefined;
+          }
+          throw error;
+        });
+      this.#connectAbort = controller;
+      this.#client = pending;
     }
-    return abortable(this.#client, signal);
+    const pending = this.#client;
+    this.#connectWaiters += 1;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.#connectWaiters -= 1;
+      if (this.#connectWaiters === 0 && this.#client === pending && this.#connectAbort !== undefined) {
+        // Evict before aborting. A bridge may reject asynchronously after the
+        // abort; a new caller must be able to start a fresh connection during
+        // that interval, and the old rejection must not clear the replacement.
+        const controller = this.#connectAbort;
+        this.#client = undefined;
+        this.#connectAbort = undefined;
+        controller.abort();
+      }
+    };
+    return abortable(pending, signal).finally(release);
   }
 }
 
@@ -140,7 +176,7 @@ function defaultBinding(): ActorsRustBinding {
 
 function nativeBinding(): ActorsRustBinding {
   return {
-    async connect(endpoint, token, signal) {
+    async connect(endpoint, token, signal, caCertificate) {
       let module: NativeActorsModule;
       try {
         // The native build script stages this generated loader and its exact
@@ -153,7 +189,7 @@ function nativeBinding(): ActorsRustBinding {
         // native artifact is preferred on Node, but a package install remains
         // usable when its optional platform artifact is not present.
         if (isMissingNativeArtifact(error)) {
-          return wasmBinding().connect(endpoint, token, signal);
+          return wasmBinding().connect(endpoint, token, signal, caCertificate);
         }
         throw error;
       }
@@ -162,8 +198,14 @@ function nativeBinding(): ActorsRustBinding {
         throw new ActorsTransportError("native Actors companion did not export NativeActorsClient", "configuration");
       }
       const cancellation = nativeCancellation(module, signal);
-      const inner = await Client.connect(endpoint, token, cancellation?.handle);
-      cancellation?.cleanup();
+      let inner: NativeActorsClient;
+      try {
+        inner = caCertificate === undefined
+          ? await Client.connect(endpoint, token, cancellation?.handle)
+          : await Client.connectWithCa(endpoint, token, Buffer.from(caCertificate), cancellation?.handle);
+      } finally {
+        cancellation?.cleanup();
+      }
       const client = Object.fromEntries(Object.keys(HTTP_ROUTES).map(operation => {
         const method = `${operation}Result` as keyof NativeActorsMethods;
         return [operation, (request: Uint8Array, signal?: AbortSignal) => {
@@ -192,9 +234,15 @@ interface NativeActorsClient extends NativeActorsMethods {
 }
 
 interface NativeActorsModule {
-  readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> };
+  readonly NativeActorsClient?: {
+    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+  };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
-  readonly default?: { readonly NativeActorsClient?: { connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient> }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+  readonly default?: { readonly NativeActorsClient?: {
+    connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+    connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
+  }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
 }
 
 function nativeCancellation(module: NativeActorsModule, signal?: AbortSignal): { handle: { cancel(): void }; cleanup: () => void } | undefined {
@@ -252,9 +300,31 @@ function isMissingNativeArtifact(error: unknown): boolean {
   if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
   const message = error instanceof Error ? error.message : String(error);
   const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
-  if (/^Cannot find module ['"][^'"]*generated[\\/]native[\\/]binding\.cjs['"]/i.test(firstLine)) return true;
-  if (/^Cannot find package ['"]@acyclic-labs[\\/]actors-(?:win32|linux|darwin|freebsd)-[^'"]+['"]/i.test(firstLine)) return true;
-  return false;
+  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
+  if (requested === undefined) return false;
+  // Only the package's own generated loader is optional. Matching a path
+  // suffix would incorrectly turn a broken transitive dependency into a
+  // silent WASM fallback.
+  let expected = new URL("../generated/native/binding.cjs", import.meta.url).pathname;
+  try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
+  return normalizeModulePath(requested) === normalizeModulePath(expected);
+}
+
+function normalizeModulePath(path: string): string {
+  let value = path;
+  if (value.startsWith("file:")) {
+    try { value = new URL(value).pathname; } catch { return ""; }
+  }
+  try { value = decodeURIComponent(value); } catch { /* keep the original path */ }
+  const normalized = value
+    .replace(/^[/\\]+(?=[A-Za-z]:)/, "")
+    .replaceAll("\\", "/")
+    .replace(/\/+/g, "/")
+    .replace(/\/$/, "");
+  // Windows module paths are case-insensitive; POSIX paths are not. Keeping
+  // POSIX case prevents an unrelated transitive module from being treated as
+  // this package's optional loader.
+  return /^(?:[A-Za-z]:\/|\/\/)/.test(normalized) ? normalized.toLowerCase() : normalized;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {

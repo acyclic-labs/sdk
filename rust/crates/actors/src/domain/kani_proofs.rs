@@ -7,7 +7,7 @@
 use super::{
     ActorLimits, ActorObservation, ActorState, CodeSha256, CreateActorResponse, DomainError,
     ErrorCode, PositiveU64, SubscriptionObservation, SubscriptionStart, SubscriptionState,
-    UpdateActorRequest, UpdateActorResponse, valid_code_sha256, wire,
+    UpdateActorRequest, UpdateActorResponse, valid_code_sha256, subscription_start, wire,
 };
 
 #[kani::proof]
@@ -132,6 +132,51 @@ fn subscription_start_preserves_cursor_and_current_head_presence() {
     assert_eq!(
         SubscriptionStart::try_from(missing_start),
         Err(DomainError::InvalidSubscription)
+    );
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn subscription_start_ingress_accepts_only_true_current_head_payload() {
+    let current_head: bool = kani::any();
+    let input = wire::SubscriptionStart {
+        start: Some(wire::subscription_start::Start::CurrentHead(current_head)),
+    };
+
+    match SubscriptionStart::try_from(input) {
+        Ok(parsed) => {
+            assert!(current_head);
+            assert_eq!(parsed.cursor_value(), None);
+            assert_eq!(parsed.current_head_value(), Some(true));
+        }
+        Err(error) => {
+            assert!(!current_head);
+            assert!(matches!(error, DomainError::InvalidSubscription));
+        }
+    }
+}
+
+#[kani::proof]
+#[kani::unwind(1)]
+fn current_head_marker_is_true_only_and_lowers_to_true_wire_payload() {
+    let raw: bool = kani::any();
+    match subscription_start::CurrentHeadMarker::try_from(raw) {
+        Ok(marker) => {
+            assert!(raw);
+            assert!(bool::from(marker));
+        }
+        Err(error) => {
+            assert!(!raw);
+            assert!(matches!(error, DomainError::InvalidSubscription));
+        }
+    }
+
+    let semantic = SubscriptionStart::current_head();
+    assert_eq!(semantic.current_head_value(), Some(true));
+    let wire_value: wire::SubscriptionStart = semantic.into();
+    assert_eq!(
+        wire_value.start,
+        Some(wire::subscription_start::Start::CurrentHead(true))
     );
 }
 
