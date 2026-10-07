@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, linkerInputs, sourceSnapshot } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, createRustcInvocationCapture, linkerInputs, sourceSnapshot } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -46,7 +47,7 @@ test("native staging rejects stale package files", async () => {
 
 function validBuildInputs() {
   return {
-    schema: "acyclic.stream.native-build-inputs.v2",
+    schema: "acyclic.stream.native-build-inputs.v3",
     target: "x86_64-pc-windows-msvc",
     target_dir: "C:/runner/_work/target-stream-native",
     runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: { command: "bun", args: ["--version"], output: "1.4.2" } } },
@@ -75,10 +76,13 @@ function validBuildInputs() {
     linker: {
       configured: { target: null, rustc: null },
       environment: { LINK: null, CC: null, AR: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
-      observed: {
-        command: "link.exe",
-        path: { command: "where.exe", args: ["link.exe"], output: "C:/Program Files/MSVC/link.exe" },
-        version: { command: "link.exe", args: ["/?"], output: "Microsoft (R) Incremental Linker Version 14.42" },
+      default: "link.exe",
+      actual: {
+        source: "rustc-invocation",
+        rustc: "C:/Rust/bin/rustc.exe",
+        target: "x86_64-pc-windows-msvc",
+        linker: "C:/Program Files/MSVC/link.exe",
+        args: ["--crate-name", "acyclic_stream_napi", "--emit", "dep-info,link"],
       },
     },
     profile: {
@@ -114,7 +118,7 @@ test("native qualification rejects build input identity mutations", () => {
     ["generator options", value => { value.generator.options.output_dir = "C:/runner/_work/other-bundle"; }, /build input attestation differs/],
     ["bun", value => { value.runtime.bun.maintained = "1.4.1"; }, /build input attestation differs/],
     ["invocation", value => { value.invocation.script = "scripts/other-build.mjs"; }, /build input attestation differs/],
-    ["linker", value => { value.linker.observed.version.output = "Microsoft (R) Incremental Linker Version 14.43"; }, /build input attestation differs/],
+    ["linker", value => { value.linker.actual.linker = "C:/Program Files/LLVM/lld-link.exe"; }, /build input attestation differs/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
     ["cache", value => { value.cache.wrapper = 42; }, /native build cache input wrapper is invalid/],
@@ -127,7 +131,7 @@ test("native qualification rejects build input identity mutations", () => {
 
   const ambientRustcLinker = linkerInputs("x86_64-pc-windows-msvc", { RUSTC_LINKER: "C:/fake/lld-link.exe" });
   assert.equal(ambientRustcLinker.configured.rustc, null);
-  assert.equal(ambientRustcLinker.observed.command, "link.exe");
+  assert.equal(ambientRustcLinker.default, "link.exe");
   assert.equal(ambientRustcLinker.environment.RUSTC_LINKER, "C:/fake/lld-link.exe");
 
   const configuredTargetLinker = linkerInputs("x86_64-pc-windows-msvc", {
@@ -136,5 +140,57 @@ test("native qualification rejects build input identity mutations", () => {
   });
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
   assert.equal(configuredTargetLinker.configured.rustc, null);
-  assert.equal(configuredTargetLinker.observed.command, "C:/configured/link.exe");
+  assert.equal(configuredTargetLinker.default, "C:/configured/link.exe");
+});
+
+test("native qualification records explicit and implicit rustc linkers through a delegated wrapper", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "stream-native-wrapper-test-"));
+  const node = process.execPath.replaceAll("\\", "/");
+  const marker = resolve(directory, "delegated.txt").replaceAll("\\", "/");
+  const rustcSource = resolve(directory, "rustc.mjs");
+  const windows = process.platform === "win32";
+  const rustcCommand = resolve(directory, windows ? "rustc.cmd" : "rustc");
+  const delegateSource = resolve(directory, "delegate.mjs");
+  const delegateCommand = resolve(directory, windows ? "delegate.cmd" : "delegate");
+  const priorWrapper = process.env.RUSTC_WRAPPER;
+  const invoke = (wrapper, args) => windows
+    ? execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", "call", wrapper, ...args], { stdio: "inherit" })
+    : execFileSync(wrapper, args, { stdio: "inherit" });
+  try {
+    await writeFile(rustcSource, `import { appendFileSync } from "node:fs"; appendFileSync(${JSON.stringify(marker)}, "rustc\\n");\n`);
+    if (windows) await writeFile(rustcCommand, `@echo off\r\n"${node}" "${rustcSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(rustcCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(rustcSource)} "$@"\n`);
+      await chmod(rustcCommand, 0o700);
+    }
+    await writeFile(delegateSource, `import { spawnSync } from "node:child_process"; import { appendFileSync } from "node:fs"; const args = process.argv.slice(2); appendFileSync(${JSON.stringify(marker)}, "delegate\\n"); const command = args.shift(); const batch = process.platform === "win32" && /\\.(?:cmd|bat)$/iu.test(command); const result = batch ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command, ...args], { stdio: "inherit" }) : spawnSync(command, args, { stdio: "inherit" }); process.exit(result.status ?? 1);\n`);
+    if (windows) await writeFile(delegateCommand, `@echo off\r\n"${node}" "${delegateSource.replaceAll("\\", "/")}" %*\r\nexit /b %errorlevel%\r\n`);
+    else {
+      await writeFile(delegateCommand, `#!/bin/sh\nexec ${JSON.stringify(node)} ${JSON.stringify(delegateSource)} "$@"\n`);
+      await chmod(delegateCommand, 0o700);
+    }
+    process.env.RUSTC_WRAPPER = delegateCommand;
+    const capture = await createRustcInvocationCapture();
+    try {
+      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "-C", "linker=C:/fake/lld-link.exe", "-Clinker=C:/fake/effective-link.exe"]);
+      const explicit = await capture.read("x86_64-pc-windows-msvc");
+      assert.equal(explicit.linker, "C:/fake/effective-link.exe");
+      assert.match((await readFile(marker)).toString("utf8"), /delegate/);
+    } finally {
+      await capture.close();
+    }
+
+    const implicitCapture = await createRustcInvocationCapture();
+    try {
+      invoke(implicitCapture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit", "dep-info,link"]);
+      const implicit = await implicitCapture.read("x86_64-pc-windows-msvc");
+      assert.equal(implicit.linker, null);
+    } finally {
+      await implicitCapture.close();
+    }
+  } finally {
+    if (priorWrapper === undefined) delete process.env.RUSTC_WRAPPER;
+    else process.env.RUSTC_WRAPPER = priorWrapper;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

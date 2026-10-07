@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, resolve, sep } from "node:path";
@@ -12,7 +12,7 @@ const packageRelative = "typescript/packages/stream/package.json";
 const defaultOutput = resolve(root, "typescript/packages/stream/generated/native");
 const nativeTargetsSchema = "acyclic.stream.native-targets.v1";
 const generationSchema = "acyclic.stream.native-generation.v1";
-const buildInputsSchema = "acyclic.stream.native-build-inputs.v2";
+const buildInputsSchema = "acyclic.stream.native-build-inputs.v3";
 const generationManifestName = "generation-manifest.json";
 const require = createRequire(import.meta.url);
 const sourceRoots = [
@@ -154,23 +154,12 @@ function optionalCommandIdentity(command, args) {
   }
 }
 
-function versionIdentity(command, args) {
-  const identity = optionalCommandIdentity(command, args);
-  if (identity === null || !/(?:version|GNU|LLD|clang|gcc)/iu.test(identity.output)) return null;
-  return identity;
-}
-
 function envValue(name, environment = process.env) {
   return Object.prototype.hasOwnProperty.call(environment, name) ? environment[name] : null;
 }
 
 function targetEnvName(target, suffix) {
   return `CARGO_TARGET_${target.replaceAll("-", "_").toUpperCase()}_${suffix}`;
-}
-
-function executableIdentity(command) {
-  if (command.includes("\\") || command.includes("/")) return { command: "configured", args: [], output: command };
-  return optionalCommandIdentity("where.exe", [command]);
 }
 
 export function linkerInputs(target, environment = process.env) {
@@ -196,13 +185,97 @@ export function linkerInputs(target, environment = process.env) {
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
       VisualStudioVersion: envValue("VisualStudioVersion", environment),
     },
-    // Cargo can still select a linker from inherited config or rustflags. Keep
-    // this executable probe explicitly observational until the build records
-    // the rustc invocation that Cargo actually ran.
-    observed: {
-      command,
-      path: command === null ? null : executableIdentity(command),
-      version: command === null ? null : versionIdentity(command, command.toLowerCase().includes("lld-link") ? ["--version"] : target.endsWith("-msvc") ? ["/?"] : ["--version"]),
+    default: command,
+  };
+}
+
+function linkerFromRustcArgs(args) {
+  let linker = null;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "-C" && typeof args[index + 1] === "string" && args[index + 1].startsWith("linker=")) linker = args[index + 1].slice("linker=".length);
+    if (typeof args[index] === "string" && args[index].startsWith("-Clinker=")) linker = args[index].slice("-Clinker=".length);
+  }
+  return linker;
+}
+
+function rustcEmitArgs(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--emit") return args[index + 1] ?? "";
+    if (typeof args[index] === "string" && args[index].startsWith("--emit=")) return args[index].slice("--emit=".length);
+  }
+  return "";
+}
+
+function captureWrapperSource(delegate, captureDirectory) {
+  return `import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+const args = process.argv.slice(2);
+const rustc = args.shift();
+if (!rustc) process.exit(1);
+writeFileSync(join(${JSON.stringify(captureDirectory)}, \`${"${process.pid}"}-${randomUUID()}.json\`), JSON.stringify({ rustc, args }));
+const environment = { ...process.env };
+${delegate === null ? "delete environment.RUSTC_WRAPPER;" : `environment.RUSTC_WRAPPER = ${JSON.stringify(delegate)};`}
+const command = ${delegate === null ? "rustc" : JSON.stringify(delegate)};
+const commandArgs = ${delegate === null ? "args" : "[rustc, ...args]"};
+const batch = process.platform === "win32" && /\\.(?:cmd|bat)$/iu.test(command);
+const quoteCommandArg = value => {
+  const text = String(value);
+  return /[\\s"&|<>^]/u.test(text) ? "\\\"" + text.replaceAll("\\\"", "\\\"\\\"") + "\\\"" : text;
+};
+const commandLine = ["call", command, ...commandArgs].map(quoteCommandArg).join(" ");
+const result = batch
+  ? spawnSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", commandLine], { env: environment, stdio: "inherit", windowsVerbatimArguments: true })
+  : spawnSync(command, commandArgs, { env: environment, stdio: "inherit" });
+if (result.error) throw result.error;
+process.exit(result.status ?? 1);
+`;
+}
+
+export async function createRustcInvocationCapture() {
+  const directory = await mkdtemp(resolve(tmpdir(), "acyclic-stream-rustc-capture-"));
+  const invocations = resolve(directory, "invocations");
+  await mkdir(invocations);
+  const delegate = envValue("RUSTC_WRAPPER");
+  const source = resolve(directory, process.platform === "win32" ? "capture.mjs" : "capture");
+  await writeFile(source, captureWrapperSource(delegate, invocations), { mode: 0o700 });
+  let wrapper = source;
+  if (process.platform === "win32") {
+    wrapper = resolve(directory, "capture.cmd");
+    await writeFile(wrapper, `@echo off\r\n"${process.execPath}" "${source}" %*\r\nexit /b %errorlevel%\r\n`);
+  } else {
+    await writeFile(source, `#!/usr/bin/env node\n${captureWrapperSource(delegate, invocations)}`, { mode: 0o700 });
+    await chmod(source, 0o700);
+  }
+  process.env.RUSTC_WRAPPER = wrapper;
+  return {
+    wrapper,
+    async read(target) {
+      const entries = [];
+      for (const name of await readdir(invocations)) {
+        if (!name.endsWith(".json")) continue;
+        entries.push(JSON.parse((await readFile(resolve(invocations, name))).toString("utf8")));
+      }
+      const matches = entries.filter(entry => {
+        const crateIndex = entry.args.indexOf("--crate-name");
+        const emit = rustcEmitArgs(entry.args);
+        return entry.args[crateIndex + 1] === "acyclic_stream_napi" && typeof emit === "string" && emit.split(",").includes("link");
+      });
+      if (matches.length !== 1) throw new Error(`native build captured ${matches.length} Stream rustc link invocations`);
+      const match = matches[0];
+      return {
+        source: "rustc-invocation",
+        rustc: match.rustc,
+        target,
+        linker: linkerFromRustcArgs(match.args),
+        args: match.args,
+      };
+    },
+    async close() {
+      if (delegate === null) delete process.env.RUSTC_WRAPPER;
+      else process.env.RUSTC_WRAPPER = delegate;
+      await rm(directory, { recursive: true, force: true });
     },
   };
 }
@@ -240,7 +313,7 @@ async function maintainedBunVersion() {
 export async function buildInputs(target, targetDir, outputDir, packageName) {
   if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
   const wrapper = envValue("RUSTC_WRAPPER");
-  const wrapperCommand = wrapper === null || /\s/u.test(wrapper.trim()) ? null : wrapper.trim();
+  const wrapperCommand = wrapper === null ? null : wrapper.trim();
   const maintainedBun = await maintainedBunVersion();
   const bunIdentity = optionalCommandIdentity("bun", ["--version"]);
   if (bunIdentity !== null && bunIdentity.output !== maintainedBun) throw new Error(`loaded Bun ${bunIdentity.output} does not match maintained version ${maintainedBun}`);
@@ -361,11 +434,15 @@ export function assertBuildInputs(value) {
     if (value.linker[section] === null || typeof value.linker[section] !== "object") throw new Error(`native build linker ${section} inputs are missing`);
     for (const item of Object.values(value.linker[section])) if (item !== null && typeof item !== "string") throw new Error("native build linker environment input is invalid");
   }
-  if (value.linker.observed === null || typeof value.linker.observed !== "object") throw new Error("native build linker observation is missing");
-  if (value.linker.observed.command !== null && typeof value.linker.observed.command !== "string") throw new Error("native build linker observed command is invalid");
-  for (const field of ["path", "version"]) {
-    if (value.linker.observed[field] !== null && (typeof value.linker.observed[field] !== "object" || typeof value.linker.observed[field].output !== "string")) throw new Error(`native build linker observed ${field} identity is invalid`);
-  }
+  if (value.linker.default !== null && typeof value.linker.default !== "string") throw new Error("native build linker default is invalid");
+  const actualLinker = value.linker.actual;
+  if (actualLinker === null || typeof actualLinker !== "object") throw new Error("native build linker invocation is missing");
+  assertString(actualLinker.source, "linker.actual.source");
+  if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
+  assertString(actualLinker.rustc, "linker.actual.rustc");
+  assertString(actualLinker.target, "linker.actual.target");
+  if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
+  if (!Array.isArray(actualLinker.args) || actualLinker.args.some(item => typeof item !== "string")) throw new Error("native build linker invocation arguments are invalid");
   return value;
 }
 
@@ -492,14 +569,7 @@ async function build(options) {
   const temporary = await mkdtemp(resolve(tmpdir(), "acyclic-stream-napi-package-"));
   const packagePath = resolve(temporary, `${randomUUID()}.json`);
   await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
-  try {
-    // Remove only the two provenance files this command owns. Any other
-    // pre-existing entry is rejected by bundleArtifacts rather than hidden.
-    await rm(resolve(output, generationManifestName), { force: true });
-    await rm(resolve(output, "native-targets.json"), { force: true });
-    // Staging and checking a previously qualified bundle must work from the
-    // clean publication assembly directory, which has no workspace dev
-    // dependencies. Load NAPI-RS only for the build command.
+  const runNapiBuild = async () => {
     const { NapiCli } = await import("@napi-rs/cli");
     const buildResult = await new NapiCli().build({
       cwd: root,
@@ -515,7 +585,29 @@ async function build(options) {
       release: true,
     });
     await buildResult.task;
+  };
+  let rustcCapture = await createRustcInvocationCapture();
+  try {
+    // Remove only the two provenance files this command owns. Any other
+    // pre-existing entry is rejected by bundleArtifacts rather than hidden.
+    await rm(resolve(output, generationManifestName), { force: true });
+    await rm(resolve(output, "native-targets.json"), { force: true });
+    // Staging and checking a previously qualified bundle must work from the
+    // clean publication assembly directory, which has no workspace dev
+    // dependencies. Load NAPI-RS only for the build command.
+    await runNapiBuild();
+    try {
+      attestedInputs.linker.actual = await rustcCapture.read(options.target);
+    } catch (error) {
+      if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
+      await rustcCapture.close();
+      execFileSync("cargo", ["clean", "--package", "acyclic-stream-napi", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+      rustcCapture = await createRustcInvocationCapture();
+      await runNapiBuild();
+      attestedInputs.linker.actual = await rustcCapture.read(options.target);
+    }
   } finally {
+    await rustcCapture.close();
     await rm(temporary, { recursive: true, force: true });
   }
   await assertSourceSnapshot(source);
