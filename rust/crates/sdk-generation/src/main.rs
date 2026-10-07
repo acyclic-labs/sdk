@@ -1142,6 +1142,13 @@ fn collect_files(
     for entry in fs::read_dir(current).map_err(io_error)? {
         let path = entry.map_err(io_error)?.path();
         if path.is_dir() {
+            // Cargo's private profile target is execution scratch space, not
+            // a generated artifact. It is deliberately only the output-root
+            // directory: a nested directory with this name can be a published
+            // docs asset and must remain observable by drift checks.
+            if path == root.join(".profile-build") {
+                continue;
+            }
             collect_files(root, &path, files, include_all)?;
         } else if include_all {
             files.push(path);
@@ -1190,6 +1197,15 @@ fn collect_source_files(
             continue;
         }
         if path.is_dir() {
+            // Research notes and build caches are inputs to neither rustdoc
+            // nor the generated documentation contract. Keep the closure
+            // precise so an unrelated note cannot invalidate a bundle.
+            if matches!(
+                name,
+                "research" | ".cache" | ".profile-build" | "target" | "node_modules"
+            ) {
+                continue;
+            }
             collect_source_files(root, &path, output, files)?;
         } else if path.is_file() {
             let relative = path.strip_prefix(root).unwrap_or(&path);
@@ -1206,11 +1222,58 @@ fn collect_source_files(
                     Some("docs" | "examples" | "scripts")
                 )
             });
+            let under_proto = components
+                .first()
+                .is_some_and(|component| component.as_os_str() == OsStr::new("proto"));
+            let under_crate_proto = under_crates
+                && components
+                    .iter()
+                    .any(|component| component.as_os_str() == OsStr::new("proto"));
+            let under_conformance = under_crates
+                && components
+                    .iter()
+                    .any(|component| component.as_os_str() == OsStr::new("conformance"));
+            let relative_string = path_string(relative);
+            let descriptor_input = matches!(
+                relative_string.as_str(),
+                "rust/crates/actors/src/generated/acyclic-actors-v1.bin"
+                    | "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin"
+                    | "rust/crates/inference/inference_descriptor.bin"
+                    | "rust/crates/machines/src/generated/acyclic-machines-v1.bin"
+                    | "rust/crates/objects/src/generated/acyclic-objects-v2.bin"
+                    | "rust/crates/stream/proto/stream/v2/stream_descriptor.bin"
+                    | "rust/crates/workers/src/generated/acyclic-workers-v1.bin"
+            );
+            let plugin_install_asset = matches!(
+                relative_string.as_str(),
+                "plugin/.agents/plugins/marketplace.json"
+                    | "plugin/.codex-plugin/plugin.json"
+                    | "plugin/.mcp.json"
+                    | "plugin/bin/acyclic"
+                    | "plugin/bin/targets.json"
+                    | "plugin/hooks/hooks.json"
+                    | "plugin/package.json"
+                    | "plugin/plugin.json"
+            ) || (under_plugin
+                && components
+                    .iter()
+                    .any(|component| component.as_os_str() == OsStr::new("bin"))
+                && path.extension().and_then(OsStr::to_str) == Some("js"))
+                || (under_plugin
+                    && components
+                        .iter()
+                        .any(|component| component.as_os_str() == OsStr::new("scripts"))
+                    && path.extension().and_then(OsStr::to_str) == Some("mjs"));
             let include = ((under_crates || under_plugin || under_doc_sources)
                 && relative
                     .extension()
                     .and_then(OsStr::to_str)
                     .is_some_and(|ext| matches!(ext, "rs" | "toml" | "lock" | "md")))
+                || ((under_proto || under_crate_proto)
+                    && path.extension().and_then(OsStr::to_str) == Some("proto"))
+                || (under_conformance && path.extension().and_then(OsStr::to_str) == Some("json"))
+                || descriptor_input
+                || plugin_install_asset
                 || relative == Path::new("Cargo.toml")
                 || relative == Path::new("Cargo.lock")
                 || relative == Path::new("rust-toolchain.toml")
@@ -1247,4 +1310,164 @@ fn git_dirty(root: &Path) -> Result<bool, CliError> {
         .output()
         .map_err(io_error)?;
     Ok(!output.status.success() || !output.stdout.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_root(label: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be available")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "sdk-generation-collector-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("test root should be creatable");
+        root
+    }
+
+    fn write(root: &Path, relative: &str, bytes: &[u8]) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("fixture path has a parent"))
+            .expect("fixture parent should be creatable");
+        fs::write(path, bytes).expect("fixture file should be writable");
+    }
+
+    #[test]
+    fn internal_profile_build_cache_is_excluded_but_public_outputs_are_hashed() {
+        let root = test_root("artifact-cache");
+        let output = root.join("output");
+        write(&output, "sdk-docs-data.v2.json", b"docs");
+        write(&output, ".profile-build/debug/cache.bin", b"cache-v1");
+        write(
+            &output,
+            "assets/.profile-build/qualified-example.txt",
+            b"published",
+        );
+        let before = artifact_hashes(&output).expect("artifact inventory should build");
+        assert!(before.contains_key("sdk-docs-data.v2.json"));
+        assert!(!before
+            .keys()
+            .any(|path| path.starts_with(".profile-build/")));
+        assert_eq!(
+            before.get("assets/.profile-build/qualified-example.txt"),
+            Some(&sha256_bytes(b"published")),
+            "only the output-root profile scratch directory is private"
+        );
+
+        write(&output, ".profile-build/debug/cache.bin", b"cache-v2");
+        let after = artifact_hashes(&output).expect("artifact inventory should rebuild");
+        assert_eq!(
+            before, after,
+            "internal cache mutation must not alter artifacts"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn contract_inputs_are_source_attested_with_precise_non_rust_rules() {
+        let root = test_root("source-inputs");
+        let output = root.join("output");
+        for (relative, bytes) in [
+            ("proto/demo.proto", b"syntax = \"proto3\";".as_slice()),
+            (
+                "rust/crates/stream/proto/stream/v2/stream.proto",
+                b"message Stream {}".as_slice(),
+            ),
+            (
+                "rust/crates/stream/conformance/stream.json",
+                b"{\"suite\":true}".as_slice(),
+            ),
+            (
+                "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+                b"descriptor-v1".as_slice(),
+            ),
+            (
+                "plugin/bin/install.js",
+                b"console.log('install');".as_slice(),
+            ),
+            (
+                "plugin/scripts/package.mjs",
+                b"export default {};".as_slice(),
+            ),
+            ("plugin/package.json", b"{\"name\":\"plugin\"}".as_slice()),
+            ("rust/crates/demo/src/ignored.json", b"{}".as_slice()),
+        ] {
+            write(&root, relative, bytes);
+        }
+
+        for (relative, bytes) in [
+            ("docs/research/ignored.md", b"research note".as_slice()),
+            (
+                "rust/crates/demo/research/ignored.md",
+                b"crate research note".as_slice(),
+            ),
+            (".cache/ignored.md", b"build cache".as_slice()),
+        ] {
+            write(&root, relative, bytes);
+        }
+
+        let before = source_file_hashes(&root, &output).expect("source inventory should build");
+        for required in [
+            "proto/demo.proto",
+            "rust/crates/stream/proto/stream/v2/stream.proto",
+            "rust/crates/stream/conformance/stream.json",
+            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+            "plugin/bin/install.js",
+            "plugin/scripts/package.mjs",
+            "plugin/package.json",
+        ] {
+            assert!(
+                before.contains_key(required),
+                "missing source input {required}"
+            );
+        }
+        for excluded in [
+            "rust/crates/demo/src/ignored.json",
+            "docs/research/ignored.md",
+            "rust/crates/demo/research/ignored.md",
+            ".cache/ignored.md",
+        ] {
+            assert!(
+                !before.contains_key(excluded),
+                "unexpected source input {excluded}"
+            );
+        }
+
+        for (relative, changed) in [
+            (
+                "proto/demo.proto",
+                b"syntax = \"proto3\"; message Changed {}".as_slice(),
+            ),
+            (
+                "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
+                b"descriptor-v2".as_slice(),
+            ),
+            (
+                "rust/crates/stream/conformance/stream.json",
+                b"{\"suite\":false}".as_slice(),
+            ),
+            (
+                "plugin/bin/install.js",
+                b"console.log('changed install');".as_slice(),
+            ),
+        ] {
+            let original = fs::read(root.join(relative)).expect("source fixture should exist");
+            write(&root, relative, changed);
+            let after = source_file_hashes(&root, &output)
+                .expect("source inventory should rebuild after an input edit");
+            assert_ne!(
+                digest_map(&before),
+                digest_map(&after),
+                "editing {relative} must change the source attestation"
+            );
+            fs::write(root.join(relative), original).expect("source fixture should restore");
+        }
+        let _ = fs::remove_dir_all(root);
+    }
 }
