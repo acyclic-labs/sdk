@@ -23,6 +23,16 @@ use std::sync::Arc;
 pub const MODEL_TASK_COMMAND_KIND: &str = "acyclic.model.v1";
 /// Versioned pinned-tool command contract.
 pub const TOOL_TASK_COMMAND_KIND: &str = "acyclic.tool.v1";
+/// Versioned nonblocking durable timer command contract.
+pub const TIMER_TASK_COMMAND_KIND: &str = "acyclic.timer.v1";
+
+/// A retained timer deadline; scheduling its authenticated wake is caller-owned.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TimerTaskCommand {
+    /// Absolute deadline under the composed host's trusted clock.
+    pub deadline_unix_ms: u64,
+}
 
 /// Ref-resolved model input. The worker supplies the stable execution identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -135,6 +145,27 @@ where
                 TOOL_TASK_COMMAND_KIND => {
                     self.tool_command(task, context, fence.clone(), command.operation_id, payload)
                         .await
+                }
+                TIMER_TASK_COMMAND_KIND => {
+                    let input: TimerTaskCommand =
+                        serde_json::from_value(payload).map_err(|error| {
+                            Error::Invalid(format!("invalid timer command: {error}"))
+                        })?;
+                    if self
+                        .runtime
+                        .task_host()
+                        .poll_timer(
+                            task,
+                            fence.clone(),
+                            command.operation_id,
+                            input.deadline_unix_ms,
+                        )
+                        .await?
+                    {
+                        ready(Outcome::Succeeded(Value::Null))
+                    } else {
+                        Ok(TaskCommandProgress::Pending)
+                    }
                 }
                 _ => Err(Error::Unsupported(format!(
                     "stock command kind {} is not bound",

@@ -13,8 +13,9 @@ use acyclic_harness::durable_host::CoordinatorTaskHost;
 use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemTaskRuntime, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TOOL_TASK_COMMAND_KIND,
-    TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome, ToolTaskCommand,
+    FilesystemTaskRuntime, MODEL_TASK_COMMAND_KIND, ModelTaskCommand, TIMER_TASK_COMMAND_KIND,
+    TOOL_TASK_COMMAND_KIND, TaskCommandHost, TaskCommandProgress, TaskWorkerOutcome,
+    TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -36,11 +37,13 @@ use acyclic_harness::workflow::{
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient, SystemUnixMillisClock};
+use acyclic_stream::{
+    LocalStream, LocalStreamLimits, StreamClient, SystemUnixMillisClock, UnixMillisClock,
+};
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
 
 struct InterruptedModel {
@@ -183,11 +186,24 @@ async fn worker_reconciles_pinned_tool_without_reexecuting_after_reopen() -> Res
     worker_restart(WorkerCommand::Tool).await
 }
 
+#[tokio::test]
+async fn worker_timer_releases_capacity_and_completes_after_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::Timer).await
+}
+
+struct TestClock(AtomicU64);
+impl UnixMillisClock for TestClock {
+    fn now_unix_millis(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum WorkerCommand {
     Wait,
     Model,
     Tool,
+    Timer,
 }
 
 struct CommandMachine {
@@ -211,7 +227,9 @@ impl ResumableMachine for CommandMachine {
                 state: state.clone(),
                 commands: vec![WorkflowCommand {
                     operation_id: OperationId::from_bytes([26; 16]),
-                    kind: if self.command == WorkerCommand::Tool {
+                    kind: if self.command == WorkerCommand::Timer {
+                        TIMER_TASK_COMMAND_KIND
+                    } else if self.command == WorkerCommand::Tool {
                         TOOL_TASK_COMMAND_KIND
                     } else {
                         MODEL_TASK_COMMAND_KIND
@@ -235,7 +253,9 @@ impl ResumableMachine for CommandMachine {
             let Outcome::Succeeded(value) = outcome else {
                 return Err(Error::Invalid("unexpected command outcome".into()));
             };
-            if self.command == WorkerCommand::Tool {
+            if self.command == WorkerCommand::Timer {
+                assert!(value.is_null());
+            } else if self.command == WorkerCommand::Tool {
                 assert_eq!(value, json!("tool-restored"));
             } else {
                 assert_eq!(value.get("text"), Some(&json!("partial-restored")));
@@ -255,6 +275,9 @@ impl ResumableMachine for CommandMachine {
 )]
 async fn worker_restart(command: WorkerCommand) -> Result<()> {
     let with_command = command != WorkerCommand::Wait;
+    let with_timer = command == WorkerCommand::Timer;
+    let uncertain = matches!(command, WorkerCommand::Model | WorkerCommand::Tool);
+    let clock = Arc::new(TestClock(AtomicU64::new(100)));
     let with_tool = command == WorkerCommand::Tool;
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let fs_options = LocalOptions::new(directory.path().join("filesystem"));
@@ -281,6 +304,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             "operation:cancel".to_owned(),
             "operation:wake".to_owned(),
             "model:generate".to_owned(),
+            "timer:wait".to_owned(),
             "tool:call:test.restore".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
@@ -371,7 +395,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             signed.clone(),
             65_536,
         )?);
-        let runtime = FilesystemTaskRuntime::open(
+        let runtime = FilesystemTaskRuntime::open_with_clock(
             stream.clone(),
             filesystem,
             volume.clone(),
@@ -389,11 +413,16 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             },
             1,
             65_536,
+            clock.clone(),
         )
         .await?;
         if !reopened {
             let input = if with_command {
-                let payload = if with_tool {
+                let payload = if with_timer {
+                    serde_json::to_value(TimerTaskCommand {
+                        deadline_unix_ms: 200,
+                    })
+                } else if with_tool {
                     let file = payloads.stage(operation, "tool-input", b"hello").await?;
                     serde_json::to_value(ToolTaskCommand {
                         name: "test.restore".into(),
@@ -426,7 +455,8 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
         let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
             .await?
             .with_payload_store(payloads.clone());
-        if reopened && !with_command {
+        if reopened && !uncertain {
+            clock.0.store(200, Ordering::SeqCst);
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -460,7 +490,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                 .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
                 .await?;
         }
-        let lease = if reopened && with_command {
+        let lease = if reopened && uncertain {
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -481,7 +511,7 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                 .ok_or_else(|| Error::NotFound("worker lease".into()))?
         };
         if let Some(old) = &old_lease
-            && !with_command
+            && !uncertain
         {
             assert!(runtime.run_task(old.clone(), &NoCommands, 1).await.is_err());
         }
@@ -508,6 +538,62 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                     acyclic_harness::scheduler::OperationPhase::Running
                 );
                 assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+                if with_timer {
+                    let fence = LeaseFence::from(&lease.reservation);
+                    let probe = OperationId::from_bytes([99; 16]);
+                    let (stock, legacy) = tokio::join!(
+                        runtime
+                            .task_host()
+                            .poll_timer(task, fence.clone(), probe, 1),
+                        runtime.task_host().wait_until(task, probe, 1)
+                    );
+                    assert!(stock?);
+                    legacy?;
+                    assert!(matches!(
+                        runtime.task_host().wait_until(task, probe, 2).await,
+                        Err(Error::Conflict(_))
+                    ));
+                    assert!(matches!(
+                        runtime
+                            .task_host()
+                            .poll_timer(task, fence.clone(), probe, 0)
+                            .await,
+                        Err(Error::Invalid(_))
+                    ));
+                    for index in 100..170u8 {
+                        assert!(
+                            !runtime
+                                .task_host()
+                                .poll_timer(
+                                    task,
+                                    fence.clone(),
+                                    OperationId::from_bytes([index; 16]),
+                                    200
+                                )
+                                .await?
+                        );
+                    }
+                    let timer_operation = OperationId::from_bytes([26; 16]);
+                    assert!(
+                        !runtime
+                            .task_host()
+                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .await?
+                    );
+                    assert!(
+                        !runtime
+                            .task_host()
+                            .poll_timer(task, fence.clone(), timer_operation, 200)
+                            .await?
+                    );
+                    assert!(matches!(
+                        runtime
+                            .task_host()
+                            .poll_timer(task, fence, timer_operation, 201)
+                            .await,
+                        Err(Error::Conflict(_))
+                    ));
+                }
                 if with_tool {
                     let context = runtime.harness().durable_context(task, operation).await?;
                     let admission = runtime.task_host().observe_admission(task).await?;
@@ -578,12 +664,12 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
             if with_command {
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
-                    usize::from(!with_tool)
+                    usize::from(command == WorkerCommand::Model)
                 );
                 assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
                 assert_eq!(
                     model.reconciled.load(Ordering::SeqCst),
-                    usize::from(!with_tool)
+                    usize::from(command == WorkerCommand::Model)
                 );
                 assert_eq!(
                     tool.reconciled.load(Ordering::SeqCst),
@@ -591,13 +677,13 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                 );
             }
         } else {
-            if with_command {
+            if uncertain {
                 assert!(
                     matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
                 );
                 assert_eq!(
                     model.generated.load(Ordering::SeqCst),
-                    usize::from(!with_tool)
+                    usize::from(command == WorkerCommand::Model)
                 );
                 assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
                 assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
@@ -607,6 +693,24 @@ async fn worker_restart(command: WorkerCommand) -> Result<()> {
                 );
             }
             old_lease = Some(lease);
+        }
+        if with_timer {
+            let timers = stream.stream(format!("harness/v2/timers/{task}"))?;
+            assert_eq!(timers.bounds().await?.tail, 72);
+            if let Some(old) = &old_lease {
+                assert!(
+                    runtime
+                        .task_host()
+                        .poll_timer(
+                            task,
+                            LeaseFence::from(&old.reservation),
+                            OperationId::from_bytes([26; 16]),
+                            200
+                        )
+                        .await
+                        .is_err()
+                );
+            }
         }
         // All provider, runtime and coordinator handles are dropped here.
     }

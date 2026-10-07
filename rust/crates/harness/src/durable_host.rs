@@ -438,6 +438,63 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
+    /// Durably retains one timer identity without holding a waiting future.
+    /// The existing owner-authenticated workflow wake supplies later admission.
+    #[cfg(feature = "filesystem")]
+    pub async fn poll_timer(
+        self: &Arc<Self>,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        operation: OperationId,
+        deadline_unix_ms: u64,
+    ) -> Result<bool> {
+        if deadline_unix_ms == 0 {
+            return Err(Error::Invalid("timer deadline is invalid".into()));
+        }
+        let owner = self.journal_owner(task, fence.clone()).await?;
+        if !owner.input_grants.contains("timer:wait") {
+            return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
+        }
+        let path = acyclic_stream::StreamPath::new(format!("harness/v2/timers/{task}"))?;
+        let key = Self::event_key("timers", task, operation)?;
+        let bytes = Bytes::from(crate::contract::canonical_json_bytes(&TimerEvent {
+            task_id: task,
+            operation_id: operation,
+            deadline_unix_ms,
+        })?);
+        // Only the selected timer is retained. Paging bounds resident records;
+        // the workflow identity ceiling bounds total scan work and history.
+        for _ in 0..64 {
+            self.verify_owner(task, &fence, false).await?;
+            let (tail, found) = self.timer_state(task, operation, deadline_unix_ms).await?;
+            if found {
+                self.verify_owner(task, &fence, false).await?;
+                return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
+            }
+            if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+                return Err(Error::Invalid(
+                    "task timer history exceeds identity limit".into(),
+                ));
+            }
+            if owner
+                .append(
+                    path.clone(),
+                    tail,
+                    &key,
+                    bytes.clone(),
+                    crate::distributed::JournalWrite::Fresh,
+                )
+                .await?
+            {
+                self.verify_owner(task, &fence, false).await?;
+                return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
+            }
+        }
+        Err(Error::Conflict(
+            "timer publication retry limit reached".into(),
+        ))
+    }
+
     /// Starts or reattaches the exact already-admitted lease. This does not
     /// acquire another reservation or infer that an uncertain provider stopped.
     pub async fn start_task(&self, lease: &crate::distributed::WorkLease) -> Result<()> {
@@ -1137,6 +1194,57 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 
+    async fn timer_state(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        deadline_unix_ms: u64,
+    ) -> Result<(u64, bool)> {
+        let stream = self.timer_stream(task)?;
+        let tail = match stream.bounds().await {
+            Ok(bounds) => bounds.tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(error.into()),
+        };
+        if tail > crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+            return Err(Error::Invalid(
+                "task timer history exceeds identity limit".into(),
+            ));
+        }
+        let mut after = 0;
+        let mut found = false;
+        while after < tail {
+            let page = stream
+                .read(after, (tail - after).min(64) as u32)
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            if page.is_empty() || page.len() > 64 {
+                return Err(Error::Storage("invalid timer replay page".into()));
+            }
+            for record in page {
+                if record.sequence != after || after >= tail {
+                    return Err(Error::Storage("timer replay sequence differs".into()));
+                }
+                let event: TimerEvent = serde_json::from_slice(&record.value)
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                if event.task_id != task || event.deadline_unix_ms == 0 {
+                    return Err(Error::Conflict(
+                        "timer history belongs to another task".into(),
+                    ));
+                }
+                if event.operation_id == operation {
+                    if found || event.deadline_unix_ms != deadline_unix_ms {
+                        return Err(Error::Conflict("timer identity reused".into()));
+                    }
+                    found = true;
+                }
+                after += 1;
+            }
+        }
+        Ok((tail, found))
+    }
+
     async fn publish_control(
         &self,
         stream: &acyclic_stream::Stream<P>,
@@ -1145,9 +1253,43 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation_id: OperationId,
         bytes: &[u8],
     ) -> Result<()> {
+        if self
+            .publish_control_at(stream, kind, task_id, operation_id, bytes, None)
+            .await?
+        {
+            Ok(())
+        } else {
+            Err(Error::Conflict(
+                "unconditional control append conflicted".into(),
+            ))
+        }
+    }
+
+    async fn publish_control_at(
+        &self,
+        stream: &acyclic_stream::Stream<P>,
+        kind: &str,
+        task_id: TaskId,
+        operation_id: OperationId,
+        bytes: &[u8],
+        expected_tail: Option<u64>,
+    ) -> Result<bool> {
         let key = Self::event_key(kind, task_id, operation_id)?;
+        let key = if let Some(tail) = expected_tail {
+            let mut digest = blake3::Hasher::new();
+            digest.update(b"harness/v2/control-tail\0");
+            digest.update(key.as_bytes());
+            digest.update(&tail.to_le_bytes());
+            StreamKey::new(Bytes::copy_from_slice(digest.finalize().as_bytes()))?
+        } else {
+            key
+        };
         let outcome = match stream
-            .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
+            .append_batch(
+                vec![Bytes::copy_from_slice(bytes)],
+                expected_tail,
+                Some(key.clone()),
+            )
             .await
         {
             Ok(outcome) => outcome,
@@ -1189,14 +1331,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         "control publication differs from its committed record".into(),
                     ));
                 }
-                Ok(())
+                Ok(true)
             }
             AppendOutcome::Committed(_) => {
                 Err(Error::Storage("invalid control append receipt".into()))
             }
-            AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
-                "unconditional control append conflicted".into(),
-            )),
+            AppendOutcome::TailConflict { .. } => Ok(false),
         }
     }
 }
@@ -1834,8 +1974,40 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             };
             let bytes = crate::contract::canonical_json_bytes(&event)?;
             let stream = self.timer_stream(task_id)?;
-            self.publish_control(&stream, "timers", task_id, operation_id, &bytes)
-                .await?;
+            let mut retained = false;
+            for _ in 0..64 {
+                let (tail, found) = self
+                    .timer_state(task_id, operation_id, deadline_unix_ms)
+                    .await?;
+                if found {
+                    retained = true;
+                    break;
+                }
+                if tail == crate::workflow::MAX_WORKFLOW_IDENTITIES as u64 {
+                    return Err(Error::Invalid(
+                        "task timer history exceeds identity limit".into(),
+                    ));
+                }
+                if self
+                    .publish_control_at(
+                        &stream,
+                        "timers",
+                        task_id,
+                        operation_id,
+                        &bytes,
+                        Some(tail),
+                    )
+                    .await?
+                {
+                    retained = true;
+                    break;
+                }
+            }
+            if !retained {
+                return Err(Error::Conflict(
+                    "timer publication retry limit reached".into(),
+                ));
+            }
             loop {
                 let now = self.clock.now_unix_millis();
                 if now >= deadline_unix_ms {

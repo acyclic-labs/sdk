@@ -22,7 +22,7 @@ use crate::{
     workflow::{MachineRegistry, MachineStatus, WorkflowCommand},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock};
+use acyclic_stream::{StreamClient, StreamProvider, SystemUnixMillisClock, UnixMillisClock};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -118,6 +118,44 @@ where
         concurrency: usize,
         maximum_payload_bytes: u64,
     ) -> Result<Self> {
+        Self::open_with_clock(
+            stream,
+            filesystem,
+            volume,
+            verifier,
+            signed,
+            scope,
+            tasks,
+            machines,
+            tools,
+            session_limits,
+            concurrency,
+            maximum_payload_bytes,
+            Arc::new(SystemUnixMillisClock),
+        )
+        .await
+    }
+
+    /// Composes the existing host with a trusted clock, including restart tests.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "explicit existing provider and authority boundaries"
+    )]
+    pub async fn open_with_clock(
+        stream: StreamClient<P>,
+        filesystem: Arc<FilesystemHost<A, O>>,
+        volume: VolumeRef,
+        verifier: AuthorityVerifier,
+        signed: Scope,
+        scope: RuntimeScope,
+        tasks: TaskRegistry,
+        machines: MachineRegistry,
+        tools: ToolRegistry,
+        session_limits: SessionLimits,
+        concurrency: usize,
+        maximum_payload_bytes: u64,
+        clock: Arc<dyn UnixMillisClock>,
+    ) -> Result<Self> {
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
             filesystem.clone(),
             volume.clone(),
@@ -145,7 +183,7 @@ where
                 scope.clone(),
                 tasks.clone(),
                 machines,
-                Arc::new(SystemUnixMillisClock),
+                clock,
             )?
             .with_session_limits(session_limits)?,
         );
