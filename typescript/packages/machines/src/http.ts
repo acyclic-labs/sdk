@@ -6,14 +6,15 @@ import type {
 } from "../generated/wasm/acyclic_machines_wasm.js";
 import { operationId } from "./index.js";
 import { asPublic, u64Number, usageOut } from "./simulator.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
-export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
+export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
 /** Managed-service transport with bounded responses and no implicit mutation retries. */
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
-  readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number;
-  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; try { validateTransportOptions(options.token, maximum); } catch (error) { const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined; const code = details?.code; const message = typeof details?.message === "string" ? details.message : "invalid Machines transport option"; if (code === "invalid-token") throw new TypeError(message); if (code === "invalid-maximum") throw new RangeError(message); throw error; } this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
+  readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
+  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; try { validateTransportOptions(options.token, maximum); } catch (error) { const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined; const code = details?.code; const message = typeof details?.message === "string" ? details.message : "invalid Machines transport option"; if (code === "invalid-token") throw new TypeError(message); if (code === "invalid-maximum") throw new RangeError(message); throw error; } this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; this.#observer = resolveObserver(options.observer); }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#call("MACHINES_INSPECT", { machineId }).then(asPublic<ObservationOut, MachineObservation>); }
@@ -34,11 +35,16 @@ export class HttpMachinesProvider implements MachinesProvider {
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_INSPECT", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_CANCEL", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
   async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> { for (const observation of await this.#call("OPERATIONS_WATCH", { operationId })) yield asPublic<OperationOut, OperationObservation>(observation); }
-  async #call<Key extends keyof MachinesHttpRoutes>(key: Key, request: MachinesHttpRequest<MachinesHttpRoutes[Key]>): Promise<MachinesHttpResponse<MachinesHttpRoutes[Key]>> {
+  #call<Key extends keyof MachinesHttpRoutes>(key: Key, request: MachinesHttpRequest<MachinesHttpRoutes[Key]>): Promise<MachinesHttpResponse<MachinesHttpRoutes[Key]>> {
     const route = httpRoutes()[key];
+    return observed(this.#observer, "machines", route, sizes => this.#send(route, request, sizes));
+  }
+  async #send<Route extends MachinesHttpRoute>(route: Route, request: MachinesHttpRequest<Route>, sizes?: OperationSizes): Promise<MachinesHttpResponse<Route>> {
     const payload = WasmSimulatedMachines.encodeHttpRequest(request);
+    if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
     const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: payload });
     const bytes = await boundedBytes(response, this.#maximum);
+    if (sizes) sizes.responseBytes = bytes.byteLength;
     let body: string;
     try { body = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { throw new MachinesTransportError("response is not valid UTF-8", response.status); }

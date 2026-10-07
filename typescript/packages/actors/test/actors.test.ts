@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { create } from "@bufbuild/protobuf";
 import fc from "fast-check";
-import { HttpActorsClient, CreateActorRequestSchema, InspectActorRequestSchema } from "../src/index.js";
+import { readFileSync } from "node:fs";
+import { HttpActorsClient, CreateActorRequestSchema, InspectActorRequestSchema, type OperationEvent } from "../src/index.js";
+import { observeInterceptors } from "../src/observe.js";
 
 describe("Actors v1 generated transport", () => {
   test("uses the generated request shape on the Rust-owned create route", async () => {
@@ -51,5 +53,32 @@ describe("Actors v1 generated transport", () => {
       if (size <= maximumResponseBytes) await inspected;
       else await expect(inspected).rejects.toThrow("exceeds configured bound");
     }), { numRuns: 100 });
+  });
+  test("observes one secret-free event per call, and nothing without an observer", async () => {
+    const events: OperationEvent[] = [];
+    const fetcher = async (_input: RequestInfo | URL, init?: RequestInit) => new Response(String(init?.body).includes("missing") ? "{}" : JSON.stringify({}), { status: String(init?.body).includes("missing") ? 404 : 200 });
+    const client = new HttpActorsClient({ endpoint: "https://actors.example.test", token: "secret", fetcher, observer: { onOperation: event => events.push(event) } });
+    await client.inspectActor(create(InspectActorRequestSchema, { actorId: "present" }));
+    await expect(client.inspectActor(create(InspectActorRequestSchema, { actorId: "missing" }))).rejects.toThrow();
+    expect(events.map(({ op, ok, code, requestBytes, responseBytes }) => ({ op, ok, code, requestBytes, responseBytes }))).toEqual([
+      { op: "inspectActor", ok: true, code: undefined, requestBytes: 21, responseBytes: 2 },
+      { op: "inspectActor", ok: false, code: 404, requestBytes: 21, responseBytes: 2 },
+    ]);
+    for (const event of events) expect(Object.keys(event).every(key => ["family", "op", "durationMs", "ok", "code", "requestBytes", "responseBytes", "work"].includes(key))).toBe(true);
+    expect(JSON.stringify(events)).not.toMatch(/secret|present|missing|v1\/actors/);
+
+    const interceptors = [(next: (request: { method: { localName: string } }) => Promise<unknown>) => next];
+    expect(observeInterceptors(interceptors, undefined, "actors")).toBe(interceptors);
+    performance.clearMeasures();
+    await new HttpActorsClient({ endpoint: "https://actors.example.test", token: "secret", fetcher }).inspectActor(create(InspectActorRequestSchema, { actorId: "present" }));
+    expect(performance.getEntriesByType("measure")).toEqual([]);
+    process.env.ACYCLIC_PERF = "1";
+    try { await new HttpActorsClient({ endpoint: "https://actors.example.test", token: "secret", fetcher }).inspectActor(create(InspectActorRequestSchema, { actorId: "present" })); }
+    finally { delete process.env.ACYCLIC_PERF; }
+    expect(performance.getEntriesByType("measure").map(entry => entry.name)).toEqual(["acyclic.actors.inspectActor"]);
+  });
+  test("keeps every package's observer helper identical", () => {
+    const source = (name: string) => readFileSync(new URL(`../../${name}/src/observe.ts`, import.meta.url), "utf8");
+    for (const name of ["filesystem", "harness", "inference", "machines", "objects", "stream", "workers"]) expect(source(name)).toBe(source("actors"));
   });
 });

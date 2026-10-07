@@ -176,3 +176,4 @@ export { SimulatedMachines } from "./simulator.js";
 
 export * from "./client.js";
 export * from "./http.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";

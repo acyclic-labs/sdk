@@ -36,6 +36,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
+import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -45,23 +46,25 @@ const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, generationDiff);
 const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "WASM join");
 
-export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
+export function adaptWasmFs(fs: WasmRawFs, observer?: AcyclicObserver): FsVolumeEngine {
+  const o = resolveObserver(observer);
+  const raw = observeRaw(fs, o);
   const engine: FsVolumeEngine = {
     capabilities: raw.capabilities,
     async createWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.createWorkspace(name));
+      return adaptWorkspace(await raw.createWorkspace(name), o);
     },
     async openWorkspace(name: string): Promise<FsWorkspace> {
       requireWorkspaceName(name);
-      return adaptWorkspace(await raw.openWorkspace(name));
+      return adaptWorkspace(await raw.openWorkspace(name), o);
     },
     objectCacheStats(): ObjectCacheStats { return objectCacheStats(raw.objectCacheStats()); },
     clearObjectCache(): void { raw.clearObjectCache(); },
     createSpeculation(volumeId, generationId, options): Speculation { return adaptSpeculation(raw.createSpeculation(volumeId, generationId, options)); },
-    async createVolume(options): Promise<FsVolume> { return adaptVolume(await raw.createVolume(options)); },
-    async createVolumeWithId(volumeId, options): Promise<FsVolume> { return adaptVolume(await raw.createVolumeWithId(volumeId, options)); },
-    async openVolume(volumeId): Promise<FsVolume> { return adaptVolume(await raw.openVolume(volumeId)); },
+    async createVolume(options): Promise<FsVolume> { return adaptVolume(await raw.createVolume(options), o); },
+    async createVolumeWithId(volumeId, options): Promise<FsVolume> { return adaptVolume(await raw.createVolumeWithId(volumeId, options), o); },
+    async openVolume(volumeId): Promise<FsVolume> { return adaptVolume(await raw.openVolume(volumeId), o); },
     async exportObject(objectId, maximumBytes) { return copyFileRead(await raw.exportObject(objectId, maximumBytes)); },
     async importObject(objectId, bytes) { return copyMutation(await raw.importObject(objectId, bytes)); },
     async exportGenerationBatch(manifest, cursor, maximumObjects, maximumObjectBytes): Promise<GenerationTransferBatch> {
@@ -72,7 +75,7 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
       const value = await raw.importGenerationBatch(manifest, cursor, objects, maximumObjects);
       return { nextObject: BigInt(value.nextObject), work: copyWork(value.work) };
     },
-    async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId)); },
+    async restoreVolume(manifest, operationId): Promise<FsVolume> { return adaptVolume(await raw.restoreVolume(manifest, operationId), o); },
     close(): void {
       raw.close();
     },
@@ -82,16 +85,18 @@ export function adaptWasmFs(raw: WasmRawFs): FsVolumeEngine {
 
 export { adaptWorkspaceContextRegistry as adaptWasmWorkspaceContextRegistry } from "./workspace-context.js";
 
-function adaptVolume(raw: WasmRawVolume): FsVolume {
+function adaptVolume(volume: WasmRawVolume, o: AcyclicObserver | undefined): FsVolume {
+  const raw = observeRaw(volume, o);
   return {
     get id() { return copyBytes(raw.id); },
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
     async diffGenerations(before, after, maximumChanges) { return generationDiff(await raw.diffGenerations(before, after, maximumChanges)); },
-    async checkout(options) { return adaptCheckout(await raw.checkout(options)); },
+    async checkout(options) { return adaptCheckout(await raw.checkout(options), o); },
   };
 }
 
-function adaptCheckout(raw: WasmRawCheckout): FsCheckout {
+function adaptCheckout(checkout: WasmRawCheckout, o: AcyclicObserver | undefined): FsCheckout {
+  const raw = observeRaw(checkout, o);
   return {
     get acquisitionWork() { return copyWork(raw.acquisitionWork); },
     async applyTransaction(operations) { const value = await raw.applyTransaction(Array.from(operations)); return copyTransactionResult(value, copyWork(value.work)); },
@@ -221,7 +226,8 @@ function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { r
 function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
 function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
 
-function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
+function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined): FsWorkspace {
+  const raw = observeRaw(handle, o);
   const workspace: FsWorkspace = {
     get name() { return raw.name; },
     get id() { return copyBytes(raw.id); },
@@ -229,14 +235,14 @@ function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
     async fork(destination: string, idempotencyKey?: Uint8Array): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
-      return adaptWorkspace(await raw.fork(destination, idempotencyKey));
+      return adaptWorkspace(await raw.fork(destination, idempotencyKey), o);
     },
     async forkAt(destination: string, generation: FsGeneration, options: import("./contracts.js").WorkspaceForkOptions = {}): Promise<FsWorkspace> {
       requireWorkspaceName(destination);
       return adaptWorkspace(await raw.forkAt(destination, rawGeneration(generation), {
         ...(options.idempotencyKey === undefined ? {} : { idempotencyKey: options.idempotencyKey }),
         ...(options.paths === undefined ? {} : { paths: [...options.paths] }),
-      }));
+      }), o);
     },
     async beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction> {
       if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
@@ -253,8 +259,27 @@ function adaptWorkspace(raw: WasmRawWorkspace): FsWorkspace {
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target), options));
     },
   };
-  workspaceHandles.set(workspace, raw);
+  workspaceHandles.set(workspace, handle);
   return workspace;
+}
+
+/**
+ * Without an observer, `raw` itself. Otherwise each promise-returning method
+ * reports `acyclic.fs.<method>` with the raw `work` receipt; arguments
+ * (paths, contents) are never read.
+ */
+function observeRaw<T extends object>(raw: T, observer: AcyclicObserver | undefined): T {
+  if (observer === undefined) return raw;
+  return new Proxy(raw, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key, target);
+      if (typeof value !== "function" || typeof key !== "string") return value;
+      return (...args: unknown[]) => {
+        const result: unknown = value.apply(target, args);
+        return result instanceof Promise ? observed(observer, "fs", key, () => result) : result;
+      };
+    },
+  });
 }
 
 function rawWorkspace(workspace: FsWorkspace): WasmRawWorkspace {

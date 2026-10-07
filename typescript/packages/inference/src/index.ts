@@ -55,6 +55,7 @@ import {
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { http_path } from "../generated/proto/validation/v1/options_pb.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
+import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } from "./observe.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
 export { InferenceProtocolError, type InferenceProtocolErrorCode } from "./contract.js";
@@ -294,7 +295,9 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly fetcher: typeof fetch = fetch,
     /** Rust-derived HTTP JSON/NDJSON ceiling; protobuf wire validation remains 8 MiB. */
     readonly maximumEventBytes = MAXIMUM_HTTP_JSON_BYTES,
+    observer?: AcyclicObserver,
   ) {
+    this.#observer = resolveObserver(observer);
     if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
       throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
     }
@@ -308,6 +311,8 @@ export class HttpInferenceTransport implements InferenceTransport {
       throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
     }
   }
+
+  readonly #observer: AcyclicObserver | undefined;
 
   /** Shared UTF-8 ceiling for requests, unary/error responses, and each stream event. */
   get maximumMessageBytes(): number { return this.maximumEventBytes; }
@@ -404,19 +409,23 @@ export class HttpInferenceTransport implements InferenceTransport {
     }
   }
 
-  async #unary<Method extends DescMethod>(
+  #unary<Method extends DescMethod>(
     route: InferenceHttpRoute<Method>,
     request: MessageShape<Method["input"]>,
     signal?: AbortSignal,
   ): Promise<MessageShape<Method["output"]>> {
-    if (route.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
-    await validateRuntimeShape(route.input, request);
-    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
-    return fromJson(route.output, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
+    return observed(this.#observer, "inference", route.path, async sizes => {
+      if (route.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
+      await validateRuntimeShape(route.input, request);
+      const response = await this.#request(route.path, toJsonString(route.input, request), signal, sizes);
+      return fromJson(route.output, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
+    });
   }
 
-  async #request(path: string, body: string, signal?: AbortSignal): Promise<Response> {
-    if (utf8Length(body) > this.maximumMessageBytes) {
+  async #request(path: string, body: string, signal?: AbortSignal, sizes?: OperationSizes): Promise<Response> {
+    const length = utf8Length(body);
+    if (sizes) sizes.requestBytes = length;
+    if (length > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
     const headers = new Headers(await this.authorization());
@@ -448,3 +457,4 @@ export class InferenceTransportError extends Error {
 }
 
 export * from "./handles.js";
+export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
