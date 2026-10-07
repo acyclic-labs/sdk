@@ -1261,10 +1261,7 @@ fn snapshot_js_json(
         return Err(JsValue::from_str("undefined is not canonical JSON"));
     }
     if let Some(number) = value.as_f64() {
-        if !number.is_finite()
-            || number == 0.0 && number.is_sign_negative()
-            || number.fract() == 0.0 && number.abs() > 9_007_199_254_740_991.0
-        {
+        if !crate::conversation::is_exact_js_number(number) {
             return Err(JsValue::from_str(
                 "JSON contains an unsafe JavaScript Number",
             ));
@@ -1733,19 +1730,7 @@ pub async fn select_model_context_wasm(
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = WasmProjectionResolver::from_js(files)?;
-    if !maximum_render_bytes.is_finite()
-        || maximum_render_bytes < 0.0
-        || maximum_render_bytes.fract() != 0.0
-        || maximum_render_bytes > 9_007_199_254_740_991.0
-    {
-        return Err(JsValue::from_str(
-            "maximum render bytes must be a safe non-negative integer",
-        ));
-    }
-    let maximum_render_bytes = maximum_render_bytes
-        .to_string()
-        .parse::<u64>()
-        .map_err(|_| JsValue::from_str("maximum render bytes are out of range"))?;
+    let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
     let selected = select_model_context_at_revision(
         &conversation,
         selection.clone(),
@@ -2330,7 +2315,7 @@ fn to_js_admitted<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
 }
 
 fn exact_js_number(value: u64) -> Result<JsValue, JsValue> {
-    if value > 9_007_199_254_740_991 {
+    if value > crate::conversation::MAX_EXACT_JS_INTEGER {
         return Err(JsValue::from_str(
             "integer exceeds JavaScript Number precision",
         ));
@@ -2829,8 +2814,7 @@ fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec<u8> {
 }
 
 fn exact_nonnegative_u64(value: f64, field: &str) -> Result<u64, JsValue> {
-    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > 9_007_199_254_740_991.0
-    {
+    if !crate::conversation::is_exact_js_number(value) || value < 0.0 || value.fract() != 0.0 {
         return Err(JsValue::from_str(&format!(
             "{field} must be a safe non-negative integer"
         )));

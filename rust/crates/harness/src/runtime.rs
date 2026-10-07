@@ -1294,7 +1294,7 @@ pub struct TaskRunLimits {
 impl TaskRunLimits {
     /// Rejects zero, nonportable, or nonrepresentable runtime bounds.
     pub fn validate(&self) -> Result<()> {
-        const MAX_JS_INTEGER: u64 = (1_u64 << 53) - 1;
+        use crate::conversation::MAX_EXACT_JS_INTEGER as MAX_JS_INTEGER;
         if self
             .concurrency
             .is_some_and(|value| value == 0 || value as u64 > MAX_JS_INTEGER)

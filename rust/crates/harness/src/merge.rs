@@ -160,13 +160,7 @@ fn proof_numbers_are_js_safe(value: &serde_json::Value) -> bool {
     while let Some(value) = pending.pop() {
         match value {
             serde_json::Value::Number(number) => {
-                if number
-                    .as_i64()
-                    .is_some_and(|integer| integer.unsigned_abs() > 9_007_199_254_740_991)
-                    || number
-                        .as_u64()
-                        .is_some_and(|integer| integer > 9_007_199_254_740_991)
-                {
+                if !crate::conversation::is_exact_js_integer(number) {
                     return false;
                 }
             }
