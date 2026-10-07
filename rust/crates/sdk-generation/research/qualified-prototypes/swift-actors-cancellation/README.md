@@ -21,6 +21,8 @@ Use a patched pinned source checkout whose three template hashes match `receipt.
   -FixtureOptions Q:\sdk\work\root-pending-actors-fixture-options.json
 ```
 
+Pass `-Product ActorsAll8ConformanceConsumer -FixtureOptions Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json` to run the source-tracked all-eight typed consumer. The runner stages both source consumers but never tracks generated Swift, headers, module maps, native libraries, or SwiftPM build products.
+
 The live cancellation gate result recorded in `receipt.json` is baseline `started=7, aborted=6, active=0`, active before cancellation `started=8, aborted=6, active=1`, then final `started=8, aborted=7, active=0`, with Swift task outcome `CancellationError()`. The 60389 fixture is a general all-eight fixture with an optional pending-operation hook; it is not a pending-only service.
 
 The all-eight typed consumer is staged externally at `Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-generated-all8-current-20261007i-consumer` and must be regenerated from the same Rust cdylib before each receipt. The standard all-eight fixture uses `Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json` and `Q:\\sdk\\work\\go-remote-primitive-current\\fixture-ca.pem` at `https://localhost:55755`.

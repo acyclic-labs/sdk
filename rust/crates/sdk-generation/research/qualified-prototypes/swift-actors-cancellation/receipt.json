@@ -25,13 +25,15 @@
   },
   "runner": {
     "path": "runner.ps1",
-    "sha256": "F60BC46473D0D62C4D54E86141C7041CC32EAAEB04F3F6A5FC9CA0A89D56DE1B",
+    "sha256": "B48F16ADDC927D8ABADA246305A96396DECD6018500D10A632937841389F0234",
     "bindgen": "cargo run --manifest-path <pinned-source>\\runner\\Cargo.toml --target-dir <work>\\bindgen-target -- <RustDll> <generated> acyclic_actors_uniffi",
     "consumer": {
       "package": "consumer/Package.swift",
-      "packageSha256": "1B7C76F1F6679D7BE831A37D29512D59E7CEAE88AC9E8C9E006505768CA94B9B",
+      "packageSha256": "852405D5B4DDB552800ADFD3C370CB896E29719F77617AE9B6D7FD8C2280D13A",
       "probe": "consumer/Sources/ActorsConformanceConsumer/main.swift",
       "probeSha256": "58365B8DF3C8AF577DC99CE4B92710D08C1DBD6C3672B47208D4A44192C71394",
+      "allEightProbe": "consumer/Sources/ActorsAll8ConformanceConsumer/main.swift",
+      "allEightProbeSha256": "C69BA15EF748A05F4707C7244D75B60E333AF299F2FF8C90191F99968600B6EA",
       "generatedOutputTracked": false
     }
   },

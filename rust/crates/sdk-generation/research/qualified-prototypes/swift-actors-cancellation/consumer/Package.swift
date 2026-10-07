@@ -6,6 +6,7 @@ let package = Package(
     name: "SwiftActorsCancellationConsumer",
     products: [
         .executable(name: "ActorsConformanceConsumer", targets: ["ActorsConformanceConsumer"]),
+        .executable(name: "ActorsAll8ConformanceConsumer", targets: ["ActorsAll8ConformanceConsumer"]),
     ],
     targets: [
         .target(
@@ -26,6 +27,11 @@ let package = Package(
             name: "ActorsConformanceConsumer",
             dependencies: ["AcyclicActors"],
             path: "Sources/ActorsConformanceConsumer"
+        ),
+        .executableTarget(
+            name: "ActorsAll8ConformanceConsumer",
+            dependencies: ["AcyclicActors"],
+            path: "Sources/ActorsAll8ConformanceConsumer"
         ),
     ]
 )
