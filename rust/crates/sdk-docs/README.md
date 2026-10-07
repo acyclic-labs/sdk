@@ -31,6 +31,12 @@ items, docs, source spans, reexports, and same-crate public documentation links,
 then returns `DocsData`. Call `write_bundle` to persist the data file, generated
 schema, and immutable release or preview index.
 
+`write_bundle` serializes publication with the persistent
+`.sdk-docs-versions.v1.lock` file in the output directory. Concurrent
+publishers may target the same output directory; each publisher holds this
+lock across index validation, bundle writes, and index replacement so entries
+are not lost.
+
 The current contract is `sdk-docs-data.v1`; optional fields such as `links` are
 omitted when empty and default during deserialization so older v1 bundles remain
 readable.
