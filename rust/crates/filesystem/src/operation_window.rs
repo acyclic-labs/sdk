@@ -196,6 +196,10 @@ impl Default for OperationReconcileLimits {
     }
 }
 
+#[cfg(kani)]
+#[path = "operation_window/kani_reconcile_limits_proof.rs"]
+mod kani_reconcile_limits_proof;
+
 fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), WorkspaceError> {
     if limits.maximum_generations == 0
         || limits.maximum_changes == 0

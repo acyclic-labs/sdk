@@ -111,6 +111,8 @@ pub mod mount;
 pub mod multi_root;
 mod numeric;
 pub use numeric::exact_u32_from_f64;
+#[cfg(kani)]
+mod kani_proofs;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
