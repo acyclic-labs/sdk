@@ -20,14 +20,29 @@ correctness proofs. No machine-checked proof is supplied by this table.
 | Registered task recovery uses the admitted checkpoint; exact step retries neither advance it twice nor bypass cancellation. | `AgentHarness::open_task`, `TaskDefinition::open` and `ResumableTaskSession` use the existing workflow host and require an exact task/lease-bound journal. Fresh steps check uncancelled ownership, including cached retries; completed values must satisfy the pinned task output schema. Latest status/outbox recovery reads one verified record. | Deterministic pinned machines, immutable provider records, linearizable task-bound publication, trusted provider binding attestations. A recovered workflow result still requires scheduler settlement. | `registered_task_reopens_checkpoint_under_replacement_lease` uses real LocalStream and local Filesystem stores, drops all runtime/provider handles, replaces the crashed lease and resumes its checkpoint. It covers invalid output, conflicting/exact retries, unbound journal rejection and read-only completed recovery after cancellation. This is task workflow qualification, not command dispatch or a complete worker loop. |
 | A configured host never exposes a newly admitted root without its immutable shared ceilings. | `CoordinatorTaskHost::with_session_limits` uses `DistributedCoordinator::declare_session` to append `Declared` and `SessionConfigured` in one tail-CAS batch. Reattachment checks the configured root ceilings; retries verify the complete logical event pair, adjacent revisions and common committed envelope. | Stream batch append is atomic and linearizable; trusted persistent wiring selects the configured host. Existing unconfigured hosts remain available. | `root_declaration_and_shared_limits_are_atomic` races incompatible and identical requests with MemoryStream; `atomic_root_limits_survive_local_stream_reopen` repeats the race and reopens LocalStream. `root_limits_reconcile_a_lost_atomic_append_acknowledgement` forces a committed MemoryStream append to lose its acknowledgement, with both available and temporarily unavailable receipt inspection. `session_retry_rejects_separately_committed_lookalike_events` rejects matching events from separate envelopes. The real Filesystem/Stream task restart test uses the configured host and rejects changed ceilings. Persistent worker composition is still required. |
 
+| Persistent stock construction cannot omit task accounting or substitute another journal, and model inputs cannot borrow the storage owner's broader read grants. | `FilesystemTaskRuntime` composes one configured host and the existing registries/providers; `FilesystemTaskExecution` owns its stock binding and task-namespaced execution journal. `TaskJournalOwner` validates input files against retained task grants and limits. | Trusted caller-owned persistent providers and linearizable Stream transactions; collision-resistant task/turn namespace. Uncomposed deadline, policy and execution-route runners are rejected. | The real local registered-task restart test interrupts the model, drops runtime/provider handles, replaces the lease and reconciles without redispatch or another charge. A second turn hits the retained shared ceiling; wrong turn IDs, widened step counts and an actual owner-readable/task-ungranted file are rejected. Publication acknowledgement-fault and generic worker qualification remain open. |
+
 ## Remaining implementation gates
 
-- Make the task-bound stock execution path mandatory in generic persistent
-  composition and qualify its two journals together. The explicit binding now
+The optional `FilesystemTaskRuntime` now composes the existing configured host,
+typed runtime and task-bound journals. Its stock execution wrapper accepts no
+alternate journal or accounting binding and namespaces turn identities by task.
+`registered_task_reopens_checkpoint_under_replacement_lease` drops real local
+Filesystem/Stream stores and runtime handles after an interrupted model stream,
+then replaces the lease, recovers both journals, reconciles once without another
+dispatch, and rejects a second turn at the retained shared ceiling. It also
+denies a real owner-readable input file whose read grant was removed from the
+task admission. Task-bound journal input validation uses retained grants and
+limits, rather than the storage owner's broader capabilities. These are runtime
+restart and model interruption results, not publication acknowledgement-fault
+or generic worker qualification.
+
+- Qualify the task-bound persistent stock path under publication/provider
+  faults. The optional composition now binds its two journals together; it
   charges fresh attempts and checks ownership on resume; reconciliation retains
   the same claim without refunding uncertainty. The task-bound Filesystem
   execution journal now compares coordinator and journal tails atomically;
-  complete stock execution/provider fault qualification remains required.
+  further stock execution/provider fault qualification remains required.
 - Compose the registered task open/resume path into the generic worker using the
   existing workflow journal and scheduler fences. Registered tasks now reopen
   through a task-bound workflow session; a complete generic local task executor and fenced
@@ -40,9 +55,10 @@ correctness proofs. No machine-checked proof is supplied by this table.
   operations and intent events. Workflow and execution replay now read bounded
   pages; repeated execution scans still require cost qualification, and the
   coordinator needs lazy projections.
-- One optional persistent Filesystem/Stream composition constructor, restart
-  tests with real local providers, accounting races, stale-owner and cancellation
-  faults, generated-contract parity for changed public APIs, and final diff audit.
+- Complete persistent worker composition, including admitted deadlines and
+  pinned policy/execution routes; extend real local restart tests with accounting
+  races, stale-owner and cancellation faults; check generated-contract parity for
+  changed public APIs and perform the final diff audit.
 
 Executor seams: use `WorkflowJournal` for checkpoint/command atomicity,
 `ExecutionJournal::append_if_tail` for model dispatch claims, and the existing

@@ -795,6 +795,9 @@ where
 
     fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            if let Some((owner, _)) = &self.owner {
+                owner.validate_input_file(reference)?;
+            }
             if reference.descriptor().byte_length() > self.maximum_payload_bytes {
                 return Err(Error::Invalid(
                     "turn input file exceeds journal limit".into(),

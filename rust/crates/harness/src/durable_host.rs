@@ -106,10 +106,22 @@ pub struct TaskJournalOwner<P> {
     workflow: crate::workflow::WorkflowAdmission,
     maximum_payload_bytes: u64,
     output_schema: Value,
+    input_grants: crate::Capabilities,
+    input_limits: crate::conversation::Limits,
 }
 
 #[cfg(feature = "filesystem")]
 impl<P: StreamProvider> TaskJournalOwner<P> {
+    pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
+        self.input_limits.validate_file(file)?;
+        if !read_granted(&self.input_grants, file)? {
+            return Err(Error::Unauthorized(
+                "task cannot read the execution input file".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn task_binding(&self) -> (TaskId, crate::scheduler::LeaseFence) {
         (self.task_id, self.fence.clone())
     }
@@ -461,6 +473,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             workflow,
             maximum_payload_bytes: admission.limits.file_bytes,
             output_schema: admission.output_schema,
+            input_grants: admission.grants,
+            input_limits: admission.limits,
         };
         owner.verify(true).await?;
         Ok(owner)

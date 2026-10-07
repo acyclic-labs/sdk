@@ -3,17 +3,25 @@
 #![allow(clippy::too_many_lines)]
 
 use acyclic_fs::{Fs, LocalOptions};
-use acyclic_harness::conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
+use acyclic_harness::context::ContextPipeline;
+use acyclic_harness::conversation::{
+    ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+};
 use acyclic_harness::core::{AggregateKind, Authority, AuthorityIssuer};
-use acyclic_harness::distributed::{DistributedCoordinator, Worker};
+use acyclic_harness::distributed::{DistributedCoordinator, SchedulerPayloadStore, Worker};
 use acyclic_harness::durable_host::CoordinatorTaskHost;
+use acyclic_harness::executor::TurnInput;
 use acyclic_harness::filesystem::{
     FilesystemContentVerifier, FilesystemHost, FilesystemSchedulerPayloadStore,
-    FilesystemWorkflowJournal,
+    FilesystemTaskRuntime,
+};
+use acyclic_harness::model::{
+    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+    ModelProvider, ModelRequest,
 };
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
-    AgentHarness, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry,
+    DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry, TaskRunLimits,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
 use acyclic_harness::tool::ToolRegistry;
@@ -25,9 +33,50 @@ use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient, SystemUnixMillisClock};
+use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
+
+struct InterruptedModel {
+    generated: AtomicUsize,
+    reconciled: AtomicUsize,
+}
+
+impl ModelProvider for InterruptedModel {
+    fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        self.generated.fetch_add(1, Ordering::SeqCst);
+        Box::pin(futures::stream::iter([
+            Ok(ModelEvent::Content {
+                delta: "partial-".into(),
+            }),
+            Err(Error::Storage("forced model interruption".into())),
+        ]))
+    }
+    fn reconcile<'a>(
+        &'a self,
+        attempt: ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            assert_eq!(
+                attempt.observed,
+                vec![ModelEvent::Content {
+                    delta: "partial-".into()
+                }]
+            );
+            self.reconciled.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(vec![
+                ModelEvent::Content {
+                    delta: "restored".into(),
+                },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            ]))
+        })
+    }
+}
 
 struct TaskMachine {
     identity: MachineIdentity,
@@ -88,11 +137,16 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
             "task:spawn:test.restart@1".to_owned(),
+            "model:generate".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
         ]),
     );
-    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
+        .with_run_limits(TaskRunLimits {
+            max_steps: Some(1),
+            ..TaskRunLimits::default()
+        })?;
     let machine: Arc<dyn ResumableMachine> = Arc::new(TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),
@@ -120,6 +174,10 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         labels: BTreeMap::new(),
     };
     let mut previous_lease = None;
+    let model = Arc::new(InterruptedModel {
+        generated: AtomicUsize::new(0),
+        reconciled: AtomicUsize::new(0),
+    });
     let session_limits = SessionLimits {
         active_tasks: 1,
         total_tasks: 2,
@@ -181,20 +239,42 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
         if reopened {
             assert!(host.observe_admission(task).await.is_err());
         }
-        let host = Arc::new(host.with_session_limits(session_limits)?);
-        let harness = AgentHarness::new(
-            tasks.clone(),
-            ToolRegistry::default(),
+        drop(host);
+        let runtime = FilesystemTaskRuntime::open(
+            stream.clone(),
+            filesystem.clone(),
+            volume.clone(),
+            issuer.verifier(),
+            signed.clone(),
             scope.clone(),
+            tasks.clone(),
+            machines.clone(),
+            ToolRegistry::default(),
+            session_limits,
             1,
-            Some(host.clone()),
-        )?;
+            65_536,
+        )
+        .await?;
+        let host = runtime.task_host();
+        let harness = runtime.harness();
         if !reopened {
+            let task_grants = scope.grants().without(&Capabilities::new([
+                volume.capability(VolumeOperation::Read)?
+            ]));
             assert!(matches!(
-                harness.admit(operation, &definition, 0, None).await?,
+                harness
+                    .scoped(task_grants, scope.limits())?
+                    .admit(operation, &definition, 0, None)
+                    .await?,
                 Admission::Accepted(_)
             ));
         }
+        let input_file = payloads
+            .stage(operation, "owner-readable-input", b"\"secret\"")
+            .await?;
+        // The composition owner can read this actual committed file, but the
+        // task deliberately lacks that owner's private-volume read grant.
+        reader.verify(&input_file).await?;
         let mut coordinator = DistributedCoordinator::open(&stream, reader)
             .await?
             .with_payload_store(payloads);
@@ -240,14 +320,85 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
                 .await
                 .is_err()
         );
-        let journal = Arc::new(FilesystemWorkflowJournal::for_task(
-            host.journal_owner(task, fence.clone()).await?,
-            filesystem.clone(),
-            volume.clone(),
-            issuer.verifier(),
-            signed.clone(),
-            65_536,
-        )?);
+        let execution = runtime
+            .stock_execution(
+                task,
+                fence.clone(),
+                OperationId::from_bytes([8; 16]),
+                Model::new("test", "interrupted", "1", Value::Null)?,
+                model.clone(),
+                ContextPipeline::default(),
+            )
+            .await?;
+        let turn = TurnInput {
+            operation_id: execution.operation_id(),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        assert!(matches!(execution.execute(TurnInput {
+            input: ModelContent::Part(ModelContentPart::File { file: input_file, policy: FileProjectionPolicy::Native }),
+            ..turn.clone()
+        }).await, Err(Error::Unauthorized(message)) if message == "task cannot read the execution input file"));
+        assert!(
+            execution
+                .execute(TurnInput {
+                    operation_id: OperationId::from_bytes([9; 16]),
+                    ..turn.clone()
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            execution
+                .execute(TurnInput {
+                    max_steps: 2,
+                    ..turn.clone()
+                })
+                .await
+                .is_err()
+        );
+        if reopened {
+            let restored = execution.execute(turn.clone()).await?;
+            assert_eq!(restored.text, "partial-restored");
+            assert_eq!(execution.execute(turn).await?, restored);
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+            let another = runtime
+                .stock_execution(
+                    task,
+                    fence.clone(),
+                    OperationId::from_bytes([10; 16]),
+                    Model::new("test", "interrupted", "1", Value::Null)?,
+                    model.clone(),
+                    ContextPipeline::default(),
+                )
+                .await?;
+            assert_ne!(another.operation_id(), execution.operation_id());
+            assert!(
+                another
+                    .execute(TurnInput {
+                        operation_id: another.operation_id(),
+                        input: ModelContent::Text("another".into()),
+                        selected_context: None,
+                        max_steps: 1,
+                    })
+                    .await
+                    .is_err()
+            );
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 1);
+        } else {
+            let interrupted = execution.execute(turn).await;
+            assert!(
+                matches!(interrupted, Err(Error::Storage(_))),
+                "{interrupted:?}"
+            );
+            assert_eq!(model.generated.load(Ordering::SeqCst), 1);
+            assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
+        }
+        drop(execution);
+        let journal = runtime.workflow_journal(task, fence.clone()).await?;
         let mut session = harness
             .open_task(task, &definition, fence.clone(), journal.clone())
             .await?;
@@ -339,14 +490,7 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
                     .is_err()
             );
             drop(session);
-            let recovery_journal = Arc::new(FilesystemWorkflowJournal::for_task(
-                host.journal_owner(task, fence.clone()).await?,
-                filesystem,
-                volume.clone(),
-                issuer.verifier(),
-                signed.clone(),
-                65_536,
-            )?);
+            let recovery_journal = runtime.workflow_journal(task, fence.clone()).await?;
             let mut recovered = harness
                 .open_task(task, &definition, fence, recovery_journal.clone())
                 .await?;
