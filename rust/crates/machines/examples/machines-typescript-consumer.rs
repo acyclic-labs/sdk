@@ -1,8 +1,8 @@
 #![allow(missing_docs, reason = "executable documentation scenario")]
 
 use acyclic_machines::{
-    CreateMachine, IdempotencyKey, Image, MachinesProvider, ProviderError, SimulatedMachines,
-    MAX_PAGE_SIZE,
+    CreateMachine, IdempotencyKey, Image, MAX_PAGE_SIZE, MachinesProvider, ProviderError,
+    SimulatedMachines,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

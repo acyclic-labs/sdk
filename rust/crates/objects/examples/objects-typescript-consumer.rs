@@ -1,6 +1,6 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
-use acyclic_objects::{wire, MemoryObjects, MemoryOptions, ObjectsProvider};
+use acyclic_objects::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
 use bytes::Bytes;
 use futures::executor::block_on;
 

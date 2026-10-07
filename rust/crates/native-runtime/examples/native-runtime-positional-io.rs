@@ -1,6 +1,6 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
-use acyclic_native_runtime::{read_at, sync_file, write_all_at, Durability};
+use acyclic_native_runtime::{Durability, read_at, sync_file, write_all_at};
 use std::fs::OpenOptions;
 use std::io;
 
