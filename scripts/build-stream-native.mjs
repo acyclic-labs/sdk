@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { chmod, cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { delimiter, dirname, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -718,9 +718,9 @@ function pathFromArtifact(output, artifactPath) {
 
 /**
  * @param {string} output
- * @param {{ expectedTarget?: string }} options
+ * @param {{ expectedTarget?: string, verifySource?: boolean }} options
  */
-async function assertBundle(output, { expectedTarget } = {}) {
+async function assertBundle(output, { expectedTarget, verifySource = true } = {}) {
   const metadataPath = resolve(output, "native-targets.json");
   const generationPath = resolve(output, generationManifestName);
   const metadataBytes = await readFile(metadataPath);
@@ -740,11 +740,13 @@ async function assertBundle(output, { expectedTarget } = {}) {
   if (JSON.stringify(metadata.targets) !== JSON.stringify(targets) || JSON.stringify(generation.targets) !== JSON.stringify(targets)) throw new Error(`native bundle ${output} target metadata differs from Rust`);
   if (expectedTarget !== undefined && metadata.selected_target !== expectedTarget) throw new Error(`native bundle selected target ${metadata.selected_target} differs from ${expectedTarget}`);
   if (!targets.includes(metadata.selected_target) || generation.selected_target !== metadata.selected_target) throw new Error("native bundle selected target is not Rust-qualified");
-  const revision = sourceRevision();
-  const current = await sourceSnapshot();
-  if (metadata.source_revision !== revision || generation.revision !== revision) throw new Error("native bundle source revision differs from current checkout");
-  if (metadata.source_sha256 !== current.sha256 || generation.source_sha256 !== current.sha256) throw new Error("native bundle source closure digest differs from current checkout");
-  if (JSON.stringify(metadata.source_files) !== JSON.stringify(current.files) || JSON.stringify(generation.source_files) !== JSON.stringify(current.files)) throw new Error("native bundle source file attestation differs from current checkout");
+  if (verifySource) {
+    const revision = sourceRevision();
+    const current = await sourceSnapshot();
+    if (metadata.source_revision !== revision || generation.revision !== revision) throw new Error("native bundle source revision differs from current checkout");
+    if (metadata.source_sha256 !== current.sha256 || generation.source_sha256 !== current.sha256) throw new Error("native bundle source closure digest differs from current checkout");
+    if (JSON.stringify(metadata.source_files) !== JSON.stringify(current.files) || JSON.stringify(generation.source_files) !== JSON.stringify(current.files)) throw new Error("native bundle source file attestation differs from current checkout");
+  }
   const artifacts = generation.artifacts;
   if (!Array.isArray(artifacts) || !Array.isArray(metadata.artifacts) || JSON.stringify(metadata.artifacts) !== JSON.stringify(artifacts) || metadata.artifact === undefined) throw new Error("native bundle artifact attestation is invalid");
   if (metadata.artifact.sha256 !== artifacts.find(item => item.path === metadata.artifact.path)?.sha256) throw new Error("native bundle selected artifact digest differs");
@@ -757,10 +759,57 @@ async function assertBundle(output, { expectedTarget } = {}) {
   return { metadata, generation, artifacts };
 }
 
+async function assertExistingBundle(output) {
+  try {
+    const metadata = await lstat(output);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error(`native bundle output is not an owned directory: ${output}`);
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+  await assertBundle(output, { verifySource: false });
+  return true;
+}
+
+export async function publishBundle(candidate, output, { validateExisting = assertExistingBundle, cleanup = rm } = {}) {
+  const parent = dirname(output);
+  await mkdir(parent, { recursive: true });
+  let existing = false;
+  try {
+    existing = await validateExisting(output);
+  } catch (error) {
+    throw new Error(`refusing to replace unowned native bundle ${output}: ${error.message}`, { cause: error });
+  }
+  if (!existing) {
+    await rename(candidate, output);
+    return;
+  }
+  const backup = resolve(parent, `.${basename(output)}.backup-${randomUUID()}`);
+  await rename(output, backup);
+  try {
+    await rename(candidate, output);
+  } catch (error) {
+    await rename(backup, output).catch(() => {});
+    throw error;
+  }
+  try {
+    await cleanup(backup, { recursive: true, force: true });
+  } catch (error) {
+    // Publication has committed once the candidate is at output. Retain the
+    // producer-owned backup and report cleanup separately rather than making a
+    // successful build appear to have failed.
+    console.warn(`native bundle backup retained at ${backup}: ${error.message}`);
+  }
+}
+
 async function build(options) {
   if (options.target === undefined) throw new Error(`build requires --target <rust-triple>\n\n${usage()}`);
   assertCleanSource();
   const output = resolve(options.output ?? defaultOutput);
+  await assertExistingBundle(output);
+  const buildOutput = await mkdtemp(resolve(dirname(output), ".acyclic-stream-native-build-"));
+  let published = false;
+  try {
   const packageManifest = await packageJson();
   const { rustPackage, targets } = rustMetadata();
   assertVersion(rustPackage, packageManifest);
@@ -770,13 +819,12 @@ async function build(options) {
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
   await ensureCargoTargetDirectory(targetDir);
   const attestedInputs = await withDeterministicRustflags(root, targetDir, options.target, async () => {
-    const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+    const attestedInputs = await buildInputs(options.target, targetDir, buildOutput, packageManifest.name);
     const rootManifest = await rootPackageJson();
     const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
     if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
       throw new Error(`loaded @napi-rs/cli ${attestedInputs.generator.version} does not match package.json ${expectedGeneratorVersion}`);
     }
-    await mkdir(output, { recursive: true });
     const temporary = await mkdtemp(resolve(tmpdir(), "acyclic-stream-napi-package-"));
     const packagePath = resolve(temporary, `${randomUUID()}.json`);
     await writeFile(packagePath, JSON.stringify({ ...packageManifest, napi: { ...packageManifest.napi, targets } }));
@@ -786,7 +834,7 @@ async function build(options) {
         cwd: root,
         packageJsonPath: packagePath,
         manifestPath: resolve(root, manifestRelative),
-        outputDir: output,
+        outputDir: buildOutput,
         target: options.target,
         targetDir,
         platform: true,
@@ -799,8 +847,8 @@ async function build(options) {
       await buildResult.task;
       // NAPI's transaction helper can leave dot-prefixed recovery entries on
       // mounted filesystems after commit. They are not published artifacts.
-      for (const entry of await readdir(output, { withFileTypes: true })) {
-        if (entry.name.startsWith(".")) await rm(resolve(output, entry.name), { recursive: true, force: true });
+      for (const entry of await readdir(buildOutput, { withFileTypes: true })) {
+        if (entry.name.startsWith(".")) await rm(resolve(buildOutput, entry.name), { recursive: true, force: true });
       }
     };
     let rustcCapture = await createRustcInvocationCapture();
@@ -811,8 +859,8 @@ async function build(options) {
       attestedInputs.environment.RUSTC_WORKSPACE_WRAPPER = process.env.RUSTC_WORKSPACE_WRAPPER ?? null;
       // Remove only the two provenance files this command owns. Any other
       // pre-existing entry is rejected by bundleArtifacts rather than hidden.
-      await rm(resolve(output, generationManifestName), { force: true });
-      await rm(resolve(output, "native-targets.json"), { force: true });
+      await rm(resolve(buildOutput, generationManifestName), { force: true });
+      await rm(resolve(buildOutput, "native-targets.json"), { force: true });
       // Staging and checking a previously qualified bundle must work from the
       // clean publication assembly directory, which has no workspace dev
       // dependencies. Load NAPI-RS only for the build command.
@@ -835,13 +883,13 @@ async function build(options) {
   });
   await assertSourceSnapshot(source);
   if (sourceRevision() !== revision) throw new Error("Stream native source changed during native build");
-  const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: output });
+  const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: buildOutput });
   const receipt = buildInputsReceipt(attestedInputs, publishedInputs);
   // Keep host-specific compiler paths and argv in the Cargo target directory;
   // publication manifests must remain stable when the checkout is relocated.
   await mkdir(targetDir, { recursive: true });
   await writeFile(resolve(targetDir, buildInputsReceiptName), `${JSON.stringify(receipt, null, 2)}\n`);
-  const bundle = await bundleArtifacts(output);
+  const bundle = await bundleArtifacts(buildOutput);
   const generation = {
     schema: generationSchema,
     package: rustPackage.name,
@@ -856,7 +904,7 @@ async function build(options) {
     artifacts: bundle.artifacts,
   };
   const generationBytes = Buffer.from(`${JSON.stringify(generation, null, 2)}\n`);
-  await writeFile(resolve(output, generationManifestName), generationBytes);
+  await writeFile(resolve(buildOutput, generationManifestName), generationBytes);
   const metadata = {
     schema: nativeTargetsSchema,
     package: rustPackage.name,
@@ -873,8 +921,13 @@ async function build(options) {
     artifacts: bundle.artifacts,
     artifact: bundle.node,
   };
-  await writeFile(resolve(output, "native-targets.json"), `${JSON.stringify(metadata, null, 2)}\n`);
-  await assertBundle(output, { expectedTarget: options.target });
+  await writeFile(resolve(buildOutput, "native-targets.json"), `${JSON.stringify(metadata, null, 2)}\n`);
+  await assertBundle(buildOutput, { expectedTarget: options.target });
+  await publishBundle(buildOutput, output);
+  published = true;
+  } finally {
+    if (!published) await rm(buildOutput, { recursive: true, force: true });
+  }
 }
 
 async function stage(options) {

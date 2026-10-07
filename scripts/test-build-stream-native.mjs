@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, ensureCargoTargetDirectory, linkerInputs, normalizeBuildInputs, publishBundle, sourceSnapshot, withDeterministicRustflags } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -42,6 +42,50 @@ test("native staging rejects stale package files", async () => {
     await assert.rejects(assertExactInventory(output, new Set(["binding.cjs"])), /unstated files: stale\.node/);
   } finally {
     await rm(output, { recursive: true, force: true });
+  }
+});
+
+test("native publication refuses an unowned output without mutating either directory", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-publication-"));
+  const candidate = resolve(parent, "candidate");
+  const output = resolve(parent, "output");
+  try {
+    await mkdir(candidate);
+    await writeFile(resolve(candidate, "candidate.node"), "candidate\n");
+    await mkdir(output);
+    await writeFile(resolve(output, "unowned.txt"), "keep\n");
+    await assert.rejects(publishBundle(candidate, output), /refusing to replace unowned native bundle/);
+    assert.equal((await readFile(resolve(output, "unowned.txt"))).toString(), "keep\n");
+    assert.equal((await readFile(resolve(candidate, "candidate.node"))).toString(), "candidate\n");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("native publication keeps the committed bundle when backup cleanup fails", async () => {
+  const parent = await mkdtemp(resolve(tmpdir(), "stream-native-publication-cleanup-"));
+  const candidate = resolve(parent, "candidate");
+  const output = resolve(parent, "output");
+  const warnings = [];
+  const originalWarn = console.warn;
+  try {
+    await mkdir(candidate);
+    await writeFile(resolve(candidate, "candidate.node"), "candidate\n");
+    await mkdir(output);
+    await writeFile(resolve(output, "previous.node"), "previous\n");
+    console.warn = message => warnings.push(message);
+    await publishBundle(candidate, output, {
+      validateExisting: async () => true,
+      cleanup: async () => { throw new Error("injected cleanup failure"); },
+    });
+    assert.equal((await readFile(resolve(output, "candidate.node"))).toString(), "candidate\n");
+    assert.equal((await readFile(resolve(output, "previous.node")).catch(() => Buffer.from(""))).toString(), "");
+    assert.equal(warnings.length, 1);
+    const backups = (await readdir(parent)).filter(name => name.startsWith(".output.backup-"));
+    assert.equal(backups.length, 1);
+  } finally {
+    console.warn = originalWarn;
+    await rm(parent, { recursive: true, force: true });
   }
 });
 
