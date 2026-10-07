@@ -30,17 +30,19 @@ import {
   type OperationEvent,
   TerminalAdmissionError,
   WireError,
+  Harness,
   type JsonlChannel,
   type HttpFetcher,
 } from "../src/index.js";
 
 const resume = create(ResumeRequestSchema, {});
+const protocol = (await Harness.create({
+  authority: { kind: "task", id: "wire-tests" },
+  issuerId: "wire-tests",
+  issuerKey: new Uint8Array(32).fill(1),
+})).protocolIdentity();
 const negotiation = create(HandshakeRequestSchema, {
-  protocol: {
-    version: "2",
-    // blake3(FILE_DESCRIPTOR_SET) for the checked-in v2 protobuf contract.
-    descriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf",
-  },
+  protocol,
   required: { capabilities: [] },
 });
 const handshake = create(HandshakeResponseSchema, {

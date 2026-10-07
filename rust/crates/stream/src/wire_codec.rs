@@ -282,6 +282,7 @@ pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
 
 #[cfg(any(
     feature = "grpc",
+    feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
@@ -297,6 +298,7 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
 
 #[cfg(any(
     feature = "grpc",
+    feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
@@ -393,6 +395,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
 
 #[cfg(any(
     feature = "grpc",
+    feature = "local",
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]

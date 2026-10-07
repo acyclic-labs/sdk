@@ -12,7 +12,8 @@ use crate::{
     wire,
     wire_codec::{decode_authority, decode_scope, encode_authority, validate_protocol},
 };
-use futures::{future::BoxFuture, stream::BoxStream};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
+use acyclic_stream::BoxProviderStream as BoxStream;
 
 /// Complete application-facing wire API. Adapters own framing, never semantics.
 ///
@@ -20,7 +21,7 @@ use futures::{future::BoxFuture, stream::BoxStream};
 /// the requested owner; [`crate::distributed::DistributedCoordinator::observe_operation`] and
 /// [`crate::distributed::DistributedCoordinator::cancel_operation`] provide the canonical checks.
 /// Wire validation alone deliberately cannot authenticate host-held key material.
-pub trait HarnessWireApi: Send + Sync + 'static {
+pub trait HarnessWireApi: acyclic_stream::ProviderPlatform + 'static {
     /// Negotiates the exact protocol and required capabilities before other calls.
     fn handshake<'a>(
         &'a self,

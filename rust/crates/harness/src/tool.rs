@@ -5,7 +5,7 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     registry::validate_component_label,
 };
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -129,7 +129,7 @@ pub struct ToolResult {
 }
 
 /// Replaceable execution behavior for a tool.
-pub trait ToolExecutor: Send + Sync {
+pub trait ToolExecutor: acyclic_stream::ProviderPlatform {
     /// Checks invocation-specific resource grants before a result is replayed,
     /// dispatched, or reconciled. A scoped adapter must reject a missing scope.
     fn authorize(
@@ -172,13 +172,13 @@ pub trait ToolExecutor: Send + Sync {
 }
 
 /// Replaceable mapping from tool results into model-visible context.
-pub trait ToolProjection: Send + Sync {
+pub trait ToolProjection: acyclic_stream::ProviderPlatform {
     /// Projects without side effects and preserves the definition's output schema.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }
 
 /// Trusted journal check for a resolved approval bound to one exact tool definition.
-pub trait ToolApprovalVerifier: Send + Sync {
+pub trait ToolApprovalVerifier: acyclic_stream::ProviderPlatform {
     /// Rejects absent, declined, mismatched, or indeterminate approvals.
     fn verify<'a>(
         &'a self,

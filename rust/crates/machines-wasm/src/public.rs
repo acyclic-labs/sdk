@@ -26,6 +26,10 @@ use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
 /// A public JavaScript number accepted only when it is an exact safe integer.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "MAX_SAFE_INTEGER is 2^53 - 1 and is exactly representable as f64"
+)]
 pub(crate) fn is_safe_integer(value: f64) -> bool {
     value.is_finite()
         && value >= 0.0

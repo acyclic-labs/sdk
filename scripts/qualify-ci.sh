@@ -22,11 +22,13 @@ case "${GITHUB_EVENT_NAME:-}" in
 esac
 # macOS ships shasum rather than sha256sum.
 sha256_matches() {
+  local observed
   if command -v sha256sum >/dev/null; then
-    echo "$1  $2" | sha256sum --check --status
+    observed="$(sha256sum "$2")" || return 1
   else
-    echo "$1  $2" | shasum -a 256 --check --status
+    observed="$(shasum -a 256 "$2")" || return 1
   fi
+  [[ "${observed%% *}" == "$1" ]]
 }
 # Fetches a pinned release archive into $TOOLS_DIR once, verifies its SHA-256
 # on every use, and extracts MEMBER into DESTINATION.
@@ -407,6 +409,11 @@ case "$lane" in
     export PATH="$(dirname "$wasm_bindgen_bin"):$PATH"
     bun install --frozen-lockfile
     bun run --filter '@acyclic-labs/fs' build
+    # The combined browser pages consume the public Stream and Harness builds;
+    # Harness also needs its Objects package declaration dependency.
+    bun run --filter '@acyclic-labs/objects' build
+    bun run --filter '@acyclic-labs/stream' build
+    bun run --filter '@acyclic-labs/harness' build
     CHROME="$(command -v google-chrome || command -v chromium)" \
       bun run --filter '@acyclic-labs/fs' test:browser
     ;;

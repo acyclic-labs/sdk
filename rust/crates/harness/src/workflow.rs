@@ -3,7 +3,7 @@
 use crate::IdempotencyKey;
 use crate::contract::next_revision;
 use crate::{Error, OperationId, Result, conversation::FileRef};
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Mutex;
@@ -102,7 +102,7 @@ pub struct MachineCheckpoint {
 }
 
 /// Semantic foundation for all durable work.
-pub trait ResumableMachine: Send + Sync {
+pub trait ResumableMachine: acyclic_stream::ProviderPlatform {
     /// Returns the immutable implementation identity.
     fn identity(&self) -> &MachineIdentity;
 
@@ -292,7 +292,7 @@ impl WorkflowAdmission {
 }
 
 /// Durable journal boundary; one commit atomically stores checkpoint and commands.
-pub trait WorkflowJournal: Send + Sync {
+pub trait WorkflowJournal: acyclic_stream::ProviderPlatform {
     /// Atomically retains one exact workflow admission. Providers must return
     /// the existing admission on retries and reject an identity conflict.
     fn admit<'a>(

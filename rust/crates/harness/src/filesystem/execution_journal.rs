@@ -16,11 +16,11 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
 

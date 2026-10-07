@@ -17,6 +17,7 @@ pub use opfs::{OpfsAcceleratedObjectStore, OpfsOpenError};
 
 #[cfg(target_arch = "wasm32")]
 mod bindings {
+    mod operation_windows;
     use super::{IndexedDbAuthorityStore, IndexedDbObjectStore, OpfsAcceleratedObjectStore};
     use acyclic_fs::compat_wire;
     use acyclic_fs::kernel::{
@@ -50,6 +51,8 @@ mod bindings {
         canonicalize_git_pending_transition_json, decode_generation_export_manifest,
         encode_generation_export_manifest, parse_git_public_command,
     };
+    pub use operation_windows::BrowserOperationWindowCoordinator;
+    use operation_windows::browser_publication_permit;
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tsify::{Ts, Tsify};
@@ -1160,24 +1163,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -1195,24 +1192,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -1230,24 +1221,18 @@ mod bindings {
                             options.maximum_conflicts,
                         )
                         .plan_pinned(
-                            match &options.source_generation {
-                                Some(id) => source
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "source generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => source.head().await.map_err(js_error)?,
-                            },
-                            match &options.target_generation {
-                                Some(id) => target
-                                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(
-                                        fixed_32(id, "target generation")?,
-                                    )))
-                                    .await
-                                    .map_err(js_error)?,
-                                None => target.head().await.map_err(js_error)?,
-                            },
+                            browser_join_generation(
+                                source,
+                                options.source_generation.as_deref(),
+                                "source generation",
+                            )
+                            .await?,
+                            browser_join_generation(
+                                target,
+                                options.target_generation.as_deref(),
+                                "target generation",
+                            )
+                            .await?,
                         )
                         .await
                         .map_err(js_error)?,
@@ -1869,16 +1854,28 @@ mod bindings {
 
         /// Publishes the complete candidate through one idempotent head CAS.
         #[wasm_bindgen]
-        pub async fn commit(&mut self) -> Result<JsValue, JsValue> {
+        pub async fn commit(
+            &mut self,
+            #[wasm_bindgen(unchecked_param_type = "BrowserOperationWindowLease | undefined")] lease: Option<
+                JsValue,
+            >,
+        ) -> Result<JsValue, JsValue> {
+            let permit = browser_publication_permit(lease)?;
             let outcome = match &mut self.engine {
                 BrowserTransactionEngine::IndexedDb(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::IndexedDbOpfs(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
                 BrowserTransactionEngine::Memory(value) => {
-                    Box::pin(value.commit()).await.map(browser_workspace_commit)
+                    Box::pin(value.commit_with_permit(permit))
+                        .await
+                        .map(browser_workspace_commit)
                 }
             }
             .map_err(js_error)?;
@@ -6212,20 +6209,24 @@ mod bindings {
         pub async fn commit(
             &mut self,
             operation_id: Vec<u8>,
+            #[wasm_bindgen(unchecked_param_type = "BrowserOperationWindowLease | undefined")] lease: Option<
+                JsValue,
+            >,
         ) -> Result<Ts<BrowserCommitResult>, JsValue> {
             let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
+            let permit = browser_publication_permit(lease)?;
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit(operation_id, boundary_budget(), &cancellation)
+                    .commit_with_permit(operation_id, permit, boundary_budget(), &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -7056,6 +7057,27 @@ mod bindings {
         })
     }
 
+    async fn browser_join_generation<
+        A: acyclic_fs::AsyncAuthorityStore,
+        O: acyclic_fs::AsyncObjectStore,
+    >(
+        workspace: &Workspace<A, O>,
+        id: Option<&[u8]>,
+        label: &str,
+    ) -> Result<Generation<A, O>, JsValue> {
+        match id {
+            Some(id) => {
+                workspace
+                    .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+                        id, label,
+                    )?)))
+                    .await
+            }
+            None => workspace.head().await,
+        }
+        .map_err(js_error)
+    }
+
     fn browser_join_history(value: &str) -> Result<JoinHistory, JsValue> {
         match value {
             "merge" => Ok(JoinHistory::Merge),
@@ -7818,14 +7840,21 @@ mod bindings {
             transaction
                 .write("/output/status".to_owned(), b"ready".to_vec())
                 .await?;
-            transaction.commit().await?;
+            transaction.commit(None).await?;
             assert_eq!(
                 workspace.read("/output/status".to_owned(), 5).await?,
                 b"ready"
             );
             assert!(exact.read("/output/status".to_owned(), 5).await.is_err());
             let exact_fork = workspace
-                .fork_at("exact-fork".to_owned(), exact, None)
+                .fork_at(
+                    "exact-fork".to_owned(),
+                    exact,
+                    serde_wasm_bindgen::to_value(&BrowserForkOptions {
+                        paths: None,
+                        idempotency_key: None,
+                    })?,
+                )
                 .await?;
             assert!(
                 exact_fork
@@ -7851,7 +7880,7 @@ mod bindings {
             ))
             .await?;
             Box::pin(transaction.write("/output/status".to_owned(), b"ready".to_vec())).await?;
-            Box::pin(transaction.commit()).await.map(|_| ())
+            Box::pin(transaction.commit(None)).await.map(|_| ())
         }
 
         async fn verify_transaction_tree_fork(
@@ -7906,11 +7935,12 @@ mod bindings {
 
 #[cfg(target_arch = "wasm32")]
 pub use bindings::{
-    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserVolume,
-    BrowserWorkspaceContextRegistry, decode_merge_candidate_json, decode_merge_plan_json,
-    decode_multi_root_candidate_json, decode_multi_root_plan_json, decode_publication_json,
-    encode_merge_candidate_json, encode_merge_plan_json, encode_multi_root_candidate_json,
-    encode_multi_root_plan_json, encode_publication_json, open_browser_fs, open_memory_fs,
+    BrowserCheckout, BrowserFs, BrowserGitCompatRepository, BrowserOperationWindowCoordinator,
+    BrowserVolume, BrowserWorkspaceContextRegistry, decode_merge_candidate_json,
+    decode_merge_plan_json, decode_multi_root_candidate_json, decode_multi_root_plan_json,
+    decode_publication_json, encode_merge_candidate_json, encode_merge_plan_json,
+    encode_multi_root_candidate_json, encode_multi_root_plan_json, encode_publication_json,
+    open_browser_fs, open_memory_fs,
 };
 
 #[cfg(all(test, target_arch = "wasm32"))]

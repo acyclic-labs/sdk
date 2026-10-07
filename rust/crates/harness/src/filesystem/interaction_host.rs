@@ -15,6 +15,7 @@ use crate::{
     store::StreamAggregate,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{StreamClient, StreamProvider};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -41,10 +42,7 @@ where
         &'a self,
         scope: Scope,
         id: InteractionId,
-    ) -> futures::future::BoxFuture<
-        'a,
-        Result<Option<(InteractionTicket, Option<InteractionResolution>)>>,
-    > {
+    ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
         Box::pin(async move {
             self.verifier.verify(&scope)?;
             let result = self.read(id).await?;
@@ -67,7 +65,7 @@ where
         id: InteractionId,
         expected_version: u64,
         response: InteractionResponse,
-    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
+    ) -> BoxFuture<'a, Result<ResolutionReceipt>> {
         Box::pin(FilesystemInteractionHost::resolve_answer(
             self,
             operation_id,
@@ -86,7 +84,7 @@ where
         expected_version: u64,
         approved: bool,
         reason: Option<String>,
-    ) -> futures::future::BoxFuture<'a, Result<ResolutionReceipt>> {
+    ) -> BoxFuture<'a, Result<ResolutionReceipt>> {
         Box::pin(FilesystemInteractionHost::resolve_approval(
             self,
             operation_id,

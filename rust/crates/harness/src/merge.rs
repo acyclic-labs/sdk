@@ -10,7 +10,7 @@ use crate::{
     fork::{ForkSeed, ResourceRevision},
     resources::{GenerationRef, ProviderRef},
 };
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 
@@ -81,7 +81,7 @@ pub enum ProjectJoinOutcome {
 /// Opaque inspected plan. Its implementation and conflict interpretation stay
 /// with the workspace provider; a lost acknowledgement must be reconciled by
 /// the stable provider operation, never blindly retried with a new key.
-pub trait ProjectJoinPlan: Send + Sync {
+pub trait ProjectJoinPlan: acyclic_stream::ProviderPlatform {
     /// Returns the exact child generation captured during inspection.
     fn source_generation(&self) -> &GenerationRef;
     /// Returns the target generation required by the compare-and-swap join.
@@ -99,7 +99,7 @@ pub trait ProjectJoinPlan: Send + Sync {
 
 /// Parent-bound project workspace operations. A child cannot obtain this
 /// binding merely by possessing a project or generation reference.
-pub trait ProjectWorkspaceProvider: Send + Sync {
+pub trait ProjectWorkspaceProvider: acyclic_stream::ProviderPlatform {
     /// Returns the provider identity that owns workspace generations.
     fn provider(&self) -> &ProviderRef;
     /// Returns the parent-controlled project volume handled by this provider.
@@ -264,7 +264,7 @@ impl ProjectMergeReceipt {
 
 /// Owning provider's immutable-generation proof, checked before Stream append.
 /// No reducer replay needs access to the live Filesystem head.
-pub trait ProjectMergeVerifier: Send + Sync {
+pub trait ProjectMergeVerifier: acyclic_stream::ProviderPlatform {
     /// Verifies the immutable provider join before publication to history.
     fn verify<'a>(
         &'a self,

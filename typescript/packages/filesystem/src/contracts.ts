@@ -1,4 +1,5 @@
 import type * as NativeBinding from "../generated/native/binding.js";
+import type { OperationWindowLease } from "./compat.js";
 import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
 import type { AcyclicObserver } from "./observe.js";
 import {
@@ -306,7 +307,7 @@ export interface FsTransaction {
     length: bigint,
   ): Promise<void>;
   rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(): Promise<WorkspaceCommit>;
+  commit(lease?: OperationWindowLease): Promise<WorkspaceCommit>;
   close(): Promise<void>;
 }
 
@@ -796,7 +797,7 @@ export interface FsCheckout {
     destinationOffset: bigint,
     length: bigint,
   ): Promise<MutationResult>;
-  commit(operationId: Uint8Array): Promise<CommitResult>;
+  commit(operationId: Uint8Array, lease?: OperationWindowLease): Promise<CommitResult>;
   mutateLive(
     operations: readonly TransactionOperation[],
     operationId: Uint8Array,
@@ -1170,7 +1171,7 @@ export interface RawWorkspaceTransaction<Commit = unknown> {
   preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
   cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
   rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(): Promise<Commit>;
+  commit(lease?: OperationWindowLease): Promise<Commit>;
 }
 
 export type WasmRawTransaction = WasmTypedClass<WasmBinding.BrowserTransaction, {}, {

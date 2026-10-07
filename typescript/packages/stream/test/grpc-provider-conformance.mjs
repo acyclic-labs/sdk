@@ -8,7 +8,7 @@ import { connectNodeAdapter } from "@connectrpc/connect-node";
 import { GrpcStreamProvider } from "../dist/grpc.js";
 import { idempotencyKey, commitId, StreamError } from "../dist/types.js";
 import { ensureStreamWasm } from "../dist/contract.js";
-import { WasmMemoryStream } from "../generated/wasm/acyclic_stream_wasm.js";
+import { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
 
 const file = fileURLToPath(import.meta.url);
@@ -64,7 +64,7 @@ if (process.argv.includes("--client")) {
 }
 
 await ensureStreamWasm();
-const memory = new WasmMemoryStream();
+const memory = new WasmStream();
 const identity = spawnSync("cargo", ["run", "--quiet", "--locked", "-p", "acyclic-actors", "--example", "conformance-certificate"], { cwd: root, encoding: "utf8" });
 assert.equal(identity.status, 0, identity.stderr);
 const tls = JSON.parse(identity.stdout);

@@ -52,9 +52,15 @@ impl OpfsAcceleratedObjectStore {
         {
             return Err(OpfsOpenError::InvalidOptions);
         }
-        let window = web_sys::window()
-            .ok_or_else(|| OpfsOpenError::Unavailable("window is absent".to_owned()))?;
-        let root = JsFuture::from(window.navigator().storage().get_directory())
+        // Both Window and Worker expose navigator.storage. Storage remains the
+        // authority; no browser-specific execution policy is introduced here.
+        let navigator = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("navigator"))
+            .map_err(|error| OpfsOpenError::Unavailable(js_message(&error)))?;
+        let storage = js_sys::Reflect::get(&navigator, &JsValue::from_str("storage"))
+            .map_err(|error| OpfsOpenError::Unavailable(js_message(&error)))?
+            .dyn_into::<web_sys::StorageManager>()
+            .map_err(|_| OpfsOpenError::Unavailable("storage manager is absent".to_owned()))?;
+        let root = JsFuture::from(storage.get_directory())
             .await
             .map_err(|error| OpfsOpenError::Unavailable(js_message(&error)))?
             .dyn_into::<FileSystemDirectoryHandle>()

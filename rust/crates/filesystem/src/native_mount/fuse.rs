@@ -4588,6 +4588,66 @@ mod tests {
         MountPath::root().child(value.as_bytes().to_vec())
     }
 
+    fn empty_projection_state() -> super::ProjectionState {
+        super::ProjectionState {
+            defaults: super::AttributeDefaults {
+                writable: true,
+                mount_uid: 0,
+                mount_gid: 0,
+            },
+            next_inode: ROOT_INODE + 1,
+            next_handle: 1,
+            by_inode: HashMap::new(),
+            inode_by_path: HashMap::new(),
+            inode_by_file: HashMap::new(),
+            files: HashMap::new(),
+            implicit: HashMap::new(),
+            streams: super::DirectoryStreams::default(),
+            invalidation: super::InvalidationQueue::default(),
+            page_stores: PageStores::default(),
+        }
+    }
+
+    #[test]
+    fn kernel_forget_retires_only_an_inode_with_no_open_handle() -> Result<(), i32> {
+        let mut state = empty_projection_state();
+        let mut linked = regular(FileId::new(), 1);
+        linked.node.link_count = 2;
+        let intern = |state: &mut super::ProjectionState, path| {
+            intern_projected(
+                &mut state.next_inode,
+                &mut state.by_inode,
+                &mut state.inode_by_path,
+                &mut state.inode_by_file,
+                path,
+                &linked,
+                None,
+                true,
+            )
+        };
+        let forgotten = intern(&mut state, name("first"))?;
+        state.release_lookup_reference(forgotten, 1);
+        assert!(!state.by_inode.contains_key(&forgotten));
+        let current = intern(&mut state, name("alias"))?;
+        assert_ne!(
+            current, forgotten,
+            "separate unheld lookups can get new inodes"
+        );
+
+        state
+            .by_inode
+            .get_mut(&current)
+            .ok_or(libc::ESTALE)?
+            .open_handles = 1;
+        state.release_lookup_reference(current, 1);
+        assert_eq!(
+            intern(&mut state, name("first"))?,
+            current,
+            "an open inode remains the same for its other hardlink name"
+        );
+        Ok(())
+    }
+
     /// Distinct positions in increasing order.
     fn positions<const N: usize>() -> [ViewStamp; N] {
         let slot = AtomicU64::new(0);
@@ -5014,31 +5074,14 @@ mod tests {
     /// them returns, without a further change to the source.
     #[test]
     fn releasing_deferred_items_wakes_the_invalidator() -> Result<(), Box<dyn std::error::Error>> {
-        use super::{
-            AttributeDefaults, DirectoryStreams, InvalidationQueue, PageStores, ProjectionCore,
-            ProjectionState,
-        };
+        use super::ProjectionCore;
         use std::sync::PoisonError;
-        let state = || ProjectionState {
-            defaults: AttributeDefaults {
-                writable: true,
-                mount_uid: 0,
-                mount_gid: 0,
-            },
-            next_inode: ROOT_INODE + 1,
-            next_handle: 1,
-            by_inode: HashMap::new(),
-            inode_by_path: HashMap::new(),
-            inode_by_file: HashMap::new(),
-            files: HashMap::new(),
-            implicit: HashMap::new(),
-            streams: DirectoryStreams::default(),
-            invalidation: InvalidationQueue::default(),
-            page_stores: PageStores::default(),
-        };
         for finishing in [false, true] {
             let (source, _) = shared_sources()?;
-            let core = Arc::new(ProjectionCore::new(Arc::new(source), state()));
+            let core = Arc::new(ProjectionCore::new(
+                Arc::new(source),
+                empty_projection_state(),
+            ));
             let waiting = core.state.lock().map_err(|_| "poisoned")?;
             let invalidator = std::thread::spawn({
                 let core = Arc::clone(&core);

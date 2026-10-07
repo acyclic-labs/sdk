@@ -24,14 +24,14 @@ export class WasmFollow {
 }
 
 /**
- * Stateful browser provider backed by the canonical Rust memory provider.
+ * Browser ABI over canonical Rust memory or durable providers.
  *
  * Unary operations use `dispatch(operation, request_bytes)` and return the
  * corresponding protobuf response bytes. `read` and `children` return arrays
  * of encoded stream response messages because protobuf streams have no single
  * finite response envelope.
  */
-export class WasmMemoryStream {
+export class WasmStream {
     free(): void;
     [Symbol.dispose](): void;
     /**
@@ -43,6 +43,10 @@ export class WasmMemoryStream {
      */
     dispatch(operation: string, input: Uint8Array): Promise<Uint8Array>;
     constructor();
+    /**
+     * Opens the canonical Rust provider on one durable `IndexedDB` journal.
+     */
+    static openBrowser(name: string, maximum_commands: number, maximum_journal_bytes: bigint): Promise<WasmStream>;
     /**
      * Opens a live follow cursor backed by the canonical provider.
      */
@@ -161,7 +165,7 @@ export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __streamErrorCodeContract: (a: any) => any;
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
-    readonly __wbg_wasmmemorystream_free: (a: number, b: number) => void;
+    readonly __wbg_wasmstream_free: (a: number, b: number) => void;
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
@@ -175,20 +179,24 @@ export interface InitOutput {
     readonly validateSequence: (a: number, b: number) => [number, number];
     readonly wasmfollow_close: (a: number) => void;
     readonly wasmfollow_next: (a: number) => any;
-    readonly wasmmemorystream_children: (a: number, b: number, c: number) => any;
-    readonly wasmmemorystream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly wasmmemorystream_new: () => number;
-    readonly wasmmemorystream_open_follow: (a: number, b: number, c: number) => any;
-    readonly wasmmemorystream_read: (a: number, b: number, c: number) => any;
+    readonly wasmstream_children: (a: number, b: number, c: number) => any;
+    readonly wasmstream_dispatch: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly wasmstream_new: () => number;
+    readonly wasmstream_openBrowser: (a: number, b: number, c: number, d: bigint) => any;
+    readonly wasmstream_open_follow: (a: number, b: number, c: number) => any;
+    readonly wasmstream_read: (a: number, b: number, c: number) => any;
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9e26981d63052d78___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_: (a: number, b: number, c: any) => [number, number];
     readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined___js_sys_4adc133f13832d5d___Function_fn_wasm_bindgen_2db2d17d2c533688___JsValue_____wasm_bindgen_2db2d17d2c533688___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9e26981d63052d78___features__gen_Event__Event______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_: (a: number, b: number) => void;
+    readonly __wbindgen_malloc: (a: number, b: number) => number;
+    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
     readonly __externref_table_alloc: () => number;
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_destroy_closure: (a: number, b: number) => void;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
-    readonly __wbindgen_malloc: (a: number, b: number) => number;
-    readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __externref_table_dealloc: (a: number) => void;
     readonly __wbindgen_start: () => void;
 }

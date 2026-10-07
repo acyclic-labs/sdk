@@ -608,12 +608,28 @@ impl<A, O> Fs<A, O> {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
 
+    /// Whether a workspace was acquired from this exact filesystem handle or its clones.
+    #[must_use]
+    pub fn owns_workspace(&self, workspace: &crate::Workspace<A, O>) -> bool {
+        self.same_deployment(&workspace.volume.fs)
+    }
+
     pub(crate) fn path_index(&self) -> &dyn crate::path_index::GenerationPathIndex {
         &*self.inner.path_index
     }
 
     pub(crate) fn authority(&self) -> &A {
         &self.inner.authority
+    }
+
+    /// Coordinates leases on an authority backend that stores windows atomically
+    /// with generation publication. Cloning the backend grants no lease.
+    #[must_use]
+    pub fn operation_windows(&self) -> crate::OperationWindowCoordinator<A>
+    where
+        A: crate::OperationWindowStore + Clone,
+    {
+        crate::OperationWindowCoordinator::new(self.inner.authority.clone())
     }
 
     #[cfg(all(test, feature = "s3-http"))]

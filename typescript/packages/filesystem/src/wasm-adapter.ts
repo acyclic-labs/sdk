@@ -1,3 +1,4 @@
+import { copyBytes, copyOptionalBytes } from "./binding-values.js";
 import type {
   FsChangeSet,
   FsVolumeEngine,
@@ -30,6 +31,7 @@ import type {
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions } from "./workspace-results.js";
 import { adaptTransaction } from "./transaction-adapter.js";
+import { adaptOperationWindowCoordinator } from "./operation-windows.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
@@ -43,6 +45,7 @@ const { adaptGeneration, rawGeneration } = createGenerationAdapter(
 );
 const generationDiff = (value: WasmRawGenerationDiff) => copyGenerationDiff(value, copyWork(value.work));
 const workspaceHandles = new WeakMap<FsWorkspace, WasmRawWorkspace>();
+const fsHandles = new WeakMap<FsVolumeEngine, WasmRawFs>();
 const { adaptChangeSet } = createChangeSetAdapter(adaptGeneration, generationDiff);
 const decodeMergeConflict = (raw: WasmRawMergeConflict) => decodeSharedMergeConflict(raw, "WASM join");
 
@@ -80,7 +83,15 @@ export function adaptWasmFs(fs: WasmRawFs, observer?: AcyclicObserver): FsVolume
       raw.close();
     },
   };
+  fsHandles.set(engine, raw);
   return engine;
+}
+
+/** Binds durable windows to the exact browser authority that publishes generations. */
+export function adaptWasmOperationWindows(filesystem: FsVolumeEngine) {
+  const raw = fsHandles.get(filesystem);
+  if (raw === undefined) throw new TypeError("operation windows require a browser filesystem opened by this module");
+  return adaptOperationWindowCoordinator(raw.operationWindows(), rawWorkspace, parseWorkspaceRebaseResult);
 }
 
 export { adaptWorkspaceContextRegistry as adaptWasmWorkspaceContextRegistry } from "./workspace-context.js";
@@ -160,7 +171,7 @@ function adaptCheckout(checkout: WasmRawCheckout, o: AcyclicObserver | undefined
     async preallocateFileById(fileId, offset, length, keepSize) { return copyMutation(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
-    async commit(operationId) { return commitResult(await raw.commit(operationId)); },
+    async commit(operationId, lease) { return commitResult(await raw.commit(operationId, lease)); },
     async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts)); },
     async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
     async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
@@ -296,13 +307,7 @@ function requireWorkspaceName(name: string): void {
   if (name.length === 0) throw new RangeError("workspace name must be non-empty");
 }
 
-function copyBytes(value: Uint8Array): Uint8Array {
-  return Uint8Array.from(value);
-}
 
-function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
-  return value === undefined ? undefined : copyBytes(value);
-}
 
 function requireIdentity(value: Uint8Array, label: string): void {
   if (value.byteLength !== 16) throw new RangeError(`${label} must be exactly 16 bytes`);
