@@ -1,7 +1,7 @@
 import type { AggregateKind, Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
-import { isSafeAuthorityId } from "./authority-contract.js";
+import { isSafeAuthorityId } from "./rust-policy.js";
 
 export interface ReplayCursor {
   readonly generation: string;

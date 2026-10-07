@@ -17,8 +17,6 @@ const modules = [
   "generate-inference-fixed-width-metadata.mjs",
   "generate-stream-http-contract.mjs",
   "generate-stream-token-operations.mjs",
-  "generate-harness-authority-contract.mjs",
-  "generate-harness-component-label-contract.mjs",
   "generate-harness-limits-contract.mjs",
   "generate-harness-child-page-contract.mjs",
   "generate-harness-private-directory-page-contract.mjs",

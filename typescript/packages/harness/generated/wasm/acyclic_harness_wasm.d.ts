@@ -826,6 +826,19 @@ export function taskIdentityDigest(name: string, version: string, input_schema: 
 export function uuidFromDigestHalf(digest: Uint8Array, second: boolean): string;
 
 /**
+ * Validates one aggregate identity with the same path-segment policy used by
+ * every Rust stream access. The returned spelling is unchanged so hosts can
+ * retain their branded string facade without reimplementing the policy.
+ */
+export function validateAuthorityPathSegment(value: string): string;
+
+/**
+ * Validates one component name with the canonical Rust byte and character
+ * policy. The field-specific error text remains a thin TypeScript concern.
+ */
+export function validateComponentLabel(value: string): string;
+
+/**
  * Validates a host-approved pinned selection without granting read authority.
  */
 export function validateContextSelection(selection: ContextSelection, limits: WasmModelLimitsInput): void;
@@ -993,6 +1006,8 @@ export interface InitOutput {
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
     readonly uuidFromDigestHalf: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly validateAuthorityPathSegment: (a: any) => [number, number, number, number];
+    readonly validateComponentLabel: (a: any) => [number, number, number, number];
     readonly validateContextSelection: (a: any, b: any) => [number, number];
     readonly validateContract: (a: number, b: number, c: any, d: any) => [number, number, number];
     readonly validateConversationMessageId: (a: number, b: number) => [number, number, number, number];

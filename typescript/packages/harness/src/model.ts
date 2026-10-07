@@ -15,7 +15,7 @@ import type {
   WasmToolJsonSchema,
   WasmToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-import { isValidComponentLabel } from "./component-label-contract.js";
+import { validateComponentLabel as validateComponentLabelRust } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
 export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
@@ -107,7 +107,7 @@ export interface ToolRef<Input, Output> {
 }
 export type LiveTool<Input, Output> = (context: ToolContext, input: Input) => Output | Promise<Output>;
 export function validateComponentLabel(value: string, field: string): void {
-  if (typeof value !== "string" || !isValidComponentLabel(value)) throw new TypeError(`${field} is invalid`);
+  validateComponentLabelRust(value, field);
 }
 export function validateToolName(name: string): void {
   validateComponentLabel(name, "tool name");
