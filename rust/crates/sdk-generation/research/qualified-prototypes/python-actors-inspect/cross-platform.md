@@ -44,3 +44,5 @@ The live remote fixture is Windows-local and was not run from ivar.
 
 No binary artifacts were copied into the repository, and no merge or
 publication was performed.
+
+The macOS arm64 native asset is reusable by the Swift and JVM qualification jobs: the ivar build at `/tmp/actors-uniffi-mac-target/release/libacyclic_actors_uniffi.dylib` has SHA-256 `28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719` and 5,122,144 bytes. Those jobs should consume that exact asset and record the hash instead of rebuilding the Rust native library.

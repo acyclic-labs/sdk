@@ -1,30 +1,38 @@
-# Pinned UniFFI C# backend source fix
+# Pinned UniFFI C# backend source qualification
 
-This source-only qualification records a minimal template fix against
-NordSecurity/uniffi-bindgen-cs at tag `v0.11.0+v0.31.0`
-(commit `e10ce410eb3a10cc19c7928b93ea8d84e038c034`, MPL-2.0).
+This source-only qualification uses NordSecurity `uniffi-bindgen-cs` tag
+`v0.11.0+v0.31.0` (commit `e10ce410eb3a10cc19c7928b93ea8d84e038c034`, MPL-2.0),
+targeting UniFFI `0.31.0`. The source patch is in
+`backend-source-cancellation.patch`; snapshots of the changed templates are
+kept beside this file. No production ABI or Rust facade file was changed.
 
-The unmodified backend emits a public `Type(ulong pointer)` raw-handle
-constructor. For a nominal validated `PositiveU64(ulong value)`, that is a
-C# signature collision and the fresh Actors generated source does not compile.
-The patch in `ObjectTemplate.cs.patch` changes the raw constructor to
-`internal Type(ulong pointer, bool _uniffi_raw_handle)` and updates every
-backend-owned lift/factory call to pass `true`. It changes only the backend
-template; generated output is not hand edited.
+The backend now emits an optional `CancellationToken` on generated async
+methods and constructors. It registers that token against each existing UniFFI
+Rust future, calls the generated `rust_future_cancel_*` symbol, maps the
+standard future status 3 to `OperationCanceledException` carrying the request
+token, and disposes the registration before freeing the future. This reuses
+UniFFI's existing future continuation map and native cancel symbols. It does
+not add an Actors operation wrapper, a managed cancellation-handle adapter, or
+a second registry. Existing Rust `CancellationHandle?` arguments remain part
+of the facade ABI and are passed as `null` by the no-handle consumer.
 
-The generated source in `generated/acyclic_actors_uniffi.cs` was produced
-from the current all-eight Actors artifact (`source_revision`
-`371bb4170e16aca973176b6756a261ee5add7297`). It retains public nominal
-validated constructors, full-width `ulong`, optional fields, enums, typed
-errors, and cancellation-handle parameters. `managed/Program.cs` is the
-source-only managed consumer: its `WithCancellation` helper creates and
-disposes the generated Rust cancellation handle only for cancellable tokens.
+The raw object constructor fix remains source-level: generated raw handle
+construction is `internal Type(ulong, bool)` while public nominal constructors
+remain available. An external assembly forge of `new PositiveU64(1UL, true)`
+produces compiler error CS1729.
 
-Qualification evidence is in `receipt.json`. The source-patched generator
-built successfully with Cargo and generated source compiled with .NET 8.
-The external runtime probe exercised all eight Actors operations, default
-(no cancellation handle) calls, a pre-cancelled `CancellationToken`, typed
-service error mapping, `PositiveU64(0)` rejection, and
-`PositiveU64(ulong.MaxValue)` preservation. Its isolated fixture used the
-same canonical fixture implementation with only the checkpoint assertion
-adapted to the consumer's idempotency key.
+`generated/acyclic_actors_uniffi.cs` was freshly generated from the Actors
+cdylib with the patched source backend. It includes all eight Actors operations,
+full-width `ulong`, optional values, nominal validated types, typed errors, and
+`CancellationToken cancellationToken = default` on async methods. The source
+compiles with the installed C# compiler. `managed/AllEightProgram.cs` compiles
+and runs all eight ordinary operations using only `null` for the Rust
+cancellation handle. `managed/Program.cs` runs three gated pending operations:
+continuation-map peaks are `1,1,1`, each map returns to zero, the fixture
+observes started=3/aborted=3/active=0, and each await throws
+`OperationCanceledException` whose token is the request token. The pending
+fixture options are the exclusive `root-pending-actors-fixture-options.json`.
+
+The generated source and consumers are retained as qualification artifacts;
+no DLL, native binary, Cargo target, or managed build output is persisted in
+this primary research directory.

@@ -5,6 +5,7 @@
 //! construction, validation, transport selection, response conversion, and
 //! cancellation remain in `acyclic-actors`.
 pub mod cancellation_metadata;
+pub mod kotlin_generation_metadata;
 
 
 use std::sync::Arc;

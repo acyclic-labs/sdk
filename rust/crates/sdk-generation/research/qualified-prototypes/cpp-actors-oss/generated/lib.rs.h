@@ -394,6 +394,7 @@ namespace acyclic {
     enum class ErrorKind : ::std::uint8_t;
     struct PositiveU64Result;
     struct ClientConnectResult;
+    struct RemoteConformanceResult;
     struct ActorsClient;
     struct ActorsError;
     struct ActorObservationView;
@@ -440,6 +441,19 @@ struct ClientConnectResult final {
   using IsRelocatable = ::std::true_type;
 };
 #endif // CXXBRIDGE1_STRUCT_acyclic$actors$ClientConnectResult
+
+#ifndef CXXBRIDGE1_STRUCT_acyclic$actors$RemoteConformanceResult
+#define CXXBRIDGE1_STRUCT_acyclic$actors$RemoteConformanceResult
+struct RemoteConformanceResult final {
+  bool ok CXX_DEFAULT_VALUE(false);
+  ::std::uint32_t operations_completed CXX_DEFAULT_VALUE(0);
+  bool authentication_rejected CXX_DEFAULT_VALUE(false);
+  ::acyclic::actors::ErrorKind error;
+  ::rust::String message;
+
+  using IsRelocatable = ::std::true_type;
+};
+#endif // CXXBRIDGE1_STRUCT_acyclic$actors$RemoteConformanceResult
 
 #ifndef CXXBRIDGE1_STRUCT_acyclic$actors$ActorsClient
 #define CXXBRIDGE1_STRUCT_acyclic$actors$ActorsClient
@@ -516,6 +530,8 @@ private:
 bool actors_client_is_connected(::acyclic::actors::ActorsClient const &client) noexcept;
 
 ::acyclic::actors::ClientConnectResult actors_client_connect_probe(::rust::Str endpoint, ::rust::Str token) noexcept;
+
+::acyclic::actors::RemoteConformanceResult actors_live_conformance_probe(::rust::Str endpoint, ::rust::Str token, ::rust::Str ca_certificate) noexcept;
 
 ::rust::Box<::acyclic::actors::ActorsError> actors_cancelled_error() noexcept;
 

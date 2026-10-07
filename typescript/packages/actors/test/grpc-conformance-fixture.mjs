@@ -142,6 +142,8 @@ export async function startConformanceFixture({ onUnaryRequest } = {}) {
   const handleExpectedConnectionReset = error => {
     if (error?.code === "ECONNRESET") return;
     if (error?.code === "ERR_HTTP2_ERROR" && error?.message === "Protocol error") return;
+    // A failed protocol probe closes its connection, not the shared fixture.
+    if (error?.code === "ERR_SSL_HTTP_REQUEST" || error?.code === "ERR_SSL_NO_APPLICATION_PROTOCOL") return;
     throw error;
   };
   server.on("connection", socket => socket.on("error", handleExpectedConnectionReset));

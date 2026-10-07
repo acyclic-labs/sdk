@@ -1,0 +1,91 @@
+{
+  "qualification": "Swift maintained UniFFI generator cancellation",
+  "status": "PASS_pending_runtime",
+  "source": {
+    "checkout": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "gitCommit": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "uniffiVersion": "0.31.0",
+    "upstream": "https://github.com/mozilla/uniffi-rs",
+    "license": "MPL-2.0",
+    "sourceStatus": "The host checkout contains the pinned source snapshot plus the three external template files; the generated output is not part of this artifact."
+  },
+  "templates": {
+    "AsyncSwift": {
+      "path": "templates/Async.swift",
+      "sha256": "830FB89B3C97713CA2C1CF844BE63E0A1AD5D458AF7A3C87A3E2FF58A2B5E0C6"
+    },
+    "macrosSwift": {
+      "path": "templates/macros.swift",
+      "sha256": "5EB1C64482514E8962099B42BE14BBC2C0B375570869CFE391006A77802ABDB4"
+    },
+    "HelpersSwift": {
+      "path": "templates/Helpers.swift",
+      "sha256": "932944185A48F7C99C81E0A08C3F89304515D7C20D025F552875D8BB816A7E44"
+    }
+  },
+  "runner": {
+    "path": "runner.ps1",
+    "sha256": "B48F16ADDC927D8ABADA246305A96396DECD6018500D10A632937841389F0234",
+    "bindgen": "cargo run --manifest-path <pinned-source>\\runner\\Cargo.toml --target-dir <work>\\bindgen-target -- <RustDll> <generated> acyclic_actors_uniffi",
+    "consumer": {
+      "package": "consumer/Package.swift",
+      "packageSha256": "852405D5B4DDB552800ADFD3C370CB896E29719F77617AE9B6D7FD8C2280D13A",
+      "probe": "consumer/Sources/ActorsConformanceConsumer/main.swift",
+      "probeSha256": "58365B8DF3C8AF577DC99CE4B92710D08C1DBD6C3672B47208D4A44192C71394",
+      "allEightProbe": "consumer/Sources/ActorsAll8ConformanceConsumer/main.swift",
+      "allEightProbeSha256": "C69BA15EF748A05F4707C7244D75B60E333AF299F2FF8C90191F99968600B6EA",
+      "generatedOutputTracked": false
+    }
+  },
+  "inputs": {
+    "rustSourceDomainSha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+    "rustDll": "Q:\\sdk\\work\\actors-uniffi-all8-check-current-20261007\\debug\\acyclic_actors_uniffi.dll",
+    "rustDllSha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+    "generatedSwiftExternal": "Q:\\sdk\\work\\actors-uniffi-current-prototype\\swift-template-cancel-current-20261007i\\acyclic_actors_uniffi.swift",
+    "generatedSwiftSha256": "F8812DAF0B3F9C8C653CBE45F19A79CAE780C7732E6166AD65FD02E675AE997B"
+  },
+  "pendingRuntime": {
+    "fixtureOptions": "Q:\\sdk\\work\\root-pending-actors-fixture-options.json",
+    "endpoint": "https://localhost:60389",
+    "control": "http://127.0.0.1:60391/state",
+    "baseline": {
+      "started": 7,
+      "active": 0,
+      "aborted": 6
+    },
+    "activeBeforeCancel": {
+      "started": 8,
+      "active": 1,
+      "aborted": 6
+    },
+    "final": {
+      "started": 8,
+      "active": 0,
+      "aborted": 7
+    },
+    "taskOutcome": "CancellationError()",
+    "cancellationArgument": "nil",
+    "manualCancellationHandle": false
+  },
+  "portableFixtureRuntime": {
+    "fixtureOptions": "Q:\\sdk\\work\\root-portable-pending-options.json",
+    "fixtureOptionsSha256": "CDE520995D6EE4CD1BD88A7D1ADB9C754037C6D7E3F0901EE57C31A29D052896",
+    "caCertificate": "Q:\\sdk\\work\\root-portable-pending-ca.pem",
+    "caCertificateSha256": "B736F215A7208E5C2B5E06CFF0EBB96D39A1444936B499027F35D6242F21FCBD",
+    "endpoint": "https://localhost:51150",
+    "control": "http://127.0.0.1:51152",
+    "pendingBaseline": { "started": 2, "active": 0, "aborted": 2 },
+    "pendingActiveBeforeCancel": { "started": 3, "active": 1, "aborted": 2 },
+    "pendingFinal": { "started": 3, "active": 0, "aborted": 3 },
+    "pendingTaskOutcome": "CancellationError()",
+    "pendingResult": "PASS generated Swift Task.cancel -> Rust future cancel; cancellation argument=nil; no manual handle",
+    "allEightResult": "BLOCKED_BY_FIXTURE_RESPONSE: fresh all-eight executable using DLL A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241 received BindingError.Service(grpcCode: 13, serviceCode: nil, detailMessage: service rejected operation) on initial actor-a inspect; no all-eight operation claim made"
+  },
+  "typedAll8": {
+    "generatedConsumerBuild": "PASS",
+    "ordinaryAndEightOperationRuntime": "NOT_RUN: standard fixture https://localhost:55755 was unavailable during this receipt update; run the ready external consumer against Q:\\sdk\\work\\go-remote-primitive-current\\fixture-options.json when the shared fixture is live",
+    "serviceErrorShape": "Generated BindingError.Service and u64 cursor remain compile-qualified in fresh output"
+  },
+  "generatedOutputsExcluded": true,
+  "nextStep": "Upstream the three template changes through maintained UniFFI Swift generator, regenerate package from Rust-owned metadata, then rerun all8 against a shared all8 fixture."
+}

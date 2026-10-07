@@ -1,6 +1,6 @@
 # Maintained UniFFI Python data enum typing patch
 
-This is an isolated qualification of the pinned Mozilla UniFFI `uniffi_bindgen` 0.31.0 source. It is not a dependency pin bump and does not modify the production crate source. The external patched source is staged at `Q:\sdk\work\actors-uniffi-python-generator-patched-20261007` and its three changed generator files are retained under the external source clone.
+This is an isolated qualification of the pinned Mozilla UniFFI `uniffi_bindgen` 0.31.0 source. It is not a dependency pin bump and does not modify the production crate source. The complete patched source is now retained in this directory under `uniffi-bindgen-0.31.0-pytyping/`; generated outputs remain in the external `Q:\sdk\work` qualification area. Upstream source revision `309762f55db3f0548194a9ceba3027fa64b18a93` and the declared `MPL-2.0` license are recorded in `PATCH-PROVENANCE.md`.
 
 The current Python backend keeps its runtime API: each data carrying enum remains a parent class with nested variant constructors and runtime dynamic reparenting, so `isinstance(value, SubscriptionStart)` and existing constructor names continue to work. The patch adds a generated `SubscriptionStartValue = typing.Union[SubscriptionStart.CURSOR, SubscriptionStart.CURRENT_HEAD]` alias and uses that alias in all generated type references. The dynamic reparenting runs only when `typing.TYPE_CHECKING` is false; this lets mypy and Pyright see the actual nested constructors while runtime behavior remains unchanged. Error enums are excluded from the alias path, so `BindingErrorValue` is not invented.
 
@@ -28,4 +28,10 @@ Static typing qualification used mypy 1.17.1 and Pyright 1.1.404. The valid nest
 - Fresh constructor/runtime probe passed.
 - Installed all-eight remote conformance passed against the existing live fixture, including typed service error and pre-cancelled operation checks.
 
-The remaining product decision is whether to upstream this small generator correction or carry it as a reviewed source patch. The qualification does not claim a production dependency update or macOS qualification.
+Static qualification covered every generated data-carrying enum alias in this Actors module (`SubscriptionStartValue`), both variant constructors, and its `SubscriptionSpec.start` field. The positive all-fields fixture passed mypy 1.17.1 and Pyright 1.1.404 with zero diagnostics. The negative cursor-string fixture produced the expected type error in both checkers. Runtime assertions confirmed both nested constructors still satisfy `isinstance(value, SubscriptionStart)` and that the alias remains a `typing.Union` of those nested classes.
+
+The source-only pending cancellation probe is `python-asyncio-pending-cancellation.py`. Against the live pending fixture at `https://localhost:60389`, it ran three real `asyncio.Task.cancel()` cycles. Each cycle observed the service transition from `active=1` to `aborted` with `active=0`, saw one continuation-map entry while pending, and returned to map size zero. The terminal marker was `PYTHON_ASYNCIO_PENDING_CANCELLATION_PASS`; the final map size was zero. This qualifies Python consumer cancellation propagation through the Rust-owned `CancellationHandle` and cleanup, not a synthetic local future.
+
+The maintained source runner is `run-uniffi-python-typing-patch.sh`; its caller supplies all build, native-library, and generated-output paths. The qualification does not claim a production dependency update.
+
+

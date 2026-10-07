@@ -102,7 +102,7 @@ Maintained-runtime repeated pending cancellation and continuation cleanup receip
 
 
 Portability and installability matrix (2026-10-07):
-- source-only matrix: PORTABILITY-MATRIX.md, SHA-256 E5DEF1513A4A4F000786482CFA2D0FFA92C2C0B457AF03BD0A86F8DAFE0234D2
+- source-only matrix: PORTABILITY-MATRIX.md, SHA-256 4F0A7487AF57C296A0F58969B6AE8AD4AE2F868393BE41C1E6F865EC59DFEC7A
 - maintained Linux wheel: Q:\sdk\work\actors-uniffi-python-linux-wheel-current-20261007\dist\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl, SHA-256 0D96809BE41C62DC893EDA16CB8DC1A1F1602F7227622EF1A167BDDA5288D154
 - packaged native `.so` SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
 - WSL installed wheel probe: LINUX_WHEEL_INSTALLED_NOMINAL_TYPES_PASS; transport fixture was unavailable for this bounded rerun
@@ -111,12 +111,16 @@ Portability and installability matrix (2026-10-07):
 
 Classpath-native Kotlin/JVM package receipt (2026-10-07):
 - package design: KOTLIN-PORTABLE-PACKAGE.md
-- JNA maintained `Native.extractFromResourcePath` resolves the generated basename from standard root prefixes `linux-x86-64/` and `win32-x86-64/`; no source loader, system property, java.library.path, or native-path setting
+- package design SHA-256 after pinned Temurin Mac runtime qualification and loader review: AA3208A56E78FD7B43868804E992BEAB48AB9737A18E9BA750223F8E14283E49
+- JNA maintained `Native.extractFromResourcePath` resolves the generated basename from standard root prefixes `linux-x86-64/`, `win32-x86-64/`, and `darwin-aarch64/`; no source loader, java.library.path, or native-path setting; UniFFI's optional libraryOverride property is unset
 - generated Kotlin remained unchanged, SHA-256 6E73BC8CA0D0C47DA51C362E98D06AFBC2B29E6F0A7F12385401B59521623A3B
 - Linux x86_64 resource SHA-256 AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24
 - Windows x86_64 resource SHA-256 A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241
 - installed JAR: Q:\sdk\work\actors-uniffi-kotlin-portable-20261007\consumer\target\actors-uniffi-kotlin-portable-0.0.0-qualification.jar
-- installed JAR SHA-256: 01C1765F1260DC8644C3D965963561D040EE842AC56619FE61B35EC2CD10BE30
+- installed JAR SHA-256 after adding the exact Python macOS arm64 asset: EAA6F40C0F5BDC7CBDFACBE74F25D03D10E70F57C9682E8036095FF1B88124BC
+- macOS arm64 resource: Q:\sdk\work\actors-uniffi-python-mac-wheel-current-20261007\libacyclic_actors_uniffi.dylib; SHA-256 28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719; 5,122,144 bytes; copied without a Rust rebuild to darwin-aarch64/libacyclic_actors_uniffi.dylib
+- macOS native provenance: Python cross-platform receipt, Darwin 24.6.0 arm64, Rust 1.98.1-aarch64-apple-darwin; matching source/native hash recorded at /tmp/actors-uniffi-mac-target/release/libacyclic_actors_uniffi.dylib on ivar
+- Mac transport check: copied the rebuilt JAR to ivar:/tmp/actors-uniffi-kotlin-portable-20261007.jar; remote JAR SHA-256 EAA6F40C0F5BDC7CBDFACBE74F25D03D10E70F57C9682E8036095FF1B88124BC and extracted darwin-aarch64 resource SHA-256 28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719
 - pinned package dependencies: Kotlin 1.9.21; kotlinx-coroutines 1.8.0; JNA 5.15.0; JDK target 17
 - offline Maven package: PASS
 - WSL Java installed-JAR constructor probe: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS
@@ -124,4 +128,17 @@ Classpath-native Kotlin/JVM package receipt (2026-10-07):
 - WSL pending fixture: https://localhost:33385; control http://127.0.0.1:44583; CA Q:\sdk\work\kotlin-wsl-pending-fixture-ca.pem; fixture launched with Windows Cargo 1.98.1 shim selected through the WSL PATH
 - Windows Java installed-JAR constructor and live fixture all-eight probe: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; endpoint https://localhost:59663; methods inspect/create/update/add/remove/resume/checkpoint/invoke; typed service error and cancellation observed
 - WSL fixture attempt was blocked by WSL Cargo 1.75.0 rejecting repository edition-2024; Windows fixture used Cargo 1.98.1
-- platform scope: Linux x86_64 and Windows x86_64 only; macOS/other architectures require separate native assets and receipts
+- macOS task-local runtime: official Eclipse Temurin JRE 17.0.20.1+1 `aarch64_mac`, extracted under /tmp/actors-kotlin-mac-jre-20261007 on ivar; published SHA-256 190480874CCCEB358CBC840393207F77AC3E63A4C5F8129D0E23E9518B96AD05; artifact URL https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jre_aarch64_mac_hotspot_17.0.20.1_1.tar.gz; no machine-global install
+- macOS constructor receipt: KOTLIN_JNA_STANDARD_RESOURCE_CONSTRUCTORS_PASS
+- macOS all-eight receipt: KOTLIN_ALL8_IMMUTABLE_PROBE_PASS; SSH reverse tunnel to the live Windows fixture; inspect/create/update/add/remove/resume/checkpoint/invoke, CA connect, typed service error, and cancellation passed
+- macOS pending receipt: KOTLIN_JNA_STANDARD_RESOURCE_PENDING_CANCELLATION_PASS; generated-null pending request observed one additional started and aborted request with active=0
+- macOS fixture tunnel: actor endpoint https://localhost:60489 -> Windows [::1]:50894; control http://127.0.0.1:60491 -> Windows 127.0.0.1:50896
+- platform scope: Linux x86_64, Windows x86_64, and macOS arm64 have installed runtime receipts using standard JNA resource prefixes
+
+Rust-owned JVM generation-data candidate (source only; no registry publication):
+- candidate JSON: RUST-OWNED-KOTLIN-GENERATION-DATA.candidate.json, SHA-256 9815D641F555960DE18AB5545460C9BCF1C540ECBEF5565CC5D702C1730FA000
+- candidate plan: RUST-OWNED-KOTLIN-GENERATION-DATA.md, SHA-256 5C48D9F735916592903C9604D14A7611449DE8156589610A17587BF460869D71
+- Cargo authority: acyclic-actors-uniffi version 0.2.0 from cargo metadata; manifest SHA-256 3208F2D3F9F52F9D06C8BBED59225D3B58F6BAF1132EB803C070946F9DAB7377; lock SHA-256 97EB05F8F0B495EB84754DC35CCFFAFD8E5943769D4922D6953D4E24CDA77BAE
+- candidate coordinate: dev.acyclic:acyclic-actors-uniffi-kotlin:0.2.0; current 0.0.0-qualification POM remains a non-release placeholder
+- nominal typing gate: BLOCKED because maintained generated opaque classes expose public (UniffiWithHandle, Long) and NoHandle constructors; enum and immutable-record payload types are compile-time strong
+- release rule: derive Maven version from Cargo metadata and reject manually divergent POM metadata; no generated source loader or native-path setup

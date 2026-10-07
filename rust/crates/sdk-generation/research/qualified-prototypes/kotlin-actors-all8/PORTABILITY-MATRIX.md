@@ -7,10 +7,10 @@ This is a source-only portability record for the maintained Rust Actors facade. 
 | Consumer | Native loader | Linux x86_64 artifact | Windows x86_64 artifact | macOS artifact strategy |
 | --- | --- | --- | --- | --- |
 | Python | generated `ctypes` loader chooses `.so`, `.dll`, or `.dylib` from the package directory | `libacyclic_actors_uniffi.so`; wheel tag `py3-none-linux_x86_64` | package-relative `.dll`; build a `win_amd64` wheel | package-relative `.dylib`; build per-architecture `macosx_*` wheels |
-| Kotlin/JVM | generated JNA direct mapping; default basename `acyclic_actors_uniffi`, or `uniffi.component.acyclic_actors_uniffi.libraryOverride` | supply `libacyclic_actors_uniffi.so` on `java.library.path` or override | supply `.dll` or override; current installed probe used the override | supply `.dylib` or override; arm64 and x86_64 need separate native artifacts |
+| Kotlin/JVM | generated JNA direct mapping; JNA extracts the default basename `acyclic_actors_uniffi` from its standard `Platform.RESOURCE_PREFIX` resource path | JAR root `linux-x86-64/libacyclic_actors_uniffi.so`; installed probe used no loader or path setting | JAR root `win32-x86-64/acyclic_actors_uniffi.dll`; installed probe used no loader or path setting | JAR root `darwin-aarch64/libacyclic_actors_uniffi.dylib` for arm64; exact Python-built asset packaged and Mac JRE constructor/all-eight/pending receipts passed |
 | Ruby | generated `ffi` loader plus package-relative native loader | package a Linux `.so` gem variant | current 0.32.2 receipt packages a relative `.dll` | package per-architecture `.dylib` gem variants |
 
-A single cross-platform Kotlin JAR is not sufficient: the maintained generated code uses JNA, not JNI, and still needs one native binary per OS/architecture. Python wheels and Ruby gems likewise need platform-specific native assets. The Rust-owned request and response types remain identical across these assets.
+A single cross-platform Kotlin JAR can carry one standard-prefix native binary per supported OS/architecture: the maintained generated code uses JNA, not JNI, and JNA selects the matching resource prefix at runtime. The Windows, WSL, and Mac probes prove this for Windows x86_64, Linux x86_64, and macOS arm64; the Mac run used a task-local verified Temurin JRE and an SSH tunnel to the live fixture. Python wheels and Ruby gems likewise need platform-specific native assets. The Rust-owned request and response types remain identical across these assets.
 
 ## Installed Linux wheel receipt
 

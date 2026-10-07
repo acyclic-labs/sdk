@@ -189,6 +189,10 @@ struct UniffiRustCallStatus {
     public bool IsPanic() {
         return code == 2;
     }
+
+    public bool IsCancelled() {
+        return code == 3;
+    }
 }
 
 // Base class for all uniffi exceptions
@@ -269,6 +273,8 @@ class _UniffiHelpers {
             } else {
                 throw new PanicException("Rust panic");
             }
+        } else if (status.IsCancelled()) {
+            throw new OperationCanceledException();
         } else {
             throw new InternalException($"Unknown rust call status: {status.code}");
         }
@@ -3428,26 +3434,26 @@ class FfiConverterTypeActorLimits: FfiConverter<ActorLimits, ulong> {
 /// </summary>
 public interface IActorsClient {
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> AddSubscription(AddSubscriptionRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> AddSubscription(AddSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> CheckpointActor(CheckpointActorRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> CheckpointActor(CheckpointActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> CreateActor(CreateActorRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> CreateActor(CreateActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <summary>
     /// Executes the legacy inspect operation through the canonical Rust client.
     /// </summary>
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> InspectActor(ActorId @actorId, CancellationHandle? @cancellation);
+    Task<ActorObservation?> InspectActor(ActorId @actorId, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> InspectActorRequest(InspectActorRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> InspectActorRequest(InspectActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<InvokeActorResponse> InvokeActor(InvokeActorRequest @request, CancellationHandle? @cancellation);
+    Task<InvokeActorResponse> InvokeActor(InvokeActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> RemoveSubscription(RemoveSubscriptionRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> RemoveSubscription(RemoveSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> ResumeSubscription(ResumeSubscriptionRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> ResumeSubscription(ResumeSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
     /// <exception cref="BindingException"></exception>
-    Task<ActorObservation?> UpdateActor(UpdateActorRequest @request, CancellationHandle? @cancellation);
+    Task<ActorObservation?> UpdateActor(UpdateActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default);
 }
 /// <summary>
 /// Opaque Rust-owned Actors client.
@@ -3545,7 +3551,7 @@ public class ActorsClient : IActorsClient, IDisposable {
 
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> AddSubscription(AddSubscriptionRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> AddSubscription(AddSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3553,6 +3559,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3563,11 +3571,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> CheckpointActor(CheckpointActorRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> CheckpointActor(CheckpointActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3575,6 +3585,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3585,11 +3597,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> CreateActor(CreateActorRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> CreateActor(CreateActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3597,6 +3611,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3607,6 +3623,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
@@ -3614,7 +3632,7 @@ public class ActorsClient : IActorsClient, IDisposable {
     /// Executes the legacy inspect operation through the canonical Rust client.
     /// </summary>
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> InspectActor(ActorId @actorId, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> InspectActor(ActorId @actorId, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3622,6 +3640,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3632,11 +3652,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> InspectActorRequest(InspectActorRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> InspectActorRequest(InspectActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3644,6 +3666,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3654,11 +3678,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<InvokeActorResponse> InvokeActor(InvokeActorRequest @request, CancellationHandle? @cancellation) {
+    public async Task<InvokeActorResponse> InvokeActor(InvokeActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3666,6 +3692,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3676,11 +3704,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterTypeInvokeActorResponse.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> RemoveSubscription(RemoveSubscriptionRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> RemoveSubscription(RemoveSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3688,6 +3718,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3698,11 +3730,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> ResumeSubscription(ResumeSubscriptionRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> ResumeSubscription(ResumeSubscriptionRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3710,6 +3744,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3720,11 +3756,13 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
     /// <exception cref="BindingException"></exception>
-    public async Task<ActorObservation?> UpdateActor(UpdateActorRequest @request, CancellationHandle? @cancellation) {
+    public async Task<ActorObservation?> UpdateActor(UpdateActorRequest @request, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         CallWithPointer(thisPtr => {
@@ -3732,6 +3770,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         }),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_rust_buffer(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_rust_buffer(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_rust_buffer(future, ref status);
@@ -3742,6 +3782,8 @@ public class ActorsClient : IActorsClient, IDisposable {
         (result) => FfiConverterOptionalTypeActorObservation.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
     }
     
@@ -6701,19 +6743,30 @@ internal static class _UniFFIAsync {
     public static async Task<T> UniffiRustCallAsync<T, F, E>(
         ulong rustFuture,
         Action<ulong, IntPtr, ulong> pollFunc,
+        Action<ulong> cancelFunc,
         CompleteFuncDelegate<F> completeFunc,
         Action<ulong> freeFunc,
         Func<F, T> liftFunc,
-        CallStatusErrorHandler<E> errorHandler
+        CallStatusErrorHandler<E> errorHandler,
+        CancellationToken cancellationToken
     ) where E : System.Exception
     {
+        CancellationTokenRegistration cancellationRegistration = default;
         try {
+            if (cancellationToken.CanBeCanceled) {
+                cancellationRegistration = cancellationToken.Register(() => cancelFunc(rustFuture));
+            }
             await PollFuture(rustFuture, pollFunc);
             var result = _UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
             return liftFunc(result);
         }
+        catch (Exception error) when (cancellationToken.IsCancellationRequested && IsNativeCancellation(error))
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
         finally
         {
+            cancellationRegistration.Dispose();
             freeFunc(rustFuture);
         }
     }
@@ -6721,20 +6774,39 @@ internal static class _UniFFIAsync {
     public static async Task UniffiRustCallAsync<E>(
         ulong rustFuture,
         Action<ulong, IntPtr, ulong> pollFunc,
+        Action<ulong> cancelFunc,
         CompleteActionDelegate completeFunc,
         Action<ulong> freeFunc,
-        CallStatusErrorHandler<E> errorHandler
+        CallStatusErrorHandler<E> errorHandler,
+        CancellationToken cancellationToken
     ) where E : System.Exception
     {
+        CancellationTokenRegistration cancellationRegistration = default;
          try {
+            if (cancellationToken.CanBeCanceled) {
+                cancellationRegistration = cancellationToken.Register(() => cancelFunc(rustFuture));
+            }
             await PollFuture(rustFuture, pollFunc);
             _UniffiHelpers.RustCallWithError(errorHandler, (ref UniffiRustCallStatus status) => completeFunc(rustFuture, ref status));
 
         }
+        catch (Exception error) when (cancellationToken.IsCancellationRequested && IsNativeCancellation(error))
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
         finally
         {
+            cancellationRegistration.Dispose();
             freeFunc(rustFuture);
         }
+    }
+
+    private static bool IsNativeCancellation(Exception error)
+    {
+        // Generated UniFFI errors conventionally expose a nested Cancelled class.
+        // Keep this backend generic; no generated error type or operation registry
+        // is needed to translate a cancelled Rust future.
+        return error is OperationCanceledException || error.GetType().Name == "Cancelled";
     }
 }
 #pragma warning restore 8625
@@ -6743,13 +6815,15 @@ public static class AcyclicActorsUniffiMethods {
     /// Connects through the canonical Rust transport and returns an opaque client.
     /// </summary>
     /// <exception cref="BindingException"></exception>
-   public static async Task<ActorsClient> ConnectActors(string @endpoint, string @token, CancellationHandle? @cancellation) 
+   public static async Task<ActorsClient> ConnectActors(string @endpoint, string @token, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) 
    {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         _UniFFILib.uniffi_acyclic_actors_uniffi_fn_func_connect_actors(FfiConverterString.INSTANCE.Lower(@endpoint), FfiConverterString.INSTANCE.Lower(@token), FfiConverterOptionalTypeCancellationHandle.INSTANCE.Lower(@cancellation)),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_u64(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_u64(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_u64(future, ref status);
@@ -6760,6 +6834,8 @@ public static class AcyclicActorsUniffiMethods {
         (result) => FfiConverterTypeActorsClient.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
    }
     /// <summary>
@@ -6767,13 +6843,15 @@ public static class AcyclicActorsUniffiMethods {
     /// canonical Rust transport and returns an opaque client.
     /// </summary>
     /// <exception cref="BindingException"></exception>
-   public static async Task<ActorsClient> ConnectActorsWithCa(string @endpoint, string @token, byte[]? @caCertificate, CancellationHandle? @cancellation) 
+   public static async Task<ActorsClient> ConnectActorsWithCa(string @endpoint, string @token, byte[]? @caCertificate, CancellationHandle? @cancellation, CancellationToken cancellationToken = default) 
    {
     return await _UniFFIAsync.UniffiRustCallAsync(
         // Get rust future
         _UniFFILib.uniffi_acyclic_actors_uniffi_fn_func_connect_actors_with_ca(FfiConverterString.INSTANCE.Lower(@endpoint), FfiConverterString.INSTANCE.Lower(@token), FfiConverterOptionalByteArray.INSTANCE.Lower(@caCertificate), FfiConverterOptionalTypeCancellationHandle.INSTANCE.Lower(@cancellation)),
         // Poll
         (ulong future, IntPtr continuation, ulong data) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_poll_u64(future, continuation, data),
+        // Cancel
+        (ulong future) => _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_cancel_u64(future),
         // Complete
         (ulong future, ref UniffiRustCallStatus status) => {
             return _UniFFILib.ffi_acyclic_actors_uniffi_rust_future_complete_u64(future, ref status);
@@ -6784,6 +6862,8 @@ public static class AcyclicActorsUniffiMethods {
         (result) => FfiConverterTypeActorsClient.INSTANCE.Lift(result),
         // Error
         FfiConverterTypeBindingError.INSTANCE
+        ,
+        cancellationToken
     );
    }
 }

@@ -1,0 +1,47 @@
+{
+  "generator": {
+    "crate": "uniffi_bindgen",
+    "version": "0.31.0",
+    "upstreamRevision": "309762f55db3f0548194a9ceba3027fa64b18a93",
+    "license": "MPL-2.0",
+    "sourcePath": "uniffi-python-typing.patch applied to verified crates.io archive",
+    "sourceOnly": true,
+    "changedFiles": {
+      "src/bindings/python/pipeline/types.rs": "D6435ECE1A9031BD7DA82D20FE6BB6B0AB7798744F2D5A0696C644F5D19F15F1",
+      "src/bindings/python/pipeline/modules.rs": "68EED062E3B295E2258D0395B96A1612D6895B526F85F31A9DECBE9BE3A49C72",
+      "src/bindings/python/templates/EnumTemplate.py": "6DF470CE51EC90E457D3E7D39785432476536F646F92441CF4C9E0F017899217"
+    },
+    "archiveSha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+    "patchSha256": "7D61A970CAF75CF684E6B5EEA4CEF46C60D0392F258CC8C78F19054853F763B3"
+  },
+  "staticTyping": {
+    "aliases": [
+      "SubscriptionStartValue"
+    ],
+    "fieldsCovered": [
+      "SubscriptionSpec.start",
+      "SubscriptionStart.CURSOR.cursor",
+      "SubscriptionStart.CURRENT_HEAD.current_head"
+    ],
+    "mypy": {
+      "version": "1.17.1",
+      "positive": "pass",
+      "negative": "expected type error"
+    },
+    "pyright": {
+      "version": "1.1.404",
+      "positive": "pass",
+      "negative": "expected type error"
+    },
+    "runtime": "nested constructors remain SubscriptionStart instances and alias remains typing.Union"
+  },
+  "pendingCancellation": {
+    "probe": "python-asyncio-pending-cancellation.py",
+    "endpoint": "https://localhost:60389",
+    "cycles": 3,
+    "eachCycle": "asyncio.Task.cancel, active=1, aborted increments, active=0, continuation map returns to zero",
+    "marker": "PYTHON_ASYNCIO_PENDING_CANCELLATION_PASS",
+    "finalContinuationMap": 0
+  },
+  "reproduction": "run-uniffi-python-typing-patch.sh"
+}

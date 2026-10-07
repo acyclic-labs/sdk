@@ -19,7 +19,7 @@
     {%- for meth in obj.methods() %}
     {%- call cs::docstring(meth, 4) %}
     {%- call cs::method_throws_annotation(meth.throws_type()) %}
-    {%  call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({% call cs::arg_list_decl(meth) %});
+    {%  call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({% if meth.is_async() %}{% call cs::async_arg_list_decl(meth) %}{% else %}{% call cs::arg_list_decl(meth) %}{% endif %});
     {%- endfor %}
 }
 
@@ -44,7 +44,7 @@
     {%- when Some with (cons) %}
     {%- call cs::docstring(cons, 4) %}
     {%- if cons.is_async() %}
-    public static async Task<{{ impl_name }}> {{ impl_name }}Async ({%- call cs::arg_list_decl(cons) -%}) {
+    public static async Task<{{ impl_name }}> {{ impl_name }}Async ({%- call cs::async_arg_list_decl(cons) -%}) {
         {%- call cs::async_call(cons, false) %}
     }
     {%- else %}
@@ -133,7 +133,7 @@
     {%- call cs::docstring(meth, 4) %}
     {%- call cs::method_throws_annotation(meth.throws_type()) %}
     {%- if meth.is_async() %}
-    public {% if is_error && meth.name()|method_name(impl_name) == "Message" %}new {% endif %}async {% call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({%- call cs::arg_list_decl(meth) -%}) {
+    public {% if is_error && meth.name()|method_name(impl_name) == "Message" %}new {% endif %}async {% call cs::return_type(meth) %} {{ meth.name()|method_name(impl_name) }}({%- call cs::async_arg_list_decl(meth) -%}) {
         {%- call cs::async_call(meth, true) %}
     }
     {%- else %}
@@ -183,7 +183,7 @@
     {%- call cs::docstring(cons, 4) %}
     {%- call cs::method_throws_annotation(cons.throws_type()) %}
     {%- if cons.is_async() %}
-    public static async Task<{{ impl_name }}> {{ cons.name()|method_name(impl_name) }} ({%- call cs::arg_list_decl(cons) -%}) {
+    public static async Task<{{ impl_name }}> {{ cons.name()|method_name(impl_name) }} ({%- call cs::async_arg_list_decl(cons) -%}) {
         {%- call cs::async_call(cons, false) %}
     }
     {%- else %}

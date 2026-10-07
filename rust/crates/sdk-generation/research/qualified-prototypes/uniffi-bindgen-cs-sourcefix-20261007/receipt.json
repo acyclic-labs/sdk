@@ -1,5 +1,5 @@
 {
-  "schema": "acyclic.actors.uniffi.csharp.sourcefix.v1",
+  "schema": "acyclic.actors.uniffi.csharp.sourcefix.v2",
   "generated_at": "2026-10-07",
   "backend": {
     "repository": "https://github.com/NordSecurity/uniffi-bindgen-cs",
@@ -7,54 +7,74 @@
     "commit": "e10ce410eb3a10cc19c7928b93ea8d84e038c034",
     "license": "MPL-2.0",
     "uniffi_target": "0.31.0",
-    "generator_build": "cargo install --path bindgen --locked --root <external-install> --force; exit 0"
+    "generator_build": "cargo build --release --locked --bin uniffi-bindgen-cs"
   },
-  "template": {
-    "path": "bindgen/templates/ObjectTemplate.cs",
-    "base_sha256": "9d34a8d10d8b5925d2c303eb5c32be57240c687fcb7357bae0411c1c32e383d9",
-    "patched_sha256": "0856cc5c0030e517359ea567cc82b2ccbaba8621073833178f67378298b963d0",
-    "patch_sha256": "583dddcc268675d038e161afe80abcac1186871016785733afeed0687b4d9308",
-    "change": "make raw Rust-handle constructor internal and disambiguate it with bool marker; update all backend-owned lift/factory calls"
+  "source_patch": {
+    "patch": "backend-source-cancellation.patch",
+    "patch_sha256": "CB8C2154E390A2913DDF667F6F3534D43BDF04D376AC04906A37AB8C52F93016",
+    "templates": {
+      "Async.cs": "A36A8BB469ED7CE964ACFE29B7B31F37A24D382B13582E647342312D52A6C3C7",
+      "Helpers.cs": "D6C039CE40945881FFF74EC857B0EC7078378C0884B068D835242D1BA70991CB",
+      "macros.cs": "572AE177639B70B6C49298932CAF9A50477BDFC8401752ECE2177D6C083F327B",
+      "ObjectTemplate.cs": "06C3B51600E1080B6A9DB512B4CD380BFB95D1D51EF4EC77E816010584B2011A",
+      "TopLevelFunctionTemplate.cs": "9281B33D064C4A4B658099142C3E3E040E8F876B31722C0D3469D7B5534AD65B"
+    },
+    "behavior": [
+      "optional CancellationToken on generated async declarations",
+      "existing UniFFI rust_future_cancel_* symbol registered with the request token",
+      "CALL_CANCELLED status 3 becomes OperationCanceledException",
+      "raw object constructor remains internal and marker-disambiguated"
+    ]
   },
   "rust_artifact": {
     "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
     "adapter_path": "rust/crates/actors-uniffi/src/lib.rs",
-    "adapter_sha256": "0AB7C322373075A4DD60113A7C768F15B15CC5BE5EEAEACCC44277049292F3B5",
-    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
-    "cdylib_sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241"
+    "domain_sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2"
   },
   "generation": {
     "config": "generated/uniffi.toml",
-    "source_sha256": "847a42c13cd1270409d95f100eed39798ce85b7c6c1893d5bda6fd47164f2386",
+    "source_sha256": "1227BF526944F1C1FBDE38115C9FC4CC2EC01435FB9B4CFCBB8A9A16BF200734",
     "output": "generated/acyclic_actors_uniffi.cs",
-    "public_access_modifier": true
+    "public_access_modifier": true,
+    "compile": "PASS; Add-Type C# compiler, 0 errors"
   },
-  "managed_probe": {
-    "target_framework": "net8.0",
-    "compile": "PASS; 0 warnings, 0 errors (source-fixed generated output)",
-    "runtime": "PASS",
-    "checks": [
-      "all eight Actors RPC operations",
-      "default calls pass null CancellationHandle",
-      "pre-cancelled CancellationToken maps to BindingException.Cancelled",
-      "wrong-token typed service error grpcCode=16 and absent service code",
-      "PositiveU64 zero rejection",
-      "PositiveU64 ulong.MaxValue round-trip"
-    ],
-    "fixture": "isolated canonical conformance fixture; checkpoint idempotency assertion adapted from checkpoint-a to csharp-checkpoint-a to match managed probe input",
-    "executable_artifact": "external runtime-only copy; no DLL or target output persisted here"
+  "managed_probes": {
+    "ordinary_all8": {
+      "source": "managed/AllEightProgram.cs",
+      "compile": "PASS",
+      "runtime": "PASS; connect, create, update, inspect, inspect request, add, remove, resume, checkpoint, invoke",
+      "cancellation_handle": "null literal only"
+    },
+    "pending_cancellation_token": {
+      "source": "managed/Program.cs",
+      "compile": "PASS",
+      "runtime": "PASS; three iterations, map baseline=0, peaks=1,1,1, after=0",
+      "fixture_state": "started=3, aborted=3, active=0",
+      "exception": "OperationCanceledException with the request CancellationToken"
+    },
+    "raw_handle_forge": {
+      "source": "managed/RawHandleNegative.cs",
+      "compile": "EXPECTED FAIL; CS1729 PositiveU64 has no constructor taking two arguments"
+    }
   },
   "provenance": {
     "primary_files": [
+      "Async.cs",
+      "Helpers.cs",
+      "macros.cs",
       "ObjectTemplate.cs",
-      "ObjectTemplate.cs.patch",
+      "TopLevelFunctionTemplate.cs",
+      "backend-source-cancellation.patch",
       "generated/acyclic_actors_uniffi.cs",
       "generated/uniffi.toml",
       "managed/Program.cs",
-      "managed/Consumer.csproj",
-      "receipt.json"
+      "managed/AllEightProgram.cs",
+      "managed/RawHandleNegative.cs",
+      "receipt.json",
+      "README.md"
     ],
     "source_only": true,
-    "production_abi_changed": false
+    "production_abi_changed": false,
+    "native_or_managed_build_outputs_persisted": false
   }
 }

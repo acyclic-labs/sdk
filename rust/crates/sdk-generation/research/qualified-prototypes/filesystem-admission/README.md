@@ -13,6 +13,8 @@ native companion has been installed:
 node research/qualified-prototypes/filesystem-admission/run.mjs \
   --package-root <extracted-@acyclic-labs-fs> \
   --native-binding <installed-@acyclic-labs-fs-platform>/acyclic-fs-<version>-<target>.node \
+  --source-root <frozen-source-root> \
+  --source-manifest <frozen-source-root>/source-attestation.json \
   --source-commit <checked-out-commit> \
   --archive <packed-@acyclic-labs-fs.tgz> \
   --receipt <qualification-directory>/filesystem-admission.json
@@ -37,10 +39,40 @@ Both runtimes must reject every value in the two reject rows at the boundary.
 The three edge values must pass boundary admission and reach the expected Rust core outcome for the non-fork fixture: zero reaches the configured-bound error, while one and u32::MAX reach the non-fork error. Unknown errors fail the gate.
 
 The receipt binds the result to the bytes tested. It contains the checked-out
-source commit, the hash computed from the packed archive, package-relative WASM JS/WASM hashes, native
-binding hash, matrix digest, and every observed result. Release assembly must
-fail if any package-owned byte differs from the bytes used to create the
-receipt, or if either runtime has a non-number that reaches downstream policy.
+source commit, a complete source-attestation manifest, the manifest's canonical
+source digest, the hash computed from the packed archive, package-relative WASM
+JS/WASM hashes, native binding hash, matrix digest, and every observed result.
+The manifest uses schema `acyclic.sdk.source-attestation.v1` and must declare
+`inventory_complete: true`, `source_state: clean` or `dirty`, the matching
+commit, the exact `required_source_roots` selector used by the runner, every
+selected source-closure file with its SHA-256 and byte count, and a canonical
+digest of sorted `path\0sha256\0bytes\n` records. The selector covers the
+Rust filesystem/native/WASM dependency closure, locked root/toolchain and
+packaging inputs, protocol sources, and the TypeScript filesystem package's
+source/test/example files while excluding generated package outputs. This
+permits an explicitly labelled dirty snapshot while still making the exact
+tested source tree reviewable. The runner independently walks that selector,
+rejects symlinks, and re-hashes every selected file. Removing a manifest entry
+fails with a missing-selector error; mutating a selected source file fails with
+a source-hash or byte-count mismatch before any receipt is written.
+
+Release assembly must fail if any source-closure or package-owned byte differs
+from the bytes used to create the receipt, or if either runtime has a non-number
+that reaches downstream policy.
+
+Before the expensive runtime qualification, the same runner can validate only
+the source inventory:
+
+```text
+node research/qualified-prototypes/filesystem-admission/run.mjs \
+  --attestation-only \
+  --source-root <frozen-source-root> \
+  --source-manifest <frozen-source-root>/source-attestation.json \
+  --source-commit <checked-out-commit>
+```
+
+This mode is used for the omission and mutation regression checks; it does not
+load or execute either runtime.
 
 This is a qualification input and receipt format. It intentionally contains no
 generated WASM, native binary, or duplicated numeric validation logic.
