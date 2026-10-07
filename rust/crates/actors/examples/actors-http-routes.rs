@@ -16,14 +16,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (operation, input, output)
         })
         .collect::<Vec<_>>();
-    let source = render_typescript(&methods);
     if let Some(output) = output {
+        let source = render_typescript(&methods);
         if let Some(parent) = std::path::Path::new(&output).parent() {
             std::fs::create_dir_all(parent)?;
         }
         std::fs::write(output, source)?;
     } else {
-        print!("{source}");
+        // Keep the original no-argument contract used by
+        // `scripts/generate-runtime-routes.mjs`.  The package generation
+        // path passes an output file when it needs the descriptor-derived
+        // TypeScript facade, while existing route consumers continue to
+        // receive the canonical JSON table.
+        println!("{}", serde_json::to_string(acyclic_actors::HTTP_ROUTES)?);
     }
     Ok(())
 }

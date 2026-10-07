@@ -32,6 +32,53 @@ fn map_error(error: client::Error) -> JsValue {
     js_error(code, error)
 }
 
+fn nominal_error(error: domain::DomainError) -> JsValue {
+    let code = match error {
+        domain::DomainError::EmptyActorId => "empty_actor_id",
+        domain::DomainError::InvalidCodeSha256 => "invalid_code_sha256",
+        domain::DomainError::Contract(_) => "invalid_argument",
+        domain::DomainError::UnknownActorState(_) => "unknown_actor_state",
+        domain::DomainError::UnknownSubscriptionState(_) => "unknown_subscription_state",
+        domain::DomainError::UnknownErrorCode(_) => "unknown_error_code",
+        domain::DomainError::MissingMessage => "missing_message",
+        domain::DomainError::InvalidSubscription => "invalid_subscription",
+        domain::DomainError::InvalidBinding => "invalid_binding",
+    };
+    js_error(code, error)
+}
+
+/// Rust-backed nominal constructor for `ActorId`.
+#[wasm_bindgen(js_name = "ActorId")]
+pub fn actor_id(value: String) -> Result<String, JsValue> {
+    domain::ActorId::new(value)
+        .map(|value| value.as_str().to_owned())
+        .map_err(nominal_error)
+}
+
+/// Rust-backed nominal constructor for `CodeSha256`.
+#[wasm_bindgen(js_name = "CodeSha256")]
+pub fn code_sha256(value: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+    domain::CodeSha256::new(value)
+        .map(|value| value.as_bytes().to_vec())
+        .map_err(nominal_error)
+}
+
+/// Rust-backed nominal constructor for `PositiveU64`.
+#[wasm_bindgen(js_name = "PositiveU64")]
+pub fn positive_u64(value: u64) -> Result<u64, JsValue> {
+    domain::PositiveU64::new(value)
+        .map(domain::PositiveU64::get)
+        .map_err(nominal_error)
+}
+
+/// Rust-backed nominal constructor for the true-only current-head marker.
+#[wasm_bindgen(js_name = "CurrentHeadMarker")]
+pub fn current_head_marker(value: bool) -> Result<bool, JsValue> {
+    domain::subscription_start::CurrentHeadMarker::try_from(value)
+        .map(bool::from)
+        .map_err(nominal_error)
+}
+
 fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
     T::decode(bytes).map_err(|error| js_error("invalid-request", error))
 }
@@ -45,6 +92,7 @@ where
     D::try_from(decode::<T>(bytes)?).map_err(|error| js_error("invalid-request", error))
 }
 
+#[allow(clippy::needless_pass_by_value, reason = "prost encoders consume the generated response value at the ABI boundary")]
 fn encode<T: Message>(message: T) -> Vec<u8> {
     message.encode_to_vec()
 }
@@ -87,6 +135,7 @@ impl AbortRegistration {
 }
 
 impl Drop for AbortRegistration {
+    #[allow(clippy::useless_conversion, reason = "wasm-bindgen's dynamic cast error is already a JsValue")]
     fn drop(&mut self) {
         if let Ok(remove) = Reflect::get(&self.signal, &JsValue::from_str("removeEventListener"))
             .and_then(|value| value.dyn_into::<Function>().map_err(Into::into))

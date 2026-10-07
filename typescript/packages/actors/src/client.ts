@@ -7,6 +7,7 @@ import {
   type ActorsMethod,
   type ActorsOperation,
 } from "./generated/actors-service.js";
+import type * as Semantic from "./generated/semantic/actors/index.js";
 
 /** Rust operation surface implemented by either the N-API or WASM bridge. */
 export type Operation = ActorsOperation;
@@ -157,6 +158,29 @@ function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
 
 export interface ActorsClient extends ActorsClientMethods {}
 
+/** A nominal Rust constructor exposed from the normal package entrypoint. */
+export async function ActorId(value: string): Promise<Semantic.ActorId> {
+  return (await defaultNominalBinding()).ActorId(value) as Semantic.ActorId;
+}
+
+/** A nominal Rust constructor exposed from the normal package entrypoint. */
+export async function CodeSha256(value: Uint8Array): Promise<Semantic.CodeSha256> {
+  return (await defaultNominalBinding()).CodeSha256(value) as Semantic.CodeSha256;
+}
+
+/** A nominal Rust constructor exposed from the normal package entrypoint. */
+export async function PositiveU64(value: bigint): Promise<Semantic.PositiveU64> {
+  return (await defaultNominalBinding()).PositiveU64(value) as Semantic.PositiveU64;
+}
+
+/** The semantic marker is true-only; Rust remains the runtime predicate. */
+export type CurrentHeadMarker = true;
+
+/** A nominal Rust constructor exposed from the normal package entrypoint. */
+export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker> {
+  return (await defaultNominalBinding()).CurrentHeadMarker(value) as CurrentHeadMarker;
+}
+
 /** Compatibility name retained while callers migrate to `ActorsClient`. */
 export class HttpActorsClient extends ActorsClient {}
 
@@ -172,27 +196,9 @@ function nativeBinding(): ActorsRustBinding {
       // this package. Select WASM before evaluating the generated loader when
       // the package was installed on another supported platform; the loader's
       // generic missing-binding error otherwise hides its requested paths.
-      // @ts-ignore generated native metadata is intentionally untracked
-      const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as { default?: NativeTargetMetadata } & NativeTargetMetadata;
-      const metadata = metadataModule.default ?? metadataModule;
-      if (!(await hasNativeArtifactForRuntime(metadata))) {
+      const module = await loadNativeModule();
+      if (module === undefined) {
         return wasmBinding().connect(endpoint, token, signal, caCertificate);
-      }
-      let module: NativeActorsModule;
-      try {
-        // The native build script stages this generated loader and its exact
-        // platform artifact into the published package. Keep the import
-        // dynamic so browser consumers never resolve Node-only code.
-        // @ts-ignore generated N-API loader is optional in browser/WASM builds
-        module = await import("../generated/native/binding.cjs") as unknown as NativeActorsModule;
-      } catch (error) {
-        // The browser-compatible WASM bridge is shipped with this package. A
-        // native artifact is preferred on Node, but a package install remains
-        // usable when its optional platform artifact is not present.
-        if (isMissingNativeArtifact(error)) {
-          return wasmBinding().connect(endpoint, token, signal, caCertificate);
-        }
-        throw error;
       }
       const Client = module.NativeActorsClient ?? module.default?.NativeActorsClient;
       if (Client === undefined) {
@@ -235,6 +241,10 @@ interface NativeActorsClient extends NativeActorsMethods {
 }
 
 interface NativeActorsModule {
+  readonly ActorId?: (value: string) => string;
+  readonly CodeSha256?: (value: Uint8Array) => Uint8Array;
+  readonly PositiveU64?: (value: bigint) => bigint;
+  readonly CurrentHeadMarker?: (value: boolean) => boolean;
   readonly NativeActorsClient?: {
     connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
     connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
@@ -243,7 +253,7 @@ interface NativeActorsModule {
   readonly default?: { readonly NativeActorsClient?: {
     connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
     connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
-  }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
+  }; readonly NativeActorsCancellation?: new () => { cancel(): void }; readonly ActorId?: (value: string) => string; readonly CodeSha256?: (value: Uint8Array) => Uint8Array; readonly PositiveU64?: (value: bigint) => bigint; readonly CurrentHeadMarker?: (value: boolean) => boolean };
 }
 
 interface NativeTargetMetadata {
@@ -254,6 +264,28 @@ async function hasNativeArtifactForRuntime(metadata: NativeTargetMetadata): Prom
   const artifacts = metadata.artifacts ?? [];
   const names = artifacts.map(artifact => artifact.path?.split(/[\\/]/).pop() ?? "");
   return (await nativeRuntimeArtifactNames()).some(name => names.includes(name));
+}
+
+type NativeMetadataModule = { readonly default?: NativeTargetMetadata } & NativeTargetMetadata;
+
+async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
+  let metadata: NativeTargetMetadata;
+  try {
+    // @ts-ignore generated native metadata is intentionally untracked
+    const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as NativeMetadataModule;
+    metadata = metadataModule.default ?? metadataModule;
+  } catch (error) {
+    if (isMissingNativeMetadata(error)) return undefined;
+    throw error;
+  }
+  if (!(await hasNativeArtifactForRuntime(metadata))) return undefined;
+  try {
+    // @ts-ignore generated N-API loader is optional in browser/WASM builds
+    return await import("../generated/native/binding.cjs") as unknown as NativeActorsModule;
+  } catch (error) {
+    if (isMissingNativeArtifact(error)) return undefined;
+    throw error;
+  }
 }
 
 /**
@@ -317,16 +349,7 @@ async function nativeResult(result: Promise<NativeActorsOperationResult>): Promi
 function wasmBinding(): ActorsRustBinding {
   return {
     async connect(endpoint, token, signal) {
-      // The generated module is produced by `build:wasm` immediately before tsc.
-      // @ts-ignore generated Rust WASM module is intentionally untracked
-      const module = await import("../generated/wasm/acyclic_actors_wasm.js");
-      if (isNodeRuntime()) {
-        const fs = await import("node:fs/promises");
-        const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
-        await module.default(bytes);
-      } else {
-        await module.default();
-      }
+      const module = await loadWasmModule();
       const inner = await module.ActorsClient.connect(endpoint, token, signal);
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
@@ -341,6 +364,42 @@ function wasmBinding(): ActorsRustBinding {
       return { ...client, transport: wasm.transport } as ActorsRustClient;
     },
   };
+}
+
+interface WasmActorsModule extends NativeNominalModule {
+  readonly default: (input?: unknown) => Promise<unknown>;
+  readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
+}
+
+interface NativeNominalModule {
+  readonly ActorId: (value: string) => string;
+  readonly CodeSha256: (value: Uint8Array) => Uint8Array;
+  readonly PositiveU64: (value: bigint) => bigint;
+  readonly CurrentHeadMarker: (value: boolean) => boolean;
+}
+
+async function loadWasmModule(): Promise<WasmActorsModule> {
+  // @ts-ignore generated Rust WASM module is intentionally untracked
+  const module = await import("../generated/wasm/acyclic_actors_wasm.js") as unknown as WasmActorsModule;
+  if (isNodeRuntime()) {
+    const fs = await import("node:fs/promises");
+    const bytes = await fs.readFile(new URL("../generated/wasm/acyclic_actors_wasm_bg.wasm", import.meta.url));
+    await module.default(bytes);
+  } else {
+    await module.default();
+  }
+  return module;
+}
+
+async function defaultNominalBinding(): Promise<NativeNominalModule> {
+  if (isNodeRuntime()) {
+    const native = await loadNativeModule();
+    const candidate = native?.default ?? native;
+    if (candidate?.ActorId && candidate.CodeSha256 && candidate.PositiveU64 && candidate.CurrentHeadMarker) {
+      return candidate as NativeNominalModule;
+    }
+  }
+  return loadWasmModule();
 }
 
 function isNodeRuntime(): boolean {
@@ -368,6 +427,19 @@ function isMissingNativeArtifact(error: unknown): boolean {
   // suffix would incorrectly turn a broken transitive dependency into a
   // silent WASM fallback.
   let expected = new URL("../generated/native/binding.cjs", import.meta.url).pathname;
+  try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
+  return normalizeModulePath(requested) === normalizeModulePath(expected);
+}
+
+function isMissingNativeMetadata(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
+  const requested = firstLine.match(/^Cannot find module ['"]([^'"]+)['"]/i)?.[1];
+  if (requested === undefined) return false;
+  let expected = new URL("../generated/native/native-targets.json", import.meta.url).pathname;
   try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
   return normalizeModulePath(requested) === normalizeModulePath(expected);
 }

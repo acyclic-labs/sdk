@@ -1,10 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { fromBinary, type MessageShape } from "@bufbuild/protobuf";
-import { ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
+import { ActorId, CodeSha256, CurrentHeadMarker, PositiveU64, ActorsClient, type ActorsRustBinding, type OperationEvent, type semantic } from "../src/index.js";
 import { ActorsService, AddSubscriptionRequestSchema, InspectActorRequestSchema } from "../generated/proto/actors/v1/actors_pb.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
 describe("Rust-backed Actors client", () => {
+  test("exposes nominal constructors from the package entrypoint", async () => {
+    const actorId = await ActorId("actor-a");
+    const digest = await CodeSha256(new Uint8Array([1, ...new Uint8Array(31)]));
+    const positive = await PositiveU64(1n);
+    const currentHead = await CurrentHeadMarker(true);
+    expect(actorId).toBe("actor-a");
+    expect(digest).toHaveLength(32);
+    expect(positive).toBe(1n);
+    expect(currentHead).toBe(true);
+  });
+
   test("installs every public operation from the maintained service descriptor", () => {
     expect(ACTORS_OPERATION_NAMES).toEqual(ActorsService.methods.map(method => method.localName));
     const client = new ActorsClient({ endpoint: "https://actors.example.test", token: "secret", binding: { connect: async () => ({ transport: "test" }) } });

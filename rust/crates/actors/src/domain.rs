@@ -433,6 +433,7 @@ pub mod subscription_start {
     /// protobuf wire representation remains a bool for descriptor stability,
     /// while this type makes `false` unrepresentable after ingress validation.
     #[derive(Clone, Copy, Debug, Eq, PartialEq, TS)]
+    #[ts(type = "true", export_to = "actors/CurrentHeadMarker.ts")]
     pub struct CurrentHeadMarker;
 
     impl Default for CurrentHeadMarker {

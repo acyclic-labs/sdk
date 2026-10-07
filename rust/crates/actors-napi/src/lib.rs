@@ -122,6 +122,16 @@ pub fn positive_u64(value: BigInt) -> Result<BigInt> {
         .map_err(|error| napi_error(nominal_error(error)))
 }
 
+/// Validate the nominal current-head marker.  The wire value is still a
+/// boolean for descriptor compatibility, but the semantic contract admits
+/// only `true`.
+#[napi(js_name = "CurrentHeadMarker")]
+pub fn current_head_marker(value: bool) -> Result<bool> {
+    domain::subscription_start::CurrentHeadMarker::try_from(value)
+        .map(bool::from)
+        .map_err(|error| napi_error(nominal_error(error)))
+}
+
 fn grpc_name(code: i32) -> &'static str {
     match code {
         0 => "ok",

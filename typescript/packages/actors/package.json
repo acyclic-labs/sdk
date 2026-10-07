@@ -2,6 +2,9 @@
   "name": "@acyclic-labs/actors",
   "version": "0.2.0",
   "private": false,
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "license": "Apache-2.0",
   "description": "Rust-owned Actors v1 contract and native/browser client",
   "repository": {
@@ -33,7 +36,7 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "build": "bun run build:wasm && tsc -b",
+    "build": "bun run generate:client && bun run build:wasm && tsc -b",
     "build:wasm": "bun ../../../scripts/build-wasm.mjs actors",
     "generate:client": "cargo run --offline -p acyclic-actors --example actors-http-routes -- src/generated/actors-service.ts",
     "build:native": "node ../../../scripts/build-actors-native.mjs build",
