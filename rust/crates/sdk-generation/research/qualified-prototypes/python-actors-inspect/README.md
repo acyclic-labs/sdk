@@ -43,3 +43,9 @@ checked into this research directory.
 
 Cross-platform package and host evidence is recorded in cross-platform.md and cross-platform-qualification-receipt.json.
 
+The exact source, generated-module, native-library, and wheel closure is in
+`minimal-patched-generator-receipt.json`. Run
+`verify-minimal-patched-generator-receipt.ps1` to recompute every recorded
+producer hash and byte count from the external qualification paths. The
+verification fails on substituted outputs or a changed source snapshot.
+

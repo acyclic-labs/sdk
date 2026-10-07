@@ -1,0 +1,115 @@
+{
+  "schema": "acyclic.rust-uniffi.python.minimal-patched-generator.v1",
+  "generated_at": "2026-10-07",
+  "generator": {
+    "crate": "uniffi_bindgen",
+    "version": "0.31.0",
+    "upstream_revision": "309762f55db3f0548194a9ceba3027fa64b18a93",
+    "license": "MPL-2.0",
+    "archive": {
+      "path": "Q:\\sdk\\work\\uniffi-python-typing-runner-work-20261007\\uniffi_bindgen-0.31.0.crate",
+      "sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
+      "bytes": 199229
+    },
+    "archive_source_files": {
+      ".cargo_vcs_info.json": "2F3BE4F34AAA9A0B1AA397D700298D12D749A853ADE40BF8198661FE5E6FD27D",
+      "Cargo.toml": "4815E130078F06D8B48582024E71ED8C035D75FB78A492594E30F0CDCD41E8CC",
+      "Cargo.lock": "3611136BD98D2C6A42FCE794655AE15915999CF01D04FCD6AF347E4370CC36EC"
+    },
+    "patch": {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/uniffi-python-typing.patch",
+      "sha256": "7D61A970CAF75CF684E6B5EEA4CEF46C60D0392F258CC8C78F19054853F763B3",
+      "bytes": 5628
+    },
+    "changed_files": {
+      "src/bindings/python/pipeline/types.rs": "D6435ECE1A9031BD7DA82D20FE6BB6B0AB7798744F2D5A0696C644F5D19F15F1",
+      "src/bindings/python/pipeline/modules.rs": "68EED062E3B295E2258D0395B96A1612D6895B526F85F31A9DECBE9BE3A49C72",
+      "src/bindings/python/templates/EnumTemplate.py": "6DF470CE51EC90E457D3E7D39785432476536F646F92441CF4C9E0F017899217"
+    },
+    "runner": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/run-uniffi-python-typing-patch.sh"
+  },
+  "rust_facade_source": {
+    "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "observed_checkout": {
+      "rust/crates/actors-uniffi/src/lib.rs": {
+        "sha256": "9AF194096FEE19643DE8D565FB68B6A9617B19EA65169C72BB6C4912D303039A",
+        "bytes": 25501
+      },
+      "rust/crates/actors/src/domain.rs": {
+        "sha256": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
+        "bytes": 58491
+      },
+      "rust/crates/actors/src/client.rs": {
+        "sha256": "97A4B0318D4CE10BD45D0EA29C616EE13DFB7D0C83B6FFFE54303EC7C11E2342",
+        "bytes": 18737
+      },
+      "rust/crates/actors/src/grpc.rs": {
+        "sha256": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
+        "bytes": 4551
+      }
+    },
+    "note": "The observed checkout hash is recorded separately from the external producer outputs. It must match the source snapshot used for a future rerun; receipt consumers must not substitute a caller-provided hash."
+  },
+  "generated_outputs": {
+    "python_module": {
+      "windows_path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-20261007\\acyclic_actors_uniffi.py",
+      "linux_path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors_uniffi.py",
+      "sha256": "1BD8903E188767D88BB66E880FFB94D9B2896AD92E0BC9374EED9B7DFBB62FE0",
+      "bytes": 167761
+    },
+    "windows_native": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-wheel-20261007\\src\\acyclic_actors_uniffi\\acyclic_actors_uniffi.dll",
+      "sha256": "A09452F273B201FA7E3D288F6C3B3FDFC4ABD979431392797D4C80D375D85241",
+      "bytes": 8966656
+    },
+    "linux_native": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-20261007\\src\\acyclic_actors_uniffi\\libacyclic_actors_uniffi.so",
+      "sha256": "AA6427DD1C6836F164CEB83BF0D14C83E6CD8BC1598683654F7619DB5BF76A24",
+      "bytes": 6566744
+    },
+    "macos_native": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\libacyclic_actors_uniffi.dylib",
+      "sha256": "28D885561244BD2D682D1103B70AD8C1989AC341777F28499731C1140FF3B719",
+      "bytes": 5122144
+    },
+    "windows_wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-generator-patched-wheel-20261007\\dist-patched\\acyclic_actors_uniffi-0.2.0-py3-none-win_amd64.whl",
+      "sha256": "76BA00E4561C4425424562385962F9AD37EBDE724473BB28E5B1512A1E7D553B",
+      "bytes": 3016231
+    },
+    "linux_wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-linux-patched-20261007\\dist\\acyclic_actors_uniffi-0.2.0-py3-none-linux_x86_64.whl",
+      "sha256": "447F84172DB1E619D1667F3788CB37CDE99A56182EAAE469DEEAF67B3A8E0761",
+      "bytes": 2302453
+    },
+    "macos_wheel": {
+      "path": "Q:\\sdk\\work\\actors-uniffi-python-mac-wheel-current-20261007\\acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+      "sha256": "F83C3D76CA2E8A8C26AF13A29403B4C294879F84574003BC4BBCE5D110BCD15B",
+      "bytes": 1936911
+    }
+  },
+  "qualification": {
+    "source_binding": "UNBOUND: the external producer outputs are retained qualification evidence, while the current checkout snapshot is recorded separately; a release claim requires a rerun whose producer input hash equals the observed checkout hash.",
+    "typing": {
+      "mypy": "1.17.1",
+      "pyright": "1.1.404",
+      "positive": "PASS: generated SubscriptionStartValue accepts CURSOR and CURRENT_HEAD constructor values",
+      "negative": "PASS: six deliberate invalid cases rejected by both checkers"
+    },
+    "installed": {
+      "windows": "PASS: isolated wheel install and all-eight remote consumer, typed service error, pre-cancelled operation",
+      "linux_wsl": "PASS: isolated wheel install, union constructor probe, all-eight remote consumer through relay, typed service error, pre-cancelled operation",
+      "macos_ivar": "PASS: isolated arm64 wheel install, union constructor probe, all-eight remote consumer through SSH tunnel, typed service error, cancellation"
+    },
+    "consumer_source": {
+      "path": "rust/crates/sdk-generation/research/qualified-prototypes/python-actors-inspect/installed-all8-remote-conformance.py",
+      "sha256": "57F778967C80A3109CA96A14009C7007235FE913645EE4824E7652A0A418857A",
+      "bytes": 3642
+    },
+    "fixture": {
+      "windows_options_sha256": "96E4D53584B421DD82453A99E65F57E5511CEE502BE09906ACDF39E8E9FB5863",
+      "endpoint": "https://localhost:55755"
+    },
+    "no_publication": true
+  }
+}

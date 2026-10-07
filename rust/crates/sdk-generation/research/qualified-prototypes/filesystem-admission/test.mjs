@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFile,
@@ -18,23 +18,23 @@ const SCRIPT = join(HERE, "run.mjs");
 const ROOT = execFileSync("git", ["-C", HERE, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 const COMMIT = execFileSync("git", ["-C", ROOT, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).trim();
 
-const run = (arguments_, options = {}) => {
-  const result = spawnSync(process.execPath, [SCRIPT, ...arguments_], {
+const run = (arguments_, options = {}) => new Promise((resolveResult, reject) => {
+  const child = spawn(process.execPath, [SCRIPT, ...arguments_], {
     cwd: ROOT,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
     ...options,
   });
-  return {
-    status: result.status,
-    stdout: result.stdout ?? "",
-    stderr: result.stderr ?? "",
-    output: `${result.stdout ?? ""}${result.stderr ?? ""}`,
-  };
-};
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  child.once("error", reject);
+  child.once("close", status => resolveResult({ status, stdout, stderr, output: `${stdout}${stderr}` }));
+});
 
 const writeManifest = async (manifestPath) => {
-  const result = run([
+  const result = await run([
     "--write-source-manifest",
     "--source-root", ROOT,
     "--source-manifest", manifestPath,
@@ -86,7 +86,7 @@ export function openMemoryFs() {
   return {
     async createWorkspace() {
       return { async liveRebase(_base, value) {
-        if (${JSON.stringify(mode)} === "mutate-artifact" && !mutated) {
+        if ((${JSON.stringify(mode)} === "mutate-artifact" || ${JSON.stringify(mode)} === "mutate-source") && !mutated) {
           appendFileSync(mutationTarget, Buffer.from("mutation"));
           mutated = true;
         }
@@ -152,31 +152,37 @@ const qualifyArgs = (manifestPath, fixture) => [
 ];
 
 const main = async () => {
+  const progress = label => process.stderr.write(`[filesystem-admission-test] ${label}\n`);
   const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-admission-regressions-"));
   const manifestPath = join(temporary, "source-attestation.json");
   const selectedSource = join(ROOT, "rust", "crates", "sdk-generation", "research", "qualified-prototypes", "filesystem-admission", "run.mjs");
   const selectedOriginal = await readFile(selectedSource);
   try {
+    progress("write manifest");
     await writeManifest(manifestPath);
 
-    const valid = run(attestationArgs(manifestPath));
+    progress("attestation");
+    const valid = await run(attestationArgs(manifestPath));
     assert.equal(valid.status, 0, valid.output);
 
-    const wrongCommit = run(attestationArgs(manifestPath, "0".repeat(40)));
+    progress("wrong commit");
+    const wrongCommit = await run(attestationArgs(manifestPath, "0".repeat(40)));
     assert.notEqual(wrongCommit.status, 0);
     assert.match(wrongCommit.output, /--source-commit does not match the source root HEAD/);
 
+    progress("missing selector");
     const missingSelector = await withManifest(manifestPath, manifest => {
       manifest.files.pop();
       manifest.file_count -= 1;
-    }, async () => run(attestationArgs(manifestPath)));
+    }, async () => await run(attestationArgs(manifestPath)));
     assert.notEqual(missingSelector.status, 0);
     assert.match(missingSelector.output, /source manifest does not match required source selector; missing=/);
 
+    progress("source mutation");
     const sourceMutation = await (async () => {
       await appendFile(selectedSource, "\n// qualification mutation regression\n");
       try {
-        return run(attestationArgs(manifestPath));
+        return await run(attestationArgs(manifestPath));
       } finally {
         await writeFile(selectedSource, selectedOriginal);
       }
@@ -184,44 +190,53 @@ const main = async () => {
     assert.notEqual(sourceMutation.status, 0);
     assert.match(sourceMutation.output, /source manifest hash mismatch for rust\/crates\/sdk-generation\/research\/qualified-prototypes\/filesystem-admission\/run\.mjs/);
 
+    progress("fresh git state");
     const freshGitState = await withManifest(manifestPath, manifest => {
       manifest.source_state = manifest.source_state === "clean" ? "dirty" : "clean";
-    }, async () => run(attestationArgs(manifestPath)));
+    }, async () => await run(attestationArgs(manifestPath)));
     assert.notEqual(freshGitState.status, 0);
     assert.match(freshGitState.output, /source manifest state does not match Git: expected/);
 
+    progress("archive mismatch fixture");
     const archiveMismatch = await makeFixture({ archiveJs: "archive-A" });
     try {
       const installedB = await readFile(join(archiveMismatch.packageRoot, "generated", "wasm", "acyclic_fs_wasm.js"));
       await writeFile(join(archiveMismatch.packageRoot, "generated", "wasm", "acyclic_fs_wasm.js"), Buffer.concat([installedB, Buffer.from("installed-B")]));
-      const result = run(qualifyArgs(manifestPath, archiveMismatch));
+      progress("archive mismatch qualify");
+      const result = await run(qualifyArgs(manifestPath, archiveMismatch));
       assert.notEqual(result.status, 0);
       assert.match(result.output, /package WASM JavaScript differs from archive entry/);
     } finally {
       await rm(archiveMismatch.fixture, { recursive: true, force: true });
     }
 
+    progress("unknown fixture");
     const unknown = await makeFixture({ mode: "unknown" });
     try {
-      const result = run(qualifyArgs(manifestPath, unknown));
+      progress("unknown qualify");
+      const result = await run(qualifyArgs(manifestPath, unknown));
       assert.notEqual(result.status, 0);
       assert.match(result.output, /wasm accepted null: downstream:unknown: expected a finite integer in the u32 range/);
     } finally {
       await rm(unknown.fixture, { recursive: true, force: true });
     }
 
+    progress("artifact mutation fixture");
     const artifactMutation = await makeFixture({ mode: "mutate-artifact" });
     try {
-      const result = run(qualifyArgs(manifestPath, artifactMutation));
+      progress("artifact mutation qualify");
+      const result = await run(qualifyArgs(manifestPath, artifactMutation));
       assert.notEqual(result.status, 0);
       assert.match(result.output, /qualification artifact changed during execution: wasm_binary/);
     } finally {
       await rm(artifactMutation.fixture, { recursive: true, force: true });
     }
 
+    progress("source during qualification fixture");
     const sourceDuringQualification = await makeFixture({ mode: "mutate-source" });
     try {
-      const result = run(qualifyArgs(manifestPath, sourceDuringQualification));
+      progress("source during qualification qualify");
+      const result = await run(qualifyArgs(manifestPath, sourceDuringQualification));
       assert.notEqual(result.status, 0);
       assert.match(result.output, /source manifest hash mismatch for rust\/crates\/sdk-generation\/research\/qualified-prototypes\/filesystem-admission\/run\.mjs/);
     } finally {

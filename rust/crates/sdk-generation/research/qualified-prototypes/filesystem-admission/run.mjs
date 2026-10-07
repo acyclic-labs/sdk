@@ -572,3 +572,5 @@ const receipt = {
 };
 await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
 console.log(JSON.stringify(receipt, null, 2));
+
+// qualification mutation regression

@@ -71,3 +71,7 @@ installed in a fresh ivar Python environment. Its all-eight remote conformance
 run passed through the SSH tunnel, including typed service errors and
 cancellation. This is a qualification of the patched macOS package and
 canonical Rust adapter, not a claim about unrelated generated runtimes.
+
+The measured source and producer closure is recorded in
+`minimal-patched-generator-receipt.json`; its verifier recomputes the external
+archive, patch, generated module, native library, wheel, and consumer hashes.

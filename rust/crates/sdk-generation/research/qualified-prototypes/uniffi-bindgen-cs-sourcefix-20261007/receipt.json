@@ -81,6 +81,6 @@
     "native_or_managed_build_outputs_persisted": false,
     "nuget_recipe": "repro-package/nuget/PACKAGE-RECIPE.md",
     "external_package_receipt": "Q:\\sdk\\work\\uniffi-bindgen-cs-sourcefix-20261007-package-20261007\\package-receipt.json",
-    "external_nupkg_sha256": "2E33DC70607AAA01FE2BFA979E8AF7782CE3A3AA70EDD6933F6CC9720E844A5D"
+    "external_nupkg_sha256": "2D8ADD15323BC80F2950257B750013C6BBA140500B20DB91E7370511136BC8C0"
   }
 }

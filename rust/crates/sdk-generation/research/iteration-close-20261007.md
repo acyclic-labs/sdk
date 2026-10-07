@@ -19,8 +19,8 @@ this loop.
   transport and page-size checks now execute in Rust before custom providers;
   TypeScript retains thin error-class adapters and removes duplicate policy.
 - Verified remote WIP checkpoint refs before this update:
-  foundation 4ef2b10761afde394f49cc4f7b30f10cca1658e1;
-  Actors generation 1429d5cf38b982ba0be4d87233a6bacbdda85ac7.
+  foundation 9de8af97151c3243c45b04c2eefb5b6f36584922;
+  Actors generation 5c4925ea96427e17efcf20ebeb50f70a9a7f73c1.
   These preserve source; they do not establish release qualification.
 - PR259 remote head 018ef828b8ecf6d98844791f3c218b2f0c85de46 lacks the latest
   locally qualified fixes. It must not be merged in that state.
@@ -34,8 +34,10 @@ this loop.
   The generated-binding async factory fixes it. Latest local source passes
   TypeScript, 55 Stream tests, 19 planner tests, browser fallback and installed
   Windows native follow cancellation/server release. Selection and alias tests
-  were added. Independent review and direct stalled native-connect cancellation
-  evidence still gate the final candidate.
+  were added. The direct installed stalled-connect test fails: cancellation
+  settles promptly, but tonic's background connection retains a TLS socket.
+  Rust connection lifetime cleanup, a rebuilt installed artifact, and exact-source
+  independent review gate the final candidate.
 - Filesystem staging passes 70 tests, strict native/browser input matrices,
   Rust u64 preservation and extracted-package finite-type compile negatives.
   This proves that snapshot only. The old 0D29 archive cannot be relabeled with
@@ -57,6 +59,13 @@ this loop.
   types and Rust future cancellation. All-operation installed evidence is
   cohort-specific; constructor probes and older receipts cannot qualify a newly
   generated package.
+- Package-model validation rejects unsupported generator families; its five
+  focused tests and formatting pass. Production integration remains gated on
+  actual executed qualification claims and producer-specific provenance: the
+  earlier Python record used the Kotlin patch digest and is not qualified.
+- The corrected C# package has assembly identity Acyclic.Actors, Version=0.2.0.0.
+  Earlier all-operation results used the stale assembly and cannot qualify this
+  replacement; fresh installed-package runtime and cancellation checks are pending.
 - New symbolic u64/presence Kani runs reached the solver but timed out. They are
   inconclusive, not proofs. Existing proof claims retain their recorded scope.
 
