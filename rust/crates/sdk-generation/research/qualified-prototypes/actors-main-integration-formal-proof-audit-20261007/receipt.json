@@ -2,16 +2,16 @@
   "artifact": "actors-main-integration-formal-proof-audit-20261007",
   "worktree": "C:\\Users\\varun\\.codex\\worktrees\\actors-main-integration\\sdk",
   "branch": "codex/actors-main-integration",
-  "head": "a27cb89322ec662e3ad1992d50341c4e52f33586",
-  "source_state": "dirty; receipt binds exact files below and must not be retagged after edits",
+  "head": "fcd86db81ba5076abf0a03758ff20593e90aab71",
+  "source_state": "clean signed candidate; receipt binds exact files below and must be rebound after any later edit",
   "proof_file": "rust/crates/actors/src/domain/formal_proofs.rs",
   "module_binding": "rust/crates/actors/src/domain.rs #[cfg(kani)] #[path = \"domain/formal_proofs.rs\"] mod kani_proofs;",
   "source_sha256": {
     "rust/crates/actors/src/domain.rs": "1ADBD09F66F551BB730257A38565F210E66D3B6C612A4A22ADECB5014B963414",
     "rust/crates/actors/src/domain/formal_proofs.rs": "A221B0CEAE2BA25338CF63DB3F24BB5B46419857367B0B2564AE4AAD21E99CEB",
-    "rust/crates/actors/src/lib.rs": "0A94A3A0064A27B2C6F19B0434F220A4A8E91A24F42E0A95FCE24A782DABC7DE",
+    "rust/crates/actors/src/lib.rs": "7F7076432EDCBC2D88A18F534B3259669622183F5B1EB1A3B6F7E1CF530F7252",
     "rust/crates/actors/src/contract.rs": "E937CDF3F10DDF3957FA64B791A4FA7C3DE7486CB213B743D74A7C965EC61F62",
-    "rust/crates/actors/build.rs": "2E28C17D9F4DB1F2E15AC456C5E131F70F1606D01AF447C5AC1FDA5CEC155841",
+    "rust/crates/actors/build.rs": "8A02F03262256B58EEB6AA756BCA122984DB53D91420A548B33CC4708CD605C3",
     "rust/crates/actors/Cargo.toml": "D687485CFB5CDD125AD5E9D2DE008E018577593549510BEB19B04184A7B01F78"
   },
   "theorems": [
@@ -48,9 +48,9 @@
     }
   ],
   "verification": {
-    "current_snapshot": "NOT_RUN; source is dirty and long Actors CBMC jobs are active",
+    "current_snapshot": "NOT_RUN_CURRENT_CANDIDATE; source-bound harness audit only while long Actors CBMC jobs are active",
     "historical_receipts": "not reused; prior PASS receipts bind different source hashes",
-    "cargo_fmt_check": "workspace check failed on pre-existing blank-line diffs in build.rs and lib.rs; formal_proofs.rs standalone check produced no diagnostic before the tool stalled",
+    "cargo_fmt_check": "PASS; cargo fmt --check --manifest-path rust/crates/actors/Cargo.toml exit 0",
     "terminal_solver_state": {
       "pid_1031718": "R+; expected_revision ingress CBMC",
       "pid_2557627": "R+; expected_revision admission CBMC"
@@ -58,3 +58,4 @@
   },
   "claim_scope": "Three nominal constructor/enum conversion properties only; no transport, whole-request, arbitrary-string, digest-length, or whole-crate claim."
 }
+
