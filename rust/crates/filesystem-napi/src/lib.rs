@@ -68,48 +68,6 @@ impl NapiU32 {
     }
 }
 
-/// Rust-owned finite file-kind projection for generated native declarations.
-#[napi(string_enum = "kebab-case")]
-pub enum NativeFileKind {
-    /// A regular file with byte-addressable content.
-    Regular,
-    /// A directory containing namespace bindings.
-    Directory,
-    /// A symbolic link whose target is stored separately.
-    SymbolicLink,
-    /// A FIFO special file.
-    Fifo,
-    /// A Unix-domain socket special file.
-    Socket,
-    /// A character-device special file.
-    CharacterDevice,
-    /// A block-device special file.
-    BlockDevice,
-    /// A Windows reparse-point entry.
-    ReparsePoint,
-    /// A mount boundary exposed by the filesystem authority.
-    MountBoundary,
-}
-
-/// Rust-owned finite payload variant projected by generated native declarations.
-#[napi(string_enum = "kebab-case")]
-pub enum NativeFilePayloadKind {
-    /// Embedded bytes for a tiny regular file.
-    InlineRegular,
-    /// Sparse extent-tree payload for a regular file.
-    Regular,
-    /// Namespace-tree payload for a directory.
-    Directory,
-    /// Authenticated target payload for a symbolic link.
-    SymbolicLink,
-    /// No payload for FIFO, socket, or mount-boundary entries.
-    Empty,
-    /// Device major/minor payload.
-    Device,
-    /// Opaque Windows reparse payload.
-    ReparsePoint,
-}
-
 /// Native speculation admission status emitted by the Rust engine.
 #[napi(string_enum = "kebab-case")]
 pub enum NativeResidencyStatus {
@@ -561,7 +519,7 @@ pub struct NativeLookup {
     /// Stable file identity when present.
     pub file_id: Option<Buffer>,
     /// Canonical file kind when present.
-    pub file_kind: Option<NativeFileKind>,
+    pub file_kind: Option<FileKind>,
     /// Number of resolved components.
     pub resolved_components: u32,
     /// Exact machine-readable work receipt.
@@ -576,7 +534,7 @@ pub struct NativeBatchLookupEntry {
     /// Stable file identity when present.
     pub file_id: Option<Buffer>,
     /// Canonical file kind when present.
-    pub file_kind: Option<NativeFileKind>,
+    pub file_kind: Option<FileKind>,
     /// Number of path components resolved before terminal absence.
     pub resolved_components: u32,
 }
@@ -696,7 +654,7 @@ pub struct NativeDirectoryEntry {
     /// Stable file identity.
     pub file_id: Buffer,
     /// Canonical file kind.
-    pub file_kind: NativeFileKind,
+    pub file_kind: FileKind,
 }
 
 /// One bounded authenticated directory cursor page.
@@ -887,13 +845,13 @@ pub struct NativeFileRecord {
     /// Stable 16-byte file identity.
     pub file_id: Buffer,
     /// Canonical file-kind name.
-    pub file_kind: NativeFileKind,
+    pub file_kind: FileKind,
     /// Number of namespace bindings referring to this record.
     pub link_count: BigInt,
     /// Canonical 33-byte metadata object identity.
     pub metadata_object: Buffer,
     /// Canonical payload variant name.
-    pub payload_kind: NativeFilePayloadKind,
+    pub payload_kind: FilePayloadKind,
     /// Logical payload byte length when the variant has one.
     pub logical_bytes: Option<BigInt>,
     /// Canonical 33-byte payload object identity when externally stored.
@@ -978,7 +936,7 @@ pub struct NativeTreeEntry {
     /// Stable 16-byte target file identity.
     pub file_id: Buffer,
     /// Canonical target file-kind name.
-    pub file_kind: NativeFileKind,
+    pub file_kind: FileKind,
 }
 
 /// Bounded generation diff result.
@@ -1626,8 +1584,8 @@ impl NativeResolvedFile {
     /// Terminal file kind authenticated by the pinned generation.
     #[napi(getter)]
     #[must_use]
-    pub fn kind(&self) -> NativeFileKind {
-        file_kind(self.inner.description().kind)
+    pub fn kind(&self) -> FileKind {
+        self.inner.description().kind
     }
 
     /// Logical content length authenticated by the pinned generation.
@@ -1869,7 +1827,7 @@ pub struct NativeTransactionConflict {
 )]
 pub struct NativeWorkspaceStat {
     pub file_id: Buffer,
-    pub kind: NativeFileKind,
+    pub kind: FileKind,
     pub link_count: BigInt,
     pub logical_bytes: Option<BigInt>,
     pub metadata: NativeWorkspaceMetadata,
@@ -1916,7 +1874,7 @@ pub struct NativeWorkspaceName {
 pub struct NativeWorkspaceDirectoryEntry {
     pub name: NativeWorkspaceName,
     pub file_id: Buffer,
-    pub kind: NativeFileKind,
+    pub kind: FileKind,
 }
 
 /// One bounded authenticated directory page.
@@ -4819,7 +4777,7 @@ impl NativeCheckout {
         Ok(NativeLookup {
             exists: record.is_some(),
             file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
-            file_kind: record.map(|value| file_kind(value.kind)),
+            file_kind: record.map(|value| value.kind),
             resolved_components: u32::from(receipt.value.resolved_components),
             work_json: work_json(&receipt.work)?,
         })
@@ -4861,7 +4819,7 @@ impl NativeCheckout {
                 NativeBatchLookupEntry {
                     exists: record.is_some(),
                     file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
-                    file_kind: record.map(|value| file_kind(value.kind)),
+                    file_kind: record.map(|value| value.kind),
                     resolved_components: u32::from(entry.resolved_components),
                 }
             })
@@ -5588,7 +5546,7 @@ impl NativeCheckout {
             .map(|entry| NativeDirectoryEntry {
                 name: Buffer::from(entry.name.as_bytes().to_vec()),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-                file_kind: file_kind(entry.kind),
+                file_kind: entry.kind,
             })
             .collect();
         Ok(NativeDirectoryPage {
@@ -7002,10 +6960,10 @@ fn encode_generation_diff(
 }
 
 fn encode_file_record(record: FileRecord) -> NativeFileRecord {
-    let payload_kind = native_payload_kind(record.payload.kind());
+    let payload_kind = record.payload.kind();
     let mut result = NativeFileRecord {
         file_id: Buffer::from(record.file_id.into_bytes().to_vec()),
-        file_kind: file_kind(record.kind),
+        file_kind: record.kind,
         link_count: bigint(record.link_count),
         metadata_object: encode_object_id(record.metadata),
         payload_kind,
@@ -7053,23 +7011,11 @@ fn encode_file_record(record: FileRecord) -> NativeFileRecord {
     result
 }
 
-fn native_payload_kind(kind: FilePayloadKind) -> NativeFilePayloadKind {
-    match kind {
-        FilePayloadKind::InlineRegular => NativeFilePayloadKind::InlineRegular,
-        FilePayloadKind::Regular => NativeFilePayloadKind::Regular,
-        FilePayloadKind::Directory => NativeFilePayloadKind::Directory,
-        FilePayloadKind::SymbolicLink => NativeFilePayloadKind::SymbolicLink,
-        FilePayloadKind::Empty => NativeFilePayloadKind::Empty,
-        FilePayloadKind::Device => NativeFilePayloadKind::Device,
-        FilePayloadKind::ReparsePoint => NativeFilePayloadKind::ReparsePoint,
-    }
-}
-
 fn encode_tree_entry(entry: &TreeEntry) -> NativeTreeEntry {
     NativeTreeEntry {
         name: encode_name_component(&entry.name),
         file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-        file_kind: file_kind(entry.kind),
+        file_kind: entry.kind,
     }
 }
 
@@ -7876,20 +7822,6 @@ fn live_outcome_resolved(outcome: &LiveMutationOutcome) -> bool {
     )
 }
 
-fn file_kind(kind: FileKind) -> NativeFileKind {
-    match kind {
-        FileKind::Regular => NativeFileKind::Regular,
-        FileKind::Directory => NativeFileKind::Directory,
-        FileKind::SymbolicLink => NativeFileKind::SymbolicLink,
-        FileKind::Fifo => NativeFileKind::Fifo,
-        FileKind::Socket => NativeFileKind::Socket,
-        FileKind::CharacterDevice => NativeFileKind::CharacterDevice,
-        FileKind::BlockDevice => NativeFileKind::BlockDevice,
-        FileKind::ReparsePoint => NativeFileKind::ReparsePoint,
-        FileKind::MountBoundary => NativeFileKind::MountBoundary,
-    }
-}
-
 fn signed_bigint(value: i64) -> BigInt {
     BigInt {
         sign_bit: value.is_negative(),
@@ -7921,7 +7853,7 @@ fn native_workspace_metadata(value: WorkspaceMetadata) -> NativeWorkspaceMetadat
 fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     NativeWorkspaceStat {
         file_id: Buffer::from(value.file_id.into_bytes().to_vec()),
-        kind: file_kind(value.kind),
+        kind: value.kind,
         link_count: bigint(value.link_count),
         logical_bytes: value.logical_bytes.map(bigint),
         metadata: native_workspace_metadata(value.metadata),
@@ -7949,7 +7881,7 @@ fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorks
                     bytes: Buffer::from(entry.name.as_bytes().to_vec()),
                 },
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-                kind: file_kind(entry.kind),
+                kind: entry.kind,
             })
             .collect(),
         has_more: value.has_more,
@@ -8393,7 +8325,7 @@ mod tests {
             source_stat.file_id.as_ref(),
             hard_link_stat.file_id.as_ref()
         );
-        assert!(matches!(source_stat.kind, NativeFileKind::Regular));
+        assert!(matches!(source_stat.kind, FileKind::Regular));
         assert_eq!(
             workspace
                 .read_symbolic_link("/shapes/symlink".to_owned())

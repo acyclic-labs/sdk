@@ -1,9 +1,14 @@
 /* tslint:disable */
 /* eslint-disable */
 /**
- * Rust-owned finite payload variant projected by generated WASM declarations.
+ * Complete namespace entry kind.
  */
-export type BrowserFilePayloadKind = "inline-regular" | "regular" | "directory" | "symbolic-link" | "empty" | "device" | "reparse-point";
+export type FileKind = "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type FilePayloadKind = "inline-regular" | "regular" | "directory" | "symbolic-link" | "empty" | "device" | "reparse-point";
 
 export interface BrowserAdmissionResult {
     status: "admitted" | "rejected";
@@ -13,7 +18,7 @@ export interface BrowserAdmissionResult {
 export interface BrowserBatchLookupEntryResult {
     exists: boolean;
     fileId: Uint8Array | undefined;
-    fileKind: BrowserFileKind | undefined;
+    fileKind: FileKind | undefined;
     resolvedComponents: number;
 }
 
@@ -53,7 +58,7 @@ export interface BrowserCommitResult {
 export interface BrowserDirectoryEntryResult {
     name: Uint8Array;
     fileId: Uint8Array;
-    fileKind: BrowserFileKind;
+    fileKind: FileKind;
 }
 
 export interface BrowserDirectoryPageResult {
@@ -112,10 +117,10 @@ export interface BrowserFileRecordReadResult {
 
 export interface BrowserFileRecordResult {
     fileId: Uint8Array;
-    fileKind: BrowserFileKind;
+    fileKind: FileKind;
     linkCount: bigint;
     metadataObject: Uint8Array;
-    payloadKind: BrowserFilePayloadKind;
+    payloadKind: FilePayloadKind;
     logicalBytes: bigint | undefined;
     payloadObject: Uint8Array | undefined;
     inlineBytes: Uint8Array | undefined;
@@ -177,7 +182,7 @@ export interface BrowserLiveTransactionResult {
 export interface BrowserLookupResult {
     exists: boolean;
     fileId: Uint8Array | undefined;
-    fileKind: BrowserFileKind | undefined;
+    fileKind: FileKind | undefined;
     resolvedComponents: number;
     work: BrowserWorkCounters;
 }
@@ -291,7 +296,7 @@ export interface BrowserTransactionResult {
 export interface BrowserTreeEntryResult {
     name: NameComponentResult;
     fileId: Uint8Array;
-    fileKind: BrowserFileKind;
+    fileKind: FileKind;
 }
 
 export interface BrowserVolumeLimits {
@@ -357,7 +362,7 @@ export interface BrowserWorkspaceCommit {
 export interface BrowserWorkspaceDirectoryEntry {
     name: BrowserWorkspaceName;
     fileId: Uint8Array;
-    kind: BrowserFileKind;
+    kind: FileKind;
 }
 
 export interface BrowserWorkspaceDirectoryPage {
@@ -405,7 +410,7 @@ export interface BrowserWorkspaceRebaseResult {
 
 export interface BrowserWorkspaceStat {
     fileId: Uint8Array;
-    kind: BrowserFileKind;
+    kind: FileKind;
     linkCount: bigint;
     logicalBytes: bigint | undefined;
     metadata: BrowserWorkspaceMetadata;
@@ -436,8 +441,6 @@ export interface NameComponentResult {
 }
 
 export type BrowserExtentPlanResult = { kind: "inline"; work: BrowserWorkCounters } | { kind: "sparse"; spans: BrowserExtentSpanResult[]; retainedAllocationBytes: bigint; work: BrowserWorkCounters };
-
-export type BrowserFileKind = "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
 
 export type BrowserPathBatch = string[];
 
@@ -1210,7 +1213,7 @@ export class BrowserResolvedFile {
     /**
      * Terminal file kind authenticated by the pinned generation.
      */
-    readonly kind: BrowserFileKind;
+    readonly kind: FileKind;
     /**
      * Logical content length authenticated by the pinned generation.
      */

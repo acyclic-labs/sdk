@@ -383,33 +383,6 @@ mod bindings {
         has_security_descriptor: bool,
     }
 
-    #[derive(Clone, Copy, Serialize, Tsify)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum BrowserFileKind {
-        Regular,
-        Directory,
-        SymbolicLink,
-        Fifo,
-        Socket,
-        CharacterDevice,
-        BlockDevice,
-        ReparsePoint,
-        MountBoundary,
-    }
-
-    /// Rust-owned finite payload variant projected by generated WASM declarations.
-    #[derive(Clone, Copy, Serialize, Tsify)]
-    #[serde(rename_all = "kebab-case")]
-    pub enum BrowserFilePayloadKind {
-        InlineRegular,
-        Regular,
-        Directory,
-        SymbolicLink,
-        Empty,
-        Device,
-        ReparsePoint,
-    }
-
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
@@ -417,7 +390,7 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        kind: BrowserFileKind,
+        kind: FileKind,
         link_count: u64,
         logical_bytes: Option<u64>,
         metadata: BrowserWorkspaceMetadata,
@@ -430,7 +403,7 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        kind: BrowserFileKind,
+        kind: FileKind,
     }
 
     #[derive(Serialize, Tsify)]
@@ -2117,7 +2090,7 @@ mod bindings {
     fn browser_workspace_stat(value: WorkspaceStat) -> BrowserWorkspaceStat {
         BrowserWorkspaceStat {
             file_id: value.file_id.into_bytes().to_vec(),
-            kind: file_kind(value.kind),
+            kind: value.kind,
             link_count: value.link_count,
             logical_bytes: value.logical_bytes,
             metadata: browser_workspace_metadata(value.metadata),
@@ -2137,7 +2110,7 @@ mod bindings {
                         bytes: entry.name.as_bytes().to_vec(),
                     },
                     file_id: entry.file_id.into_bytes().to_vec(),
-                    kind: file_kind(entry.kind),
+                    kind: entry.kind,
                 })
                 .collect(),
             has_more: value.has_more,
@@ -2652,7 +2625,7 @@ mod bindings {
         exists: bool,
         #[tsify(type = "Uint8Array | undefined")]
         file_id: Option<serde_bytes::ByteBuf>,
-        file_kind: Option<BrowserFileKind>,
+        file_kind: Option<FileKind>,
         resolved_components: u16,
         work: BrowserWorkCounters,
     }
@@ -2663,7 +2636,7 @@ mod bindings {
         exists: bool,
         #[tsify(type = "Uint8Array | undefined")]
         file_id: Option<serde_bytes::ByteBuf>,
-        file_kind: Option<BrowserFileKind>,
+        file_kind: Option<FileKind>,
         resolved_components: u16,
     }
 
@@ -2746,7 +2719,7 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        file_kind: BrowserFileKind,
+        file_kind: FileKind,
     }
 
     #[derive(Serialize, Tsify)]
@@ -2904,12 +2877,12 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        file_kind: BrowserFileKind,
+        file_kind: FileKind,
         link_count: u64,
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         metadata_object: Vec<u8>,
-        payload_kind: BrowserFilePayloadKind,
+        payload_kind: FilePayloadKind,
         logical_bytes: Option<u64>,
         #[tsify(type = "Uint8Array | undefined")]
         payload_object: Option<serde_bytes::ByteBuf>,
@@ -2985,7 +2958,7 @@ mod bindings {
         #[serde(with = "serde_bytes")]
         #[tsify(type = "Uint8Array")]
         file_id: Vec<u8>,
-        file_kind: BrowserFileKind,
+        file_kind: FileKind,
     }
 
     #[derive(Serialize, Tsify)]
@@ -4301,13 +4274,13 @@ mod bindings {
     impl BrowserResolvedFile {
         /// Terminal file kind authenticated by the pinned generation.
         #[wasm_bindgen(getter)]
-        pub fn kind(&self) -> Result<Ts<BrowserFileKind>, JsValue> {
+        pub fn kind(&self) -> Result<Ts<FileKind>, JsValue> {
             let kind = match &self.engine {
                 BrowserResolvedFileEngine::IndexedDb(file) => file.description().kind,
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().kind,
                 BrowserResolvedFileEngine::Memory(file) => file.description().kind,
             };
-            ts(file_kind(kind))
+            ts(kind)
         }
 
         /// Logical content length authenticated by the pinned generation.
@@ -4617,7 +4590,7 @@ mod bindings {
             ts(BrowserLookupResult {
                 exists: record.is_some(),
                 file_id: record.map(|value| value.file_id.into_bytes().to_vec().into()),
-                file_kind: record.map(|value| file_kind(value.kind)),
+                file_kind: record.map(|value| value.kind),
                 resolved_components: receipt.value.resolved_components,
                 work: browser_work(receipt.work),
             })
@@ -4668,7 +4641,7 @@ mod bindings {
                         file_id: entry
                             .record
                             .map(|record| record.file_id.into_bytes().to_vec().into()),
-                        file_kind: entry.record.map(|record| file_kind(record.kind)),
+                        file_kind: entry.record.map(|record| record.kind),
                         resolved_components: entry.resolved_components,
                     })
                     .collect(),
@@ -5502,7 +5475,7 @@ mod bindings {
                 .map(|entry| DirectoryEntryResult {
                     name: entry.name.as_bytes().to_vec(),
                     file_id: entry.file_id.into_bytes().to_vec(),
-                    file_kind: file_kind(entry.kind),
+                    file_kind: entry.kind,
                 })
                 .collect();
             ts(BrowserDirectoryPageResult {
@@ -7221,10 +7194,10 @@ mod bindings {
     }
 
     fn encode_file_record(record: FileRecord) -> FileRecordResult {
-        let payload_kind = browser_payload_kind(record.payload.kind());
+        let payload_kind = record.payload.kind();
         let mut result = FileRecordResult {
             file_id: record.file_id.into_bytes().to_vec(),
-            file_kind: file_kind(record.kind),
+            file_kind: record.kind,
             link_count: record.link_count,
             metadata_object: encode_object_id(record.metadata),
             payload_kind,
@@ -7273,23 +7246,11 @@ mod bindings {
         result
     }
 
-    fn browser_payload_kind(kind: FilePayloadKind) -> BrowserFilePayloadKind {
-        match kind {
-            FilePayloadKind::InlineRegular => BrowserFilePayloadKind::InlineRegular,
-            FilePayloadKind::Regular => BrowserFilePayloadKind::Regular,
-            FilePayloadKind::Directory => BrowserFilePayloadKind::Directory,
-            FilePayloadKind::SymbolicLink => BrowserFilePayloadKind::SymbolicLink,
-            FilePayloadKind::Empty => BrowserFilePayloadKind::Empty,
-            FilePayloadKind::Device => BrowserFilePayloadKind::Device,
-            FilePayloadKind::ReparsePoint => BrowserFilePayloadKind::ReparsePoint,
-        }
-    }
-
     fn encode_tree_entry(entry: &TreeEntry) -> TreeEntryResult {
         TreeEntryResult {
             name: encode_name_component(&entry.name),
             file_id: entry.file_id.into_bytes().to_vec(),
-            file_kind: file_kind(entry.kind),
+            file_kind: entry.kind,
         }
     }
 
@@ -7615,20 +7576,6 @@ mod bindings {
                 CheckoutMutationMode::PrivateCow => MutationMode::PrivateOverlay,
                 CheckoutMutationMode::DirectLive => MutationMode::DirectLive,
             },
-        }
-    }
-
-    fn file_kind(kind: FileKind) -> BrowserFileKind {
-        match kind {
-            FileKind::Regular => BrowserFileKind::Regular,
-            FileKind::Directory => BrowserFileKind::Directory,
-            FileKind::SymbolicLink => BrowserFileKind::SymbolicLink,
-            FileKind::Fifo => BrowserFileKind::Fifo,
-            FileKind::Socket => BrowserFileKind::Socket,
-            FileKind::CharacterDevice => BrowserFileKind::CharacterDevice,
-            FileKind::BlockDevice => BrowserFileKind::BlockDevice,
-            FileKind::ReparsePoint => BrowserFileKind::ReparsePoint,
-            FileKind::MountBoundary => BrowserFileKind::MountBoundary,
         }
     }
 

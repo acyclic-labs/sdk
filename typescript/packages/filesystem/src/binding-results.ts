@@ -9,7 +9,7 @@ import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
 import { isFileKind } from "../generated/hosted-contract.js";
 
 type RawFileRecord = WasmRawFileRecordSnapshot;
-type BoundaryFileKind = WorkspaceFileKind | WasmBinding.BrowserFileKind | NativeBinding.NativeFileKind;
+type BoundaryFileKind = WorkspaceFileKind | WasmBinding.FileKind | NativeBinding.FileKind;
 type RawTreeEntry = TreeEntrySnapshot;
 
 /**

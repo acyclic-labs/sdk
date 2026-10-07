@@ -40,7 +40,7 @@ type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
         : T;
 
 export type FsProfile = WasmBinding.BrowserVolumeOptions["profile"];
-export type FilePayloadKind = WasmBinding.BrowserFilePayloadKind;
+export type FilePayloadKind = WasmBinding.FilePayloadKind;
 
 export interface EngineCapabilities {
   readonly version: string;
