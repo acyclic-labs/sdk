@@ -1985,6 +1985,24 @@ impl NativeWorkspace {
             .map_err(napi_error)
     }
 
+    /// Reopens an authenticated exact retained generation without moving the head.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid identity, authority, authentication, or storage failures.
+    #[napi]
+    pub async fn generation(&self, id: Buffer) -> Result<NativeGeneration> {
+        let id = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
+            id.as_ref(),
+            "generation identity",
+        )?));
+        self.inner
+            .generation(id)
+            .await
+            .map(|inner| NativeGeneration { inner })
+            .map_err(napi_error)
+    }
+
     /// Synchronizes prior workspace operations and returns the exact immutable head.
     ///
     /// # Errors

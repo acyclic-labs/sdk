@@ -28,6 +28,7 @@ import {
   FileKind,
   FilesystemProfile,
   FilesystemService,
+  GenerationRefSchema,
   JoinHistory,
   JoinStatus as WireJoinStatus,
   MutationSchema,
@@ -253,6 +254,13 @@ function workspace(client: HostedClient, value: WireWorkspace): HostedFsWorkspac
     name: reference.name,
     id: Uint8Array.from(reference.workspaceId),
     async head() { return Uint8Array.from((await currentGeneration(client, reference)).generationId); },
+    async generation(id) {
+      const selected = create(GenerationRefSchema, {
+        workspace: reference, generationId: exactBytes(id, 32, "generation identity"),
+      });
+      await stat(client, selected, "/");
+      return generation(client, selected);
+    },
     async sync() { return generation(client, await currentGeneration(client, reference)); },
     async checkpoint(label) {
       requireName(label);

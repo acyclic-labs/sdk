@@ -1079,6 +1079,14 @@ export declare class NativeWorkspace {
    */
   head(): Promise<Buffer>
   /**
+   * Reopens an authenticated exact retained generation without moving the head.
+   *
+   * # Errors
+   *
+   * Returns invalid identity, authority, authentication, or storage failures.
+   */
+  generation(id: Buffer): Promise<NativeGeneration>
+  /**
    * Synchronizes prior workspace operations and returns the exact immutable head.
    *
    * # Errors
