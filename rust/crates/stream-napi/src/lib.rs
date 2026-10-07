@@ -11,6 +11,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use acyclic_stream::{StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
@@ -23,6 +24,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+const UNAVAILABLE_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
@@ -332,6 +334,9 @@ pub struct NativeStreamFollow {
 #[napi]
 impl NativeStreamFollow {
     /// Returns the next canonical `ReadResponse`, or an empty result at end/close.
+    ///
+    /// Transient `Unavailable` items remain owned by the Rust cursor and are
+    /// retried here. Terminal stream errors are returned in the result envelope.
     #[napi]
     pub async fn next_result(&self) -> Result<NativeStreamNextResult> {
         if self.state.closed.load(Ordering::Acquire) {
@@ -345,47 +350,78 @@ impl NativeStreamFollow {
         let Some(stream) = records.as_mut() else {
             return Ok(NativeStreamNextResult::end());
         };
-        let next = run_with_cancellation(
-            async {
-                stream
-                    .next()
+        loop {
+            let next = run_with_cancellation(
+                async { Ok(stream.next().await) },
+                Some(self.state.token.clone()),
+            )
+            .await;
+            match next {
+                Ok(Some(Ok(record))) => {
+                    if self.state.closed.load(Ordering::Acquire) {
+                        records.take();
+                        return Ok(NativeStreamNextResult::end());
+                    }
+                    let response = wire::ReadResponse {
+                        record: Some(wire_codec::record_wire(record)),
+                    };
+                    return Ok(NativeStreamNextResult::value(
+                        encode(&response, "follow").map_err(|error| napi_error(&error))?,
+                    ));
+                }
+                Ok(Some(Err(StreamError::Unavailable))) => {
+                    // RecordStream retains its cursor after an unavailable
+                    // item so the next poll can reopen or retry the active
+                    // endpoint. Keep that recovery in Rust: exposing the
+                    // transient error to JavaScript would make the iterator
+                    // throw and close the otherwise retryable cursor.
+                    if self.state.closed.load(Ordering::Acquire) || self.state.token.is_cancelled()
+                    {
+                        records.take();
+                        return Ok(NativeStreamNextResult::end());
+                    }
+                    // Keep a persistently unavailable endpoint from turning a
+                    // retryable cursor into a tight loop. This matches the
+                    // retry delay used by the canonical gRPC record cursor.
+                    if let Err(error) = run_with_cancellation(
+                        async {
+                            tokio::time::sleep(UNAVAILABLE_RETRY_DELAY).await;
+                            Ok::<(), NativeStreamErrorMetadata>(())
+                        },
+                        Some(self.state.token.clone()),
+                    )
                     .await
-                    .transpose()
-                    .map_err(|error| stream_error(&error))
-            },
-            Some(self.state.token.clone()),
-        )
-        .await;
-        match next {
-            Ok(Some(record)) => {
-                if self.state.closed.load(Ordering::Acquire) {
+                    {
+                        if self.state.closed.load(Ordering::Acquire)
+                            || self.state.token.is_cancelled()
+                        {
+                            records.take();
+                            return Ok(NativeStreamNextResult::end());
+                        }
+                        return Ok(NativeStreamNextResult::failure(error));
+                    }
+                }
+                Ok(Some(Err(error))) => {
+                    if self.state.closed.load(Ordering::Acquire) {
+                        records.take();
+                        return Ok(NativeStreamNextResult::end());
+                    }
+                    return Ok(NativeStreamNextResult::failure(stream_error(&error)));
+                }
+                Ok(None) => {
                     records.take();
                     return Ok(NativeStreamNextResult::end());
                 }
-                let response = wire::ReadResponse {
-                    record: Some(wire_codec::record_wire(record)),
-                };
-                Ok(NativeStreamNextResult::value(
-                    encode(&response, "follow").map_err(|error| napi_error(&error))?,
-                ))
-            }
-            Ok(None) => {
-                records.take();
-                Ok(NativeStreamNextResult::end())
-            }
-            Err(error) => {
-                // `RecordStream` is a recovery-aware stream: a transient item
-                // error is yielded together with its cursor so the next poll
-                // can retry the active endpoint. Keep that cursor alive unless
-                // this handle was explicitly closed or cancelled.
-                if self.state.closed.load(Ordering::Acquire) {
-                    records.take();
-                    return Ok(NativeStreamNextResult::end());
+                Err(error) => {
+                    if self.state.closed.load(Ordering::Acquire) {
+                        records.take();
+                        return Ok(NativeStreamNextResult::end());
+                    }
+                    if self.state.token.is_cancelled() {
+                        records.take();
+                    }
+                    return Ok(NativeStreamNextResult::failure(error));
                 }
-                if self.state.token.is_cancelled() {
-                    records.take();
-                }
-                Ok(NativeStreamNextResult::failure(error))
             }
         }
     }
@@ -1084,6 +1120,62 @@ mod tests {
             .expect("second read failed");
         assert!(second.value.is_none());
         assert!(second.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn unavailable_follow_item_is_retried_without_exposing_a_throwable_error() {
+        let record = acyclic_stream::Record {
+            sequence: 0,
+            value: vec![1_u8, 2].into(),
+            commit_id: acyclic_stream::CommitId::default(),
+            committed_at_micros: 0,
+        };
+        let records: acyclic_stream::RecordStream =
+            futures::stream::iter([Err(StreamError::Unavailable), Ok(record)]).boxed();
+        let follow = NativeStreamFollow {
+            state: FollowState {
+                records: Arc::new(Mutex::new(Some(records))),
+                token: CancellationToken::new(),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+        };
+
+        let result = follow
+            .next_result()
+            .await
+            .expect("retryable follow read failed");
+        assert!(result.value.is_some());
+        assert!(result.error.is_none());
+        let end = follow.next_result().await.expect("follow end failed");
+        assert!(end.value.is_none());
+        assert!(end.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn repeated_unavailable_follow_items_are_cancellable() {
+        let records: acyclic_stream::RecordStream =
+            futures::stream::repeat(Err(StreamError::Unavailable)).boxed();
+        let follow = Arc::new(NativeStreamFollow {
+            state: FollowState {
+                records: Arc::new(Mutex::new(Some(records))),
+                token: CancellationToken::new(),
+                closed: Arc::new(AtomicBool::new(false)),
+            },
+        });
+        let pending = tokio::spawn({
+            let follow = Arc::clone(&follow);
+            async move { follow.next_result().await }
+        });
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        follow.state.token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), pending)
+            .await
+            .expect("retryable follow read did not cancel")
+            .expect("retryable follow task panicked")
+            .expect("retryable follow read rejected");
+        assert!(result.value.is_none());
+        assert!(result.error.is_none());
+        follow.close().await;
     }
 
     #[tokio::test]
