@@ -91,7 +91,7 @@ const retainedAll = (runId, prefix) => `${prefix}-${runId}-2`;
 
 test("recorded lanes are reused with their retained artifact", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: false, mainPush: false, trusted: null, marker: everywhere, retained: retainedAll,
+    force: false, mainPush: false, marker: everywhere, retained: retainedAll,
   });
   assert.deepEqual(matrix, []);
   assert.equal(reused.linux.artifact, "packages-linux-7-2");
@@ -107,7 +107,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
     force: false,
     mainPush: false,
     fullQualification: true,
-    trusted: null,
+   
     marker: everywhere,
     retained: retainedAll,
   });
@@ -118,7 +118,7 @@ test("full qualification rebuilds source-bound packages after a README-only chan
 
 test("a lane whose artifact expired executes again", () => {
   const { matrix } = chooseLanes(lanes, {
-    force: false, mainPush: false, trusted: null, marker: everywhere,
+    force: false, mainPush: false, marker: everywhere,
     retained: (runId, prefix) => (prefix === "coverage" ? "" : retainedAll(runId, prefix)),
   });
   assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
@@ -126,7 +126,7 @@ test("a lane whose artifact expired executes again", () => {
 
 test("ordinary main pushes keep downstream qualification off the routine path", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: false, mainPush: true, trusted: null, marker: () => null, retained: retainedAll,
+    force: false, mainPush: true, marker: () => null, retained: retainedAll,
     coreOnly: true,
   });
   assert.deepEqual(matrix.map(lane => lane.lane).sort(), ["gate", "policy"]);
@@ -135,7 +135,7 @@ test("ordinary main pushes keep downstream qualification off the routine path", 
 
 test("forced runs execute every lane", () => {
   const { matrix, reused } = chooseLanes(lanes, {
-    force: true, mainPush: false, trusted: source, marker: everywhere, retained: retainedAll,
+    force: true, mainPush: false, marker: everywhere, retained: retainedAll,
   });
   assert.equal(matrix.length, lanes.length);
   assert.deepEqual(reused, {});
@@ -154,7 +154,7 @@ test("forced reusable release calls keep the full lane scope", () => {
     force: true,
     mainPush: false,
     coreOnly: true,
-    trusted: source,
+   
     marker: everywhere,
     retained: retainedAll,
   });
@@ -168,7 +168,7 @@ test("routine pull requests qualify only the core gate and policy lanes", () => 
     mainPush: false,
     pullRequest: true,
     coreOnly: true,
-    trusted: null,
+   
     marker: () => null,
     retained: () => "",
   });

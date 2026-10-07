@@ -58,7 +58,6 @@ jobs:
       keys: ${{ steps.fingerprints.outputs.keys }}
       matrix: ${{ steps.select.outputs.matrix }}
       reused: ${{ steps.select.outputs.reused }}
-      trusted: ${{ steps.select.outputs.trusted }}
       windows: ${{ steps.select.outputs.windows }}
     steps:
       - name: Check out exact source
@@ -186,9 +185,6 @@ jobs:
       MAKEFLAGS: -j${{ matrix.workers }}
       RAYON_NUM_THREADS: ${{ matrix.workers }}
       RUST_TEST_THREADS: ${{ matrix.workers }}
-      # Windows restores the compiler cache at ~70 MB/s rather than from
-      # co-located storage, so bound it near one run's working set.
-      SCCACHE_CACHE_SIZE: ${{ contains(matrix.runner, 'windows') && '3G' || '8G' }}
     # Complete qualification is governed by bounded operations and resource
     # limits, not a wall-clock cutoff across cold builds and package verification.
     steps:
@@ -225,7 +221,6 @@ jobs:
       MAKEFLAGS: -j4
       RAYON_NUM_THREADS: 4
       RUST_TEST_THREADS: 4
-      SCCACHE_CACHE_SIZE: 3G
     # Preserve all checks when cold builds outlast an estimated lane duration.
     steps:
       - name: Await the qualification plan
@@ -344,7 +339,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REUSED: ${{ needs.plan.outputs.reused }}
-          TRUSTED: ${{ needs.plan.outputs.trusted }}
         run: node scripts/plan-qualification.mjs record
 
       - name: Record gate

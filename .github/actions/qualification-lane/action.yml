@@ -22,9 +22,22 @@ runs:
         "CARGO_INCREMENTAL=0" >> $env:GITHUB_ENV
         .\scripts\windows-rust-setup.ps1 -Phase start
 
+    # Core and full runs compile different invocations (coverage, packaging,
+    # release builds), so each keeps its own compiler cache, sized to one
+    # run's working set. Windows restores at ~70 MB/s rather than from
+    # co-located storage, so its full cache stays smaller.
     - name: Configure lane-local compiler cache
+      id: sccache
       shell: bash
-      run: echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
+      run: |
+        scope=core size=2G
+        if [[ "${FORCE:-}" == true ]] || [[ "$GITHUB_EVENT_NAME" =~ ^(release|workflow_dispatch|schedule)$ ]]; then
+          scope=full size=8G
+          [[ "$RUNNER_OS" != Windows ]] || size=3G
+        fi
+        echo "scope=$scope" >> "$GITHUB_OUTPUT"
+        echo "SCCACHE_DIR=${RUNNER_TEMP}/sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_CACHE_SIZE=$size" >> "$GITHUB_ENV"
 
     # Only compressed crate archives and indexes are cached: Cargo unpacks the
     # sources it needs far faster than a cache can restore them file by file.
@@ -60,19 +73,20 @@ runs:
         path: ${{ runner.temp }}/tools
         key: sdk-tools-v6-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}
 
-    # Exact cache hits are reliable where prefix fallbacks are not, and saving
-    # a fresh multi-gigabyte cache per commit evicts everything else. Compiler
-    # output is therefore keyed by what shapes compiler invocations (toolchain,
-    # lockfile, manifests, lane scripts), not by workspace sources, which
-    # recompile either way. Lane-local caches restore and save once instead
-    # of contending on sccache object writes.
+    # Only main saves compiler output; every other run restores main's newest
+    # entry. Caches are branch-scoped, so a cache saved by a pull request would
+    # never warm another pull request's first run, and multi-gigabyte saves per
+    # pull request evict main's. Main pushes run the core lanes (see
+    # plan-qualification.mjs) and manual full runs on main warm the full lanes.
+    # Lane-local caches restore and save once instead of contending on sccache
+    # object writes. Cargo target directories are never cached.
     - name: Restore lane build cache
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
       with:
         path: ${{ runner.temp }}/sccache
-        key: sdk-build-v4-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock', '**/Cargo.toml', '.github/workflows/qualification.yml', '.github/actions/qualification-lane/action.yml', 'scripts/qualify-ci.sh', 'scripts/qualify-ci.ps1', 'scripts/build-product.mjs') }}
+        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          sdk-build-v4-${{ inputs.lane }}-${{ runner.os }}-${{ runner.arch }}-
+          sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Enable compiler cache
       uses: mozilla-actions/sccache-action@d651010b8da762cde178750d8eda7b5febfe147a # v0.0.9
@@ -146,6 +160,15 @@ runs:
         TOOLS_DIR: ${{ runner.temp }}/tools/${{ inputs.lane }}-${{ runner.arch }}
         LLVM_PATH: ${{ runner.temp }}/llvm
       run: .\scripts\qualify-ci.ps1 -Lane windows
+
+    # Saved even when a test fails: entries are content-addressed, and a red
+    # main must not leave pull requests compiling cold.
+    - name: Save lane build cache
+      if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+      uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: sdk-sccache-v5-${{ inputs.lane }}-${{ steps.sccache.outputs.scope }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Retain qualified outputs
       if: inputs.artifact != ''
