@@ -229,6 +229,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ExecutionEvent::ModelStarted {
                 step,
                 request_digest,
+                ..
             } => JournalWrite::Model {
                 attempt_id: operation,
                 step: *step,
@@ -278,6 +279,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if let crate::executor::ExecutionEvent::ModelStarted {
                 step,
                 request_digest,
+                ..
             } = &record.event
             {
                 coordinator.scheduler().require_model_claim(
@@ -2334,7 +2336,7 @@ mod tests {
             )
         };
         #[cfg(feature = "filesystem")]
-        let (execution, execution_pending) = {
+        let (execution, execution_pending, model_request) = {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             let journal = crate::filesystem::FilesystemExecutionJournal::for_task(
                 host.journal_owner(task_id, fence.clone()).await?,
@@ -2345,6 +2347,15 @@ mod tests {
                 content_scope.clone(),
                 65_536,
             )?;
+            // Request residency fixture: this test qualifies authority, not model preparation.
+            let model_request = journal
+                .stage(
+                    attempt,
+                    "model-request".into(),
+                    b"null".to_vec(),
+                    "application/json",
+                )
+                .await?;
             let pending_operation = OperationId::from_bytes([80; 16]);
             let digest = blake3::hash(format!("{pending_operation}:pending-execution").as_bytes());
             let key = StreamKey::new(Bytes::copy_from_slice(digest.as_bytes()))?;
@@ -2384,7 +2395,8 @@ mod tests {
                         "wrong-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
-                            request_digest: [4; 32]
+                            request_digest: [4; 32],
+                            request: model_request.clone(),
                         }
                     )
                     .await
@@ -2397,7 +2409,8 @@ mod tests {
                         "absent-claim".into(),
                         ExecutionEvent::ModelStarted {
                             step: 1,
-                            request_digest: [3; 32]
+                            request_digest: [3; 32],
+                            request: model_request.clone(),
                         }
                     )
                     .await
@@ -2406,6 +2419,7 @@ mod tests {
             let start = ExecutionEvent::ModelStarted {
                 step: 0,
                 request_digest: [3; 32],
+                request: model_request.clone(),
             };
             assert!(
                 journal
@@ -2471,6 +2485,7 @@ mod tests {
                     ExecutionEvent::ModelStarted {
                         step: 0,
                         request_digest: [3; 32],
+                        request: model_request.clone(),
                     },
                 )
                 .await?;
@@ -2487,7 +2502,7 @@ mod tests {
                 adopted.replay(uncharged, 0, 64).await.is_err(),
                 "cold replay must reject a model start lacking its retained charge"
             );
-            (journal, pending)
+            (journal, pending, model_request)
         };
         host.claim_model_dispatch(task_id, attempt, 0, [3; 32], fence.clone())
             .await?;
@@ -2692,7 +2707,8 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
-                            request_digest: [3; 32]
+                            request_digest: [3; 32],
+                            request: model_request.clone(),
                         }
                     )
                     .await
@@ -2730,7 +2746,8 @@ mod tests {
                         "model".into(),
                         ExecutionEvent::ModelStarted {
                             step: 0,
-                            request_digest: [3; 32]
+                            request_digest: [3; 32],
+                            request: model_request.clone(),
                         }
                     )
                     .await

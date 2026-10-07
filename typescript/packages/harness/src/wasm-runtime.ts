@@ -11,7 +11,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "validateWireResume", "validateWireObserve", "validateWireCancel",
   "validateWireAdmission", "validateWireStatus", "validateWireCancellation",
   "validateToolDefinition", "validateToolInvocation", "validateToolResult",
-  "validateModelContent", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
+  "validateModelContent", "prepareModelRequest", "encodeModelPrefix", "validateModelMessages", "validateUserInput", "admitModelEvent", "selectModelContext",
   "validateModelContextSelection", "validateSelectedModelContext",
   "prepareConversationTurn",
   "validateConversationMessageId", "validateIdentity", "deriveOperationUuid", "batchMemberOperationId", "taskIdentityDigest",
@@ -41,7 +41,10 @@ export function assertHarnessWasmExports(value: unknown): void {
   const contentStore = typeof exports.WasmContentStore === "function"
     ? true
     : REQUIRED_WASM_CONTENT_EXPORTS.every(name => typeof exports[name] === "function");
-  if (!contentStore || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
+  const prefix = typeof exports.WasmReducer === "function"
+    ? typeof (exports.WasmReducer as { prototype: Record<string, unknown> }).prototype.prepareInheritedModelRequest === "function"
+    : typeof exports.wasmreducer_prepareInheritedModelRequest === "function";
+  if (!contentStore || !prefix || REQUIRED_HARNESS_WASM_EXPORTS.some(name => typeof exports[name] !== "function")) {
     throw new Error("harness WASM does not provide the required validators");
   }
 }

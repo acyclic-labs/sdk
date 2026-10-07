@@ -18,9 +18,11 @@ export const deriveOperationUuid: (a: number, b: number, c: number, d: number) =
 export const digestCanonicalJson: (a: any) => [number, number, number, number];
 export const encodeAttachmentManifest: (a: any) => [number, number, number, number];
 export const encodeCanonicalJson: (a: any) => [number, number, number, number];
+export const encodeModelPrefix: (a: number, b: number, c: any, d: number, e: number, f: any) => [number, number, number, number];
 export const fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
 export const forkSeedFromReport: (a: any) => [number, number, number];
 export const prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+export const prepareModelRequest: (a: any, b: any) => [number, number, number, number];
 export const selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
 export const taskAdmissionIdentities: (a: any) => [number, number, number];
 export const taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
@@ -74,6 +76,7 @@ export const wasmreducer_issueScopeForAgent: (a: number, b: number, c: number, d
 export const wasmreducer_issueScopeWithPolicies: (a: number, b: number, c: number, d: any) => [number, number, number];
 export const wasmreducer_issueScopeWithPoliciesForAgent: (a: number, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
 export const wasmreducer_new: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
+export const wasmreducer_prepareInheritedModelRequest: (a: number, b: any, c: any, d: any, e: any, f: any) => any;
 export const wasmreducer_protocolIdentity: (a: number) => [number, number, number];
 export const wasmreducer_restore: (a: any, b: number, c: number, d: number, e: number, f: any) => [number, number, number];
 export const wasmreducer_snapshot: (a: number) => [number, number, number];
@@ -93,6 +96,6 @@ export const __wbindgen_exn_store: (a: number) => void;
 export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;
 export const __wbindgen_destroy_closure: (a: number, b: number) => void;
-export const __externref_table_dealloc: (a: number) => void;
 export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __externref_table_dealloc: (a: number) => void;
 export const __wbindgen_start: () => void;

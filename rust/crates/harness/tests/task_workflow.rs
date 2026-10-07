@@ -17,7 +17,7 @@ use acyclic_harness::filesystem::{
 };
 use acyclic_harness::model::{
     FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
-    ModelProvider, ModelRequest,
+    ModelProvider, PreparedModelRequest,
 };
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
@@ -45,7 +45,7 @@ struct InterruptedModel {
 }
 
 impl ModelProvider for InterruptedModel {
-    fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, _: PreparedModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
         self.generated.fetch_add(1, Ordering::SeqCst);
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::Content {

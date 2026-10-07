@@ -174,7 +174,7 @@ pub trait ToolExecutor: Send + Sync {
 
 /// Replaceable mapping from tool results into model-visible context.
 pub trait ToolProjection: Send + Sync {
-    /// Projects an invocation/result pair without side effects.
+    /// Projects without side effects and preserves the definition's output schema.
     fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value>;
 }
 

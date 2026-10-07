@@ -3735,12 +3735,8 @@ impl TaskContext {
         Ok(context)
     }
 
-    async fn validate_model_messages(&self, messages: &[ModelMessage]) -> Result<()> {
-        if messages.is_empty() || messages.len() > self.scope.limits().context_messages {
-            return Err(Error::Invalid("model context count is invalid".into()));
-        }
+    async fn verify_model_files(&self, messages: &[ModelMessage]) -> Result<()> {
         for message in messages {
-            message.content.validate_limits(self.scope.limits())?;
             let parts = match &message.content {
                 ModelContent::Text(_) => continue,
                 ModelContent::Part(part) => std::slice::from_ref(part),
@@ -3813,7 +3809,7 @@ impl TaskContext {
                 "model output token bound must be positive".into(),
             ));
         }
-        self.validate_model_messages(&messages).await?;
+        self.verify_model_files(&messages).await?;
         let tools = self
             .harness
             .tools
@@ -3841,8 +3837,9 @@ impl TaskContext {
             model: binding.model.clone(),
             messages,
             tools,
-            max_output_tokens,
+            max_output_tokens: Some(max_output_tokens.unwrap_or(4_096)),
         };
+        let request = crate::model::PreparedModelRequest::prepare(request, self.scope.limits())?;
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
@@ -6422,8 +6419,9 @@ mod tests {
     impl ModelProvider for CompletedModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            request: crate::model::PreparedModelRequest,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = request.request().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(
                     "test model lock poisoned".into(),

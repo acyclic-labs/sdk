@@ -214,11 +214,14 @@ impl ToolProjection for NoopTool {
 struct CapturingModel(Mutex<Vec<ModelRequest>>);
 
 impl ModelProvider for CapturingModel {
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        request: acyclic_harness::model::PreparedModelRequest,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(request);
+            .push(request.request().clone());
         Box::pin(stream::iter(vec![Ok(ModelEvent::Completed {
             metadata: Value::Null,
         })]))
@@ -230,7 +233,10 @@ impl ModelProvider for CapturingModel {
 }
 
 impl ModelProvider for TextModel {
-    fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        _: acyclic_harness::model::PreparedModelRequest,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::iter(vec![
             Ok(ModelEvent::Content {
@@ -340,6 +346,14 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     assert_ne!(first_terminal?, second_terminal?);
     assert_eq!(journal_a.replay(operation, 0, 64).await?.len(), 3);
     let paged = OperationId::from_bytes([57; 16]);
+    let paged_request = journal_a
+        .stage(
+            paged,
+            "paged-request".into(),
+            b"null".to_vec(),
+            "application/json",
+        )
+        .await?;
     for step in 0..70 {
         journal_a
             .append(
@@ -348,6 +362,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 ExecutionEvent::ModelStarted {
                     step,
                     request_digest: [57; 32],
+                    request: paged_request.clone(),
                 },
             )
             .await?;
@@ -367,6 +382,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
             ExecutionEvent::ModelStarted {
                 step: 0,
                 request_digest: [57; 32],
+                request: paged_request.clone(),
             },
         )
         .await?;
@@ -382,7 +398,8 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
                 "paged-cas-70".into(),
                 ExecutionEvent::ModelStarted {
                     step: 70,
-                    request_digest: [57; 32]
+                    request_digest: [57; 32],
+                    request: paged_request.clone(),
                 },
             )
             .await?

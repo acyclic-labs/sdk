@@ -713,16 +713,24 @@ impl TurnJournal<'_> {
     async fn drain_calls(&mut self) -> Result<()> {
         while let Ok(call) = self.calls.try_recv() {
             match call {
-                ProxyCall::Started {
-                    step,
-                    request_digest,
-                } => {
+                ProxyCall::Started { step, request } => {
                     let step = self.offset.saturating_add(step);
+                    let request_digest = *blake3::hash(&request).as_bytes();
+                    let request = self
+                        .journal
+                        .stage(
+                            self.operation,
+                            format!("codex:{}:model:{step}:request", self.run),
+                            request,
+                            "application/json",
+                        )
+                        .await?;
                     self.append(
                         &format!("model:{step}:started"),
                         ExecutionEvent::ModelStarted {
                             step,
                             request_digest,
+                            request,
                         },
                     )
                     .await?;

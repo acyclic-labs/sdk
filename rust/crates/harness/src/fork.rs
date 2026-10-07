@@ -36,11 +36,14 @@ pub const MAX_FORK_INHERITED_MESSAGES: u64 = 16_384;
 type DirectManifestReads = BTreeSet<(String, AgentId)>;
 type ManifestMemberGrants = BTreeMap<String, BTreeMap<String, BTreeSet<AgentId>>>;
 
-/// Child-owned, ref-only exact prefix of the authoritative parent conversation.
-/// Its canonical bytes are bound to the parent reducer before fork publication.
+/// Child-owned pointer to one immutable revision of authoritative parent history.
+/// Publication binds its ordered history digest to the parent reducer; no
+/// message list or attachment bodies are copied into the child volume.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InheritedConversationPrefix {
+    /// Version of this direct-parent reference contract.
+    pub format_version: u32,
     /// Parent conversation from which this prefix was selected.
     pub parent: Authority,
     /// Exact parent revision observed during selection.
@@ -49,14 +52,15 @@ pub struct InheritedConversationPrefix {
     pub parent_agent: AgentId,
     /// Inclusive final sequence selected for inheritance.
     pub through_sequence: u64,
-    /// Additional agents explicitly granted child reference access.
+    /// Readers bound to this preparation retry identity; grants live in the seed.
     pub attached_agents: Vec<AgentId>,
-    /// Ordered ref-only messages in the selected prefix.
-    pub messages: Vec<ConversationMessage>,
+    /// Digest of the ordered messages at this exact parent revision.
+    pub message_digest: [u8; 32],
 }
 
 impl InheritedConversationPrefix {
-    /// Selects one contiguous parent prefix without copying any attachment bodies.
+    /// Binds one contiguous parent prefix without retaining its message list.
+    /// Reader grants remain in the authoritative fork seed.
     pub fn select(
         parent: Authority,
         parent_revision: u64,
@@ -88,16 +92,17 @@ impl InheritedConversationPrefix {
                 "inherited attached agents are invalid".into(),
             ));
         }
+        let selected = messages
+            .get(..count)
+            .ok_or_else(|| Error::Invalid("inherited prefix exceeds parent history".into()))?;
         Ok(Self {
+            format_version: 2,
             parent,
             parent_revision,
             parent_agent,
             through_sequence,
             attached_agents: attached_agents.to_vec(),
-            messages: messages
-                .get(..count)
-                .ok_or_else(|| Error::Invalid("inherited prefix exceeds parent history".into()))?
-                .to_vec(),
+            message_digest: crate::contract::canonical_json_digest(&selected)?,
         })
     }
 
