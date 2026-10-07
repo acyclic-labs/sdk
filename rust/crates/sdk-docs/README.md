@@ -32,6 +32,21 @@ then returns `DocsData`. Call `write_bundle` to persist the data file, generated
 schema, and guarded release or preview version index. Published release data
 files are immutable; the index is validated and replaced atomically.
 
+The publication root contains `sdk-docs-versions.v1.json` and its
+`sdk-docs-versions.v1.schema.json`. The index's `latest` entry is always the
+stable release with the greatest SemVer; `releases` contains the stable
+release entries, and `preview` is one independent optional preview entry.
+Resolve each entry's `dataFile` relative to the index root rather than
+reconstructing a path from an untrusted version string. Release data is stored
+under `releases/<version>/sdk-docs-data.v1.json`; preview data is stored under
+`preview/<version>/sdk-docs-data.v1.json`. Each version directory also contains
+its `sdk-docs-data.v1.schema.json`.
+
+The selected data file contains its own `version`, `channel`, `source`,
+`navigation`, and `families`. The `version`, `channel`, and
+`source.revision` must agree with the selected index entry, and `navigation`
+describes that file's families.
+
 `write_bundle` serializes publication with the persistent
 `.sdk-docs-versions.v1.lock` file in the output directory. Concurrent
 publishers may target the same output directory; each publisher holds this
