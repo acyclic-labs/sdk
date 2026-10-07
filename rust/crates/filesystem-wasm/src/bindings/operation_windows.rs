@@ -10,6 +10,7 @@ use acyclic_fs::{
 #[wasm_bindgen]
 pub struct BrowserOperationWindowCoordinator {
     inner: OperationWindowCoordinator<IndexedDbAuthorityStore>,
+    owner: BrowserEngine,
 }
 
 #[derive(Deserialize, Serialize, Tsify)]
@@ -164,7 +165,10 @@ impl BrowserFs {
                 ));
             }
         };
-        Ok(BrowserOperationWindowCoordinator { inner })
+        Ok(BrowserOperationWindowCoordinator {
+            inner,
+            owner: self.engine.as_ref().ok_or_else(closed_error)?.clone(),
+        })
     }
 }
 
@@ -305,6 +309,7 @@ impl BrowserOperationWindowCoordinator {
         now_millis: u64,
         options: Ts<BrowserOperationReconcileOptions>,
     ) -> Result<Ts<BrowserWorkspaceOperationClose>, JsValue> {
+        self.require_workspace(workspace)?;
         let lease = lease.to_rust().map_err(js_error)?.decode()?;
         let limits = options.to_rust().map_err(js_error)?.into();
         macro_rules! finish {
@@ -348,6 +353,7 @@ impl BrowserOperationWindowCoordinator {
         now_millis: u64,
         options: Ts<BrowserOperationReconcileOptions>,
     ) -> Result<Option<Ts<BrowserWorkspaceRebaseResult>>, JsValue> {
+        self.require_workspace(workspace)?;
         let limits = options.to_rust().map_err(js_error)?.into();
         Ok(match &workspace.engine {
             BrowserWorkspaceEngine::IndexedDb(value) => self
@@ -372,5 +378,24 @@ impl BrowserOperationWindowCoordinator {
                 ));
             }
         })
+    }
+}
+
+impl BrowserOperationWindowCoordinator {
+    fn require_workspace(&self, workspace: &BrowserWorkspace) -> Result<(), JsValue> {
+        let owned = match (&self.owner, &workspace.engine) {
+            (BrowserEngine::IndexedDb(fs), BrowserWorkspaceEngine::IndexedDb(value)) => {
+                fs.owns_workspace(value)
+            }
+            (BrowserEngine::IndexedDbOpfs(fs), BrowserWorkspaceEngine::IndexedDbOpfs(value)) => {
+                fs.owns_workspace(value)
+            }
+            _ => false,
+        };
+        if owned {
+            Ok(())
+        } else {
+            Err(js_error("workspace belongs to another browser filesystem"))
+        }
     }
 }

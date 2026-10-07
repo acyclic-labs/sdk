@@ -43,6 +43,7 @@ if (actor !== null) {
   };
   channel.postMessage({ ready: actor });
 } else {
+  const { adaptWasmFs, adaptWasmOperationWindows } = await import("../dist/wasm-adapter.js");
   const result = document.querySelector("#result");
   const workspace = await fs.createWorkspace("main");
   const windows = fs.operationWindows();
@@ -150,6 +151,40 @@ if (actor !== null) {
       assert((await windows.finishWorkspace(workspace, mainLease, BigInt(Date.now()), limits)).kind === "reconciled", "final close did not reconcile expired and live leases");
       assert((await windows.inspect(workspace.id)).kind === "idle", "reconciliation did not restore idle authority");
       assert(await windows.recoverWorkspace(workspace, BigInt(Date.now()), limits) === undefined, "idle recovery reran reconciliation");
+
+      // Equal workspace IDs never grant access to another database's workspace.
+      const foreignFs = await openBrowserFs({ ...options, databaseName: `${databaseName}-foreign` });
+      try {
+        const foreign = await foreignFs.createWorkspace("main");
+        assert(equal(foreign.id, workspace.id), "ownership control requires equal workspace IDs");
+        const publicFs = adaptWasmFs(fs);
+        const publicWorkspace = await publicFs.openWorkspace("main");
+        const publicForeign = await adaptWasmFs(foreignFs).openWorkspace("main");
+        const publicWindows = adaptWasmOperationWindows(publicFs);
+        const ownedLease = await windows.begin(workspace.id, await workspace.head(), "ownership", BigInt(Date.now()), expiry);
+        for (const [coordinator, other] of [[windows, foreign], [publicWindows, publicForeign]]) {
+          for (const action of [
+            () => coordinator.finishWorkspace(other, ownedLease, BigInt(Date.now()), limits),
+            () => coordinator.recoverWorkspace(other, expiry + 1n, limits),
+          ]) {
+            let rejected = false;
+            try { await action(); } catch (error) { rejected = String(error).includes("another browser filesystem"); }
+            assert(rejected, "foreign workspace crossed the exact filesystem ownership boundary");
+            assert((await windows.inspect(workspace.id)).kind === "active", "foreign reconciliation changed the live lease");
+          }
+        }
+        await windows.finish(ownedLease, BigInt(Date.now()));
+        const ticket = await windows.inspect(workspace.id);
+        assert(ticket.kind === "reconciling", "ownership test did not retain a recovery ticket");
+        let rejected = false;
+        try { await publicWindows.recoverWorkspace(publicForeign, BigInt(Date.now()), limits); }
+        catch (error) { rejected = String(error).includes("another browser filesystem"); }
+        const retained = await windows.inspect(workspace.id);
+        assert(rejected && retained.kind === "reconciling" && equal(ticket.ticket, retained.ticket), "foreign recovery consumed the owning database's ticket");
+        await publicWindows.recoverWorkspace(publicWorkspace, BigInt(Date.now()), limits);
+        assert((await windows.inspect(workspace.id)).kind === "idle", "owning workspace could not recover its ticket");
+        foreign.free();
+      } finally { foreignFs.close(); }
     } finally { reopened.close(); }
     result.dataset.status = "passed";
     result.dataset.waiting = "";
