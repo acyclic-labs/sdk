@@ -18,7 +18,13 @@
     "mirror": "/tmp/actors-fcd-proof-20261007",
     "tool": "Kani Rust Verifier 0.68.0; CBMC 6.11.0; nightly-2026-08-21; CaDiCaL 3.0.0",
     "execution": "Linux WSL2 ext4 task-local mirror, CARGO_NET_OFFLINE=true, RUSTC_WRAPPER=, --jobs 1",
-    "source_binding": "mirror hashes above equal Windows candidate file hashes immediately before runs"
+    "source_binding": "mirror hashes above equal Windows candidate file hashes immediately before runs",
+    "commands": [
+      "cd /tmp/actors-fcd-proof-20261007 && RUSTC_WRAPPER= CARGO_NET_OFFLINE=true /tmp/cargo-kani-068 --package acyclic-actors --harness positive_u64_constructor_accepts_exactly_nonzero_values --jobs 1",
+      "cd /tmp/actors-fcd-proof-20261007 && RUSTC_WRAPPER= CARGO_NET_OFFLINE=true /tmp/cargo-kani-068 --package acyclic-actors --harness actor_limits_constructor_accepts_exactly_positive_values --jobs 1",
+      "cd /tmp/actors-fcd-proof-20261007 && RUSTC_WRAPPER= CARGO_NET_OFFLINE=true /tmp/cargo-kani-068 --package acyclic-actors --harness enum_numeric_mappings_are_inverse_and_lossless --jobs 1"
+    ],
+    "observed_source_inventory": "Windows worktree and task-local WSL mirror were hash-compared immediately before these runs; all listed source hashes match."
   },
   "theorems": [
     {
