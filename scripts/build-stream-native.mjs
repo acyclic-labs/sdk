@@ -12,7 +12,7 @@ const packageRelative = "typescript/packages/stream/package.json";
 const defaultOutput = resolve(root, "typescript/packages/stream/generated/native");
 const nativeTargetsSchema = "acyclic.stream.native-targets.v1";
 const generationSchema = "acyclic.stream.native-generation.v1";
-const buildInputsSchema = "acyclic.stream.native-build-inputs.v1";
+const buildInputsSchema = "acyclic.stream.native-build-inputs.v2";
 const generationManifestName = "generation-manifest.json";
 const require = createRequire(import.meta.url);
 const sourceRoots = [
@@ -160,8 +160,8 @@ function versionIdentity(command, args) {
   return identity;
 }
 
-function envValue(name) {
-  return Object.prototype.hasOwnProperty.call(process.env, name) ? process.env[name] : null;
+function envValue(name, environment = process.env) {
+  return Object.prototype.hasOwnProperty.call(environment, name) ? environment[name] : null;
 }
 
 function targetEnvName(target, suffix) {
@@ -173,11 +173,11 @@ function executableIdentity(command) {
   return optionalCommandIdentity("where.exe", [command]);
 }
 
-function linkerInputs(target) {
+export function linkerInputs(target, environment = process.env) {
   const targetLinkerName = targetEnvName(target, "LINKER");
   const configured = {
-    target: envValue(targetLinkerName),
-    rustc: envValue("RUSTC_LINKER"),
+    target: envValue(targetLinkerName, environment),
+    rustc: null,
   };
   const linkerCommand = configured.target ?? configured.rustc;
   const defaultCommand = linkerCommand === null
@@ -187,17 +187,23 @@ function linkerInputs(target) {
   return {
     configured,
     environment: {
-      LINK: envValue("LINK"),
-      CC: envValue("CC"),
-      AR: envValue("AR"),
-      VCINSTALLDIR: envValue("VCINSTALLDIR"),
-      VCToolsInstallDir: envValue("VCToolsInstallDir"),
-      WindowsSdkDir: envValue("WindowsSdkDir"),
-      VisualStudioVersion: envValue("VisualStudioVersion"),
+      LINK: envValue("LINK", environment),
+      CC: envValue("CC", environment),
+      AR: envValue("AR", environment),
+      RUSTC_LINKER: envValue("RUSTC_LINKER", environment),
+      VCINSTALLDIR: envValue("VCINSTALLDIR", environment),
+      VCToolsInstallDir: envValue("VCToolsInstallDir", environment),
+      WindowsSdkDir: envValue("WindowsSdkDir", environment),
+      VisualStudioVersion: envValue("VisualStudioVersion", environment),
     },
-    command,
-    path: command === null ? null : executableIdentity(command),
-    version: command === null ? null : versionIdentity(command, command.toLowerCase().includes("lld-link") ? ["--version"] : target.endsWith("-msvc") ? ["/?"] : ["--version"]),
+    // Cargo can still select a linker from inherited config or rustflags. Keep
+    // this executable probe explicitly observational until the build records
+    // the rustc invocation that Cargo actually ran.
+    observed: {
+      command,
+      path: command === null ? null : executableIdentity(command),
+      version: command === null ? null : versionIdentity(command, command.toLowerCase().includes("lld-link") ? ["--version"] : target.endsWith("-msvc") ? ["/?"] : ["--version"]),
+    },
   };
 }
 
@@ -238,6 +244,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
   const maintainedBun = await maintainedBunVersion();
   const bunIdentity = optionalCommandIdentity("bun", ["--version"]);
   if (bunIdentity !== null && bunIdentity.output !== maintainedBun) throw new Error(`loaded Bun ${bunIdentity.output} does not match maintained version ${maintainedBun}`);
+  const configBytes = await readFile(resolve(root, ".cargo/config.toml"));
   return {
     schema: buildInputsSchema,
     target,
@@ -277,7 +284,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
       cargo_incremental: envValue("CARGO_INCREMENTAL"),
       release_incremental: envValue("CARGO_PROFILE_RELEASE_INCREMENTAL"),
       manifest_sha256: digest(await readFile(resolve(root, "Cargo.toml"))),
-      config_sha256: digest(await readFile(resolve(root, ".cargo/config.toml"))),
+      config_sha256: digest(configBytes),
     },
     environment: {
       RUSTFLAGS: envValue("RUSTFLAGS"),
@@ -354,9 +361,10 @@ export function assertBuildInputs(value) {
     if (value.linker[section] === null || typeof value.linker[section] !== "object") throw new Error(`native build linker ${section} inputs are missing`);
     for (const item of Object.values(value.linker[section])) if (item !== null && typeof item !== "string") throw new Error("native build linker environment input is invalid");
   }
-  if (value.linker.command !== null && typeof value.linker.command !== "string") throw new Error("native build linker command is invalid");
+  if (value.linker.observed === null || typeof value.linker.observed !== "object") throw new Error("native build linker observation is missing");
+  if (value.linker.observed.command !== null && typeof value.linker.observed.command !== "string") throw new Error("native build linker observed command is invalid");
   for (const field of ["path", "version"]) {
-    if (value.linker[field] !== null && (typeof value.linker[field] !== "object" || typeof value.linker[field].output !== "string")) throw new Error(`native build linker ${field} identity is invalid`);
+    if (value.linker.observed[field] !== null && (typeof value.linker.observed[field] !== "object" || typeof value.linker.observed[field].output !== "string")) throw new Error(`native build linker observed ${field} identity is invalid`);
   }
   return value;
 }
@@ -475,9 +483,6 @@ async function build(options) {
   const source = await sourceSnapshot();
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
   const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
-  if (options.target.endsWith("-msvc") && (attestedInputs.linker.path === null || attestedInputs.linker.version === null)) {
-    throw new Error("MSVC native build requires a discovered linker path and version");
-  }
   const rootManifest = await rootPackageJson();
   const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
   if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {

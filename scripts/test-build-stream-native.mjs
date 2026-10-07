@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, sourceSnapshot } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, linkerInputs, sourceSnapshot } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -46,7 +46,7 @@ test("native staging rejects stale package files", async () => {
 
 function validBuildInputs() {
   return {
-    schema: "acyclic.stream.native-build-inputs.v1",
+    schema: "acyclic.stream.native-build-inputs.v2",
     target: "x86_64-pc-windows-msvc",
     target_dir: "C:/runner/_work/target-stream-native",
     runtime: { node: "v24.0.0", node_path: "C:/Program Files/nodejs/node.exe", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: { command: "bun", args: ["--version"], output: "1.4.2" } } },
@@ -75,9 +75,11 @@ function validBuildInputs() {
     linker: {
       configured: { target: null, rustc: null },
       environment: { LINK: null, CC: null, AR: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
-      command: "link.exe",
-      path: { command: "where.exe", args: ["link.exe"], output: "C:/Program Files/MSVC/link.exe" },
-      version: { command: "link.exe", args: ["/?"], output: "Microsoft (R) Incremental Linker Version 14.42" },
+      observed: {
+        command: "link.exe",
+        path: { command: "where.exe", args: ["link.exe"], output: "C:/Program Files/MSVC/link.exe" },
+        version: { command: "link.exe", args: ["/?"], output: "Microsoft (R) Incremental Linker Version 14.42" },
+      },
     },
     profile: {
       name: "release",
@@ -112,7 +114,7 @@ test("native qualification rejects build input identity mutations", () => {
     ["generator options", value => { value.generator.options.output_dir = "C:/runner/_work/other-bundle"; }, /build input attestation differs/],
     ["bun", value => { value.runtime.bun.maintained = "1.4.1"; }, /build input attestation differs/],
     ["invocation", value => { value.invocation.script = "scripts/other-build.mjs"; }, /build input attestation differs/],
-    ["linker", value => { value.linker.version.output = "Microsoft (R) Incremental Linker Version 14.43"; }, /build input attestation differs/],
+    ["linker", value => { value.linker.observed.version.output = "Microsoft (R) Incremental Linker Version 14.43"; }, /build input attestation differs/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
     ["cache", value => { value.cache.wrapper = 42; }, /native build cache input wrapper is invalid/],
@@ -122,4 +124,17 @@ test("native qualification rejects build input identity mutations", () => {
     if (["compiler", "generator", "generator options", "bun", "invocation", "linker", "environment"].includes(label)) assert.throws(() => assertMatchingBuildInputs(valid, mutated), expected);
     else assert.throws(() => assertBuildInputs(mutated), expected);
   }
+
+  const ambientRustcLinker = linkerInputs("x86_64-pc-windows-msvc", { RUSTC_LINKER: "C:/fake/lld-link.exe" });
+  assert.equal(ambientRustcLinker.configured.rustc, null);
+  assert.equal(ambientRustcLinker.observed.command, "link.exe");
+  assert.equal(ambientRustcLinker.environment.RUSTC_LINKER, "C:/fake/lld-link.exe");
+
+  const configuredTargetLinker = linkerInputs("x86_64-pc-windows-msvc", {
+    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: "C:/configured/link.exe",
+    RUSTC_LINKER: "C:/ambient/lld-link.exe",
+  });
+  assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
+  assert.equal(configuredTargetLinker.configured.rustc, null);
+  assert.equal(configuredTargetLinker.observed.command, "C:/configured/link.exe");
 });
