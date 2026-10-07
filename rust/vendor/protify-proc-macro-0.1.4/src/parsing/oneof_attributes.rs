@@ -4,6 +4,8 @@ use crate::*;
 pub struct OneofAttrs {
 	pub options: TokensOr<TokenStream2>,
 	pub from_proto: Option<PathOrClosure>,
+	/// Validation applied to the fully converted semantic value on wire ingress.
+	pub post_from_proto: Option<PathOrClosure>,
 	pub into_proto: Option<PathOrClosure>,
 	pub forwarded_derives: Vec<Path>,
 	pub forwarded_attrs: Vec<Meta>,
@@ -53,6 +55,7 @@ pub fn process_oneof_attrs(
 ) -> Result<OneofAttrs, Error> {
 	let mut options = TokenStreamOr::new(|_| quote! { [] });
 	let mut from_proto: Option<PathOrClosure> = None;
+	let mut post_from_proto: Option<PathOrClosure> = None;
 	let mut into_proto: Option<PathOrClosure> = None;
 	let mut forwarded_derives: Vec<Path> = Vec::new();
 	let mut auto_tests = AutoTests::default();
@@ -82,6 +85,9 @@ pub fn process_oneof_attrs(
 			"from_proto" => {
 				from_proto = Some(meta.expr_value()?.as_path_or_closure()?);
 			}
+			"post_from_proto" => {
+				post_from_proto = Some(meta.expr_value()?.as_path_or_closure()?);
+			}
 			"into_proto" => {
 				into_proto = Some(meta.expr_value()?.as_path_or_closure()?);
 			}
@@ -103,6 +109,7 @@ pub fn process_oneof_attrs(
 	Ok(OneofAttrs {
 		options,
 		from_proto,
+		post_from_proto,
 		into_proto,
 		forwarded_derives,
 		is_proxied: macro_attrs.is_proxied,
