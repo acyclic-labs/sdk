@@ -3296,7 +3296,7 @@ function __wbg_get_imports() {
         __wbg_getRandomValues_3f44b700395062e5: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
-        __wbg_getRandomValues_696b3d8d7a0bb3f9: function() { return handleError(function (arg0, arg1) {
+        __wbg_getRandomValues_85bb9ec093ba4400: function() { return handleError(function (arg0, arg1) {
             globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
         }, arguments); },
         __wbg_get_4848e350b40afc16: function(arg0, arg1) {
@@ -3561,7 +3561,7 @@ function __wbg_get_imports() {
             const ret = arg0.next();
             return ret;
         }, arguments); },
-        __wbg_now_5b0efd3371c42a23: function() { return handleError(function () {
+        __wbg_now_2ef92f9e3342b41f: function() { return handleError(function () {
             const ret = Date.now();
             return ret;
         }, arguments); },

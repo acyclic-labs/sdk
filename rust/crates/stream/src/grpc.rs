@@ -1361,9 +1361,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
-        let error = match Client::connect_eager(endpoint, "\r\n").await {
-            Ok(_) => return Err("malformed bearer unexpectedly connected".into()),
-            Err(error) => error,
+        let Err(error) = Client::connect_eager(endpoint, "\r\n").await else {
+            return Err("malformed bearer unexpectedly connected".into());
         };
         assert!(matches!(error, ConnectError::InvalidCredential));
         assert!(
