@@ -173,12 +173,13 @@ export class BrowserCheckout {
      * Returns a JavaScript error for malformed operation identity, clean
      * or read-only checkout, closure failure, cancellation, or bounded work.
      * @param {Uint8Array} operation_id
+     * @param {BrowserOperationWindowLease | undefined} lease
      * @returns {Promise<BrowserCommitResult>}
      */
-    commit(operation_id) {
+    commit(operation_id, lease) {
         const ptr0 = passArray8ToWasm0(operation_id, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
-        const ret = wasm.browsercheckout_commit(this.__wbg_ptr, ptr0, len0);
+        const ret = wasm.browsercheckout_commit(this.__wbg_ptr, ptr0, len0, isLikeNone(lease) ? 0 : addToExternrefTable0(lease));
         return ret;
     }
     /**
@@ -1332,6 +1333,17 @@ export class BrowserFs {
         return ret;
     }
     /**
+     * Opens a coordinator on the exact persistent authority; construction acquires no lease.
+     * @returns {BrowserOperationWindowCoordinator}
+     */
+    operationWindows() {
+        const ret = wasm.browserfs_operationWindows(this.__wbg_ptr);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return BrowserOperationWindowCoordinator.__wrap(ret[0]);
+    }
+    /**
      * Restores authority only after authenticating a complete imported closure.
      *
      * # Errors
@@ -1662,6 +1674,123 @@ export class BrowserJoinPlan {
     }
 }
 if (Symbol.dispose) BrowserJoinPlan.prototype[Symbol.dispose] = BrowserJoinPlan.prototype.free;
+
+/**
+ * Durable leases sharing the filesystem's exact `IndexedDB` authority.
+ */
+export class BrowserOperationWindowCoordinator {
+    static __wrap(ptr) {
+        ptr = ptr >>> 0;
+        const obj = Object.create(BrowserOperationWindowCoordinator.prototype);
+        obj.__wbg_ptr = ptr;
+        BrowserOperationWindowCoordinatorFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        BrowserOperationWindowCoordinatorFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_browseroperationwindowcoordinator_free(ptr, 0);
+    }
+    /**
+     * Opens an overlapping lease through the shared Rust transition.
+     * @param {Uint8Array} workspace_id
+     * @param {Uint8Array} parent
+     * @param {string} owner
+     * @param {bigint} now_millis
+     * @param {bigint} expires_at_millis
+     * @param {Uint8Array | null} [lease_id]
+     * @returns {Promise<BrowserOperationWindowLease>}
+     */
+    begin(workspace_id, parent, owner, now_millis, expires_at_millis, lease_id) {
+        const ptr0 = passArray8ToWasm0(workspace_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(parent, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(owner, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        var ptr3 = isLikeNone(lease_id) ? 0 : passArray8ToWasm0(lease_id, wasm.__wbindgen_malloc);
+        var len3 = WASM_VECTOR_LEN;
+        const ret = wasm.browseroperationwindowcoordinator_begin(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, now_millis, expires_at_millis, ptr3, len3);
+        return ret;
+    }
+    /**
+     * Closes a lease; the final closer owns reconciliation.
+     * @param {BrowserOperationWindowLease} lease
+     * @param {bigint} now_millis
+     * @returns {Promise<BrowserOperationWindowClose>}
+     */
+    finish(lease, now_millis) {
+        const ret = wasm.browseroperationwindowcoordinator_finish(this.__wbg_ptr, lease, now_millis);
+        return ret;
+    }
+    /**
+     * Closes and completes deferred workspace reconciliation through the existing coordinator.
+     * @param {BrowserWorkspace} workspace
+     * @param {BrowserOperationWindowLease} lease
+     * @param {bigint} now_millis
+     * @param {BrowserOperationReconcileOptions} options
+     * @returns {Promise<BrowserWorkspaceOperationClose>}
+     */
+    finishWorkspace(workspace, lease, now_millis, options) {
+        _assertClass(workspace, BrowserWorkspace);
+        const ret = wasm.browseroperationwindowcoordinator_finishWorkspace(this.__wbg_ptr, workspace.__wbg_ptr, lease, now_millis, options);
+        return ret;
+    }
+    /**
+     * Inspects the current durable phase without acquiring authority.
+     * @param {Uint8Array} workspace_id
+     * @returns {Promise<BrowserOperationWindowPhase>}
+     */
+    inspect(workspace_id) {
+        const ptr0 = passArray8ToWasm0(workspace_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.browseroperationwindowcoordinator_inspect(this.__wbg_ptr, ptr0, len0);
+        return ret;
+    }
+    /**
+     * Coalesces an authenticated parent advance.
+     * @param {Uint8Array} workspace_id
+     * @param {Uint8Array} parent
+     * @returns {Promise<boolean>}
+     */
+    observeParent(workspace_id, parent) {
+        const ptr0 = passArray8ToWasm0(workspace_id, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(parent, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ret = wasm.browseroperationwindowcoordinator_observeParent(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        return ret;
+    }
+    /**
+     * Recovers expired leases and interrupted reconciliation without rerunning external effects.
+     * @param {BrowserWorkspace} workspace
+     * @param {bigint} now_millis
+     * @param {BrowserOperationReconcileOptions} options
+     * @returns {Promise<BrowserWorkspaceRebaseResult | undefined>}
+     */
+    recoverWorkspace(workspace, now_millis, options) {
+        _assertClass(workspace, BrowserWorkspace);
+        const ret = wasm.browseroperationwindowcoordinator_recoverWorkspace(this.__wbg_ptr, workspace.__wbg_ptr, now_millis, options);
+        return ret;
+    }
+    /**
+     * Extends the exact live lease; its previous publication permit is fenced.
+     * @param {BrowserOperationWindowLease} lease
+     * @param {bigint} now_millis
+     * @param {bigint} expires_at_millis
+     * @returns {Promise<BrowserOperationWindowLease>}
+     */
+    renew(lease, now_millis, expires_at_millis) {
+        const ret = wasm.browseroperationwindowcoordinator_renew(this.__wbg_ptr, lease, now_millis, expires_at_millis);
+        return ret;
+    }
+}
+if (Symbol.dispose) BrowserOperationWindowCoordinator.prototype[Symbol.dispose] = BrowserOperationWindowCoordinator.prototype.free;
 
 /**
  * One immutable file resolved against a pinned checkout generation.
@@ -2000,10 +2129,11 @@ export class BrowserTransaction {
     }
     /**
      * Publishes the complete candidate through one idempotent head CAS.
+     * @param {BrowserOperationWindowLease | undefined} lease
      * @returns {Promise<any>}
      */
-    commit() {
-        const ret = wasm.browsertransaction_commit(this.__wbg_ptr);
+    commit(lease) {
+        const ret = wasm.browsertransaction_commit(this.__wbg_ptr, isLikeNone(lease) ? 0 : addToExternrefTable0(lease));
         return ret;
     }
     /**
@@ -3319,20 +3449,20 @@ function __wbg_get_imports() {
             const ret = result;
             return ret;
         },
-        __wbg_instanceof_Uint8Array_4b8da683deb25d72: function(arg0) {
+        __wbg_instanceof_StorageManager_42415de996a16207: function(arg0) {
             let result;
             try {
-                result = arg0 instanceof Uint8Array;
+                result = arg0 instanceof StorageManager;
             } catch (_) {
                 result = false;
             }
             const ret = result;
             return ret;
         },
-        __wbg_instanceof_Window_c0fee4c064502536: function(arg0) {
+        __wbg_instanceof_Uint8Array_4b8da683deb25d72: function(arg0) {
             let result;
             try {
-                result = arg0 instanceof Window;
+                result = arg0 instanceof Uint8Array;
             } catch (_) {
                 result = false;
             }
@@ -3380,10 +3510,6 @@ function __wbg_get_imports() {
             const len1 = WASM_VECTOR_LEN;
             getDataViewMemory0().setInt32(arg0 + 4 * 1, len1, true);
             getDataViewMemory0().setInt32(arg0 + 4 * 0, ptr1, true);
-        },
-        __wbg_navigator_9b09ea705d03d227: function(arg0) {
-            const ret = arg0.navigator;
-            return ret;
         },
         __wbg_new_4f9fafbb3909af72: function() {
             const ret = new Object();
@@ -3542,10 +3668,6 @@ function __wbg_get_imports() {
             const ret = typeof window === 'undefined' ? null : window;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
         },
-        __wbg_storage_8f8e63186ec77353: function(arg0) {
-            const ret = arg0.storage;
-            return ret;
-        },
         __wbg_target_732d56b173b7e87c: function(arg0) {
             const ret = arg0.target;
             return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
@@ -3595,22 +3717,22 @@ function __wbg_get_imports() {
             return ret;
         }, arguments); },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 978, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 1022, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___wasm_bindgen_2db2d17d2c533688___JsValue__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsError___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 815, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 863, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_Event__Event______true_);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 23, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("IDBVersionChangeEvent")], shim_idx: 24, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke___web_sys_9d8a003a502ed1ff___features__gen_IdbVersionChangeEvent__IdbVersionChangeEvent__core_ed718c3d60ebd546___result__Result_____wasm_bindgen_2db2d17d2c533688___JsValue___true_);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 814, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 862, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_2db2d17d2c533688___convert__closures_____invoke_______true_);
             return ret;
         },
@@ -3711,6 +3833,9 @@ const BrowserGitCompatRepositoryFinalization = (typeof FinalizationRegistry === 
 const BrowserJoinPlanFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserjoinplan_free(ptr >>> 0, 1));
+const BrowserOperationWindowCoordinatorFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_browseroperationwindowcoordinator_free(ptr >>> 0, 1));
 const BrowserResolvedFileFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_browserresolvedfile_free(ptr >>> 0, 1));
