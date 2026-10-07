@@ -150,19 +150,19 @@
   },
   "generated_python": [
     {
-      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/src/acyclic_actors_uniffi/acyclic_actors.py",
+      "path": "Q:\\sdk\\work\\python-actors-actual03bb-generated\\acyclic_actors.py",
       "sha256": "d8bd547ec8478fc1c4d34baf101526819636f1e5abeddc827fbb8bd5cdc27412",
       "bytes": 88560
     },
     {
-      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/src/acyclic_actors_uniffi/acyclic_actors_uniffi.py",
+      "path": "Q:\\sdk\\work\\python-actors-actual03bb-generated\\acyclic_actors_uniffi.py",
       "sha256": "c04f3f0a19b57abc900d8c647e59ab121e75549f8c79a3ede78f1e4be640d73e",
       "bytes": 73896
     }
   ],
   "wheel": {
-    "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15.0_arm64.whl",
-    "sha256": "f917222d2ba982a935c55e04fa838b863e0e555f139fac6f9d0a57955b8c9693",
+    "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+    "sha256": "17af5cf87763f3fade82bf783848c8d4fa5a87065dedee379bcdd98ba4a2f48f",
     "bytes": 2011519
   },
   "uniffi_bindgen": "0.31.0",
@@ -172,8 +172,8 @@
   "platform": "macos-ivar-arm64",
   "artifacts": {
     "wheel": {
-      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15.0_arm64.whl",
-      "sha256": "f917222d2ba982a935c55e04fa838b863e0e555f139fac6f9d0a57955b8c9693",
+      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+      "sha256": "17af5cf87763f3fade82bf783848c8d4fa5a87065dedee379bcdd98ba4a2f48f",
       "bytes": 2011519
     }
   }

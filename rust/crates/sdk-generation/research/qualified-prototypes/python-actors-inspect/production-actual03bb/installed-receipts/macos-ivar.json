@@ -12,6 +12,7 @@
     "invoke"
   ],
   "checks": [
+    "installed-wheel",
     "remote",
     "service_error",
     "pre-cancelled",
@@ -26,10 +27,18 @@
     "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
     "python_patch_sha256": "ba9a79b23d3a32b3468507b6dbb8c6e740c172dec2a8724647be353fbc674920"
   },
+  "installation": {
+    "package_root": "/private/tmp/python-actors-mac-venv-actual03bb/lib/python3.14/site-packages/acyclic_actors_uniffi",
+    "module": {
+      "path": "/private/tmp/python-actors-mac-venv-actual03bb/lib/python3.14/site-packages/acyclic_actors_uniffi/acyclic_actors_uniffi.py",
+      "sha256": "c04f3f0a19b57abc900d8c647e59ab121e75549f8c79a3ede78f1e4be640d73e",
+      "bytes": 73896
+    }
+  },
   "artifacts": {
     "wheel": {
-      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15.0_arm64.whl",
-      "sha256": "f917222d2ba982a935c55e04fa838b863e0e555f139fac6f9d0a57955b8c9693",
+      "path": "/tmp/actors-uniffi-python-production-actual03bb-mac-20261007/dist/acyclic_actors_uniffi-0.2.0-py3-none-macosx_15_0_arm64.whl",
+      "sha256": "17af5cf87763f3fade82bf783848c8d4fa5a87065dedee379bcdd98ba4a2f48f",
       "bytes": 2011519
     }
   }

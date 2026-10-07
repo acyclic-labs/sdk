@@ -12,6 +12,7 @@
     "invoke"
   ],
   "checks": [
+    "installed-wheel",
     "remote",
     "service_error",
     "pre-cancelled",
@@ -25,6 +26,14 @@
     "uniffi_bindgen": "0.31.0",
     "uniffi_source_sha256": "4ED0150801958D4825DA56A41C71F000A457AC3A4613FA9647DF78AC4B6B6881",
     "python_patch_sha256": "ba9a79b23d3a32b3468507b6dbb8c6e740c172dec2a8724647be353fbc674920"
+  },
+  "installation": {
+    "package_root": "Q:\\sdk\\work\\python-actors-win-venv-rerun3\\Lib\\site-packages\\acyclic_actors_uniffi",
+    "module": {
+      "path": "Q:\\sdk\\work\\python-actors-win-venv-rerun3\\Lib\\site-packages\\acyclic_actors_uniffi\\acyclic_actors_uniffi.py",
+      "sha256": "c04f3f0a19b57abc900d8c647e59ab121e75549f8c79a3ede78f1e4be640d73e",
+      "bytes": 73896
+    }
   },
   "artifacts": {
     "wheel": {

@@ -175,3 +175,46 @@ actual browser cancellation evidence, and direct-production proof results.
 
 All M1-M6 completion gates remain open. No additional merge was performed during
 this audit. Source snapshots are WIP preservation, not qualification receipts.
+
+## Independent integration review: 2026-10-07 follow-up
+
+This iteration made progress by inspecting actual current-main candidates and
+finding defects that change admission decisions; it is not a status-only wait.
+
+- Filesystem is now integrated on main c8 in filesystem-main-port-c8 at
+  `6274988e8aab33e10d721775be31e7f3a0839cd1`. The full dependency closure is
+  29 files, 1,263 additions and 644 deletions, including generated bindings.
+  Root found PublicWasm's special fileKind branch skips recursive readonly
+  projection for all other record fields. The owner is correcting that branch;
+  independent negative compilation is required before final package admission.
+  WorkCounters now exposes exact bigint values rather than bounded numbers;
+  installed tests must cover counters above Number.MAX_SAFE_INTEGER.
+- Actors main-based candidate is sdkgen-actors-c8-minimal at a2881c65 plus WIP.
+  Root inspected its actual WASM cancellation edits, maintained generator vendor,
+  loader fallback, handwritten client surface, and native assembly. The owner
+  must preserve upstream license/provenance and justify the focused maintained
+  generator patch. Handwritten eight-operation facade/interface definitions and
+  normalizeSemantic remain gaps in the fully generated end-state, not evidence
+  of completion. True cancellation and CurrentHead false unrepresentability are
+  still merge gates.
+- Linux Stream native artifact installed checks passed with loaded artifact SHA
+  1d864635e6dc227091ac9645abc7c753ab74855fc0a79bf02ef0c7883df9e21d,
+  archive SHA 3792360e5e2ecf537158a3bb37682721595354a5ead7ab4b9299cf75b8574389.
+  Evidence is Q:/sdk/work/stream-repro-evidence-c8. The producer includes dirty
+  peer attestation edits, explicitly distinct from compiled Rust closure. No
+  production platform selector changes are admitted from this prototype alone.
+  Root verified ssh ivar is reachable: Darwin arm64 and Cargo available. macOS
+  qualification is assigned, rather than accepting a claim that no host exists.
+- Root inspected the twenty-profile Rustdoc manifest. Its source paths refer to
+  rust-source-foundation, including Actors bindings absent from main c8. The
+  prototype proves available-source projection only. It does not prove current
+  main coverage; receipt labels/source identity and main integration need fixing.
+- Python's latest installed cohort is source 03bb, explicitly historical. Current
+  main-based nominal/readonly producer qualification remains outstanding.
+- Stream linker attestation fixed ambient RUSTC_LINKER misuse but effective
+  Cargo configuration includes inherited/global inputs. Ad hoc repository-only
+  rejection cannot establish the final linker invocation. Review remains open.
+
+Remote checkpoints verified at the start of this iteration were foundation
+8542364f7ee2983092b6196f92165cf3f0a39d39 and Actors language WIP
+5f8b7061465cd632d643e90d682c5d5195d9fe5b. No merge is claimed by this review.

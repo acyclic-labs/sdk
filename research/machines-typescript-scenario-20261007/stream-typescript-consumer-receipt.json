@@ -1,0 +1,15 @@
+{
+  "schema": "acyclic.sdk.typescript-scenario-receipt.v1",
+  "scenario": "stream/typescript-consumer",
+  "package": "@acyclic-labs/stream",
+  "packageVersion": "0.2.0",
+  "sourceSha256": "sha256:885D06096C4006CEB4C992DACB9B757FA1CD251CD2F7E3D5FC78B0466619588B",
+  "rustOutputSha256": "sha256:A57089EDA97464FB3AEBE5075BB90DD9E7A83B38C4DF40A51D47B854E0CD29C1",
+  "generatedSnippetSha256": "sha256:AE8B348BD805726B4E35CD26D814FB79331EA1F5B298689C92CA4BAEE6840034",
+  "packageTarballSha256": "sha256:5BC14F362E68C1C7D624302742C43312A4EE94380B54C3D999B63643A7CD5AA4",
+  "runtime": "StreamClient.memory() backed by installed package WASM",
+  "compile": "npx tsc -p tsconfig.json --pretty false",
+  "execute": "node dist/generated-stream-typescript-consumer.js",
+  "observedOutput": "{\"tail\":\"2\",\"records\":2}",
+  "staging": "C:\\Users\\varun\\.codex\\worktrees\\stream-typescript-scenario-consumer-staging-20261007"
+}

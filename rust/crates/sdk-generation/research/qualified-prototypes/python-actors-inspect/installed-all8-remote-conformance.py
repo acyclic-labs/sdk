@@ -1,5 +1,6 @@
 import asyncio, json, os
 import hashlib
+import zipfile
 from pathlib import Path
 
 FIXTURE = Path(os.environ.get("ACYCLIC_FIXTURE_OPTIONS", r"Q:\sdk\work\go-remote-primitive-current\fixture-options.json"))
@@ -17,6 +18,35 @@ def check_actor(value, expected):
     assert state == expected["state"]
     assert observation.checkpoint_epoch == expected["checkpointEpoch"]
     assert observation.configuration_revision == expected["configurationRevision"]
+
+def verify_installed_wheel(module, wheel_path):
+    module_path = Path(module.__file__).resolve()
+    package_root = module_path.parent
+    if "site-packages" not in {part.lower() for part in package_root.parts}:
+        raise AssertionError(f"generated module was not imported from an installed site-packages tree: {module_path}")
+    generated_module = package_root / "acyclic_actors_uniffi.py"
+    if not generated_module.is_file():
+        raise AssertionError(f"installed generated module is missing: {generated_module}")
+    with zipfile.ZipFile(wheel_path) as wheel:
+        candidates = [
+            name for name in wheel.namelist()
+            if name.endswith("/acyclic_actors_uniffi.py")
+        ]
+        if len(candidates) != 1:
+            raise AssertionError(f"wheel has unexpected generated-module entries: {candidates}")
+        expected_sha256 = hashlib.sha256(wheel.read(candidates[0])).hexdigest()
+    actual_bytes = generated_module.read_bytes()
+    actual_sha256 = hashlib.sha256(actual_bytes).hexdigest()
+    if actual_sha256 != expected_sha256:
+        raise AssertionError("installed generated module does not match the measured wheel")
+    return {
+        "package_root": str(package_root),
+        "module": {
+            "path": str(generated_module),
+            "sha256": actual_sha256,
+            "bytes": len(actual_bytes),
+        },
+    }
 
 async def main():
     fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -59,6 +89,9 @@ async def main():
             "bytes": artifact.stat().st_size,
         }
     import acyclic_actors_uniffi as m
+    installed_identity = None
+    if receipt_path:
+        installed_identity = verify_installed_wheel(m, artifact_path)
 
     operations = []
     checks = []
@@ -112,7 +145,7 @@ async def main():
     assert response.body == b""
     assert [(h.name, h.value) for h in response.headers] == [("location", "/result")]
     operations.append("invoke")
-    checks.append("remote")
+    checks.extend(("installed-wheel", "remote"))
     unauthorized = await m.connect_actors_with_ca(
         fixture["endpoint"], "wrong-token", fixture["caCertificate"].encode("utf-8"), None,
     )
@@ -196,6 +229,7 @@ async def main():
                 "python_patch_sha256": producer_manifest["python_patch_sha256"],
             },
         }
+        receipt["installation"] = installed_identity
         # The language-package model consumes the artifact under its language
         # key.  Keep the producer's measured identity; never copy a caller's
         # hash into a different output record.

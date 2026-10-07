@@ -60,12 +60,14 @@ struct SwiftPostPatchAll8Consumer {
             print("typed PositiveU64 validator rejected zero")
         }
         let _ = try Start.currentHead()
+        print("stage=before-connect")
         let client = try await connectActorsWithCa(
             endpoint: options.endpoint,
             token: options.token,
             caCertificate: Data(options.caCertificate.utf8),
             cancellation: nil
         )
+        print("stage=connected")
         let actorID = try ActorId(value: options.actorId)
         let digest = try CodeSha256(value: Data(repeating: 1, count: 32))
         let limits = try ActorLimits(
@@ -74,7 +76,9 @@ struct SwiftPostPatchAll8Consumer {
             checkpointBytes: PositiveU64(value: 8192)
         )
 
+        print("stage=before-inspect")
         let inspect = try await client.inspectActor(request: InspectActorRequest(actorId: actorID), cancellation: nil)
+        print("stage=after-inspect")
         _ = try requireObservation(inspect.actor, label: "ordinary-inspect", actorID: options.actorId)
         let spec = try SubscriptionSpec(
             subscriptionId: "swift-post-patch-subscription",
