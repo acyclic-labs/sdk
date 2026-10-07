@@ -380,6 +380,7 @@ pub trait Executor: Send + Sync {
 #[derive(Clone)]
 pub struct StockExecutor {
     model: Model,
+    max_output_tokens: u32,
     provider: Arc<dyn ModelProvider>,
     context: ContextPipeline,
     tools: ToolRegistry,
@@ -409,6 +410,7 @@ impl StockExecutor {
     ) -> Self {
         Self {
             model,
+            max_output_tokens: 4_096,
             provider,
             context,
             tools,
@@ -419,6 +421,15 @@ impl StockExecutor {
             task: None,
             inherited_prefix: None,
         }
+    }
+
+    /// Sets the caller's output token budget for each model request.
+    pub fn with_max_output_tokens(mut self, maximum: u32) -> Result<Self> {
+        if maximum == 0 {
+            return Err(Error::Invalid("model output token budget is zero".into()));
+        }
+        self.max_output_tokens = maximum;
+        Ok(self)
     }
 
     /// Binds this worker's exact admitted task and execution fence. Fresh model
@@ -581,6 +592,7 @@ impl StockExecutor {
             "executor": "acyclic.stock.v3",
             "input": input,
             "model": self.model,
+            "max_output_tokens": self.max_output_tokens,
             "context": self.context.contracts(),
             "tools": self.tools.definitions()?,
             "limits": self.limits,
@@ -740,7 +752,7 @@ impl StockExecutor {
                             .contains(&capability::tool_call(&tool.name))
                     })
                     .collect(),
-                max_output_tokens: Some(4_096),
+                max_output_tokens: Some(self.max_output_tokens),
             };
             if let Some((prefix, verifier)) = &self.inherited_prefix {
                 crate::model::PreparedModelRequest::inherit(
@@ -2151,7 +2163,8 @@ mod tests {
             provider.clone(),
             ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
             ToolRegistry::new(),
-        );
+        )
+        .with_max_output_tokens(8_192)?;
         let journal = Journal::default();
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -2162,6 +2175,26 @@ mod tests {
         assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
         let first = executor.model_step(&journal, &input, 0, &[]).await?;
         assert_eq!(first, executor.model_step(&journal, &input, 0, &[]).await?);
+        assert_eq!(
+            crate::model::PreparedModelRequest::decode(
+                &provider
+                    .0
+                    .lock()
+                    .map_err(|_| Error::Storage("test lock".into()))?[0],
+                Limits::default(),
+            )?
+            .request()
+            .max_output_tokens,
+            Some(8_192)
+        );
+        assert!(
+            executor
+                .clone()
+                .with_max_output_tokens(16_384)?
+                .model_step(&journal, &input, 0, &[])
+                .await
+                .is_err()
+        );
         assert_eq!(stage.0.load(Ordering::SeqCst), 1);
         assert_eq!(
             provider

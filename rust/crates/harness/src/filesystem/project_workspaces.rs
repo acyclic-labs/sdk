@@ -328,7 +328,7 @@ fn decode_conflict(key: &[u8]) -> Result<MergeConflict> {
                 3 => NameEncoding::WindowsUtf16Le,
                 _ => return Err(Error::Invalid("unknown conflict name encoding".into())),
             };
-            let name = LogicalName::new(encoding, name.to_vec(), 4_096)
+            let name = LogicalName::new(encoding, name.to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             Ok(MergeConflict::Binding {
                 directory_id: id,

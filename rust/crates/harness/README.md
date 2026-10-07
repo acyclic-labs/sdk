@@ -32,6 +32,12 @@ recovery; it never reloads sources or transforms. New projections require new
 admissions. A custom loop must finish each tool exchange before requesting the
 next model step or publishing a child prefix.
 
+Stock output-token budgets are caller-controlled: Rust exposes
+`StockExecutor::with_max_output_tokens`, and TypeScript exposes
+`HarnessBuilder.modelOutputTokens`. Both default to 4,096 tokens and accept any
+positive value representable by the model request's `u32` field. Rust binds the
+budget into the durable execution identity; admitted requests retain it on replay.
+
 `ContextPipeline` composes ordered sources and transformations. `SelectionStage`
 registers a pinned file/span or schema-validated custom attribute with a typed
 `ContextRenderer`; full, summary and reference representations are explicit

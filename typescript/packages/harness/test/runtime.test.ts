@@ -1805,9 +1805,10 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
-    const provider = { async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+    const budgets: number[] = [];
+    const provider = { async *generate(request: { model: unknown; maxOutputTokens: number }) { seen.push(request.model); budgets.push(request.maxOutputTokens); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
-    const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
+    const runtime = Harness.builder(contracts).model(rootIdentity, provider).modelOutputTokens(8_192).build();
     rootIdentity.options.mode = "mutated";
     await runtime.run("root");
     expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
@@ -1816,6 +1817,9 @@ describe("typed agent runtime", () => {
     childIdentity.options.mode = "mutated";
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
+    expect(budgets).toEqual([8_192, 8_192]);
+    expect(() => Harness.builder(contracts).modelOutputTokens(0)).toThrow("positive u32");
+    expect(() => Harness.builder(contracts).modelOutputTokens(2 ** 32)).toThrow("positive u32");
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
   });
 

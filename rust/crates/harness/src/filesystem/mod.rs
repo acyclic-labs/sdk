@@ -179,7 +179,7 @@ where
         Box::pin(async move {
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), 4_096)
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -1790,7 +1790,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &workspace,
                     Some(&generation),
                     &format!("/{metadata_path}"),
-                    64 * 1024,
+                    receipt_bytes.len() as u64,
                 )
                 .await
                 .map_err(|_| Error::Conflict("upload metadata index is missing".into()))?;
@@ -1990,7 +1990,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &workspace,
                 Some(generation),
                 &format!("/{}", content_metadata_path(provisional.path())),
-                64 * 1024,
+                u64::MAX,
             )
             .await;
         let (descriptor, display_name) = match metadata {

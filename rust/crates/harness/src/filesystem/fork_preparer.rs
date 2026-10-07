@@ -700,7 +700,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .conversation()
             .ok_or_else(|| Error::Invalid("fork parent has no conversation state".into()))?;
         if let Some(file) = seed.inherited_context.first() {
-            let bytes = self.read_pinned(file, 64 * 1_024 * 1_024).await?;
+            let bytes = self
+                .read_pinned(file, file.descriptor().byte_length())
+                .await?;
             let actual: InheritedConversationPrefix = crate::contract::json_from_slice(&bytes)
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
             let expected = InheritedConversationPrefix::select(
@@ -756,7 +758,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         volume: &VolumeRef,
     ) -> Result<()> {
         let journal = allocation_ref(self.provider.clone(), volume)?;
-        let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
+        let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX)
             .await?
             .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
         if claim.operation_id != seed.operation_id
@@ -768,7 +770,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 "fork child volume belongs to another preparation".into(),
             ));
         }
-        let binding = read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096)
+        let binding = read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", u64::MAX)
             .await?
             .ok_or_else(|| {
                 Error::Unauthorized("fork seed was not bound to its allocation".into())
@@ -797,9 +799,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .ok_or_else(|| Error::Invalid("fork has no child project".into()))?,
         ] {
             let journal = allocation_ref(self.provider.clone(), volume)?;
-            let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
-                .await?
-                .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
+            let claim =
+                read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Unauthorized("fork child volume was not allocated".into())
+                    })?;
             if claim.operation_id != seed.operation_id
                 || claim.parent != seed.parent
                 || claim.child != seed.child
@@ -809,7 +814,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "fork child volume belongs to another preparation".into(),
                 ));
             }
-            match read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096).await? {
+            match read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", u64::MAX).await? {
                 Some(prior) if prior == binding => continue,
                 Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
                 None => {}
@@ -822,7 +827,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     Some(&observed.generation),
                     &[WorkspaceMutation::PutFile {
                         path: "/seed.json".into(),
-                        bytes: encode_record(&binding, 4_096)?,
+                        bytes: encode_record(&binding, u64::MAX)?,
                     }],
                     &key,
                 )
@@ -831,7 +836,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Ok(_) | Err(Error::Conflict(_)) => {}
                 Err(error) => return Err(error),
             }
-            match read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096).await? {
+            match read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", u64::MAX).await? {
                 Some(prior) if prior == binding => {}
                 Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
                 None => return Err(Error::Indeterminate(seed.operation_id)),
@@ -854,7 +859,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .create_workspace(name)
             .await
             .map_err(map_error)?;
-        match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096).await? {
+        match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX).await? {
             Some(prior) if prior == claim => return Ok(()),
             Some(_) => {
                 return Err(Error::Conflict(
@@ -871,7 +876,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 Some(&observed.generation),
                 &[WorkspaceMutation::PutFile {
                     path: "/claim.json".into(),
-                    bytes: encode_record(&claim, 4_096)?,
+                    bytes: encode_record(&claim, u64::MAX)?,
                 }],
                 &key,
             )
@@ -880,7 +885,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Ok(_) | Err(Error::Conflict(_)) => {}
             Err(error) => return Err(error),
         }
-        match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096).await? {
+        match read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", u64::MAX).await? {
             Some(prior) if prior == claim => Ok(()),
             Some(_) => Err(Error::Conflict(
                 "fork child volume is already allocated".into(),

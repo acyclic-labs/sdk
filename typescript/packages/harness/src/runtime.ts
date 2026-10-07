@@ -1572,6 +1572,7 @@ function pinForkPublisher(contracts: NativeContracts, value: ForkPublisher): For
 
 /** Replaceable runtime boundaries; registries remain versioned builder entries. */
 export interface HarnessBindings {
+  readonly modelOutputTokens?: number;
   readonly model?: Readonly<{ identity: Model; provider: ModelProvider }>;
   readonly agentLoop?: AgentLoop;
   readonly context?: ContextBuilder;
@@ -1608,8 +1609,10 @@ export class HarnessBuilder {
   #model?: BoundModel; #loop?: AgentLoop; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #host?: HarnessRuntimeHost; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #forkPreparer?: ForkPreparer; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
   readonly #grants: string[] = [];
   #limits: Limits = DEFAULT_LIMITS;
+  #modelOutputTokens = 4_096;
   /** Bind independent providers together without creating a second registry. */
   bindings(value: HarnessBindings): this {
+    if (value.modelOutputTokens !== undefined) this.modelOutputTokens(value.modelOutputTokens);
     if (value.model) this.model(value.model.identity, value.model.provider);
     if (value.agentLoop) this.agentLoop(value.agentLoop);
     if (value.context) this.context(value.context);
@@ -1630,6 +1633,14 @@ export class HarnessBuilder {
     return this;
   }
   model(identity: Model, provider: ModelProvider): this { this.contracts.encodeCanonicalJson(identity.options); this.#model = bindModel(identity, provider); return this; }
+  /** Set the caller's output token budget for stock model requests. */
+  modelOutputTokens(maximum: number): this {
+    if (!Number.isInteger(maximum) || maximum <= 0 || maximum > 0xffff_ffff) {
+      throw new TypeError("model output token budget must be a positive u32");
+    }
+    this.#modelOutputTokens = maximum;
+    return this;
+  }
   agentLoop(value: AgentLoop): this { this.#loop = value; return this; }
   inheritedModelPrefix(value: InheritedModelPrefix): this {
     const scope = structuredClone(value.scope);
@@ -1712,7 +1723,7 @@ export class HarnessBuilder {
     this.#selectedTools.set(name, revision);
     return this;
   }
-  build(): AgentHarness { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
+  build(): AgentHarness { const components: AgentHarnessComponents = { limits: this.#limits, modelOutputTokens: this.#modelOutputTokens }; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#loop) components.loop = this.#loop; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#host) components.host = this.#host; if (this.#execution) { if (this.#host) throw new Error("execution route conflicts with legacy durable host"); components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
     if (!this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) throw new TypeError("project workspaces require fork:publish or project:merge");
     components.workspaces = this.#workspaces;
   } if (this.#forkPreparer) {
@@ -1729,7 +1740,7 @@ export class HarnessBuilder {
   } validateTaskRequirements(this.contracts, this.#tasks, this.#tools, components, this.#grants); return new AgentHarness(this.#tasks, this.#tools, components, ExecutionScope.create().grant(...this.#grants), new Map(), this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction); }
 }
 
-interface AgentHarnessComponents { inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
+interface AgentHarnessComponents { modelOutputTokens?: number; inheritedModelPrefix?: InheritedModelPrefix; model?: BoundModel; loop?: AgentLoop; context?: ContextBuilder; interactions?: InteractionHandler; interactionResolver?: InteractionResolver; policy?: Policy; host?: HarnessRuntimeHost; state?: HarnessRuntimeState; spawner?: HarnessRuntimeSpawner; execution?: HarnessExecutionProvider; content?: ContentBindings; artifacts?: ContentBindings; forkPreparer?: ForkPreparer; forkPublisher?: ForkPublisher; workspaces?: ProjectWorkspaceProvider; limits?: Limits }
 const harnessConstruction = Symbol("HarnessBuilder-owned construction");
 export class AgentHarness {
   readonly #tasks: ReadonlyMap<string, ErasedTaskDefinition>; readonly #tools: ReadonlyMap<string, ErasedRegisteredTool>;
@@ -2338,7 +2349,7 @@ export class AgentHarness {
       for (let step = 0; step < maxSteps; step += 1) {
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
-        const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: 4_096 });
+        const request = structuredClone({ model: model.identity, messages, tools: this.#modelToolDefinitions(), maxOutputTokens: this.components.modelOutputTokens ?? 4_096 });
         const prefix = this.components.inheritedModelPrefix;
         let bytes: Uint8Array;
         if (prefix === undefined) bytes = prepareModelRequestWasm(request, nativeLimits(this.limits));
