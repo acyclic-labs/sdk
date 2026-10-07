@@ -4,6 +4,7 @@ import type {
   WorkspaceExtentPlan, WorkspaceName, WorkspaceStat,
 } from "./contracts.js";
 import type { BrowserWorkCounters } from "../generated/wasm/acyclic_fs_wasm.js";
+import { WORK_COUNTER_KEYS } from "../generated/hosted-contract.js";
 
 /** Keep the public copy exhaustive when Rust adds a generated work counter. */
 function exhaustiveKeys<T>() {
@@ -12,23 +13,11 @@ function exhaustiveKeys<T>() {
   ): Keys => keys;
 }
 
-const workCounterKeys = exhaustiveKeys<WorkCounters>()([
-  "authorityRecordsRead", "authorityRecordsAppended", "authorityBytesRead", "authorityBytesWritten",
-  "objectProbes", "backendReadOperations", "backendWriteOperations", "durabilityOperations", "pageReads",
-  "pageWrites", "objectBytesRead", "objectBytesWritten", "bytesHashed", "bytesCopied", "bytesEncoded",
-  "sourceBytesRead", "sourcePathComponents", "sourceEntriesVisited", "outputBytes", "itemsExamined", "itemsReturned", "allocationOperations",
-  "peakAllocationBytes", "materializations",
-]);
-
-function safeWorkNumber(value: bigint, key: string): number {
-  const number = Number(value);
-  if (!Number.isSafeInteger(number)) throw new RangeError(`WASM work counter ${key} exceeds the public safe number range`);
-  return number;
-}
+export const workCounterKeys = exhaustiveKeys<WorkCounters>()(WORK_COUNTER_KEYS);
 
 export function copyWork(value: BrowserWorkCounters): WorkCounters {
-  const result = {} as Record<keyof WorkCounters, number>;
-  for (const key of workCounterKeys) result[key] = safeWorkNumber(value[key], key);
+  const result = {} as Record<keyof WorkCounters, bigint>;
+  for (const key of workCounterKeys) result[key] = BigInt(value[key]);
   return result;
 }
 

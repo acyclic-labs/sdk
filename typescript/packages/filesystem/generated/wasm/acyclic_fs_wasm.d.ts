@@ -1,5 +1,15 @@
 /* tslint:disable */
 /* eslint-disable */
+/**
+ * Complete namespace entry kind.
+ */
+export type FileKind = "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+
+/**
+ *Auto-generated discriminant enum variants
+ */
+export type FilePayloadKind = "inline-regular" | "regular" | "directory" | "symbolic-link" | "empty" | "device" | "reparse-point";
+
 export interface BrowserAdmissionResult {
     status: "admitted" | "rejected";
     rejection: string | undefined;
@@ -8,7 +18,7 @@ export interface BrowserAdmissionResult {
 export interface BrowserBatchLookupEntryResult {
     exists: boolean;
     fileId: Uint8Array | undefined;
-    fileKind: string | undefined;
+    fileKind: FileKind | undefined;
     resolvedComponents: number;
 }
 
@@ -48,7 +58,7 @@ export interface BrowserCommitResult {
 export interface BrowserDirectoryEntryResult {
     name: Uint8Array;
     fileId: Uint8Array;
-    fileKind: string;
+    fileKind: FileKind;
 }
 
 export interface BrowserDirectoryPageResult {
@@ -107,10 +117,10 @@ export interface BrowserFileRecordReadResult {
 
 export interface BrowserFileRecordResult {
     fileId: Uint8Array;
-    fileKind: string;
+    fileKind: FileKind;
     linkCount: bigint;
     metadataObject: Uint8Array;
-    payloadKind: string;
+    payloadKind: FilePayloadKind;
     logicalBytes: bigint | undefined;
     payloadObject: Uint8Array | undefined;
     inlineBytes: Uint8Array | undefined;
@@ -172,7 +182,7 @@ export interface BrowserLiveTransactionResult {
 export interface BrowserLookupResult {
     exists: boolean;
     fileId: Uint8Array | undefined;
-    fileKind: string | undefined;
+    fileKind: FileKind | undefined;
     resolvedComponents: number;
     work: BrowserWorkCounters;
 }
@@ -299,7 +309,7 @@ export interface BrowserTransactionResult {
 export interface BrowserTreeEntryResult {
     name: NameComponentResult;
     fileId: Uint8Array;
-    fileKind: string;
+    fileKind: FileKind;
 }
 
 export interface BrowserVolumeLimits {
@@ -365,7 +375,7 @@ export interface BrowserWorkspaceCommit {
 export interface BrowserWorkspaceDirectoryEntry {
     name: BrowserWorkspaceName;
     fileId: Uint8Array;
-    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+    kind: FileKind;
 }
 
 export interface BrowserWorkspaceDirectoryPage {
@@ -413,7 +423,7 @@ export interface BrowserWorkspaceRebaseResult {
 
 export interface BrowserWorkspaceStat {
     fileId: Uint8Array;
-    kind: "regular" | "directory" | "symbolic-link" | "fifo" | "socket" | "character-device" | "block-device" | "reparse-point" | "mount-boundary";
+    kind: FileKind;
     linkCount: bigint;
     logicalBytes: bigint | undefined;
     metadata: BrowserWorkspaceMetadata;
@@ -1263,7 +1273,7 @@ export class BrowserResolvedFile {
     /**
      * Terminal file kind authenticated by the pinned generation.
      */
-    readonly kind: string;
+    readonly kind: FileKind;
     /**
      * Logical content length authenticated by the pinned generation.
      */
@@ -1688,7 +1698,7 @@ export interface InitOutput {
     readonly __wbg_browserworkspace_free: (a: number, b: number) => void;
     readonly __wbg_browserworkspacecontextregistry_free: (a: number, b: number) => void;
     readonly browserchangeset_changes: (a: number) => [number, number, number];
-    readonly browserchangeset_compose: (a: number, b: number, c: number) => any;
+    readonly browserchangeset_compose: (a: number, b: number, c: any) => any;
     readonly browserchangeset_from: (a: number) => number;
     readonly browserchangeset_to: (a: number) => number;
     readonly browsercheckout_acquisitionWork: (a: number) => [number, number, number];
@@ -1697,7 +1707,7 @@ export interface InitOutput {
     readonly browsercheckout_cloneFileRange: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
     readonly browsercheckout_cloneFileRangeById: (a: number, b: number, c: number, d: bigint, e: number, f: number, g: bigint, h: bigint) => any;
     readonly browsercheckout_commit: (a: number, b: number, c: number, d: number) => any;
-    readonly browsercheckout_createDevice: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly browsercheckout_createDevice: (a: number, b: number, c: number, d: number, e: number, f: any, g: any) => any;
     readonly browsercheckout_createDirectory: (a: number, b: number, c: number) => any;
     readonly browsercheckout_createFile: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsercheckout_createReparsePoint: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -1706,17 +1716,17 @@ export interface InitOutput {
     readonly browsercheckout_discard: (a: number) => any;
     readonly browsercheckout_exportManifest: (a: number) => any;
     readonly browsercheckout_hardLink: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browsercheckout_listDirectory: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
-    readonly browsercheckout_listDirectoryRecords: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
-    readonly browsercheckout_listNamedAttributes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => any;
+    readonly browsercheckout_listDirectory: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+    readonly browsercheckout_listDirectoryRecords: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
+    readonly browsercheckout_listNamedAttributes: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: any) => any;
     readonly browsercheckout_lookupBatchNoFollow: (a: number, b: any) => any;
     readonly browsercheckout_lookupNoFollow: (a: number, b: number, c: number) => any;
-    readonly browsercheckout_mutateLive: (a: number, b: any, c: number, d: number, e: number, f: number) => any;
-    readonly browsercheckout_planFileExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
-    readonly browsercheckout_planFileExtentsById: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
+    readonly browsercheckout_mutateLive: (a: number, b: any, c: number, d: number, e: any, f: any) => any;
+    readonly browsercheckout_planFileExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: any) => any;
+    readonly browsercheckout_planFileExtentsById: (a: number, b: number, c: number, d: bigint, e: bigint, f: any) => any;
     readonly browsercheckout_preallocateFile: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
     readonly browsercheckout_preallocateFileById: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
-    readonly browsercheckout_prepareMerge: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsercheckout_prepareMerge: (a: number, b: number, c: number, d: any, e: any) => any;
     readonly browsercheckout_readFileRange: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
     readonly browsercheckout_readFileRangeById: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
     readonly browsercheckout_readFileRecordById: (a: number, b: number, c: number) => any;
@@ -1725,7 +1735,7 @@ export interface InitOutput {
     readonly browsercheckout_readNamedAttribute: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly browsercheckout_readReparsePoint: (a: number, b: number, c: number) => any;
     readonly browsercheckout_readSymbolicLink: (a: number, b: number, c: number) => any;
-    readonly browsercheckout_rebaseHead: (a: number, b: number) => any;
+    readonly browsercheckout_rebaseHead: (a: number, b: any) => any;
     readonly browsercheckout_refreshHead: (a: number) => any;
     readonly browsercheckout_refreshLive: (a: number) => any;
     readonly browsercheckout_remove: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -1734,7 +1744,7 @@ export interface InitOutput {
     readonly browsercheckout_resizeFile: (a: number, b: number, c: number, d: bigint) => any;
     readonly browsercheckout_resizeFileById: (a: number, b: number, c: number, d: bigint) => any;
     readonly browsercheckout_resolveFiles: (a: number, b: any) => any;
-    readonly browsercheckout_resumeLive: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsercheckout_resumeLive: (a: number, b: number, c: number, d: any, e: any) => any;
     readonly browsercheckout_seekFileExtent: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsercheckout_seekFileExtentById: (a: number, b: number, c: number, d: bigint, e: number, f: number) => any;
     readonly browsercheckout_setAttributes: (a: number, b: number, c: number, d: number, e: number, f: number, g: bigint) => any;
@@ -1754,9 +1764,9 @@ export interface InitOutput {
     readonly browserfs_createVolume: (a: number, b: any) => any;
     readonly browserfs_createVolumeWithId: (a: number, b: number, c: number, d: any) => any;
     readonly browserfs_createWorkspace: (a: number, b: number, c: number) => any;
-    readonly browserfs_exportGenerationBatch: (a: number, b: any, c: bigint, d: number, e: bigint) => any;
+    readonly browserfs_exportGenerationBatch: (a: number, b: any, c: bigint, d: any, e: bigint) => any;
     readonly browserfs_exportObject: (a: number, b: number, c: number, d: bigint) => any;
-    readonly browserfs_importGenerationBatch: (a: number, b: any, c: bigint, d: any, e: number) => any;
+    readonly browserfs_importGenerationBatch: (a: number, b: any, c: bigint, d: any, e: any) => any;
     readonly browserfs_importObject: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserfs_objectCacheStats: (a: number) => [number, number, number];
     readonly browserfs_openVolume: (a: number, b: number, c: number) => any;
@@ -1764,9 +1774,9 @@ export interface InitOutput {
     readonly browserfs_operationWindows: (a: number) => [number, number, number];
     readonly browserfs_restoreVolume: (a: number, b: any, c: number, d: number) => any;
     readonly browsergeneration_id: (a: number) => [number, number];
-    readonly browsergeneration_listDirectory: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly browsergeneration_listDirectory: (a: number, b: number, c: number, d: number, e: any) => any;
     readonly browsergeneration_pin: (a: number, b: number, c: number) => any;
-    readonly browsergeneration_planExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
+    readonly browsergeneration_planExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: any) => any;
     readonly browsergeneration_read: (a: number, b: number, c: number, d: bigint) => any;
     readonly browsergeneration_readRange: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
     readonly browsergeneration_readSymbolicLink: (a: number, b: number, c: number) => any;
@@ -1788,7 +1798,7 @@ export interface InitOutput {
     readonly browseroperationwindowcoordinator_observeParent: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browseroperationwindowcoordinator_recoverWorkspace: (a: number, b: number, c: bigint, d: any) => any;
     readonly browseroperationwindowcoordinator_renew: (a: number, b: any, c: bigint, d: bigint) => any;
-    readonly browserresolvedfile_kind: (a: number) => [number, number];
+    readonly browserresolvedfile_kind: (a: number) => [number, number, number];
     readonly browserresolvedfile_logicalBytes: (a: number) => bigint;
     readonly browserresolvedfile_metadataCanonicalBytes: (a: number) => [number, number, number, number];
     readonly browserresolvedfile_readRange: (a: number, b: bigint, c: bigint) => any;
@@ -1813,7 +1823,7 @@ export interface InitOutput {
     readonly browsertransaction_createSymbolicLink: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_hardLink: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_preallocate: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
-    readonly browsertransaction_rebase: (a: number, b: number) => any;
+    readonly browsertransaction_rebase: (a: number, b: any) => any;
     readonly browsertransaction_remove: (a: number, b: number, c: number) => any;
     readonly browsertransaction_rename: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browsertransaction_resize: (a: number, b: number, c: number, d: bigint) => any;
@@ -1822,21 +1832,21 @@ export interface InitOutput {
     readonly browsertransaction_zeroRange: (a: number, b: number, c: number, d: bigint, e: bigint, f: number, g: number) => any;
     readonly browservolume_acquisitionWork: (a: number) => [number, number, number];
     readonly browservolume_checkout: (a: number, b: any) => any;
-    readonly browservolume_diffGenerations: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly browservolume_diffGenerations: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
     readonly browservolume_id: (a: number) => [number, number];
     readonly browserworkspace_beginTransaction: (a: number, b: number, c: number) => any;
     readonly browserworkspace_checkpoint: (a: number, b: number, c: number) => any;
     readonly browserworkspace_delete: (a: number, b: number, c: number) => any;
-    readonly browserworkspace_diff: (a: number, b: number, c: number, d: number) => any;
+    readonly browserworkspace_diff: (a: number, b: number, c: number, d: any) => any;
     readonly browserworkspace_fork: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserworkspace_forkAt: (a: number, b: number, c: number, d: number, e: any) => any;
     readonly browserworkspace_head: (a: number) => any;
     readonly browserworkspace_id: (a: number) => [number, number];
     readonly browserworkspace_joinInto: (a: number, b: number, c: any) => any;
-    readonly browserworkspace_liveRebase: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly browserworkspace_liveRebase: (a: number, b: number, c: number, d: any, e: any, f: any) => any;
     readonly browserworkspace_name: (a: number) => [number, number];
     readonly browserworkspace_pin: (a: number, b: number, c: number) => any;
-    readonly browserworkspace_planExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: number) => any;
+    readonly browserworkspace_planExtents: (a: number, b: number, c: number, d: bigint, e: bigint, f: any) => any;
     readonly browserworkspace_read: (a: number, b: number, c: number, d: bigint) => any;
     readonly browserworkspace_readRange: (a: number, b: number, c: number, d: bigint, e: bigint) => any;
     readonly browserworkspace_readSymbolicLink: (a: number, b: number, c: number) => any;
@@ -1845,7 +1855,7 @@ export interface InitOutput {
     readonly browserworkspace_sync: (a: number) => any;
     readonly browserworkspace_write: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserworkspacecontextregistry_adoptRoot: (a: number, b: number, c: number, d: number, e: number) => any;
-    readonly browserworkspacecontextregistry_discardSubtree: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
+    readonly browserworkspacecontextregistry_discardSubtree: (a: number, b: number, c: number, d: number, e: number, f: any) => any;
     readonly browserworkspacecontextregistry_new: () => number;
     readonly browserworkspacecontextregistry_registerChild: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
     readonly browserworkspacecontextregistry_registerRoot: (a: number, b: number, c: number, d: number, e: number) => any;

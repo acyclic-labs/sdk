@@ -1,9 +1,11 @@
 //! Generated-language native embedding boundary for the canonical Rust engine.
 
+use acyclic_fs::compat_wire;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
-    FileMetadata, FilePayload, FileRecord, LogicalName, NameEncoding, NamespacePath,
-    RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata, encode_file_metadata,
+    FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,
+    NamespacePath, RebaseDecision, TransferCursor, TreeEntry, decode_file_metadata,
+    encode_file_metadata,
 };
 use acyclic_fs::model::{
     AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
@@ -48,6 +50,218 @@ use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// A JavaScript number accepted at the N-API boundary as an exact `u32`.
+///
+/// N-API's built-in `u32` conversion can coerce fractional, negative, and
+/// overflowing JavaScript numbers. This binding-only wrapper checks the
+/// representation before the canonical Rust policy receives the value. Zero
+/// remains valid here so the Rust core retains ownership of positive-bound
+/// policy for operations that require it.
+#[derive(Clone, Copy)]
+#[napi(transparent, object_from_js = false, object_to_js = false)]
+pub struct NapiU32(u32);
+
+impl NapiU32 {
+    const fn into_inner(self) -> u32 {
+        self.0
+    }
+}
+
+/// Native speculation admission status emitted by the Rust engine.
+#[napi(string_enum = "kebab-case")]
+pub enum NativeResidencyStatus {
+    /// The residency request was admitted.
+    Admitted,
+    /// The residency request was rejected by the Rust policy.
+    Rejected,
+}
+
+/// Native promotion admission status emitted by the Rust engine.
+#[napi(string_enum = "kebab-case")]
+pub enum NativePromotionStatus {
+    /// The object is already satisfied at the requested destination.
+    Satisfied,
+    /// The promotion was planned and has an operation identity.
+    Planned,
+    /// The promotion was rejected by the Rust policy.
+    Rejected,
+}
+
+fn validate_napi_u32(number: f64) -> Result<u32> {
+    acyclic_fs::exact_u32_from_f64(number)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
+}
+
+#[allow(
+    unsafe_code,
+    reason = "N-API trait hooks require a narrow unsafe boundary"
+)]
+mod napi_u32_codec {
+    //! The only unsafe code in this binding is the two N-API trait hooks below.
+    //!
+    //! N-API supplies live environment and value handles to these callbacks, and
+    //! the maintained `f64`/`u32` implementations own the handle conversion.
+    //! This module keeps those required ABI hooks narrow while the public binding
+    //! remains subject to the workspace `unsafe_code = "deny"` lint.
+
+    use super::{NapiU32, Result, validate_napi_u32};
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+    use napi::{JsNumber, Unknown, ValueType};
+
+    impl FromNapiValue for NapiU32 {
+        /// # Safety
+        ///
+        /// N-API calls this hook with the live environment and value handles
+        /// associated with the JavaScript argument being decoded.
+        unsafe fn from_napi_value(
+            env: napi::sys::napi_env,
+            value: napi::sys::napi_value,
+        ) -> Result<Self> {
+            // SAFETY: N-API provided the live environment and value handles.
+            let unknown = unsafe { <Unknown as FromNapiValue>::from_napi_value(env, value)? };
+            if unknown.get_type()? != ValueType::Number {
+                return Err(napi::Error::new(
+                    napi::Status::InvalidArg,
+                    "expected a JavaScript number",
+                ));
+            }
+            // SAFETY: the value type was checked as Number immediately above.
+            let number = unsafe { unknown.cast::<JsNumber>()? }.get_double()?;
+            Ok(Self(validate_napi_u32(number)?))
+        }
+    }
+
+    impl ToNapiValue for NapiU32 {
+        /// # Safety
+        ///
+        /// N-API calls this hook with a live environment handle while exporting
+        /// the validated value to JavaScript.
+        unsafe fn to_napi_value(
+            env: napi::sys::napi_env,
+            value: Self,
+        ) -> Result<napi::sys::napi_value> {
+            // SAFETY: N-API supplied the live environment for this export hook.
+            unsafe { <u32 as ToNapiValue>::to_napi_value(env, value.0) }
+        }
+    }
+}
+
+/// Serialize exact work counters as decimal strings so native JSON never
+/// rounds a Rust `u64` through JavaScript's number representation.
+fn work_json(work: &acyclic_fs::WorkCounters) -> Result<String> {
+    let mut value = serde_json::to_value(work).map_err(napi_error)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| napi_error("work counters must serialize as an object"))?;
+    for (field, value) in object {
+        let number = value
+            .as_u64()
+            .ok_or_else(|| napi_error(format!("work counter {field} must serialize as u64")))?;
+        *value = serde_json::Value::String(number.to_string());
+    }
+    serde_json::to_string(&value).map_err(napi_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Encodes a merge-plan payload in the versioned compatibility envelope.
+pub fn encode_merge_plan_json(value_json: String) -> Result<String> {
+    compat_wire::encode_merge_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Decodes a versioned merge-plan envelope to its canonical payload.
+pub fn decode_merge_plan_json(value_json: String) -> Result<String> {
+    compat_wire::decode_merge_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Encodes a merge-candidate payload in the versioned compatibility envelope.
+pub fn encode_merge_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::encode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Decodes a versioned merge-candidate envelope to its canonical payload.
+pub fn decode_merge_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::decode_merge_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Encodes a multi-root plan payload in the versioned compatibility envelope.
+pub fn encode_multi_root_plan_json(value_json: String) -> Result<String> {
+    compat_wire::encode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Decodes a versioned multi-root plan envelope to its canonical payload.
+pub fn decode_multi_root_plan_json(value_json: String) -> Result<String> {
+    compat_wire::decode_multi_root_plan_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Encodes a multi-root candidate payload in the compatibility envelope.
+pub fn encode_multi_root_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::encode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Decodes a multi-root candidate envelope to its canonical payload.
+pub fn decode_multi_root_candidate_json(value_json: String) -> Result<String> {
+    compat_wire::decode_multi_root_candidate_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Encodes a publication payload in the versioned compatibility envelope.
+pub fn encode_publication_json(value_json: String) -> Result<String> {
+    compat_wire::encode_publication_payload(&value_json).map_err(napi_wire_error)
+}
+
+#[napi]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "N-API exports receive owned strings from JavaScript"
+)]
+/// Decodes a versioned publication envelope to its canonical payload.
+pub fn decode_publication_json(value_json: String) -> Result<String> {
+    compat_wire::decode_publication_payload(&value_json).map_err(napi_wire_error)
+}
 
 /// Exact native companion capabilities returned before any filesystem work.
 #[napi(object)]
@@ -113,55 +327,55 @@ pub struct NativeObjectCacheStats {
 #[napi(object)]
 pub struct NativeObjectCacheOptions {
     /// Maximum resident immutable objects.
-    pub maximum_entries: u32,
+    pub maximum_entries: NapiU32,
     /// Maximum resident canonical object bytes.
     pub maximum_bytes: BigInt,
     /// Maximum distinct backing-store reads in flight.
-    pub maximum_in_flight: u32,
+    pub maximum_in_flight: NapiU32,
     /// Maximum followers retained behind one in-flight read.
-    pub maximum_waiters_per_object: u32,
+    pub maximum_waiters_per_object: NapiU32,
 }
 
 /// Hard policy for native local-residency prediction.
 #[napi(object)]
 pub struct NativeResidencySpeculationOptions {
     /// Maximum concurrently admitted residency operations.
-    pub maximum_active_operations: u32,
+    pub maximum_active_operations: NapiU32,
     /// Maximum bytes reserved by active residency operations.
     pub maximum_active_bytes: BigInt,
     /// Number of terminal outcomes retained for usefulness control.
-    pub outcome_window: u32,
+    pub outcome_window: NapiU32,
     /// Number of foreground/speculative traffic samples retained.
-    pub traffic_window: u32,
+    pub traffic_window: NapiU32,
     /// Maximum speculative share of observed foreground traffic.
-    pub speculative_cost_basis_points: u32,
+    pub speculative_cost_basis_points: NapiU32,
     /// Terminal sample count required before usefulness rejection.
-    pub minimum_usefulness_samples: u32,
+    pub minimum_usefulness_samples: NapiU32,
     /// Minimum useful terminal outcome ratio after the sample floor.
-    pub minimum_usefulness_basis_points: u32,
+    pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Hard policy for native cross-location promotion planning.
 #[napi(object)]
 pub struct NativePromotionSpeculationOptions {
     /// Maximum concurrently admitted promotion operations.
-    pub maximum_active_operations: u32,
+    pub maximum_active_operations: NapiU32,
     /// Maximum object bytes reserved by active promotions.
     pub maximum_active_bytes: BigInt,
     /// Maximum estimated cost reserved by active promotions.
     pub maximum_active_cost_units: BigInt,
     /// Maximum exact object-location facts accepted per plan.
-    pub maximum_residency_facts: u32,
+    pub maximum_residency_facts: NapiU32,
     /// Maximum destination capabilities accepted per plan.
-    pub maximum_destinations: u32,
+    pub maximum_destinations: NapiU32,
     /// Maximum acceptable storage tiers supplied per plan.
-    pub maximum_accepted_tiers: u32,
+    pub maximum_accepted_tiers: NapiU32,
     /// Number of terminal outcomes retained for usefulness control.
-    pub outcome_window: u32,
+    pub outcome_window: NapiU32,
     /// Terminal sample count required before usefulness rejection.
-    pub minimum_usefulness_samples: u32,
+    pub minimum_usefulness_samples: NapiU32,
     /// Minimum useful terminal outcome ratio after the sample floor.
-    pub minimum_usefulness_basis_points: u32,
+    pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Complete policy for both native speculation engines.
@@ -195,8 +409,8 @@ pub struct NativeResidencyObservation {
 /// Native residency admission result.
 #[napi(object)]
 pub struct NativeResidencyAdmission {
-    /// `admitted`, `duplicate`, or `rejected`.
-    pub status: String,
+    /// `admitted` or `rejected`.
+    pub status: NativeResidencyStatus,
     /// Typed rejection reason when status is `rejected`.
     pub rejection: Option<String>,
 }
@@ -220,7 +434,7 @@ pub struct NativeObjectResidency {
     /// Storage tier of the observed location.
     pub tier: String,
     /// Deterministic source preference; lower values are preferred.
-    pub source_priority: u32,
+    pub source_priority: NapiU32,
 }
 
 /// Writable native promotion destination capability.
@@ -235,7 +449,7 @@ pub struct NativePromotionDestination {
     /// Largest canonical object accepted by the destination.
     pub maximum_object_bytes: BigInt,
     /// Deterministic destination preference; lower values are preferred.
-    pub priority: u32,
+    pub priority: NapiU32,
     /// Exact estimated cost per canonical byte.
     pub cost_units_per_byte: BigInt,
 }
@@ -243,8 +457,8 @@ pub struct NativePromotionDestination {
 /// Bounded native promotion planning result.
 #[napi(object)]
 pub struct NativePromotionAdmission {
-    /// `admitted`, `duplicate`, or `rejected`.
-    pub status: String,
+    /// `satisfied`, `planned`, or `rejected`.
+    pub status: NativePromotionStatus,
     /// Typed rejection reason when status is `rejected`.
     pub rejection: Option<String>,
     /// Admitted or duplicate operation identity.
@@ -272,23 +486,23 @@ pub struct NativeSpeculationPreemption {
 #[napi(object)]
 pub struct NativeVolumeLimits {
     /// Maximum encoded bytes in an absolute path.
-    pub maximum_path_bytes: u32,
+    pub maximum_path_bytes: NapiU32,
     /// Maximum encoded bytes in one component.
-    pub maximum_component_bytes: u32,
+    pub maximum_component_bytes: NapiU32,
     /// Maximum number of path components.
-    pub maximum_path_depth: u32,
+    pub maximum_path_depth: NapiU32,
     /// Maximum canonical immutable-object bytes.
     pub maximum_object_bytes: BigInt,
     /// Maximum operations in one atomic mutation.
-    pub maximum_mutations_per_batch: u32,
+    pub maximum_mutations_per_batch: NapiU32,
     /// Maximum paths in one shared lookup batch.
-    pub maximum_paths_per_batch: u32,
+    pub maximum_paths_per_batch: NapiU32,
     /// Maximum exact dependencies retained by a checkout.
-    pub maximum_checkout_dependencies: u32,
+    pub maximum_checkout_dependencies: NapiU32,
     /// Maximum entries returned by one listing page.
-    pub maximum_directory_page_entries: u32,
+    pub maximum_directory_page_entries: NapiU32,
     /// Maximum authenticated tree height.
-    pub maximum_page_height: u32,
+    pub maximum_page_height: NapiU32,
     /// Maximum bytes returned by one range read.
     pub maximum_read_bytes: BigInt,
     /// Maximum files in one generation closure.
@@ -341,7 +555,7 @@ pub struct NativeLookup {
     /// Stable file identity when present.
     pub file_id: Option<Buffer>,
     /// Canonical file kind when present.
-    pub file_kind: Option<String>,
+    pub file_kind: Option<FileKind>,
     /// Number of resolved components.
     pub resolved_components: u32,
     /// Exact machine-readable work receipt.
@@ -356,7 +570,7 @@ pub struct NativeBatchLookupEntry {
     /// Stable file identity when present.
     pub file_id: Option<Buffer>,
     /// Canonical file kind when present.
-    pub file_kind: Option<String>,
+    pub file_kind: Option<FileKind>,
     /// Number of path components resolved before terminal absence.
     pub resolved_components: u32,
 }
@@ -417,7 +631,9 @@ impl NativeResolvedFiles {
 
     /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
     #[napi]
-    pub fn take(&self, index: u32) -> Result<Option<NativeResolvedFile>> {
+    pub fn take(&self, index: NapiU32) -> Result<Option<NativeResolvedFile>> {
+        let index = index.into_inner();
+
         self.files
             .lock()
             .map_err(napi_error)?
@@ -474,7 +690,7 @@ pub struct NativeDirectoryEntry {
     /// Stable file identity.
     pub file_id: Buffer,
     /// Canonical file kind.
-    pub file_kind: String,
+    pub file_kind: FileKind,
 }
 
 /// One bounded authenticated directory cursor page.
@@ -560,9 +776,9 @@ pub struct NativeTransactionOperation {
     /// Replacement logical file length.
     pub logical_bytes: Option<BigInt>,
     /// Device major identity.
-    pub major: Option<u32>,
+    pub major: Option<NapiU32>,
     /// Device minor identity.
-    pub minor: Option<u32>,
+    pub minor: Option<NapiU32>,
     /// Rename replacement policy.
     pub replace: Option<bool>,
     /// Zero-range physical allocation policy.
@@ -590,9 +806,9 @@ pub struct NativeMaterializeOptions {
     /// Existing empty host directory.
     pub destination: String,
     /// Maximum entries in one authenticated directory page.
-    pub maximum_directory_entries: u32,
+    pub maximum_directory_entries: NapiU32,
     /// Maximum spans in one authenticated extent plan.
-    pub maximum_extent_spans: u32,
+    pub maximum_extent_spans: NapiU32,
     /// Maximum bytes in one host transfer allocation.
     pub transfer_bytes: BigInt,
 }
@@ -665,13 +881,13 @@ pub struct NativeFileRecord {
     /// Stable 16-byte file identity.
     pub file_id: Buffer,
     /// Canonical file-kind name.
-    pub file_kind: String,
+    pub file_kind: FileKind,
     /// Number of namespace bindings referring to this record.
     pub link_count: BigInt,
     /// Canonical 33-byte metadata object identity.
     pub metadata_object: Buffer,
     /// Canonical payload variant name.
-    pub payload_kind: String,
+    pub payload_kind: FilePayloadKind,
     /// Logical payload byte length when the variant has one.
     pub logical_bytes: Option<BigInt>,
     /// Canonical 33-byte payload object identity when externally stored.
@@ -756,7 +972,7 @@ pub struct NativeTreeEntry {
     /// Stable 16-byte target file identity.
     pub file_id: Buffer,
     /// Canonical target file-kind name.
-    pub file_kind: String,
+    pub file_kind: FileKind,
 }
 
 /// Bounded generation diff result.
@@ -1084,11 +1300,11 @@ impl NativeSpeculation {
             .map_err(napi_error)?;
         Ok(match admission {
             ResidencyAdmission::Admitted(_) => NativeResidencyAdmission {
-                status: "admitted".to_owned(),
+                status: NativeResidencyStatus::Admitted,
                 rejection: None,
             },
             ResidencyAdmission::Rejected(rejection) => NativeResidencyAdmission {
-                status: "rejected".to_owned(),
+                status: NativeResidencyStatus::Rejected,
                 rejection: Some(rejection.as_str().to_owned()),
             },
         })
@@ -1123,7 +1339,7 @@ impl NativeSpeculation {
             .map_err(napi_error)?;
         Ok(NativeResidencyExecution {
             object_bytes: bigint(receipt.value),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -1366,11 +1582,11 @@ pub struct NativeOperationWindowClose {
 #[derive(Clone, Copy)]
 pub struct NativeOperationReconcileOptions {
     /// Maximum immutable generations examined for ancestry.
-    pub maximum_generations: u32,
+    pub maximum_generations: NapiU32,
     /// Maximum semantic changes admitted by reconciliation.
-    pub maximum_changes: u32,
+    pub maximum_changes: NapiU32,
     /// Maximum exact conflicts returned.
-    pub maximum_conflicts: u32,
+    pub maximum_conflicts: NapiU32,
 }
 
 /// Workspace-aware final-close outcome.
@@ -1404,8 +1620,8 @@ impl NativeResolvedFile {
     /// Terminal file kind authenticated by the pinned generation.
     #[napi(getter)]
     #[must_use]
-    pub fn kind(&self) -> String {
-        file_kind(self.inner.description().kind).to_owned()
+    pub fn kind(&self) -> FileKind {
+        self.inner.description().kind
     }
 
     /// Logical content length authenticated by the pinned generation.
@@ -1440,7 +1656,7 @@ impl NativeResolvedFile {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -1454,7 +1670,7 @@ impl NativeResolvedFile {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 }
@@ -1498,11 +1714,11 @@ pub struct NativeJoinOptions {
     /// `merge`, `rebase`, `squash`, or `cherry-pick`.
     pub history: String,
     /// Maximum lineage generations examined while finding an ancestor.
-    pub maximum_generations: u32,
+    pub maximum_generations: NapiU32,
     /// Maximum semantic changes admitted by the plan.
-    pub maximum_changes: u32,
+    pub maximum_changes: NapiU32,
     /// Maximum exact conflicts returned by application.
-    pub maximum_conflicts: u32,
+    pub maximum_conflicts: NapiU32,
     /// Optional caller-pinned source generation.
     pub source_generation: Option<Buffer>,
     /// Optional exact target CAS precondition.
@@ -1560,11 +1776,11 @@ pub struct NativeSourceOptions {
     /// `pinned` or `tracking`.
     pub mode: String,
     /// Maximum paths admitted by one baseline or reconciliation.
-    pub maximum_paths: u32,
+    pub maximum_paths: NapiU32,
     /// Maximum sparse spans admitted per regular file.
-    pub maximum_extent_spans: u32,
+    pub maximum_extent_spans: NapiU32,
     /// Maximum pending native changes before fail-closed rescan.
-    pub maximum_queued_changes: u32,
+    pub maximum_queued_changes: NapiU32,
     /// Canonical portable prefixes omitted from capture and deletion inference.
     pub excluded_paths: Option<Vec<String>>,
 }
@@ -1647,7 +1863,7 @@ pub struct NativeTransactionConflict {
 )]
 pub struct NativeWorkspaceStat {
     pub file_id: Buffer,
-    pub kind: String,
+    pub kind: FileKind,
     pub link_count: BigInt,
     pub logical_bytes: Option<BigInt>,
     pub metadata: NativeWorkspaceMetadata,
@@ -1694,7 +1910,7 @@ pub struct NativeWorkspaceName {
 pub struct NativeWorkspaceDirectoryEntry {
     pub name: NativeWorkspaceName,
     pub file_id: Buffer,
-    pub kind: String,
+    pub kind: FileKind,
 }
 
 /// One bounded authenticated directory page.
@@ -1950,8 +2166,10 @@ impl NativeWorkspace {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeWorkspaceExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
+
         Box::pin(self.inner.plan_extents(
             &path,
             bigint_u64(&offset, "offset")?,
@@ -2064,10 +2282,14 @@ impl NativeWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Buffer>,
-        maximum_generations: u32,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_generations: NapiU32,
+        maximum_changes: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeWorkspaceRebaseResult> {
+        let maximum_generations = maximum_generations.into_inner();
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         self.inner
             .live_rebase(
                 native_idempotency_key(idempotency_key)?,
@@ -2090,8 +2312,10 @@ impl NativeWorkspace {
         &self,
         from: &NativeGeneration,
         to: &NativeGeneration,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
+        let maximum_changes = maximum_changes.into_inner();
+
         self.inner
             .diff(&from.inner, &to.inner, maximum_changes)
             .await
@@ -2115,9 +2339,9 @@ impl NativeWorkspace {
             .join_into(&target.inner)
             .history(history)
             .bounds(
-                options.maximum_generations,
-                options.maximum_changes,
-                options.maximum_conflicts,
+                options.maximum_generations.into_inner(),
+                options.maximum_changes.into_inner(),
+                options.maximum_conflicts.into_inner(),
             )
             .plan_pinned(
                 match options.source_generation {
@@ -2228,8 +2452,10 @@ impl NativeChangeSet {
     pub async fn compose(
         &self,
         next: &NativeChangeSet,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
+        let maximum_changes = maximum_changes.into_inner();
+
         self.inner
             .compose(&next.inner, maximum_changes)
             .await
@@ -2390,8 +2616,10 @@ impl NativeGeneration {
         &self,
         path: String,
         after: Option<NativeWorkspaceName>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeWorkspaceDirectoryPage> {
+        let maximum_entries = maximum_entries.into_inner();
+
         let after = after.map(native_workspace_name).transpose()?;
         Box::pin(
             self.inner
@@ -2416,8 +2644,10 @@ impl NativeGeneration {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeWorkspaceExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
+
         Box::pin(self.inner.plan_extents(
             &path,
             bigint_u64(&offset, "offset")?,
@@ -2575,9 +2805,9 @@ const fn operation_reconcile_limits(
     options: NativeOperationReconcileOptions,
 ) -> OperationReconcileLimits {
     OperationReconcileLimits {
-        maximum_generations: options.maximum_generations,
-        maximum_changes: options.maximum_changes,
-        maximum_conflicts: options.maximum_conflicts,
+        maximum_generations: options.maximum_generations.into_inner(),
+        maximum_changes: options.maximum_changes.into_inner(),
+        maximum_conflicts: options.maximum_conflicts.into_inner(),
     }
 }
 
@@ -2968,7 +3198,12 @@ impl NativeWorkspaceTransaction {
     ///
     /// Returns dependency-probe, authentication, storage, or replay failures.
     #[napi]
-    pub async fn rebase(&self, maximum_conflicts: u32) -> Result<NativeTransactionRebaseResult> {
+    pub async fn rebase(
+        &self,
+        maximum_conflicts: NapiU32,
+    ) -> Result<NativeTransactionRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         self.inner
             .lock()
             .await
@@ -3470,8 +3705,10 @@ impl NativeWorkspaceContextRegistry {
         &self,
         parent_context_id: Buffer,
         child_context_id: Buffer,
-        maximum: u32,
+        maximum: NapiU32,
     ) -> Result<Buffer> {
+        let maximum = maximum.into_inner();
+
         let discarded = self
             .inner
             .discard_subtree(
@@ -3551,8 +3788,10 @@ impl NativeWorkspaceGraph {
     pub async fn ancestors(
         &self,
         workspace_id: Buffer,
-        maximum: u32,
+        maximum: NapiU32,
     ) -> Result<Vec<NativeWorkspaceLineageRecord>> {
+        let maximum = maximum.into_inner();
+
         self.inner
             .ancestors(WorkspaceId::from_bytes(fixed_16(&workspace_id)?), maximum)
             .await
@@ -3863,9 +4102,9 @@ impl NativeFs {
                 PathBuf::from(path),
                 SourceOptions {
                     mode,
-                    maximum_paths: options.maximum_paths,
-                    maximum_extent_spans: options.maximum_extent_spans,
-                    maximum_queued_changes: options.maximum_queued_changes,
+                    maximum_paths: options.maximum_paths.into_inner(),
+                    maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+                    maximum_queued_changes: options.maximum_queued_changes.into_inner(),
                     excluded_paths: options
                         .excluded_paths
                         .unwrap_or_default()
@@ -3988,7 +4227,7 @@ impl NativeFs {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4028,9 +4267,11 @@ impl NativeFs {
         &self,
         manifest: NativeExportManifest,
         cursor: BigInt,
-        maximum_objects: u32,
+        maximum_objects: NapiU32,
         maximum_object_bytes: BigInt,
     ) -> Result<NativeGenerationTransferBatch> {
+        let maximum_objects = maximum_objects.into_inner();
+
         let manifest = decode_export_manifest(&manifest)?;
         let receipt = self
             .inner
@@ -4056,7 +4297,7 @@ impl NativeFs {
                 .into_iter()
                 .map(|object| Buffer::from(object.bytes.to_vec()))
                 .collect(),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4072,8 +4313,10 @@ impl NativeFs {
         manifest: NativeExportManifest,
         cursor: BigInt,
         objects: Vec<Buffer>,
-        maximum_objects: u32,
+        maximum_objects: NapiU32,
     ) -> Result<NativeGenerationTransferCursor> {
+        let maximum_objects = maximum_objects.into_inner();
+
         let manifest = decode_export_manifest(&manifest)?;
         let objects = objects
             .into_iter()
@@ -4093,7 +4336,7 @@ impl NativeFs {
             .map_err(napi_error)?;
         Ok(NativeGenerationTransferCursor {
             next_object: BigInt::from(receipt.value.next_object()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4145,7 +4388,7 @@ impl NativeVolume {
     /// Returns a JavaScript error if the canonical JSON receipt cannot be encoded.
     #[napi(getter)]
     pub fn acquisition_work_json(&self) -> Result<String> {
-        serde_json::to_string(&self.acquisition_work).map_err(napi_error)
+        work_json(&self.acquisition_work)
     }
 
     /// Computes one bounded Merkle-aware semantic generation diff.
@@ -4159,8 +4402,10 @@ impl NativeVolume {
         &self,
         before: Buffer,
         after: Buffer,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeGenerationDiff> {
+        let maximum_changes = maximum_changes.into_inner();
+
         let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &before,
             "before generation identity",
@@ -4230,7 +4475,7 @@ impl NativeCheckout {
     /// Returns a JavaScript error if the canonical JSON receipt cannot be encoded.
     #[napi(getter)]
     pub fn acquisition_work_json(&self) -> Result<String> {
-        serde_json::to_string(&self.acquisition_work).map_err(napi_error)
+        work_json(&self.acquisition_work)
     }
 
     /// Applies one ordered sparse mutation batch atomically within this volume.
@@ -4269,7 +4514,7 @@ impl NativeCheckout {
                 .into_iter()
                 .map(|identity| identity.map(|value| Buffer::from(value.into_bytes().to_vec())))
                 .collect(),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4288,7 +4533,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeCheckpointResult {
             generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4352,9 +4597,12 @@ impl NativeCheckout {
     pub async fn prepare_merge(
         &self,
         theirs: Buffer,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_changes: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeMergePreparation> {
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &theirs,
             "merge generation identity",
@@ -4417,8 +4665,8 @@ impl NativeCheckout {
             &mut checkout,
             &MaterializeOptions {
                 destination: options.destination.into(),
-                maximum_directory_entries: options.maximum_directory_entries,
-                maximum_extent_spans: options.maximum_extent_spans,
+                maximum_directory_entries: options.maximum_directory_entries.into_inner(),
+                maximum_extent_spans: options.maximum_extent_spans.into_inner(),
                 transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
             },
             boundary_budget(),
@@ -4433,7 +4681,7 @@ impl NativeCheckout {
             special_files: bigint(receipt.value.special_files),
             logical_file_bytes: bigint(receipt.value.logical_file_bytes),
             written_bytes: bigint(receipt.value.written_bytes),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4450,9 +4698,12 @@ impl NativeCheckout {
         &self,
         source_root: String,
         paths: Vec<String>,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
+
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
         let paths = paths
@@ -4479,7 +4730,7 @@ impl NativeCheckout {
             examined_paths: bigint(receipt.value.examined_paths),
             changed_paths: bigint(receipt.value.changed_paths),
             staged_file_bytes: bigint(receipt.value.staged_file_bytes),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4499,9 +4750,12 @@ impl NativeCheckout {
     pub async fn capture_baseline(
         &self,
         source_root: String,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
+
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
@@ -4523,7 +4777,7 @@ impl NativeCheckout {
             examined_paths: bigint(receipt.value.examined_paths),
             changed_paths: bigint(receipt.value.changed_paths),
             staged_file_bytes: bigint(receipt.value.staged_file_bytes),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4537,9 +4791,11 @@ impl NativeCheckout {
     pub fn watch(
         &self,
         source_root: String,
-        maximum_queued_changes: u32,
+        maximum_queued_changes: NapiU32,
         recursive: bool,
     ) -> Result<NativeWatcher> {
+        let maximum_queued_changes = maximum_queued_changes.into_inner();
+
         let source_root = PathBuf::from(source_root);
         let watcher = FsNativeWatch::open_with_profile(
             &source_root,
@@ -4585,9 +4841,9 @@ impl NativeCheckout {
         Ok(NativeLookup {
             exists: record.is_some(),
             file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
-            file_kind: record.map(|value| file_kind(value.kind).to_owned()),
+            file_kind: record.map(|value| value.kind),
             resolved_components: u32::from(receipt.value.resolved_components),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4627,7 +4883,7 @@ impl NativeCheckout {
                 NativeBatchLookupEntry {
                     exists: record.is_some(),
                     file_id: record.map(|value| Buffer::from(value.file_id.into_bytes().to_vec())),
-                    file_kind: record.map(|value| file_kind(value.kind).to_owned()),
+                    file_kind: record.map(|value| value.kind),
                     resolved_components: u32::from(entry.resolved_components),
                 }
             })
@@ -4635,7 +4891,7 @@ impl NativeCheckout {
         Ok(NativeBatchLookup {
             entries,
             retained_allocation_bytes: bigint(receipt.value.retained_allocation_bytes),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4666,7 +4922,7 @@ impl NativeCheckout {
             exists: record.is_some(),
             record,
             metadata_canonical_bytes,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4687,7 +4943,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeFileRecordRead {
             record: encode_file_record(receipt.value),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4706,7 +4962,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
             canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4726,7 +4982,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMetadataResult {
             canonical_bytes: Buffer::from(encode_file_metadata(receipt.value).map_err(napi_error)?),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4885,7 +5141,7 @@ impl NativeCheckout {
         Ok(NativeNamedAttributeResult {
             exists: receipt.value.is_some(),
             bytes: receipt.value.map(|value| Buffer::from(value.to_vec())),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -4900,8 +5156,10 @@ impl NativeCheckout {
         path: String,
         after_class: Option<String>,
         after_name: Option<Buffer>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeNamedAttributePage> {
+        let maximum_entries = maximum_entries.into_inner();
+
         let path = native_path(&path, self.config)?;
         let after = match (after_class, after_name) {
             (None, None) => None,
@@ -4938,7 +5196,7 @@ impl NativeCheckout {
                 })
                 .collect(),
             has_more: receipt.value.has_more,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5059,7 +5317,7 @@ impl NativeCheckout {
                         })
                         .collect(),
                 ),
-                work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+                work_json: work_json(&receipt.work)?,
             })
         })
     }
@@ -5099,7 +5357,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5132,7 +5390,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5148,8 +5406,10 @@ impl NativeCheckout {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
+
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -5180,8 +5440,10 @@ impl NativeCheckout {
         file_id: Buffer,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
+
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -5228,7 +5490,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeExtentSeek {
             offset: receipt.value.map(bigint),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5260,7 +5522,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeExtentSeek {
             offset: receipt.value.map(bigint),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5280,7 +5542,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5300,7 +5562,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.to_vec()),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5315,8 +5577,10 @@ impl NativeCheckout {
         &self,
         path: String,
         after: Option<String>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeDirectoryPage> {
+        let maximum_entries = maximum_entries.into_inner();
+
         let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
         let path = NamespacePath::from_portable_in_profile(
             &portable,
@@ -5346,13 +5610,13 @@ impl NativeCheckout {
             .map(|entry| NativeDirectoryEntry {
                 name: Buffer::from(entry.name.as_bytes().to_vec()),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-                file_kind: file_kind(entry.kind).to_owned(),
+                file_kind: entry.kind,
             })
             .collect();
         Ok(NativeDirectoryPage {
             entries,
             has_more: receipt.value.has_more,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5368,8 +5632,10 @@ impl NativeCheckout {
         &self,
         path: String,
         after: Option<String>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeDirectoryRecordPage> {
+        let maximum_entries = maximum_entries.into_inner();
+
         let path = native_path(&path, self.config)?;
         let after = after
             .as_deref()
@@ -5402,7 +5668,7 @@ impl NativeCheckout {
         Ok(NativeDirectoryRecordPage {
             entries,
             has_more: receipt.value.has_more,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5428,7 +5694,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
             file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5449,7 +5715,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
             file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5479,7 +5745,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
             file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -5513,9 +5779,11 @@ impl NativeCheckout {
         &self,
         path: String,
         kind: String,
-        major: u32,
-        minor: u32,
+        major: NapiU32,
+        minor: NapiU32,
     ) -> Result<NativeMutationResult> {
+        let major = major.into_inner();
+        let minor = minor.into_inner();
         let path = native_path(&path, self.config)?;
         let kind = device_kind(&kind)?;
         let mut checkout = self.inner.lock().await;
@@ -5589,7 +5857,7 @@ impl NativeCheckout {
             .map_err(napi_error)?;
         Ok(NativeMutationResult {
             file_id: None,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -6003,9 +6271,12 @@ impl NativeCheckout {
         &self,
         operations: Vec<NativeTransactionOperation>,
         operation_id: Buffer,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_attempts: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeAuthoredLiveMutationResult> {
+        let maximum_attempts = maximum_attempts.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         let maximum =
             usize::try_from(self.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
         if operations.len() > maximum || operations.capacity() > maximum {
@@ -6078,9 +6349,12 @@ impl NativeCheckout {
     pub async fn resume_live(
         &self,
         operation_id: Buffer,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_attempts: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeLiveMutationResult> {
+        let maximum_attempts = maximum_attempts.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = self.inner.lock().await;
         checkout
@@ -6114,7 +6388,9 @@ impl NativeCheckout {
     /// Returns a JavaScript error for unsupported consistency, zero bounds,
     /// corruption, cancellation, storage, replay, or bounded-work failure.
     #[napi]
-    pub async fn rebase_head(&self, maximum_conflicts: u32) -> Result<NativeRebaseResult> {
+    pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.into_inner();
+
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -6143,7 +6419,7 @@ impl NativeCheckout {
             generation_id,
             conflict_count,
             truncated,
-            work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+            work_json: work_json(&receipt.work)?,
         })
     }
 
@@ -6244,9 +6520,12 @@ impl NativeWatcher {
     #[napi]
     pub async fn reconcile(
         &self,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchReconcileResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
+
         let _operation = self.operation.lock().await;
         ensure_no_pending_interval(&self.pending)?;
         self.verify_capture_root()?;
@@ -6292,7 +6571,7 @@ impl NativeWatcher {
                 examined_paths: bigint(pending.baseline.examined_paths),
                 changed_paths: bigint(pending.baseline.changed_paths),
                 staged_file_bytes: bigint(pending.baseline.staged_file_bytes),
-                work_json: serde_json::to_string(&pending.work).map_err(napi_error)?,
+                work_json: work_json(&pending.work)?,
             },
             post_baseline,
         })
@@ -6308,10 +6587,14 @@ impl NativeWatcher {
     #[napi]
     pub async fn poll_capture(
         &self,
-        maximum_changes: u32,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_changes: NapiU32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchCaptureResult> {
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
+
         let _operation = self.operation.lock().await;
         self.verify_capture_root()?;
         let pending = {
@@ -6394,7 +6677,7 @@ impl NativeWatcher {
             examined_paths: bigint(receipt.value.capture.examined_paths),
             changed_paths: bigint(receipt.value.capture.changed_paths),
             staged_file_bytes: bigint(receipt.value.capture.staged_file_bytes),
-            work_json: serde_json::to_string(&work).map_err(napi_error)?,
+            work_json: work_json(&work)?,
         })
     }
 }
@@ -6710,7 +6993,7 @@ fn native_extent_span(span: &acyclic_fs::kernel::ExtentSlice) -> NativeExtentSpa
 fn native_extent_plan(
     receipt: acyclic_fs::FsReceipt<Option<acyclic_fs::kernel::ExtentPlan>>,
 ) -> Result<NativeExtentPlan> {
-    let work_json = serde_json::to_string(&receipt.work).map_err(napi_error)?;
+    let work_json = work_json(&receipt.work)?;
     match receipt.value {
         None => Ok(NativeExtentPlan {
             kind: "inline".to_owned(),
@@ -6752,17 +7035,18 @@ fn encode_generation_diff(
             })
             .collect(),
         truncated: diff.truncated,
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
 fn encode_file_record(record: FileRecord) -> NativeFileRecord {
+    let payload_kind = record.payload.kind();
     let mut result = NativeFileRecord {
         file_id: Buffer::from(record.file_id.into_bytes().to_vec()),
-        file_kind: file_kind(record.kind).to_owned(),
+        file_kind: record.kind,
         link_count: bigint(record.link_count),
         metadata_object: encode_object_id(record.metadata),
-        payload_kind: String::new(),
+        payload_kind,
         logical_bytes: None,
         payload_object: None,
         inline_bytes: None,
@@ -6771,7 +7055,6 @@ fn encode_file_record(record: FileRecord) -> NativeFileRecord {
     };
     match record.payload {
         FilePayload::InlineRegular(bytes) => {
-            "inline-regular".clone_into(&mut result.payload_kind);
             result.logical_bytes = Some(bigint(u64::try_from(bytes.as_bytes().len()).unwrap_or(0)));
             result.inline_bytes = Some(Buffer::from(bytes.as_bytes().to_vec()));
         }
@@ -6779,25 +7062,21 @@ fn encode_file_record(record: FileRecord) -> NativeFileRecord {
             logical_bytes,
             extents,
         } => {
-            "regular".clone_into(&mut result.payload_kind);
             result.logical_bytes = Some(bigint(logical_bytes));
             result.payload_object = Some(encode_object_id(extents));
         }
         FilePayload::Directory { entries } => {
-            "directory".clone_into(&mut result.payload_kind);
             result.payload_object = Some(encode_object_id(entries));
         }
         FilePayload::SymbolicLink {
             target_bytes,
             target,
         } => {
-            "symbolic-link".clone_into(&mut result.payload_kind);
             result.logical_bytes = Some(bigint(target_bytes));
             result.payload_object = Some(encode_object_id(target));
         }
-        FilePayload::Empty => "empty".clone_into(&mut result.payload_kind),
+        FilePayload::Empty => {}
         FilePayload::Device { major, minor } => {
-            "device".clone_into(&mut result.payload_kind);
             result.device_major = Some(major);
             result.device_minor = Some(minor);
         }
@@ -6805,7 +7084,6 @@ fn encode_file_record(record: FileRecord) -> NativeFileRecord {
             payload_bytes,
             payload,
         } => {
-            "reparse-point".clone_into(&mut result.payload_kind);
             result.logical_bytes = Some(bigint(payload_bytes));
             result.payload_object = Some(encode_object_id(payload));
         }
@@ -6817,7 +7095,7 @@ fn encode_tree_entry(entry: &TreeEntry) -> NativeTreeEntry {
     NativeTreeEntry {
         name: encode_name_component(&entry.name),
         file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-        file_kind: file_kind(entry.kind).to_owned(),
+        file_kind: entry.kind,
     }
 }
 
@@ -6832,7 +7110,7 @@ fn encode_merge_preparation(
     preparation: MergePreparation,
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeMergePreparation> {
-    let work_json = serde_json::to_string(&work).map_err(napi_error)?;
+    let work_json = work_json(&work)?;
     Ok(match preparation {
         MergePreparation::Prepared { generation_id } => NativeMergePreparation {
             status: "prepared".to_owned(),
@@ -6878,25 +7156,28 @@ fn decode_object_id(bytes: &[u8]) -> Result<ObjectId> {
 fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<SpeculationOptions> {
     Ok(SpeculationOptions {
         residency: ResidencySpeculatorOptions {
-            maximum_active_operations: options.residency.maximum_active_operations,
+            maximum_active_operations: options.residency.maximum_active_operations.into_inner(),
             maximum_active_bytes: bigint_u64(
                 &options.residency.maximum_active_bytes,
                 "maximumActiveBytes",
             )?,
-            outcome_window: options.residency.outcome_window,
-            traffic_window: options.residency.traffic_window,
+            outcome_window: options.residency.outcome_window.into_inner(),
+            traffic_window: options.residency.traffic_window.into_inner(),
             speculative_cost_basis_points: u16_from_u32(
-                options.residency.speculative_cost_basis_points,
+                options.residency.speculative_cost_basis_points.into_inner(),
                 "speculativeCostBasisPoints",
             )?,
-            minimum_usefulness_samples: options.residency.minimum_usefulness_samples,
+            minimum_usefulness_samples: options.residency.minimum_usefulness_samples.into_inner(),
             minimum_usefulness_basis_points: u16_from_u32(
-                options.residency.minimum_usefulness_basis_points,
+                options
+                    .residency
+                    .minimum_usefulness_basis_points
+                    .into_inner(),
                 "residency minimumUsefulnessBasisPoints",
             )?,
         },
         promotion: PromotionSpeculatorOptions {
-            maximum_active_operations: options.promotion.maximum_active_operations,
+            maximum_active_operations: options.promotion.maximum_active_operations.into_inner(),
             maximum_active_bytes: bigint_u64(
                 &options.promotion.maximum_active_bytes,
                 "maximumActiveBytes",
@@ -6905,13 +7186,16 @@ fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<Spec
                 &options.promotion.maximum_active_cost_units,
                 "maximumActiveCostUnits",
             )?,
-            maximum_residency_facts: options.promotion.maximum_residency_facts,
-            maximum_destinations: options.promotion.maximum_destinations,
-            maximum_accepted_tiers: options.promotion.maximum_accepted_tiers,
-            outcome_window: options.promotion.outcome_window,
-            minimum_usefulness_samples: options.promotion.minimum_usefulness_samples,
+            maximum_residency_facts: options.promotion.maximum_residency_facts.into_inner(),
+            maximum_destinations: options.promotion.maximum_destinations.into_inner(),
+            maximum_accepted_tiers: options.promotion.maximum_accepted_tiers.into_inner(),
+            outcome_window: options.promotion.outcome_window.into_inner(),
+            minimum_usefulness_samples: options.promotion.minimum_usefulness_samples.into_inner(),
             minimum_usefulness_basis_points: u16_from_u32(
-                options.promotion.minimum_usefulness_basis_points,
+                options
+                    .promotion
+                    .minimum_usefulness_basis_points
+                    .into_inner(),
                 "promotion minimumUsefulnessBasisPoints",
             )?,
         },
@@ -6928,7 +7212,7 @@ fn native_object_residency(value: &NativeObjectResidency) -> Result<ObjectReside
         object_id: decode_object_id(&value.object_id)?,
         location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
         tier: native_storage_tier(&value.tier)?,
-        source_priority: u16_from_u32(value.source_priority, "sourcePriority")?,
+        source_priority: u16_from_u32(value.source_priority.into_inner(), "sourcePriority")?,
     })
 }
 
@@ -6940,7 +7224,7 @@ fn native_promotion_destination(
         tier: native_storage_tier(&value.tier)?,
         writable: value.writable,
         maximum_object_bytes: bigint_u64(&value.maximum_object_bytes, "maximumObjectBytes")?,
-        priority: u16_from_u32(value.priority, "promotion priority")?,
+        priority: u16_from_u32(value.priority.into_inner(), "promotion priority")?,
         cost_units_per_byte: bigint_u64(&value.cost_units_per_byte, "costUnitsPerByte")?,
     })
 }
@@ -6948,7 +7232,7 @@ fn native_promotion_destination(
 fn native_promotion_admission(value: PromotionAdmission) -> NativePromotionAdmission {
     match value {
         PromotionAdmission::Satisfied(residency) => NativePromotionAdmission {
-            status: "satisfied".to_owned(),
+            status: NativePromotionStatus::Satisfied,
             rejection: None,
             operation_id: None,
             object_id: Some(encode_object_id(residency.object_id)),
@@ -6957,7 +7241,7 @@ fn native_promotion_admission(value: PromotionAdmission) -> NativePromotionAdmis
             estimated_cost_units: None,
         },
         PromotionAdmission::Planned(plan) => NativePromotionAdmission {
-            status: "planned".to_owned(),
+            status: NativePromotionStatus::Planned,
             rejection: None,
             operation_id: Some(Buffer::from(
                 plan.candidate.operation_id.into_bytes().to_vec(),
@@ -6970,7 +7254,7 @@ fn native_promotion_admission(value: PromotionAdmission) -> NativePromotionAdmis
             estimated_cost_units: Some(bigint(plan.estimated_cost_units)),
         },
         PromotionAdmission::Rejected(rejection) => NativePromotionAdmission {
-            status: "rejected".to_owned(),
+            status: NativePromotionStatus::Rejected,
             rejection: Some(rejection.as_str().to_owned()),
             operation_id: None,
             object_id: None,
@@ -7033,7 +7317,7 @@ fn encode_checkpoint_receipt(
 ) -> Result<NativeCheckpointResult> {
     Ok(NativeCheckpointResult {
         generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),
-        work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+        work_json: work_json(&receipt.work)?,
     })
 }
 
@@ -7042,7 +7326,7 @@ fn encode_created_mutation(
 ) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: Some(Buffer::from(receipt.value.into_bytes().to_vec())),
-        work_json: serde_json::to_string(&receipt.work).map_err(napi_error)?,
+        work_json: work_json(&receipt.work)?,
     })
 }
 
@@ -7054,7 +7338,7 @@ fn encode_export_manifest(
     Ok(NativeExportManifest {
         manifest_bytes: Buffer::from(manifest_bytes),
         objects: manifest.objects.into_iter().map(encode_object_id).collect(),
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
@@ -7099,7 +7383,7 @@ fn encode_watch_batch(
             next_sequence: Some(bigint(next_sequence.get())),
             reason: None,
             changes: changes.into_iter().map(encode_watch_change).collect(),
-            work_json: serde_json::to_string(&work).map_err(napi_error)?,
+            work_json: work_json(&work)?,
         }),
         WatchBatch::RescanRequired { epoch, reason } => Ok(NativeWatchBatch {
             status: "rescan-required".to_owned(),
@@ -7108,7 +7392,7 @@ fn encode_watch_batch(
             next_sequence: None,
             reason: Some(watch_reason(reason).to_owned()),
             changes: Vec::new(),
-            work_json: serde_json::to_string(&work).map_err(napi_error)?,
+            work_json: work_json(&work)?,
         }),
     }
 }
@@ -7220,8 +7504,8 @@ fn native_authored_transaction(
         "create-device" => AuthoredMutation::CreateDevice {
             path: native_path(&required(path, "path")?, config)?,
             kind: device_kind(&required(file_kind, "fileKind")?)?,
-            major: required(major, "major")?,
-            minor: required(minor, "minor")?,
+            major: required(major.map(NapiU32::into_inner), "major")?,
+            minor: required(minor.map(NapiU32::into_inner), "minor")?,
             metadata,
         },
         "create-reparse-point" => AuthoredMutation::CreateReparsePoint {
@@ -7367,7 +7651,7 @@ fn native_mutation(
 ) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: file_id.map(|value| Buffer::from(value.into_bytes().to_vec())),
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
@@ -7403,8 +7687,10 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
     let unicode = UnicodePolicy::from_public_str(&options.unicode)
         .ok_or_else(|| Error::new(Status::InvalidArg, "invalid Unicode policy"))?;
     let limits = options.limits;
-    let maximum_path_depth = u16_from_u32(limits.maximum_path_depth, "maximumPathDepth")?;
-    let maximum_page_height = u16_from_u32(limits.maximum_page_height, "maximumPageHeight")?;
+    let maximum_path_depth =
+        u16_from_u32(limits.maximum_path_depth.into_inner(), "maximumPathDepth")?;
+    let maximum_page_height =
+        u16_from_u32(limits.maximum_page_height.into_inner(), "maximumPageHeight")?;
     VolumeConfig {
         profile,
         concurrency,
@@ -7415,14 +7701,14 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
         hard_links: options.hard_links,
         sparse_files: options.sparse_files,
         limits: VolumeLimits {
-            maximum_path_bytes: limits.maximum_path_bytes,
-            maximum_component_bytes: limits.maximum_component_bytes,
+            maximum_path_bytes: limits.maximum_path_bytes.into_inner(),
+            maximum_component_bytes: limits.maximum_component_bytes.into_inner(),
             maximum_path_depth,
             maximum_object_bytes: bigint_u64(&limits.maximum_object_bytes, "maximumObjectBytes")?,
-            maximum_mutations_per_batch: limits.maximum_mutations_per_batch,
-            maximum_paths_per_batch: limits.maximum_paths_per_batch,
-            maximum_checkout_dependencies: limits.maximum_checkout_dependencies,
-            maximum_directory_page_entries: limits.maximum_directory_page_entries,
+            maximum_mutations_per_batch: limits.maximum_mutations_per_batch.into_inner(),
+            maximum_paths_per_batch: limits.maximum_paths_per_batch.into_inner(),
+            maximum_checkout_dependencies: limits.maximum_checkout_dependencies.into_inner(),
+            maximum_directory_page_entries: limits.maximum_directory_page_entries.into_inner(),
             maximum_page_height,
             maximum_read_bytes: bigint_u64(&limits.maximum_read_bytes, "maximumReadBytes")?,
             maximum_files_per_generation: bigint_u64(
@@ -7446,7 +7732,7 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
 fn mutation_result(work: acyclic_fs::WorkCounters) -> Result<NativeMutationResult> {
     Ok(NativeMutationResult {
         file_id: None,
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
@@ -7459,10 +7745,10 @@ fn bigint(value: u64) -> BigInt {
 
 fn native_object_cache_options(options: NativeObjectCacheOptions) -> Result<ObjectCacheOptions> {
     let converted = ObjectCacheOptions {
-        maximum_entries: options.maximum_entries,
+        maximum_entries: options.maximum_entries.into_inner(),
         maximum_bytes: bigint_u64(&options.maximum_bytes, "maximumBytes")?,
-        maximum_in_flight: options.maximum_in_flight,
-        maximum_waiters_per_object: options.maximum_waiters_per_object,
+        maximum_in_flight: options.maximum_in_flight.into_inner(),
+        maximum_waiters_per_object: options.maximum_waiters_per_object.into_inner(),
     };
     drop(options);
     Ok(converted)
@@ -7519,7 +7805,7 @@ fn commit_result(
         epoch,
         sequence,
         committed_fingerprint: fingerprint,
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
@@ -7603,7 +7889,7 @@ fn live_mutation_result(
         conflict_count,
         truncated,
         committed_fingerprint: fingerprint,
-        work_json: serde_json::to_string(&work).map_err(napi_error)?,
+        work_json: work_json(&work)?,
     })
 }
 
@@ -7614,20 +7900,6 @@ fn live_outcome_resolved(outcome: &LiveMutationOutcome) -> bool {
             | LiveMutationOutcome::AlreadyCommitted { .. }
             | LiveMutationOutcome::IdempotencyConflict { .. }
     )
-}
-
-fn file_kind(kind: FileKind) -> &'static str {
-    match kind {
-        FileKind::Regular => "regular",
-        FileKind::Directory => "directory",
-        FileKind::SymbolicLink => "symbolic-link",
-        FileKind::Fifo => "fifo",
-        FileKind::Socket => "socket",
-        FileKind::CharacterDevice => "character-device",
-        FileKind::BlockDevice => "block-device",
-        FileKind::ReparsePoint => "reparse-point",
-        FileKind::MountBoundary => "mount-boundary",
-    }
 }
 
 fn signed_bigint(value: i64) -> BigInt {
@@ -7661,7 +7933,7 @@ fn native_workspace_metadata(value: WorkspaceMetadata) -> NativeWorkspaceMetadat
 fn native_workspace_stat(value: WorkspaceStat) -> NativeWorkspaceStat {
     NativeWorkspaceStat {
         file_id: Buffer::from(value.file_id.into_bytes().to_vec()),
-        kind: file_kind(value.kind).to_owned(),
+        kind: value.kind,
         link_count: bigint(value.link_count),
         logical_bytes: value.logical_bytes.map(bigint),
         metadata: native_workspace_metadata(value.metadata),
@@ -7689,7 +7961,7 @@ fn native_workspace_directory_page(value: WorkspaceDirectoryPage) -> NativeWorks
                     bytes: Buffer::from(entry.name.as_bytes().to_vec()),
                 },
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
-                kind: file_kind(entry.kind).to_owned(),
+                kind: entry.kind,
             })
             .collect(),
         has_more: value.has_more,
@@ -7780,6 +8052,46 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_work_json_preserves_full_u64_values() {
+        let work = acyclic_fs::WorkCounters {
+            authority_records_read: 9_007_199_254_740_993,
+            bytes_copied: u64::MAX,
+            materializations: u64::MAX,
+            ..Default::default()
+        };
+        let encoded = work_json(&work).expect("work counters serialize");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid work JSON");
+        let object = value.as_object().expect("work counters object");
+        let canonical = serde_json::to_value(acyclic_fs::WorkCounters::default())
+            .expect("canonical work counters serialize");
+        let mut encoded_keys = object.keys().collect::<Vec<_>>();
+        let mut canonical_keys = canonical
+            .as_object()
+            .expect("canonical work counters object")
+            .keys()
+            .collect::<Vec<_>>();
+        encoded_keys.sort_unstable();
+        canonical_keys.sort_unstable();
+        assert_eq!(
+            encoded_keys, canonical_keys,
+            "every canonical counter must be present"
+        );
+        assert!(object.values().all(serde_json::Value::is_string));
+        assert_eq!(
+            value["authorityRecordsRead"],
+            serde_json::Value::String("9007199254740993".to_owned())
+        );
+        assert_eq!(
+            value["bytesCopied"],
+            serde_json::Value::String(u64::MAX.to_string())
+        );
+        assert_eq!(
+            value["materializations"],
+            serde_json::Value::String(u64::MAX.to_string())
+        );
+    }
+
+    #[test]
     #[allow(clippy::expect_used, reason = "fixed test fixture must deserialize")]
     fn git_json_boundary_rejects_deserialized_capture_authority() {
         let tree = serde_json::json!({
@@ -7856,10 +8168,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -7877,10 +8189,10 @@ mod tests {
             NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
-                    maximum_entries: 0,
+                    maximum_entries: NapiU32(0),
                     maximum_bytes: bigint(1024),
-                    maximum_in_flight: 2,
-                    maximum_waiters_per_object: 2,
+                    maximum_in_flight: NapiU32(2),
+                    maximum_waiters_per_object: NapiU32(2),
                 },
             )
             .await
@@ -7890,13 +8202,13 @@ mod tests {
             NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
-                    maximum_entries: 8,
+                    maximum_entries: NapiU32(8),
                     maximum_bytes: BigInt {
                         sign_bit: false,
                         words: vec![0, 1],
                     },
-                    maximum_in_flight: 2,
-                    maximum_waiters_per_object: 2,
+                    maximum_in_flight: NapiU32(2),
+                    maximum_waiters_per_object: NapiU32(2),
                 },
             )
             .await
@@ -7912,10 +8224,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -7926,24 +8238,24 @@ mod tests {
             Buffer::from(generation_id.digest().into_bytes().to_vec()),
             NativeSpeculationOptions {
                 residency: NativeResidencySpeculationOptions {
-                    maximum_active_operations: 2,
+                    maximum_active_operations: NapiU32(2),
                     maximum_active_bytes: bigint(1024),
-                    outcome_window: 8,
-                    traffic_window: 8,
-                    speculative_cost_basis_points: 10_000,
-                    minimum_usefulness_samples: 2,
-                    minimum_usefulness_basis_points: 1,
+                    outcome_window: NapiU32(8),
+                    traffic_window: NapiU32(8),
+                    speculative_cost_basis_points: NapiU32(10_000),
+                    minimum_usefulness_samples: NapiU32(2),
+                    minimum_usefulness_basis_points: NapiU32(1),
                 },
                 promotion: NativePromotionSpeculationOptions {
-                    maximum_active_operations: 2,
+                    maximum_active_operations: NapiU32(2),
                     maximum_active_bytes: bigint(1024),
                     maximum_active_cost_units: bigint(1024),
-                    maximum_residency_facts: 4,
-                    maximum_destinations: 4,
-                    maximum_accepted_tiers: 4,
-                    outcome_window: 8,
-                    minimum_usefulness_samples: 2,
-                    minimum_usefulness_basis_points: 1,
+                    maximum_residency_facts: NapiU32(4),
+                    maximum_destinations: NapiU32(4),
+                    maximum_accepted_tiers: NapiU32(4),
+                    outcome_window: NapiU32(8),
+                    minimum_usefulness_samples: NapiU32(2),
+                    minimum_usefulness_basis_points: NapiU32(1),
                 },
             },
         )?;
@@ -7963,7 +8275,7 @@ mod tests {
                 reason: "sequential-range".to_owned(),
             })
             .await?;
-        assert_eq!(admission.status, "admitted");
+        assert!(matches!(admission.status, NativeResidencyStatus::Admitted));
 
         let promotion = speculation
             .plan_promotion(
@@ -7973,19 +8285,19 @@ mod tests {
                     object_id: encode_object_id(object_id),
                     location_id: Buffer::from([1_u8; 16].to_vec()),
                     tier: "durable-origin".to_owned(),
-                    source_priority: 0,
+                    source_priority: NapiU32(0),
                 }],
                 vec![NativePromotionDestination {
                     location_id: Buffer::from([2_u8; 16].to_vec()),
                     tier: "node-local".to_owned(),
                     writable: true,
                     maximum_object_bytes: bigint(1024),
-                    priority: 0,
+                    priority: NapiU32(0),
                     cost_units_per_byte: bigint(1),
                 }],
             )
             .await?;
-        assert_eq!(promotion.status, "planned");
+        assert!(matches!(promotion.status, NativePromotionStatus::Planned));
         speculation
             .finish_promotion(Buffer::from(operation_id.into_bytes().to_vec()), true)
             .await?;
@@ -8093,7 +8405,7 @@ mod tests {
             source_stat.file_id.as_ref(),
             hard_link_stat.file_id.as_ref()
         );
-        assert_eq!(source_stat.kind, "regular");
+        assert!(matches!(source_stat.kind, FileKind::Regular));
         assert_eq!(
             workspace
                 .read_symbolic_link("/shapes/symlink".to_owned())
@@ -8103,7 +8415,7 @@ mod tests {
         );
         let listing = workspace.sync().await?;
         let first_page = listing
-            .list_directory("/shapes".to_owned(), None, 1)
+            .list_directory("/shapes".to_owned(), None, NapiU32(1))
             .await?;
         assert!(first_page.has_more);
         let Some(first_entry) = first_page.entries.first() else {
@@ -8123,12 +8435,17 @@ mod tests {
                     encoding: first_entry.name.encoding.clone(),
                     bytes: Buffer::from(first_entry.name.bytes.as_ref().to_vec()),
                 }),
-                16,
+                NapiU32(16),
             )
             .await?;
         assert_eq!(remaining_page.entries.len(), 3);
         let extents = workspace
-            .plan_extents("/shapes/source".to_owned(), bigint(0), bigint(6), 8)
+            .plan_extents(
+                "/shapes/source".to_owned(),
+                bigint(0),
+                bigint(6),
+                NapiU32(8),
+            )
             .await?;
         assert!(extents.spans.iter().any(|span| span.kind == "content"));
         assert!(
@@ -8157,7 +8474,7 @@ mod tests {
             .await?;
         assert_eq!(first.commit(None).await?.status, "committed");
         assert_eq!(disjoint.commit(None).await?.status, "conflict");
-        let safe = disjoint.rebase(16).await?;
+        let safe = disjoint.rebase(NapiU32(16)).await?;
         assert_eq!(safe.status, "rebased");
         assert!(safe.conflicts.is_empty());
         assert_eq!(disjoint.commit(None).await?.status, "committed");
@@ -8176,7 +8493,7 @@ mod tests {
             .await?;
         assert_eq!(winner.commit(None).await?.status, "committed");
         assert_eq!(loser.commit(None).await?.status, "conflict");
-        let conflict = loser.rebase(16).await?;
+        let conflict = loser.rebase(NapiU32(16)).await?;
         assert_eq!(conflict.status, "conflicted");
         assert!(!conflict.conflicts.is_empty());
         assert!(!conflict.truncated);
@@ -8194,10 +8511,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8281,10 +8598,10 @@ mod tests {
         let reopened = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?
@@ -8309,10 +8626,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8322,9 +8639,9 @@ mod tests {
                 source.path().to_string_lossy().into_owned(),
                 NativeSourceOptions {
                     mode: "tracking".to_owned(),
-                    maximum_paths: 128,
-                    maximum_extent_spans: 128,
-                    maximum_queued_changes: 128,
+                    maximum_paths: NapiU32(128),
+                    maximum_extent_spans: NapiU32(128),
+                    maximum_queued_changes: NapiU32(128),
                     excluded_paths: None,
                 },
             )
@@ -8365,10 +8682,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 32,
+                maximum_entries: NapiU32(32),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 4,
-                maximum_waiters_per_object: 4,
+                maximum_in_flight: NapiU32(4),
+                maximum_waiters_per_object: NapiU32(4),
             },
         )
         .await?;
@@ -8385,9 +8702,9 @@ mod tests {
             .write("/second".to_owned(), Buffer::from(vec![3_u8]))
             .await?;
         let end = agent.sync().await?;
-        let first = agent.diff(&base, &middle, 32).await?;
-        let second = agent.diff(&middle, &end, 32).await?;
-        let composed = first.compose(&second, 32).await?;
+        let first = agent.diff(&base, &middle, NapiU32(32)).await?;
+        let second = agent.diff(&middle, &end, NapiU32(32)).await?;
+        let composed = first.compose(&second, NapiU32(32)).await?;
         assert_eq!(composed.from().id().as_ref(), base.id().as_ref());
         assert_eq!(composed.to().id().as_ref(), end.id().as_ref());
         assert!(!composed.changes()?.files.is_empty());
@@ -8399,9 +8716,9 @@ mod tests {
                     source_generation: None,
                     target_generation: None,
                     history: "merge".to_owned(),
-                    maximum_generations: 64,
-                    maximum_changes: 64,
-                    maximum_conflicts: 16,
+                    maximum_generations: NapiU32(64),
+                    maximum_changes: NapiU32(64),
+                    maximum_conflicts: NapiU32(16),
                 },
             )
             .await?;
@@ -8421,10 +8738,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 32,
+                maximum_entries: NapiU32(32),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 4,
-                maximum_waiters_per_object: 4,
+                maximum_in_flight: NapiU32(4),
+                maximum_waiters_per_object: NapiU32(4),
             },
         )
         .await?;
@@ -8541,9 +8858,13 @@ mod tests {
             source_root: source_root.path().to_path_buf(),
             cancellation: CancellationToken::new(),
         };
-        assert!(Box::pin(watcher.reconcile(64, 64)).await.is_err());
+        assert!(
+            Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64)))
+                .await
+                .is_err()
+        );
         shared.lock().await.clear_retained_operation(unresolved);
-        Box::pin(watcher.reconcile(64, 64)).await?;
+        Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
         Ok(())
     }
 }

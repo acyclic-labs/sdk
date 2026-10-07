@@ -15,6 +15,7 @@ export type {
   EngineCapabilities,
   FileRecordChange,
   FileRecordSnapshot,
+  FilePayloadKind,
   FileReadResult,
   FsChangeSet,
   FsCheckout,

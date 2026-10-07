@@ -79,12 +79,17 @@ import { adaptTransaction } from "./transaction-adapter.js";
 import { createGenerationAdapter } from "./generation-adapter.js";
 import { createChangeSetAdapter } from "./change-set-adapter.js";
 import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, copyFileRecord,
-  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
-import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
+  copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult, projectFileKind,
+  projectRawFileKind } from "./binding-results.js";
+import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult, workCounterKeys } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 
-import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
-  validateJoinOptions } from "./workspace-results.js";
+import {
+  decodeMergeConflict as decodeSharedMergeConflict,
+  parseJoinResult as parseSharedJoinResult,
+  parseMergePreparation,
+  parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
+} from "./workspace-results.js";
 
 const { adaptGeneration, rawGeneration } = createGenerationAdapter(
   copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan,
@@ -181,13 +186,10 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
   if (options.root.length === 0) {
     throw new RangeError("native filesystem root must be non-empty");
   }
-  requirePositiveInteger(options.objectCache.maximumEntries, "maximum cache entries");
-  requirePositiveInteger(options.objectCache.maximumBytes, "maximum cache bytes");
-  requirePositiveInteger(options.objectCache.maximumInFlight, "maximum cache in-flight reads");
-  requirePositiveInteger(
-    options.objectCache.maximumWaitersPerObject,
-    "maximum cache waiters per object",
-  );
+  // The generated N-API binding admits the u32 cache limits through Rust's
+  // exact numeric converter. `maximumBytes` is the one public number that this
+  // adapter converts to bigint, so retain its lossless conversion guard here.
+  requirePositiveSafeInteger(options.objectCache.maximumBytes, "maximum cache bytes");
   const binding = await bindings();
   return adaptFs(
     await binding.NativeFs.open(options.root, {
@@ -290,7 +292,6 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
     },
     async ancestors(workspaceId, maximum) {
       requireIdentity(workspaceId, "workspace identity");
-      requirePositiveInteger(maximum, "maximum ancestors");
       return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
     },
   };
@@ -487,9 +488,6 @@ function adaptFs(raw: NativeRawFs): NativeFsEngine {
     ): Promise<NativeFsWorkspace> {
       requireWorkspaceName(name);
       if (path.length === 0) throw new RangeError("source path must be non-empty");
-      requirePositiveInteger(options.maximumPaths, "maximum source paths");
-      requirePositiveInteger(options.maximumExtentSpans, "maximum source extent spans");
-      requirePositiveInteger(options.maximumQueuedChanges, "maximum queued source changes");
       return adaptWorkspace(await raw.attachDirectory(name, path, options), scope);
     },
     get cancelled(): boolean {
@@ -555,7 +553,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     },
     async lookupNoFollow(path) {
       const value = await raw.lookupNoFollow(path);
-      return { exists: value.exists, fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind, resolvedComponents: value.resolvedComponents, work: parseWork(value.workJson) };
+      return { exists: value.exists, fileId: copyOptionalBytes(value.fileId), fileKind: value.fileKind === undefined ? undefined : projectFileKind(value.fileKind), resolvedComponents: value.resolvedComponents, work: parseWork(value.workJson) };
     },
     async lookupBatchNoFollow(paths) {
       const value = await raw.lookupBatchNoFollow(paths);
@@ -644,7 +642,7 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
 
 function adaptResolvedFile(raw: import("./contracts.js").NativeRawResolvedFile): ResolvedFile {
   return {
-    kind: raw.kind,
+    kind: projectRawFileKind(raw.kind),
     logicalBytes: raw.logicalBytes,
     metadataCanonicalBytes: copyBytes(raw.metadataCanonicalBytes),
     async readRange(offset, length) { return fileReadResult(await raw.readRange(offset, length)); },
@@ -694,7 +692,12 @@ function isRescanReason(value: string | undefined): value is Extract<NativeWatch
 
 function adaptSpeculation(raw: NativeRawSpeculation): Speculation {
   return {
-    observe(value) { return raw.observe(value); },
+    async observe(value) {
+      const result = await raw.observe(value);
+      return result.rejection === undefined
+        ? { status: result.status }
+        : { status: result.status, rejection: result.rejection };
+    },
     async executeResidency(operationId) { const value = await raw.executeResidency(operationId); return { objectBytes: value.objectBytes, work: parseWork(value.workJson) }; },
     finishResidency(operationId, useful) { return raw.finishResidency(operationId, useful); },
     async planPromotion(request) {
@@ -845,7 +848,6 @@ function adaptWorkspace(
       );
     },
     async diff(from, to, maximumChanges): Promise<FsChangeSet> {
-      requirePositiveInteger(maximumChanges, "maximum changes");
       return scope.adaptChangeSet(
         nativeBoundary<Parameters<typeof scope.adaptChangeSet>[0]>(
           await raw.diff(
@@ -857,7 +859,6 @@ function adaptWorkspace(
       );
     },
     async joinInto(target, options): Promise<ResolvableFsJoinPlan> {
-      validateJoinOptions(options);
       return adaptJoinPlan(await raw.joinInto(rawWorkspace(target, scope), options));
     },
     async mount(destination, options): Promise<NativeWorkspaceMount> {
@@ -978,17 +979,22 @@ function parseWork(value: string): WorkCounters {
   if (typeof parsed !== "object" || parsed === null) {
     throw new TypeError("native work receipt is malformed");
   }
-  for (const [key, counter] of Object.entries(parsed)) {
-    if (!Number.isSafeInteger(counter) || (counter as number) < 0) {
-      throw new RangeError(`native work counter ${key} exceeds the public safe number range`);
+  const source = parsed as Record<string, unknown>;
+  const result = {} as Record<keyof WorkCounters, bigint>;
+  for (const key of workCounterKeys) {
+    const counter = source[key];
+    if (typeof counter === "string" && /^(?:0|[1-9][0-9]*)$/.test(counter)) {
+      result[key] = BigInt(counter);
+    } else {
+      throw new RangeError(`native work counter ${key} must be a canonical decimal string`);
     }
   }
-  return parsed as WorkCounters;
+  return result;
 }
 
 
 
-function requirePositiveInteger(value: number, label: string): void {
+function requirePositiveSafeInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new RangeError(`${label} must be a positive safe integer`);
   }
