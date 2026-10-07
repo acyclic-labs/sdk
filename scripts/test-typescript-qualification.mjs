@@ -45,8 +45,9 @@ function writeArchiveFixture(stage, item) {
   writeFileSync(join(packageDirectory, "CHANGELOG.md"), `# ${item.name} changelog\n\n## ${item.version} fixture\n`);
   writeFileSync(join(packageDirectory, "dist/index.js"), "export {};\n");
   writeFileSync(join(packageDirectory, "dist/index.d.ts"), "export {};\n");
-  const result = spawnSync("bun", ["pm", "pack", "--destination", output, "--ignore-scripts", "--quiet"], {
-    cwd: packageDirectory,
+  const archiveRoot = join(stage, "archive-inputs", item.asset.slice(0, -4));
+  cpSync(packageDirectory, join(archiveRoot, "package"), { recursive: true });
+  const result = spawnSync("tar", ["-czf", join(output, item.asset), "-C", archiveRoot, "package"], {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, `${result.stderr}\n${result.stdout}`);
