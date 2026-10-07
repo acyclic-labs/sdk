@@ -1,0 +1,14 @@
+{
+  "schema": "acyclic.sdk.rust-authority.v1",
+  "authority": "rust",
+  "exporter": "signed-source-1269511",
+  "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+  "families": [
+    {
+      "source": "actors/v1/actors.proto",
+      "source_sha256": "06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064",
+      "descriptor": "actors/v1/actors.fds.bin",
+      "descriptor_sha256": "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c"
+    }
+  ]
+}

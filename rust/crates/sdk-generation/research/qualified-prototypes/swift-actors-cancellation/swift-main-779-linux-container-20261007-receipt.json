@@ -1,0 +1,53 @@
+{
+  "schema": "swift-actors-cancellation-linux-container/v1",
+  "createdAt": "2026-10-07",
+  "status": "PASS_LINUX_CONTAINER",
+  "producer": {
+    "workspace": "Q:\\sdk\\work\\sdkgen-actors-c8-minimal",
+    "revision": "77997805785e8a61f1bf7580ca273e992caee740",
+    "libSourceSha256": "CC4706F8DDAD3A85CC2E35A433C07282C5B4E801E770F1E16BE3AA8A7608618E",
+    "rustLibraryLinuxSha256": "755B758CF1C128C0764B08C5E419989E0EE096C4CAA7E17FF94C56CFA244A231"
+  },
+  "generator": {
+    "source": "Q:\\sdk\\work\\uniffi-swift-oss-prototype\\source",
+    "uniffiVersion": "0.31.0",
+    "historicalRevision": "c3d82376d5b5e32a7886a4af7f8a65de8fe60795",
+    "CustomTypeSha256": "10A58FB8890C0D2DF102F45E1330BB2ABBB20938A9C8FC2803652C7A0C9B4035",
+    "EnumTemplateSha256": "C0E66A925F2DB14035C3C80BB3C84E8E2E7F9E2ACD9D41D5EA6469CC47082E81"
+  },
+  "toolchain": {
+    "image": "docker.io/library/swift:6.4.0-jammy",
+    "digest": "sha256:11bb836ebbc05dbe59b28ffa6cb6ca6b452375d7a65b322c5b6c83f44d52f8c0",
+    "imageId": "sha256:11bb836ebbc05dbe59b28ffa6cb6ca6b452375d7a65b322c5b6c83f44d52f8c0",
+    "target": "x86_64-unknown-linux-gnu",
+    "swiftVersion": "Swift version 6.4 (swift-6.4-RELEASE)",
+    "imageBytes": 1350095773,
+    "package": "C:\\Users\\varun\\.codex\\swift-linux-c8-20261007\\container-package"
+  },
+  "generated": {
+    "swiftSha256": "699903753C4E4C378E6D05F36917F7BD51D797A9AB0F9D30033F24324DA35140",
+    "uniffiSwiftSha256": "CC419003CCB5A1BA006B2298C52A37FB3955299C41573AB6B3C9255C4D496855",
+    "ffiHeaderSha256": "753B669A97846E510FE20F532F802AABB36867FEBA20F71A8AA469265AA5ED0B",
+    "config": "nominal custom types + immutable records + Start.CurrentHead Rust validator"
+  },
+  "fixtures": {
+    "boundarySourceSha256": "265EAC3CA5B21EA5793092DFABD4811A59EF0622DCE96072821B826494970631",
+    "boundaryPackageExecutableSha256": "3905601FCB91EFFEB15B76A3B8EFF901A46607840A80142A6DE1D07778906820",
+    "cancelSourceSha256": "AE36352ED0BAA6A453E7BBDCFD5146B7233492E035885191D3952A50E1F94F04",
+    "cancelPackageExecutableSha256": "330285B2C15F88C709F7870C1021329D875391428C4B4D77C3526730C9D7CC1B",
+    "negativeSourceSha256": "381CBD967140A976E0361046FA58E4E385B0708EB09C8FC3A8B279FC046DB9E9"
+  },
+  "results": {
+    "all19": "PASS",
+    "all8": "PASS",
+    "fullRange": "PASS (0, 2^63, u64.max; PositiveU64.max; presence)",
+    "taskCancel": "PASS (CancellationError; server active->aborted exactly once)",
+    "negativeCompile": "PASS (readonly let and ActorId rawValue rejected)",
+    "staticGenerated": "PASS_NOMINAL_PRIVATE_STORAGE_IMMUTABLE_RECORDS_RUST_VALIDATORS"
+  },
+  "caveats": [
+    "This receipt uses the maintained nominal producer artifact identified by the Rust source SHA and library SHA above. A clean detached git-779 rebuild was separately shown to have incompatible non-nominal metadata and is not substituted here.",
+    "Task-owned Linux fixtures were stopped after execution and verified absent.",
+    "The earlier swift-main-779-linux-20261007-receipt.json remains unchanged as the pre-container pending record."
+  ]
+}

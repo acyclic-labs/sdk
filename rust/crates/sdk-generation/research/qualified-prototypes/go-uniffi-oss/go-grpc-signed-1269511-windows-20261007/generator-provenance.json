@@ -1,0 +1,17 @@
+{
+  "producer_source": "go/cmd/sdk-go-producer/main.go",
+  "producer_source_sha256": "7e3d0ecd856be85d10aaca6e21ea803689d574331f260d07e2d53146feba4feb",
+  "producer_binary": "C:/Users/varun/AppData/Local/Temp/go-signed-producer-20261007/sdk-go-producer.exe",
+  "producer_binary_sha256": "4eeda3316ad53eee9b62def933860642affefc28c9fd952c16f3e4e15c4d2fee",
+  "protoc": "C:/Users/varun/AppData/Local/Temp/go-signed-producer-20261007/protoc/bin/protoc.exe",
+  "protoc_sha256": "5a1b5350308309c9729ce4484a798981f281c10909144c4bdefd6a37688e4b1f",
+  "protoc_version": "libprotoc 36.2",
+  "protoc_gen_go": "Q:/sdk/work/go-remote-primitive-current/tools/gobin/protoc-gen-go.exe",
+  "protoc_gen_go_sha256": "8bd39c992bd7c598e6930d621f18c908618e1c11de76998b3017d3d381adf6d5",
+  "protoc_gen_go_version": "v1.36.10",
+  "protoc_gen_go_grpc": "Q:/sdk/work/go-remote-primitive-current/tools/gobin/protoc-gen-go-grpc.exe",
+  "protoc_gen_go_grpc_sha256": "ebad8d5a03297e6cb4c7c819b90074948d8e8bae7bd4490f1f1097c1be2e248b",
+  "protoc_gen_go_grpc_version": "1.5.1",
+  "go_version": "go1.27.1",
+  "go_archive_sha256": "a3911b5e0e1b1053f25ed0675f4c1c6aad1e2bfcf253df2b9be4caabd2edd95d"
+}

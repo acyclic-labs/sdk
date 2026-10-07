@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.sdk.go.signed-source-inventory.v1",
+  "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+  "source_checkout": "C:\\Users\\varun\\.codex\\tmp\\sdkgen-actors-c8-minimal-1269511",
+  "source_status": "signed current source snapshot; unrelated peer dirty file left untouched",
+  "rust_sources": {
+    "rust/crates/actors-uniffi/src/lib.rs": "116288cf44f352bdc5c1b395af66b7f230aeac25f4f9e8c7c466f38375bf4a98",
+    "rust/crates/actors/src/domain.rs": "361c8584c3c9c5a4e1974b97b9341226d4a2c816a1e1684d18a3be5d8bfdb257",
+    "rust/crates/actors-uniffi/Cargo.toml": "03f3a7b92277a06fb9c544b711571840dbd6625f55d2d457cf1b3129586c5ebd",
+    "Cargo.lock": "7c8703075b8c8db0f6298cdf876e6741c7d285b3a6e71c879a4b65eccfb02206",
+    ".cargo/config.toml": "b0bafcc74b1675391e1c26780708f70bfe0f64555a6949bc8d444a6c182aa41"
+  },
+  "proto": {
+    "actors_sha256": "06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064",
+    "validation_sha256": "3bc88dd7527243ae1bf8f1ce052f4191b67b0f73f94ce6f82ce275571a2d1f9a",
+    "actors_descriptor_sha256": "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c"
+  },
+  "native": {
+    "artifact": "native/acyclic_actors_uniffi.dll",
+    "sha256": "4299a090f6e9dc89fad2f973648fbf3add356e16f23c0c68a216df8f20ac23cd",
+    "target": "windows-x86_64",
+    "command": "CARGO_TARGET_DIR=C:/Users/varun/AppData/Local/Temp/go-signed-native-target-20261007 cargo build --manifest-path C:/Users/varun/.codex/tmp/sdkgen-actors-c8-minimal-1269511/rust/crates/actors-uniffi/Cargo.toml --release --lib"
+  }
+}

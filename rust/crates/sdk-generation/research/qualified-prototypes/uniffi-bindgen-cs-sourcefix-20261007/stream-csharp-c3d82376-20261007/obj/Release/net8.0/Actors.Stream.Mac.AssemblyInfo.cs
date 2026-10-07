@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Research C# binding for Rust-owned Stream cursors")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0-c3d82376-macos-arm64+371bb4170e16aca973176b6756a261ee5add7297")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0-c3d82376+371bb4170e16aca973176b6756a261ee5add7297")]
 [assembly: System.Reflection.AssemblyProductAttribute("Actors.Stream")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Actors.Stream")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

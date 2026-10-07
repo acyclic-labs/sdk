@@ -421,3 +421,13 @@ Docs CLI5activeintegrationtests nowPASS stalerustdoc,sourceState,pluginclosure,r
 - Actors signed 919a04d source remains unpushed at observation; mutable byte type aliases remain blocker. Maintained Windows/Linux/macOS companion assemblies exist, but final source/package qualification must follow the generic readonly projection fix.
 - JVM Stream source and three-platform artifacts/receipts now preserved in the existing unpublished GitHub recovery draft with verified API digests; no registry publication/deployment.
 - Goal remains active. No new merge performed in this iteration.
+### Integrated Filesystem source frozen remotely
+
+- Signed merge `ced6f3ed8413723ba1e399855f7aff9853e79b30` preserves both current main and ba8 history. Signed generated-output update `c2e2d8ef80ab88a989c1f5955e6f35881f0274cd` is clean tracked and verified on remote PR267 and codex/filesystem-main-review-integration.
+- Maintained native/WASM generation after Rust operation-limit fix passed. Native ABI and TypeScript adapter passed using pinned Bun 1.4.2; TypeScript build and type fixtures passed. The source delta removes 30 net authored TS lines relative to maincd6.
+- Full pre-final-guard filesystem run passed 1,149 library tests plus every available integration suite (36 library and one integration test explicitly ignored by their own environment gates). Final source operation-window suite passed all 16 tests, including zero-limit no-close/no-recovery-claim.
+- The Rust pure reconciliation-limits predicate is now directly proven over all three symbolic u32 fields, with a failing negative control. Stateful mutation safety is a regression test claim, not a mathematical proof claim.
+- Initial c2 CI37666962372 failed because GitHub retained old PR basec8, including main's Web Flow signedcd6 in SSH-only PR verification. Refreshed PR base tocd6 and reopened existing draft; no signature policy was weakened. Fresh CI37667870393 plan, policy, gate, and SDK Qualification jobs passed at observation; final record job still live. Windows hosted job skipped; Windows local ABI/adapter checks already passed.
+- Final source-specific clean installed release artifacts and validation are assigned to fs_attestation. Separate signed validator tool commit4633ad6178e9ae296da1f8969f9edb476bad9340 must be pushed and recorded independently of SDK source; research runner stays outside product PR.
+- Actors readonly exported type and constructor matrix now passes at d69057b2b248fcf930aaf962bbaadd0d52297731, with Node20 native and realHTTP1 gRPC-web all-eight/cancellation behavior; old919 native/WASM provenance is still insufficient until new source-bound rebuild.
+- No new merge to main performed. Goal remains active; all16 useful subagent slots remain assigned.

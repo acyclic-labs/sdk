@@ -1,0 +1,53 @@
+{
+  "schema": "acyclic.sdk.go.remote-actors-qualification.v2",
+  "status": "WIRE_QUALIFIED_SIGNED_GENERATION_HISTORICAL_FIXTURE",
+  "target": "go",
+  "scope": "generated protobuf/gRPC Actors v1 transport",
+  "source_revision": "1269511d636b8ceeea1604a23919a9c1448241fa",
+  "generated_package": "package",
+  "generator": "generator-provenance.json",
+  "native": {
+    "signed_source_artifact": "native/acyclic_actors_uniffi.dll",
+    "status": "built from signed source but UniFFI native, not the gRPC fixture",
+    "sha256": "4299a090f6e9dc89fad2f973648fbf3add356e16f23c0c68a216df8f20ac23cd"
+  },
+  "fixture": {
+    "options": "evidence/fixture-options-linux.json",
+    "endpoint": "https://localhost:43595",
+    "source_revision": "371bb4170e16aca973176b6756a261ee5add7297",
+    "source_status": "historical shared transport fixture; wire only evidence, do not relabel as signed native runtime",
+    "options_sha256": "3924bc8f750d39d10c45552a46f019638072c2addcbbf6cd041608700c4be500"
+  },
+  "checks": [
+    "go test -mod=readonly ./...",
+    "external consumer build",
+    "all eight Actors RPCs",
+    "uint64 2^63 and MaxUint64 marshal/decode",
+    "optional uint64 presence",
+    "oneof cursor 9007199254740993",
+    "unknown enum numeric 99 wire preservation",
+    "bearer metadata accepted/rejected typed status",
+    "pre-cancelled context typed Canceled",
+    "deadline bounded authenticated InspectActor"
+  ],
+  "results": {
+    "package_compile": "PASS",
+    "external_consumer_compile": "PASS",
+    "all8": "PASS",
+    "u64_presence": "PASS",
+    "typed_errors": "PASS",
+    "signed_native_grpc_runtime": "EXCLUDED_SOURCE_MISMATCH"
+  },
+  "output_sha256": {
+    "evidence/authority/actors/v1/actors.proto": "06ceab3f17010830f61a8c0ed1d52d2b2ef7e7fa261807cf407e6615f7b17064",
+    "evidence/authority/actors/v1/actors.fds.bin": "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c",
+    "evidence/authority/validation/v1/options.proto": "3bc88dd7527243ae1bf8f1ce052f4191b67b0f73f94ce6f82ce275571a2d1f9a",
+    "package/gen/actors/v1/actors.pb.go": "009181ad24a95c5e655f8a4fba36a1d072859c14b4fd4a736c02776b164bddd9",
+    "package/gen/actors/v1/actors_grpc.pb.go": "79bc43b23e53438e60fe8f0d171bf8663c5802441c74c770f12ea7a18888c42a",
+    "package/gen/validation/v1/options.pb.go": "0e31dcf23ea5cc8d2bd13479f28ae43448b023db18e166c6a889f3ac4d84c4e0",
+    "package/go.mod": "8bfbc454fd9120df962ff95650c2f377567aadadb254740fb3685ff706c3e923",
+    "package/go.sum": "e34b4ddb3ea9d54efdaea326b5837f32b8e60f72b1dac34a9df14a8115cd4e12",
+    "native/acyclic_actors_uniffi.dll": "4299a090f6e9dc89fad2f973648fbf3add356e16f23c0c68a216df8f20ac23cd"
+  },
+  "generated_at_utc": "2026-10-07T18:38:27.501058+00:00"
+}

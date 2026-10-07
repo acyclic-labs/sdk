@@ -1,0 +1,52 @@
+{
+  "status": "proof_pass",
+  "artifact": "kani-workcounters-add-zero-cd6-20261007",
+  "source_checkout": "C:/Users/varun/.codex/worktrees/filesystem-main-review/sdk",
+  "source_revision": "cd6ab86bf9f5fbfa8eeb416b6604de379df67903",
+  "production_package": "acyclic-fs",
+  "production_symbols": [
+    "acyclic_fs::WorkCounters",
+    "acyclic_fs::WorkCounters::default",
+    "acyclic_fs::WorkCounters::checked_add"
+  ],
+  "source_inventory": {
+    "rust/crates/filesystem/src/performance.rs": "FF2DF7765743C19C4AE51DFA749BA3E2798AD35AEA300951FAFEB26C247ED22E",
+    "rust/crates/filesystem/src/lib.rs": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB",
+    "Cargo.toml": "4848C130EEA42C02973F21EE20358B30512B63A98BA8B1C37AA330E44AE7B97B",
+    "src/bin/kani_workcounters.rs": "3585C094364F5685E247BB8A40CB2D9D425AA56EA77E70E3E72A760DB5A9093B"
+  },
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustup": "nightly-2026-08-21",
+    "solver": "CaDiCaL 3.0.0",
+    "default_unwind": 2
+  },
+  "command": "cargo-kani --manifest-path Cargo.toml --package kani-workcounters-add-zero-cd6-20261007 --exact --default-unwind 2 -j1 --harness checked_add_zero_preserves_all_u64_counters --solver cadical --output-format regular",
+  "terminal_exit": 0,
+  "harness_summary": "Complete - 1 successfully verified harnesses, 0 failures, 1 total.",
+  "cbmc_summary": "0 of 457 failed",
+  "raw_log": "audit/checked-add-zero-cd6-kani068.raw.txt",
+  "raw_log_sha256": "BA8F64AA3A49D9B0DAA3B0A5B62249935A60A7F984315AFF9EF6B18B60EE42D8",
+  "theorem": "For every symbolic production WorkCounters value across all 24 u64 fields, production checked_add(WorkCounters::default()) returns Ok and preserves every field exactly.",
+  "source_binding": {
+    "copied_production_algorithm": false,
+    "calls_actual_production_method": true,
+    "proof_only_fixture_builder": true
+  },
+  "negative_control": {
+    "harness": "negative_control_zero_add_changes_object_probes",
+    "expected_result": "failure",
+    "cbmc_summary": "2 of 159 failed",
+    "verification": "VERIFICATION:- FAILED",
+    "raw_log": "audit/negative-control-workcounters-cd6-kani068.raw.txt",
+    "raw_log_sha256": "2FDECF09F224494DDFC9607580F71833F6174E6C199193DE233C4D9944289A3E"
+  },
+  "excluded": [
+    "decimal or JSON serialization",
+    "JavaScript or transport representation",
+    "nonzero-delta overflow theorem",
+    "budget admission",
+    "filesystem operation behavior"
+  ]
+}

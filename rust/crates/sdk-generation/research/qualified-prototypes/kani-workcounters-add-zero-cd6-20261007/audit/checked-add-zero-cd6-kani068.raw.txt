@@ -17,3 +17,2341 @@ warning: use of an unstable feature
   |
   = note: requested on the command line with `--force-warn unstable-features`
 
+   Compiling kani-workcounters-add-zero-cd6-20261007 v0.1.0 (/mnt/c/Users/varun/.codex/worktrees/rust-source-foundation/sdk/rust/crates/sdk-generation/research/qualified-prototypes/kani-workcounters-add-zero-cd6-20261007)
+warning: use of an unstable feature
+ --> <crate attribute>:1:12
+  |
+1 | #![feature(register_tool)]
+  |            ^^^^^^^^^^^^^
+  |
+  = note: requested on the command line with `--force-warn unstable-features`
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 47.28s
+Checking harness checked_add_zero_preserves_all_u64_counters...
+CBMC 6.11.0 (cbmc-6.11.0)
+CBMC version 6.11.0 (cbmc-6.11.0) 64-bit x86_64 linux
+Reading GOTO program from file /tmp/kani-workcounters-add-zero-cd6-20261007/kani/x86_64-unknown-linux-gnu/debug/build/kani-workcounters-add-zero-cd6-20261007/870fe9d85a2a68d6/out/kani_workcounters__RNvCs3CxIOQBO9PA_17kani_workcounters43checked_add_zero_preserves_all_u64_counters.out
+Generating GOTO Program
+Adding CPROVER library (x86_64)
+Removal of function pointers and virtual functions
+Generic Property Instrumentation
+Running with 16 object bits, 48 offset bits (user-specified)
+Starting Bounded Model Checking
+Runtime Symex: 0.100594s
+size of program expression: 3435 steps
+slicing removed 2105 assignments
+Generated 338 VCC(s), 2 remaining after simplification
+Runtime Postprocess Equation: 0.00187017s
+Passing problem to propositional reduction
+converting SSA
+Runtime Convert SSA: 0.0104727s
+Running propositional reduction
+Post-processing
+Runtime Post-process: 3.8994e-05s
+Solving with CaDiCaL 3.0.0
+8510 variables, 13949 clauses
+SAT checker: instance is SATISFIABLE
+Runtime Solver: 0.000521269s
+Runtime decision procedure: 0.0112414s
+Running propositional reduction
+Solving with CaDiCaL 3.0.0
+8511 variables, 13950 clauses
+SAT checker: instance is UNSATISFIABLE
+Runtime Solver: 0.00220483s
+Runtime decision procedure: 0.00240472s
+
+RESULTS:
+Check 1: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 2: memcmp.precondition.1
+	 - Status: SUCCESS
+	 - Description: "memcmp region 1 readable"
+	 - Location: <builtin-library-memcmp>:19 in function memcmp
+
+Check 3: memcmp.precondition.2
+	 - Status: SUCCESS
+	 - Description: "memcpy region 2 readable"
+	 - Location: <builtin-library-memcmp>:21 in function memcmp
+
+Check 4: <u8 as core::slice::cmp::SlicePartialEq<u8>>::equal_same_length.arithmetic_overflow.1
+	 - Status: SUCCESS
+	 - Description: "attempt to compute `unchecked_mul` which would overflow"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/cmp.rs:156:24 in function <u8 as core::slice::cmp::SlicePartialEq<u8>>::equal_same_length
+
+Check 5: checked_add_zero_preserves_all_u64_counters.assertion.1
+	 - Status: SUCCESS
+	 - Description: "assertion failed: value.checked_add(WorkCounters::default()) == Ok(value)"
+	 - Location: src/bin/kani_workcounters.rs:40:5 in function checked_add_zero_preserves_all_u64_counters
+
+Check 6: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.unreachable.1
+	 - Status: SUCCESS
+	 - Description: "unreachable code"
+	 - Location: src/bin/kani_workcounters.rs:0:0 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 7: acyclic_fs::WorkCounters::checked_add.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:234:24 in function acyclic_fs::WorkCounters::checked_add
+
+Check 8: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 9: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 10: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 11: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 12: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 13: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:50 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 14: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 15: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 16: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 17: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 18: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 19: std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2192:59 in function std::cmp::impls::<impl std::cmp::PartialOrd for u64>::lt
+
+Check 20: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 21: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 22: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 23: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 24: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 25: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 26: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 27: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 28: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 29: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 30: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 31: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkCounters>::eq
+
+Check 32: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 33: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 34: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 35: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 36: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 37: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 38: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 39: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 40: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 41: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 42: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 43: std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &acyclic_fs::WorkError>::eq
+
+Check 44: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 45: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 46: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 47: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 48: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 49: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 50: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 51: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 52: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 53: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 54: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 55: std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &&str>::eq
+
+Check 56: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 57: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 58: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 59: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 60: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 61: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 62: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 63: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 64: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 65: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 66: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 67: std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &[u8]>::eq
+
+Check 68: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 69: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 70: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 71: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 72: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 73: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 74: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 75: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 76: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 77: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 78: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 79: std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &str>::eq
+
+Check 80: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 81: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 82: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 83: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 84: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 85: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:27 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 86: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 87: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 88: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 89: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 90: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 91: std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2399:34 in function std::cmp::impls::<impl std::cmp::PartialEq for &u64>::eq
+
+Check 92: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 93: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 94: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 95: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 96: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 97: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 98: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 99: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 100: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 101: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 102: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 103: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:69:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 104: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 105: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 106: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 107: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 108: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 109: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 110: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 111: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.20
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 112: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.21
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 113: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.22
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 114: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.23
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 115: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.24
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:71:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 116: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.25
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 117: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.26
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 118: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.27
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 119: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.28
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 120: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.29
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 121: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.30
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 122: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.31
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 123: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.32
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 124: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.33
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 125: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.34
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 126: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.35
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 127: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.36
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:73:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 128: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.37
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 129: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.38
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 130: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.39
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 131: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.40
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 132: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.41
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 133: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.42
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 134: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.43
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 135: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.44
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 136: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.45
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 137: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.46
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 138: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.47
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 139: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.48
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:75:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 140: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.49
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 141: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.50
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 142: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.51
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 143: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.52
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 144: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.53
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 145: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.54
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 146: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.55
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 147: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.56
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 148: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.57
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 149: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.58
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 150: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.59
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 151: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.60
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:77:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 152: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.61
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 153: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.62
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 154: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.63
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 155: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.64
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 156: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.65
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 157: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.66
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 158: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.67
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 159: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.68
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 160: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.69
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 161: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.70
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 162: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.71
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 163: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.72
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:79:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 164: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.73
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 165: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.74
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 166: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.75
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 167: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.76
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 168: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.77
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 169: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.78
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 170: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.79
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 171: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.80
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 172: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.81
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 173: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.82
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 174: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.83
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 175: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.84
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:81:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 176: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.85
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 177: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.86
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 178: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.87
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 179: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.88
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 180: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.89
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 181: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.90
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 182: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.91
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 183: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.92
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 184: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.93
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 185: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.94
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 186: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.95
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 187: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.96
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:83:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 188: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.97
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 189: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.98
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 190: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.99
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 191: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.100
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 192: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.101
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 193: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.102
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 194: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.103
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 195: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.104
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 196: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.105
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 197: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.106
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 198: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.107
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 199: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.108
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:85:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 200: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.109
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 201: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.110
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 202: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.111
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 203: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.112
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 204: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.113
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 205: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.114
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 206: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.115
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 207: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.116
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 208: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.117
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 209: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.118
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 210: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.119
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 211: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.120
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:87:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 212: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.121
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 213: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.122
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 214: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.123
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 215: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.124
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 216: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.125
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 217: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.126
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 218: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.127
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 219: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.128
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 220: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.129
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 221: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.130
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 222: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.131
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 223: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.132
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:89:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 224: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.133
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 225: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.134
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 226: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.135
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 227: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.136
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 228: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.137
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 229: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.138
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 230: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.139
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 231: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.140
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 232: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.141
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 233: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.142
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 234: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.143
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 235: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.144
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:91:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 236: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.145
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 237: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.146
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 238: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.147
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 239: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.148
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 240: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.149
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 241: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.150
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 242: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.151
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 243: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.152
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 244: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.153
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 245: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.154
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 246: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.155
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 247: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.156
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:93:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 248: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.157
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 249: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.158
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 250: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.159
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 251: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.160
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 252: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.161
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 253: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.162
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 254: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.163
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 255: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.164
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 256: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.165
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 257: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.166
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 258: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.167
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 259: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.168
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:95:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 260: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.169
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 261: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.170
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 262: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.171
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 263: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.172
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 264: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.173
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 265: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.174
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 266: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.175
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 267: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.176
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 268: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.177
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 269: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.178
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 270: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.179
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 271: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.180
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:97:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 272: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.181
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 273: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.182
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 274: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.183
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 275: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.184
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 276: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.185
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 277: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.186
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 278: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.187
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 279: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.188
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 280: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.189
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 281: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.190
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 282: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.191
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 283: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.192
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:99:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 284: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.193
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 285: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.194
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 286: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.195
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 287: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.196
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 288: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.197
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 289: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.198
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 290: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.199
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 291: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.200
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 292: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.201
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 293: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.202
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 294: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.203
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 295: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.204
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:101:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 296: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.205
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 297: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.206
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 298: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.207
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 299: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.208
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 300: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.209
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 301: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.210
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 302: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.211
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 303: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.212
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 304: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.213
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 305: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.214
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 306: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.215
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 307: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.216
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:103:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 308: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.217
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 309: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.218
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 310: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.219
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 311: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.220
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 312: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.221
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 313: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.222
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 314: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.223
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 315: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.224
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 316: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.225
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 317: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.226
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 318: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.227
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 319: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.228
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:105:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 320: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.229
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 321: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.230
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 322: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.231
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 323: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.232
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 324: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.233
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 325: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.234
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 326: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.235
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 327: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.236
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 328: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.237
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 329: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.238
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 330: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.239
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 331: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.240
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:107:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 332: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.241
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 333: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.242
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 334: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.243
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 335: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.244
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 336: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.245
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 337: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.246
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 338: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.247
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 339: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.248
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 340: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.249
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 341: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.250
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 342: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.251
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 343: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.252
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:109:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 344: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.253
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 345: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.254
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 346: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.255
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 347: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.256
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 348: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.257
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 349: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.258
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 350: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.259
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 351: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.260
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 352: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.261
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 353: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.262
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 354: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.263
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 355: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.264
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:111:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 356: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.265
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 357: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.266
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 358: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.267
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 359: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.268
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 360: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.269
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 361: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.270
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 362: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.271
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 363: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.272
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 364: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.273
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 365: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.274
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 366: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.275
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 367: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.276
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:113:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 368: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.277
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 369: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.278
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 370: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.279
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 371: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.280
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 372: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.281
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 373: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.282
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 374: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.283
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 375: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.284
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 376: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.285
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 377: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.286
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 378: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.287
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 379: <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq.pointer_dereference.288
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:115:5 in function <acyclic_fs::WorkCounters as std::cmp::PartialEq>::eq
+
+Check 380: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 381: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 382: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 383: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 384: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 385: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:54 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 386: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 387: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 388: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 389: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 390: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 391: std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/cmp.rs:2153:63 in function std::cmp::impls::<impl std::cmp::PartialEq for u64>::eq
+
+Check 392: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 393: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 394: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 395: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 396: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 397: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 398: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 399: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 400: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 401: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 402: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 403: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 404: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 405: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 406: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 407: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 408: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 409: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 410: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 411: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.20
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 412: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.21
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 413: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.22
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 414: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.23
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 415: <acyclic_fs::WorkError as std::cmp::PartialEq>::eq.pointer_dereference.24
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../filesystem-main-review/sdk/rust/crates/filesystem/src/performance.rs:588:41 in function <acyclic_fs::WorkError as std::cmp::PartialEq>::eq
+
+Check 416: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 417: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 418: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 419: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 420: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 421: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 422: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 423: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 424: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 425: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 426: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 427: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 428: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.13
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 429: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.14
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 430: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.15
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 431: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.16
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 432: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.17
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 433: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.18
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 434: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.19
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 435: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.20
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 436: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.21
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 437: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.22
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 438: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.23
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 439: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.24
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 440: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.25
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 441: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.26
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 442: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.27
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 443: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.28
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 444: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.29
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 445: <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq.pointer_dereference.30
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: ../../../../../../../../../../../../../../home/runner/.rustup/toolchains/nightly-2026-08-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/result.rs:554:16 in function <std::result::Result<acyclic_fs::WorkCounters, acyclic_fs::WorkError> as std::cmp::PartialEq>::eq
+
+Check 446: memcmp.pointer_dereference.1
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 447: memcmp.pointer_dereference.2
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 448: memcmp.pointer_dereference.3
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 449: memcmp.pointer_dereference.4
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 450: memcmp.pointer_dereference.5
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 451: memcmp.pointer_dereference.6
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 452: memcmp.pointer_dereference.7
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer NULL"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 453: memcmp.pointer_dereference.8
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer invalid"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 454: memcmp.pointer_dereference.9
+	 - Status: SUCCESS
+	 - Description: "dereference failure: deallocated dynamic object"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 455: memcmp.pointer_dereference.10
+	 - Status: SUCCESS
+	 - Description: "dereference failure: dead object"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 456: memcmp.pointer_dereference.11
+	 - Status: SUCCESS
+	 - Description: "dereference failure: pointer outside object bounds"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+Check 457: memcmp.pointer_dereference.12
+	 - Status: SUCCESS
+	 - Description: "dereference failure: invalid integer address"
+	 - Location: <builtin-library-memcmp>:27 in function memcmp
+
+
+SUMMARY:
+ ** 0 of 457 failed
+
+VERIFICATION:- SUCCESSFUL
+Verification Time: 0.23796284s
+
+Manual Harness Summary:
+Complete - 1 successfully verified harnesses, 0 failures, 1 total.

@@ -1,0 +1,69 @@
+{
+  "artifact": "kani-operation-window-reconcile-limits-ced6-20261007",
+  "status": "proof_pass",
+  "proof_kind": "direct_production_pure_function",
+  "generated_at": "2026-10-07",
+  "production_checkout": "C:\\Users\\varun\\.codex\\worktrees\\filesystem-main-review\\sdk",
+  "proof_checkout": "C:\\Users\\varun\\.codex\\tmp\\filesystem-main-review-kani-limits-cd6",
+  "source_revision": "ced6f3ed8413723ba1e399855f7aff9853e79b30",
+  "source_dirty_in_proof_checkout": true,
+  "production_source_path": "rust/crates/filesystem/src/operation_window.rs",
+  "source_inventory": {
+    "operation_window_base_sha256": "441A01CC7F6211B746D243244F62FF779B37D236CB9273569A1DE77CF2896C19",
+    "operation_window_proof_sha256": "3CEC49CC46457F489953B7455C2B32BA78CD0563E0C8CAC8CAE4ABF6D6DCB645",
+    "lib_rs_sha256": "1BD52C28F32698CC7EF0D1C1F81616060461A531C7522BC2D2FAA90AC9F5B1DB",
+    "cargo_toml_sha256": "DE6B091DE9055FAAE2EC054C996722553EF6846CCDAFEEF99037163F47B7201F"
+  },
+  "harness_module": "operation_window::kani_reconcile_limits_proof",
+  "harnesses": {
+    "positive": "reconcile_limits_validate_iff_all_three_bounds_positive",
+    "negative_control": "negative_control_zero_generation_is_accepted"
+  },
+  "theorem": "forall symbolic u32 maximum_generations, maximum_changes, maximum_conflicts: validate_reconcile_limits(limits).is_ok() iff all three fields are nonzero; any zero field returns Err(WorkspaceError::JoinLimit)",
+  "direct_binding": "task-local cfg(kani) module imports the private production function and production struct via super; no copied validator",
+  "toolchain": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rust_toolchain": "nightly-2026-08-21",
+    "solver": "cadical",
+    "default_unwind": 2,
+    "cargo_build_jobs": 1,
+    "cargo_net_offline": true
+  },
+  "positive": {
+    "raw_log": "audit/reconcile-limits-positive-kani068.raw.txt",
+    "raw_log_sha256": "AAD4B70F8C10A13B0856F05CD0AA1AC513E08EF2073853B365122BE16258AF91",
+    "summary": "0 of 94 failed (2 unreachable)",
+    "verification": "VERIFICATION:- SUCCESSFUL",
+    "manual_harness": "Complete - 1 successfully verified harnesses, 0 failures, 1 total",
+    "terminal_exit_code": 0
+  },
+  "negative_control": {
+    "raw_log": "audit/negative-control-reconcile-limits-kani068.raw.txt",
+    "raw_log_sha256": "A096787663E628DC63A677E0B9FC9B3088EDD25F1B55A474F9FFD4C5174D8A3D",
+    "summary": "1 of 91 failed (2 unreachable)",
+    "failed_check": "assertion failed: result.is_ok()",
+    "verification": "VERIFICATION:- FAILED",
+    "manual_harness": "Complete - 0 successfully verified harnesses, 1 failures, 1 total",
+    "terminal_exit_code": 0,
+    "expected_failure": true
+  },
+  "exclusions": [
+    "state mutation or state preservation",
+    "four durable entrypoint call sites",
+    "async behavior",
+    "transport or wire semantics",
+    "Rust regression test"
+  ],
+  "command_template": "RUSTC_WRAPPER= CARGO_BUILD_JOBS=1 CARGO_NET_OFFLINE=true RUSTUP_TOOLCHAIN=nightly-2026-08-21 CARGO_TARGET_DIR=/tmp/kani-operation-window-limits-ced6-20261007 /tmp/kani068/bin/cargo-kani --manifest-path rust/crates/filesystem/Cargo.toml --package acyclic-fs --exact --default-unwind 2 -j1 --harness <one harness above> --solver cadical --output-format regular",
+  "preserved_files": [
+    "README.md",
+    "source/operation_window.rs",
+    "audit/reconcile-limits-positive-kani068.raw.txt",
+    "audit/negative-control-reconcile-limits-kani068.raw.txt",
+    "receipt.json"
+  ],
+  "canonical_current_revision": "c2e2d8ef80ab88a989c1f5955e6f35881f0274cd",
+  "canonical_current_operation_window_sha256": "441A01CC7F6211B746D243244F62FF779B37D236CB9273569A1DE77CF2896C19",
+  "canonical_current_source_hash_matches_proven_base": true
+}
