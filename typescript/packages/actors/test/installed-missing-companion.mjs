@@ -15,7 +15,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const consumer = resolve(process.argv[2] ?? process.cwd());
-const companionName = "@acyclic-labs/actors-win32-x64-msvc";
+const companionName = process.env.ACTORS_COMPANION_PACKAGE ?? "@acyclic-labs/actors-win32-x64-msvc";
 const companion = resolve(consumer, "node_modules", companionName);
 const hidden = `${companion}.missing-for-test`;
 
