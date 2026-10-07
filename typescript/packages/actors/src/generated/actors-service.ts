@@ -1,6 +1,7 @@
 // Generated from the canonical ActorsService descriptor. Do not edit.
 import { ActorsService } from "../../generated/proto/actors/v1/actors_pb.js";
-import type { ActorsCallOptions, ReadonlySemantic } from "../client.js";
+import type { ActorsCallOptions } from "../client.js";
+import type { ReadonlySemantic } from "./readonly.js";
 import type * as Semantic from "./semantic/actors/index.js";
 
 export type ActorsMethod = (typeof ActorsService.methods)[number];

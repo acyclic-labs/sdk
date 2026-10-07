@@ -7,7 +7,17 @@ import {
   type ActorsMethod,
   type ActorsOperation,
 } from "./generated/actors-service.js";
-import type * as Semantic from "./generated/semantic/actors/index.js";
+import {
+  configureActorsNominalBinding,
+  ActorId,
+  CodeSha256,
+  PositiveU64,
+  CurrentHeadMarker,
+  type ActorsNominalBinding,
+} from "./generated/nominal.js";
+import type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
+export type { ReadonlyBytes, ReadonlySemantic } from "./generated/readonly.js";
+export { ActorId, CodeSha256, PositiveU64, CurrentHeadMarker } from "./generated/nominal.js";
 
 /** Rust operation surface implemented by either the N-API or WASM bridge. */
 export type Operation = ActorsOperation;
@@ -38,21 +48,6 @@ export interface ActorsOptions {
   readonly observer?: AcyclicObserver;
 }
 
-/**
- * The Rust declarations are generated as structural TypeScript types. Keep
- * the public client view immutable, including nested records and collections,
- * while retaining the brands and presence unions emitted by ts-rs.
- */
-export type ReadonlySemantic<T> = T extends Uint8Array
-  ? T
-  : T extends (...args: never[]) => unknown
-    ? T
-    : T extends readonly (infer Item)[]
-      ? readonly ReadonlySemantic<Item>[]
-      : T extends object
-        ? { readonly [K in keyof T]: ReadonlySemantic<T[K]> }
-        : T;
-
 /** Errors raised after Rust has returned a structured operation failure. */
 export class ActorsTransportError extends Error {
   constructor(message: string, readonly code = "actors_error") { super(message); }
@@ -82,7 +77,7 @@ export class ActorsClient {
 
   async #call<Request, Response>(method: ActorsMethod, request: Request, options?: ActorsCallOptions): Promise<Response> {
     const operation = method.localName as Operation;
-    const encoded = toBinary(method.input, create(method.input, request as MessageShape<typeof method.input>));
+    const encoded = toBinary(method.input, create(method.input, toWireSemantic(request) as MessageShape<typeof method.input>));
     throwIfAborted(options?.signal);
     const client = await this.#connection(options?.signal);
     return observed(this.#observer, "actors", operation, async sizes => {
@@ -158,31 +153,21 @@ function normalizeSemantic(value: unknown, schema?: DescMessage): unknown {
 
 export interface ActorsClient extends ActorsClientMethods {}
 
-/** A nominal Rust constructor exposed from the normal package entrypoint. */
-export async function ActorId(value: string): Promise<Semantic.ActorId> {
-  return (await defaultNominalBinding()).ActorId(value) as Semantic.ActorId;
-}
-
-/** A nominal Rust constructor exposed from the normal package entrypoint. */
-export async function CodeSha256(value: Uint8Array): Promise<Semantic.CodeSha256> {
-  return (await defaultNominalBinding()).CodeSha256(value) as Semantic.CodeSha256;
-}
-
-/** A nominal Rust constructor exposed from the normal package entrypoint. */
-export async function PositiveU64(value: bigint): Promise<Semantic.PositiveU64> {
-  return (await defaultNominalBinding()).PositiveU64(value) as Semantic.PositiveU64;
-}
-
-/** The semantic marker is true-only; Rust remains the runtime predicate. */
-export type CurrentHeadMarker = Semantic.CurrentHeadMarker;
-
-/** A nominal Rust constructor exposed from the normal package entrypoint. */
-export async function CurrentHeadMarker(value: true): Promise<CurrentHeadMarker> {
-  return (await defaultNominalBinding()).CurrentHeadMarker(value) as CurrentHeadMarker;
-}
-
 /** Compatibility name retained while callers migrate to `ActorsClient`. */
 export class HttpActorsClient extends ActorsClient {}
+
+/**
+ * Clone the public readonly semantic view at the wire boundary. Buf's
+ * generated encoder intentionally accepts mutable Uint8Array/Array shapes;
+ * cloning here keeps that implementation detail out of the public contract
+ * and prevents callers from mutating an input while a Rust connection starts.
+ */
+function toWireSemantic(value: unknown): unknown {
+  if (value instanceof Uint8Array) return new Uint8Array(value);
+  if (Array.isArray(value)) return value.map(item => toWireSemantic(item));
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toWireSemantic(item)]));
+}
 
 function defaultBinding(): ActorsRustBinding {
   const scope = globalThis as { process?: { versions?: { node?: string } } };
@@ -240,20 +225,16 @@ interface NativeActorsClient extends NativeActorsMethods {
   readonly transport: string | (() => string);
 }
 
-interface NativeActorsModule {
-  readonly ActorId?: (value: string) => string;
-  readonly CodeSha256?: (value: Uint8Array) => Uint8Array;
-  readonly PositiveU64?: (value: bigint) => bigint;
-  readonly CurrentHeadMarker?: (value: boolean) => boolean;
+interface NativeActorsModule extends Partial<ActorsNominalBinding> {
   readonly NativeActorsClient?: {
     connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
     connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
   };
   readonly NativeActorsCancellation?: new () => { cancel(): void };
-  readonly default?: { readonly NativeActorsClient?: {
+  readonly default?: Partial<ActorsNominalBinding> & { readonly NativeActorsClient?: {
     connect(endpoint: string, token: string, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
     connectWithCa(endpoint: string, token: string, ca: Buffer, cancellation?: { cancel(): void }): Promise<NativeActorsClient>;
-  }; readonly NativeActorsCancellation?: new () => { cancel(): void }; readonly ActorId?: (value: string) => string; readonly CodeSha256?: (value: Uint8Array) => Uint8Array; readonly PositiveU64?: (value: bigint) => bigint; readonly CurrentHeadMarker?: (value: boolean) => boolean };
+  }; readonly NativeActorsCancellation?: new () => { cancel(): void } };
 }
 
 interface NativeTargetMetadata {
@@ -275,10 +256,10 @@ async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
     const metadataModule = await import("../generated/native/native-targets.json", { with: { type: "json" } }) as unknown as NativeMetadataModule;
     metadata = metadataModule.default ?? metadataModule;
   } catch (error) {
-    if (isMissingNativeMetadata(error)) return undefined;
+    if (isMissingNativeMetadata(error)) return loadNativeCompanion();
     throw error;
   }
-  if (!(await hasNativeArtifactForRuntime(metadata))) return undefined;
+  if (!(await hasNativeArtifactForRuntime(metadata))) return loadNativeCompanion();
   try {
     // @ts-ignore generated N-API loader is optional in browser/WASM builds
     return await import("../generated/native/binding.cjs") as unknown as NativeActorsModule;
@@ -286,6 +267,26 @@ async function loadNativeModule(): Promise<NativeActorsModule | undefined> {
     if (isMissingNativeArtifact(error)) return undefined;
     throw error;
   }
+}
+
+/** Resolve the maintained optional N-API package for the current exact target. */
+async function loadNativeCompanion(): Promise<NativeActorsModule | undefined> {
+  const packageName = await nativeCompanionPackageName();
+  if (packageName === undefined) return undefined;
+  try {
+    return await import(packageName) as unknown as NativeActorsModule;
+  } catch (error) {
+    if (isMissingNativePackage(error, packageName)) return undefined;
+    throw error;
+  }
+}
+
+async function nativeCompanionPackageName(): Promise<string | undefined> {
+  const names = await nativeRuntimeArtifactNames();
+  const artifact = names[0];
+  if (artifact === undefined) return undefined;
+  const target = artifact.slice("index.".length, -".node".length);
+  return `@acyclic-labs/actors-${target}`;
 }
 
 /**
@@ -366,16 +367,9 @@ function wasmBinding(): ActorsRustBinding {
   };
 }
 
-interface WasmActorsModule extends NativeNominalModule {
+interface WasmActorsModule extends ActorsNominalBinding {
   readonly default: (input?: unknown) => Promise<unknown>;
   readonly ActorsClient: { connect(endpoint: string, token: string, signal?: unknown): Promise<unknown> };
-}
-
-interface NativeNominalModule {
-  readonly ActorId: (value: string) => string;
-  readonly CodeSha256: (value: Uint8Array) => Uint8Array;
-  readonly PositiveU64: (value: bigint) => bigint;
-  readonly CurrentHeadMarker: (value: boolean) => boolean;
 }
 
 async function loadWasmModule(): Promise<WasmActorsModule> {
@@ -391,16 +385,18 @@ async function loadWasmModule(): Promise<WasmActorsModule> {
   return module;
 }
 
-async function defaultNominalBinding(): Promise<NativeNominalModule> {
+async function defaultNominalBinding(): Promise<ActorsNominalBinding> {
   if (isNodeRuntime()) {
     const native = await loadNativeModule();
     const candidate = native?.default ?? native;
     if (candidate?.ActorId && candidate.CodeSha256 && candidate.PositiveU64 && candidate.CurrentHeadMarker) {
-      return candidate as NativeNominalModule;
+      return candidate as ActorsNominalBinding;
     }
   }
   return loadWasmModule();
 }
+
+configureActorsNominalBinding(defaultNominalBinding);
 
 function isNodeRuntime(): boolean {
   const scope = globalThis as { process?: { versions?: { node?: string } } };
@@ -442,6 +438,16 @@ function isMissingNativeMetadata(error: unknown): boolean {
   let expected = new URL("../generated/native/native-targets.json", import.meta.url).pathname;
   try { expected = decodeURIComponent(expected); } catch { /* keep the URL path */ }
   return normalizeModulePath(requested) === normalizeModulePath(expected);
+}
+
+function isMissingNativePackage(error: unknown, packageName: string): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = "code" in error && typeof error.code === "string" ? error.code : undefined;
+  if (code !== "ERR_MODULE_NOT_FOUND" && code !== "MODULE_NOT_FOUND") return false;
+  const message = error instanceof Error ? error.message : String(error);
+  const firstLine = message.split(/\r?\n/, 1)[0] ?? message;
+  const requested = firstLine.match(/^Cannot find package ['"]([^'"]+)['"]/i)?.[1];
+  return requested === packageName;
 }
 
 function normalizeModulePath(path: string): string {
