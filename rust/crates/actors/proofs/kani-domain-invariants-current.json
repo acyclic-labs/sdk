@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.kani-proof/v1",
-  "captured_at": "2026-10-07T02:48:23Z",
+  "captured_at": "2026-10-07T04:54:02Z",
   "status": "proved",
   "source": {
     "revision": "371bb4170e16aca973176b6756a261ee5add7297",
@@ -10,7 +10,7 @@
       "rust\\crates\\actors\\src\\contract.rs": "BA1F52D0C30E11FD7C0203FE7C2DA1F057874828F18DF61528DC53D838587ABD",
       "rust\\crates\\actors\\src\\contract_definitions.rs": "0B6039FBD35201CAF4C5AC5227C414EEF7E87C3A6037E576C28F76380E4428FA",
       "rust\\crates\\actors\\src\\domain.rs": "79092881EC6B9434A3AC3AE6B810DCA46BB85A8E4C8C1E98191982AC5D82B4B2",
-      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "85251C6AB16FEE0F62F938681C466037D44AE5622E2788AB72F86C4BA6D9A689",
+      "rust\\crates\\actors\\src\\domain\\kani_proofs.rs": "24C98EE340C24CA7BB97102E12C6C6202A967268500E184571D887F0879A32D9",
       "rust\\crates\\actors\\src\\grpc.rs": "315C3AD18E10D0D0D084A294BBE125826C2108641BE218FF4F7BFB98B07756C2",
       "rust\\crates\\actors\\src\\http.rs": "FD04B1D37B4D9F75256373EFC232FC0030CC0BA32CB3974390A7081AC81BF675",
       "rust\\crates\\actors\\src\\lib.rs": "9C1F32FAE8D4F2BD4925F785242F85369553E4182D188A894BC06C995F776853",
@@ -18,10 +18,10 @@
       "rust\\crates\\actors\\build.rs": "56BC1AB53AA1711D85D9C3F52257B7745FA126ADABD9DBD9A7B52D04CA32E35C",
       "rust\\crates\\actors\\Cargo.toml": "29403145B1FFA7BC81357098EF598C953A09B4CD1FA499EC102F8B537F29E5EE",
       "Cargo.toml": "E08A391F59C9B0C5F4694F41453639BD350498332BFD7D01CE58ADCC89A96675",
-      "Cargo.lock": "95523D7AA4B05BC3E6F63276AABA1DCBE4290FE9EA3D46A1F5AF2D3764CD1D88",
+      "Cargo.lock": "B195CF972794FD6042E72475B7C6B569BB2FB2DD866CEF627852FF57360B4874",
       ".cargo\\config.toml": "B0BAFCC74B1675391E1C26780708F70BFE0F64555A6949BC8D444A6C182AAE41",
       "rust-toolchain.toml": "85DB324345B7937C49EA2AC8B962D741F710719F4F751CAB809985CBE6AFBE3C",
-      "rust\\crates\\actors\\proofs\\run-kani.sh": "B56D05B4FDE07B0F3A8138208FC7E686A3FBAC672A842960563C4400F0109A27"
+      "rust\\crates\\actors\\proofs\\run-kani.sh": "01ACCF058C5FF3FECB9BE44756597884389E88091066427464C3A7FDB9D10CDA"
     },
     "note": "Receipt is valid only for this exact revision and source-hash inventory."
   },
@@ -44,6 +44,7 @@
       "domain::kani_proofs::code_sha256_rejects_33_bytes",
       "domain::kani_proofs::code_sha256_rejects_64_bytes",
       "domain::kani_proofs::subscription_start_preserves_cursor_and_current_head_presence",
+      "domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
       "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
       "domain::kani_proofs::actor_limits_constructor_accepts_exactly_positive_values",
       "domain::kani_proofs::enum_numeric_mappings_are_inverse_and_lossless"
@@ -87,6 +88,10 @@
       "obligation": "subscription_start preserves the cursor and optional current-head presence."
     },
     {
+      "name": "domain::kani_proofs::subscription_start_valid_wire_round_trip_preserves_oneof_identity",
+      "obligation": "Valid subscription_start wire values round-trip through the domain without changing oneof identity."
+    },
+    {
       "name": "domain::kani_proofs::positive_u64_constructor_accepts_exactly_nonzero_values",
       "obligation": "PositiveU64 accepts every nonzero u64 and rejects zero."
     },
@@ -100,18 +105,18 @@
     }
   ],
   "result": {
-    "successful": 10,
+    "successful": 11,
     "failures": 0,
-    "total": 10,
+    "total": 11,
     "unwind": 65,
     "jobs": 1
   },
   "evidence": {
-    "log": "kani-domain-invariants-current.log",
-    "log_sha256": "4668F76AFACD7007D5A280A8F167635A23063F42BEFE25FE5F749C6693AE42A6"
+    "log": "runner-validation-11-roundtrip-policy11.log",
+    "log_sha256": "57CF9B40CC7117DDFCACAD15D6B18F224B678C4EA59BEED536103142FA56D401"
   },
   "verification_policy": {
-    "summary": "Manual Harness Summary: Complete - 10 successfully verified harnesses, 0 failures, 10 total",
+    "summary": "Manual Harness Summary: Complete - 11 successfully verified harnesses, 0 failures, 11 total",
     "required_markers": [
       "VERIFICATION:- SUCCESSFUL",
       "CARGO_KANI_EXIT=0"

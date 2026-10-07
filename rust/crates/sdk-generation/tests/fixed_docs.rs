@@ -682,8 +682,10 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     let binary = Path::new(env!("CARGO_BIN_EXE_sdk-generation"));
     let cache = sandbox
         .parent()
-        .unwrap()
-        .join("sdk-generation-release-fixture-cache");
+        .and_then(Path::parent)
+        .unwrap_or_else(|| sandbox.parent().unwrap())
+        .join("sdkgen-fixtures")
+        .join(sandbox.file_name().unwrap());
     let result = command(binary, "generate", &root, None, &output, "release")
         .env("CARGO_TARGET_DIR", &cache)
         .env("RUSTC", root.join("missing-rustc.exe"))
@@ -724,15 +726,15 @@ fn release_generation_builds_rustdoc_from_the_pinned_workspace() {
     );
     assert!(
         output
-            .join("generated/acyclic_actors/rust/fixture.generated.rs")
+            .join("generated/acyclic_actors/rust/acyclic.actors.v1.rs")
             .is_file()
     );
     assert!(
         output
-            .join("generated/acyclic_actors/rust/fixture.generated.bin")
+            .join("generated/acyclic_actors/acyclic-actors-v1.bin")
             .is_file()
     );
-    let generated_source = output.join("generated/acyclic_actors/rust/fixture.generated.rs");
+    let generated_source = output.join("generated/acyclic_actors/rust/acyclic.actors.v1.rs");
     let generated_source_bytes = fs::read(&generated_source).unwrap();
     fs::write(&generated_source, b"tampered generated source\n").unwrap();
     let drift = command(binary, "drift", &root, None, &output, "release")

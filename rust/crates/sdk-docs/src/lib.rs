@@ -721,7 +721,7 @@ fn build_family(
     let title = titleize(&crate_name);
     let mut public_items = public_api::extract(json_path)?;
     deduplicate_public_items(&mut public_items);
-    let public_occurrence_paths = public_occurrence_paths(&public_items, &crate_name);
+    let public_occurrence_paths = public_occurrence_paths(krate, &public_items, &crate_name);
     let use_occurrences = public_use_occurrences(krate, &crate_name)?;
     let mut items = Vec::new();
     for public_item in &public_items {
@@ -855,6 +855,7 @@ fn validate_navigation(data: &DocsData) -> Result<(), Error> {
 }
 
 fn public_occurrence_paths(
+    krate: &Crate,
     public_items: &[public_api::PublicItemSignature],
     crate_name: &str,
 ) -> HashMap<Id, Vec<String>> {
@@ -862,9 +863,15 @@ fn public_occurrence_paths(
     // or glob contributes an occurrence path for that definition, so retain
     // those paths while keeping the link target anchored to the definition ID.
     // Only local public-api occurrences are safe to expose as stable targets.
+    // Local implementation members can be rendered through a foreign receiver
+    // path (including generic, array, and primitive receivers), so membership
+    // proof is the authority for those occurrences rather than the first path
+    // component.
     let mut paths = HashMap::<Id, Vec<String>>::new();
     for public_item in public_items {
-        if public_item.path.first().map(String::as_str) != Some(crate_name) {
+        if public_item.path.first().map(String::as_str) != Some(crate_name)
+            && !is_local_impl_member(krate, public_item)
+        {
             continue;
         }
         paths
@@ -2024,6 +2031,120 @@ mod tests {
     }
 
     #[test]
+    fn build_data_projects_authored_links_to_array_receiver_methods() {
+        let root =
+            std::env::temp_dir().join(format!("sdk-docs-array-link-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("src")).expect("fixture source directory should be creatable");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub fn link_source() {}\nimpl From<ImageDigest> for [u8; 32] { fn from(value: ImageDigest) -> Self { [0; 32] } }\n",
+        )
+        .expect("fixture source should be writable");
+        let rustdoc_path = root.join("demo.json");
+        let fixture = serde_json::json!({
+            "root": 0,
+            "crate_version": "1.0.0",
+            "includes_private": false,
+            "index": {
+                "0": {
+                    "id": 0, "crate_id": 0, "name": "demo", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"module": {"is_crate": true, "items": [40, 41], "is_stripped": false}}
+                },
+                "30": {
+                    "id": 30, "crate_id": 0, "name": null,
+                    "span": {"filename": "src/lib.rs", "begin": [2, 1], "end": [2, 100]},
+                    "visibility": "default", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"impl": {
+                        "is_unsafe": false,
+                        "generics": {"params": [], "where_predicates": []},
+                        "provided_trait_methods": [],
+                        "trait": {"path": "From", "id": 99, "args": null},
+                        "for": {"array": {"type": {"primitive": "u8"}, "len": "32"}},
+                        "items": [33], "is_negative": false, "is_synthetic": false,
+                        "blanket_impl": null
+                    }}
+                },
+                "33": {
+                    "id": 33, "crate_id": 0, "name": "from",
+                    "span": {"filename": "src/lib.rs", "begin": [2, 48], "end": [2, 100]},
+                    "visibility": "default", "docs": "Convert an image digest.", "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [["value", {"resolved_path": {"path": "ImageDigest", "id": 41, "args": null}}]], "output": {"generic": "Self"}, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
+                    }}
+                },
+                "40": {
+                    "id": 40, "crate_id": 0, "name": "link_source",
+                    "span": {"filename": "src/lib.rs", "begin": [1, 1], "end": [1, 24]},
+                    "visibility": "public", "docs": "See the array conversion.",
+                    "links": {"array conversion": 33}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"function": {
+                        "sig": {"inputs": [], "output": null, "is_c_variadic": false},
+                        "generics": {"params": [], "where_predicates": []},
+                        "header": {"is_const": false, "is_unsafe": false, "is_async": false, "abi": "Rust"},
+                        "has_body": true, "default_unstable": null
+                    }}
+                },
+                "41": {
+                    "id": 41, "crate_id": 0, "name": "ImageDigest", "span": null,
+                    "visibility": "public", "docs": null, "links": {}, "attrs": [],
+                    "deprecation": null, "stability": null, "const_stability": null,
+                    "inner": {"struct": {
+                        "kind": "unit", "generics": {"params": [], "where_predicates": []},
+                        "impls": [30]
+                    }}
+                }
+            },
+            "paths": {
+                "41": {"crate_id": 0, "path": ["demo", "ImageDigest"], "kind": "struct"},
+                "99": {"crate_id": 1, "path": ["core", "convert", "From"], "kind": "trait"}
+            },
+            "external_crates": {},
+            "target": {"triple": "x86_64-pc-windows-msvc", "target_features": []},
+            "format_version": 60
+        });
+        fs::write(
+            &rustdoc_path,
+            serde_json::to_vec(&fixture).expect("array link fixture should serialize"),
+        )
+        .expect("array link fixture should be writable");
+        let input = BuildInput {
+            version: "1.0.0".into(),
+            channel: Channel::Release,
+            revision: "a".repeat(40),
+            source_state: "captured-snapshot".into(),
+            source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
+            repository_root: root.clone(),
+            rustdoc_files: vec![rustdoc_path],
+            generated_sources: Vec::new(),
+            mark_latest: false,
+        };
+        let data = build_data(&input).expect("array link fixture should build");
+        let link_source = data.families[0]
+            .items
+            .iter()
+            .find(|item| item.name == "link_source")
+            .expect("link source should be projected");
+        assert_eq!(
+            link_source.links.get("array conversion"),
+            Some(&vec!["[u8; 32]::from".into()])
+        );
+        assert!(data.families[0]
+            .items
+            .iter()
+            .any(|item| item.path == "[u8; 32]::from"));
+        fs::remove_dir_all(root).expect("fixture directory should be removable");
+    }
+
+    #[test]
     fn release_publication_rejects_unbound_source_before_creating_output() {
         let output =
             std::env::temp_dir().join(format!("sdk-docs-provenance-{}", std::process::id()));
@@ -2654,7 +2775,7 @@ mod tests {
                 path: vec!["demo".into(), "associated_target".into()],
             },
         ];
-        let alias_public_paths = public_occurrence_paths(&alias_public_items, "demo");
+        let alias_public_paths = public_occurrence_paths(&alias_graph, &alias_public_items, "demo");
         let alias_root = alias_graph
             .index
             .get(&alias_graph.root)

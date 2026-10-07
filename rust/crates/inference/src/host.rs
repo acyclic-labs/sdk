@@ -215,18 +215,11 @@ fn authorization(api_key: &str) -> Result<Zeroizing<String>, Error> {
 }
 
 fn nonzero<const N: usize>(value: &[u8; N]) -> Result<(), Error> {
-    if *value == [0; N] {
-        return Err(Error::Invalid("zero identity"));
-    }
-    Ok(())
+    contract::nonzero(value).map_err(|error| contract_error(&error))
 }
 
 fn fixed<const N: usize>(value: &[u8]) -> Result<[u8; N], Error> {
-    let bytes = value
-        .try_into()
-        .map_err(|_| Error::Invalid("identity length differs"))?;
-    nonzero(&bytes)?;
-    Ok(bytes)
+    contract::fixed(value).map_err(|error| contract_error(&error))
 }
 
 fn bounded<M: prost::Message>(message: &M) -> Result<(), Error> {

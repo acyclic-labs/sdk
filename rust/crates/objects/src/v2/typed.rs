@@ -38,8 +38,10 @@ pub trait TypedObjectsProvider: ObjectsProvider {
     async fn typed_delete_bucket(
         &self,
         request: domain::DeleteBucketRequest,
-    ) -> Result<wire::DeleteBucketResponse, Error> {
-        <Self as ObjectsProvider>::delete_bucket(self, request.into()).await
+    ) -> Result<bool, Error> {
+        Ok(<Self as ObjectsProvider>::delete_bucket(self, request.into())
+            .await?
+            .existed)
     }
 
     /// Publishes one complete object with a validated typed header.
@@ -76,8 +78,10 @@ pub trait TypedObjectsProvider: ObjectsProvider {
     async fn typed_delete(
         &self,
         request: domain::DeleteObjectRequest,
-    ) -> Result<wire::DeleteObjectResponse, Error> {
-        <Self as ObjectsProvider>::delete(self, request.into()).await
+    ) -> Result<bool, Error> {
+        Ok(<Self as ObjectsProvider>::delete(self, request.into())
+            .await?
+            .existed)
     }
 
     /// Traverses a live listing and validates its page against the typed query.
@@ -140,8 +144,10 @@ pub trait TypedObjectsProvider: ObjectsProvider {
     async fn typed_abort_multipart(
         &self,
         request: domain::AbortMultipartRequest,
-    ) -> Result<wire::AbortMultipartResponse, Error> {
-        <Self as ObjectsProvider>::abort_multipart(self, request.into()).await
+    ) -> Result<bool, Error> {
+        Ok(<Self as ObjectsProvider>::abort_multipart(self, request.into())
+            .await?
+            .existed)
     }
 }
 
@@ -249,21 +255,17 @@ mod tests {
                 aborted_key,
                 aborted.upload_id().clone(),
             ))
-            .await?
-            .existed);
+            .await?);
 
         assert!(provider
             .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), object_key))
-            .await?
-            .existed);
+            .await?);
         assert!(provider
             .typed_delete(domain::DeleteObjectRequest::new(bucket.clone(), upload_key))
-            .await?
-            .existed);
+            .await?);
         assert!(provider
             .typed_delete_bucket(domain::DeleteBucketRequest::new(bucket))
-            .await?
-            .existed);
+            .await?);
         Ok(())
     }
 

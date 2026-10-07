@@ -350,9 +350,9 @@ receipt = {
     },
     "harnesses": harnesses,
     "result": {
-        "successful": 10,
+        "successful": 11,
         "failures": 0,
-        "total": 10,
+        "total": 11,
         "unwind": int(os.environ["DEFAULT_UNWIND"]),
         "jobs": int(os.environ["JOBS"]),
     },
@@ -361,7 +361,7 @@ receipt = {
         "log_sha256": log_digest,
     },
     "verification_policy": {
-        "summary": "Manual Harness Summary: Complete - 10 successfully verified harnesses, 0 failures, 10 total",
+        "summary": "Manual Harness Summary: Complete - 11 successfully verified harnesses, 0 failures, 11 total",
         "required_markers": ["VERIFICATION:- SUCCESSFUL", "CARGO_KANI_EXIT=0"],
     },
     "scope": [

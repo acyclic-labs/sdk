@@ -44,10 +44,7 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use napi::bindgen_prelude::{
-    Array, AsyncTask, BigInt, Buffer, Error, FromNapiValue, PromiseRaw, Result, Status,
-    ToNapiValue,
-};
+use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
@@ -61,11 +58,12 @@ use std::sync::Arc;
 /// representation before the canonical Rust policy receives the value. Zero
 /// remains valid here so the Rust core retains ownership of positive-bound
 /// policy for operations that require it.
+#[derive(Clone, Copy)]
 #[napi(transparent, object_from_js = false, object_to_js = false)]
 pub struct NapiU32(u32);
 
 impl NapiU32 {
-    fn into_inner(self) -> u32 {
+    const fn into_inner(self) -> u32 {
         self.0
     }
 }
@@ -80,27 +78,43 @@ fn validate_napi_u32(number: f64) -> Result<u32> {
     Ok(number as u32)
 }
 
-fn read_napi_u32(env: napi::sys::napi_env, value: napi::sys::napi_value) -> Result<u32> {
-    let mut number = 0.0_f64;
-    napi::check_status!(unsafe { napi::sys::napi_get_value_double(env, value, &mut number) })?;
-    validate_napi_u32(number)
-}
+#[allow(unsafe_code)]
+mod napi_u32_codec {
+    //! The only unsafe code in this binding is the two N-API trait hooks below.
+    //!
+    //! N-API supplies live environment and value handles to these callbacks, and
+    //! the maintained `f64`/`u32` implementations own the handle conversion.
+    //! This module keeps those required ABI hooks narrow while the public binding
+    //! remains subject to the workspace `unsafe_code = "deny"` lint.
 
-impl FromNapiValue for NapiU32 {
-    unsafe fn from_napi_value(
-        env: napi::sys::napi_env,
-        value: napi::sys::napi_value,
-    ) -> Result<Self> {
-        Ok(Self(read_napi_u32(env, value)?))
+    use super::{NapiU32, Result, validate_napi_u32};
+    use napi::bindgen_prelude::{FromNapiValue, ToNapiValue};
+
+    impl FromNapiValue for NapiU32 {
+        /// # Safety
+        ///
+        /// N-API calls this hook with the live environment and value handles
+        /// associated with the JavaScript argument being decoded.
+        unsafe fn from_napi_value(
+            env: napi::sys::napi_env,
+            value: napi::sys::napi_value,
+        ) -> Result<Self> {
+            let number = unsafe { <f64 as FromNapiValue>::from_napi_value(env, value)? };
+            Ok(Self(validate_napi_u32(number)?))
+        }
     }
-}
 
-impl ToNapiValue for NapiU32 {
-    unsafe fn to_napi_value(
-        env: napi::sys::napi_env,
-        value: Self,
-    ) -> Result<napi::sys::napi_value> {
-        <u32 as ToNapiValue>::to_napi_value(env, value.0)
+    impl ToNapiValue for NapiU32 {
+        /// # Safety
+        ///
+        /// N-API calls this hook with a live environment handle while exporting
+        /// the validated value to JavaScript.
+        unsafe fn to_napi_value(
+            env: napi::sys::napi_env,
+            value: Self,
+        ) -> Result<napi::sys::napi_value> {
+            unsafe { <u32 as ToNapiValue>::to_napi_value(env, value.0) }
+        }
     }
 }
 
@@ -235,55 +249,55 @@ pub struct NativeObjectCacheStats {
 #[napi(object)]
 pub struct NativeObjectCacheOptions {
     /// Maximum resident immutable objects.
-    pub maximum_entries: u32,
+    pub maximum_entries: NapiU32,
     /// Maximum resident canonical object bytes.
     pub maximum_bytes: BigInt,
     /// Maximum distinct backing-store reads in flight.
-    pub maximum_in_flight: u32,
+    pub maximum_in_flight: NapiU32,
     /// Maximum followers retained behind one in-flight read.
-    pub maximum_waiters_per_object: u32,
+    pub maximum_waiters_per_object: NapiU32,
 }
 
 /// Hard policy for native local-residency prediction.
 #[napi(object)]
 pub struct NativeResidencySpeculationOptions {
     /// Maximum concurrently admitted residency operations.
-    pub maximum_active_operations: u32,
+    pub maximum_active_operations: NapiU32,
     /// Maximum bytes reserved by active residency operations.
     pub maximum_active_bytes: BigInt,
     /// Number of terminal outcomes retained for usefulness control.
-    pub outcome_window: u32,
+    pub outcome_window: NapiU32,
     /// Number of foreground/speculative traffic samples retained.
-    pub traffic_window: u32,
+    pub traffic_window: NapiU32,
     /// Maximum speculative share of observed foreground traffic.
-    pub speculative_cost_basis_points: u32,
+    pub speculative_cost_basis_points: NapiU32,
     /// Terminal sample count required before usefulness rejection.
-    pub minimum_usefulness_samples: u32,
+    pub minimum_usefulness_samples: NapiU32,
     /// Minimum useful terminal outcome ratio after the sample floor.
-    pub minimum_usefulness_basis_points: u32,
+    pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Hard policy for native cross-location promotion planning.
 #[napi(object)]
 pub struct NativePromotionSpeculationOptions {
     /// Maximum concurrently admitted promotion operations.
-    pub maximum_active_operations: u32,
+    pub maximum_active_operations: NapiU32,
     /// Maximum object bytes reserved by active promotions.
     pub maximum_active_bytes: BigInt,
     /// Maximum estimated cost reserved by active promotions.
     pub maximum_active_cost_units: BigInt,
     /// Maximum exact object-location facts accepted per plan.
-    pub maximum_residency_facts: u32,
+    pub maximum_residency_facts: NapiU32,
     /// Maximum destination capabilities accepted per plan.
-    pub maximum_destinations: u32,
+    pub maximum_destinations: NapiU32,
     /// Maximum acceptable storage tiers supplied per plan.
-    pub maximum_accepted_tiers: u32,
+    pub maximum_accepted_tiers: NapiU32,
     /// Number of terminal outcomes retained for usefulness control.
-    pub outcome_window: u32,
+    pub outcome_window: NapiU32,
     /// Terminal sample count required before usefulness rejection.
-    pub minimum_usefulness_samples: u32,
+    pub minimum_usefulness_samples: NapiU32,
     /// Minimum useful terminal outcome ratio after the sample floor.
-    pub minimum_usefulness_basis_points: u32,
+    pub minimum_usefulness_basis_points: NapiU32,
 }
 
 /// Complete policy for both native speculation engines.
@@ -342,7 +356,7 @@ pub struct NativeObjectResidency {
     /// Storage tier of the observed location.
     pub tier: String,
     /// Deterministic source preference; lower values are preferred.
-    pub source_priority: u32,
+    pub source_priority: NapiU32,
 }
 
 /// Writable native promotion destination capability.
@@ -357,7 +371,7 @@ pub struct NativePromotionDestination {
     /// Largest canonical object accepted by the destination.
     pub maximum_object_bytes: BigInt,
     /// Deterministic destination preference; lower values are preferred.
-    pub priority: u32,
+    pub priority: NapiU32,
     /// Exact estimated cost per canonical byte.
     pub cost_units_per_byte: BigInt,
 }
@@ -394,23 +408,23 @@ pub struct NativeSpeculationPreemption {
 #[napi(object)]
 pub struct NativeVolumeLimits {
     /// Maximum encoded bytes in an absolute path.
-    pub maximum_path_bytes: u32,
+    pub maximum_path_bytes: NapiU32,
     /// Maximum encoded bytes in one component.
-    pub maximum_component_bytes: u32,
+    pub maximum_component_bytes: NapiU32,
     /// Maximum number of path components.
-    pub maximum_path_depth: u32,
+    pub maximum_path_depth: NapiU32,
     /// Maximum canonical immutable-object bytes.
     pub maximum_object_bytes: BigInt,
     /// Maximum operations in one atomic mutation.
-    pub maximum_mutations_per_batch: u32,
+    pub maximum_mutations_per_batch: NapiU32,
     /// Maximum paths in one shared lookup batch.
-    pub maximum_paths_per_batch: u32,
+    pub maximum_paths_per_batch: NapiU32,
     /// Maximum exact dependencies retained by a checkout.
-    pub maximum_checkout_dependencies: u32,
+    pub maximum_checkout_dependencies: NapiU32,
     /// Maximum entries returned by one listing page.
-    pub maximum_directory_page_entries: u32,
+    pub maximum_directory_page_entries: NapiU32,
     /// Maximum authenticated tree height.
-    pub maximum_page_height: u32,
+    pub maximum_page_height: NapiU32,
     /// Maximum bytes returned by one range read.
     pub maximum_read_bytes: BigInt,
     /// Maximum files in one generation closure.
@@ -539,7 +553,8 @@ impl NativeResolvedFiles {
 
     /// Transfers one generation-bound handle to JavaScript. Each index may be taken once.
     #[napi]
-    pub fn take(&self, index: u32) -> Result<Option<NativeResolvedFile>> {
+    pub fn take(&self, index: NapiU32) -> Result<Option<NativeResolvedFile>> {
+        let index = index.into_inner();
         self.files
             .lock()
             .map_err(napi_error)?
@@ -682,9 +697,9 @@ pub struct NativeTransactionOperation {
     /// Replacement logical file length.
     pub logical_bytes: Option<BigInt>,
     /// Device major identity.
-    pub major: Option<u32>,
+    pub major: Option<NapiU32>,
     /// Device minor identity.
-    pub minor: Option<u32>,
+    pub minor: Option<NapiU32>,
     /// Rename replacement policy.
     pub replace: Option<bool>,
     /// Zero-range physical allocation policy.
@@ -712,9 +727,9 @@ pub struct NativeMaterializeOptions {
     /// Existing empty host directory.
     pub destination: String,
     /// Maximum entries in one authenticated directory page.
-    pub maximum_directory_entries: u32,
+    pub maximum_directory_entries: NapiU32,
     /// Maximum spans in one authenticated extent plan.
-    pub maximum_extent_spans: u32,
+    pub maximum_extent_spans: NapiU32,
     /// Maximum bytes in one host transfer allocation.
     pub transfer_bytes: BigInt,
 }
@@ -1474,11 +1489,11 @@ pub struct NativeOperationWindowClose {
 #[derive(Clone, Copy)]
 pub struct NativeOperationReconcileOptions {
     /// Maximum immutable generations examined for ancestry.
-    pub maximum_generations: u32,
+    pub maximum_generations: NapiU32,
     /// Maximum semantic changes admitted by reconciliation.
-    pub maximum_changes: u32,
+    pub maximum_changes: NapiU32,
     /// Maximum exact conflicts returned.
-    pub maximum_conflicts: u32,
+    pub maximum_conflicts: NapiU32,
 }
 
 /// Workspace-aware final-close outcome.
@@ -1597,11 +1612,11 @@ pub struct NativeJoinOptions {
     /// `merge`, `rebase`, `squash`, or `cherry-pick`.
     pub history: String,
     /// Maximum lineage generations examined while finding an ancestor.
-    pub maximum_generations: u32,
+    pub maximum_generations: NapiU32,
     /// Maximum semantic changes admitted by the plan.
-    pub maximum_changes: u32,
+    pub maximum_changes: NapiU32,
     /// Maximum exact conflicts returned by application.
-    pub maximum_conflicts: u32,
+    pub maximum_conflicts: NapiU32,
 }
 
 /// Terminal result of applying one immutable join plan.
@@ -1655,11 +1670,11 @@ pub struct NativeSourceOptions {
     /// `pinned` or `tracking`.
     pub mode: String,
     /// Maximum paths admitted by one baseline or reconciliation.
-    pub maximum_paths: u32,
+    pub maximum_paths: NapiU32,
     /// Maximum sparse spans admitted per regular file.
-    pub maximum_extent_spans: u32,
+    pub maximum_extent_spans: NapiU32,
     /// Maximum pending native changes before fail-closed rescan.
-    pub maximum_queued_changes: u32,
+    pub maximum_queued_changes: NapiU32,
     /// Canonical portable prefixes omitted from capture and deletion inference.
     pub excluded_paths: Option<Vec<String>>,
 }
@@ -2011,8 +2026,9 @@ impl NativeWorkspace {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeWorkspaceExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
         Box::pin(self.inner.plan_extents(
             &path,
             bigint_u64(&offset)?,
@@ -2121,10 +2137,13 @@ impl NativeWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Buffer>,
-        maximum_generations: u32,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_generations: NapiU32,
+        maximum_changes: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeWorkspaceRebaseResult> {
+        let maximum_generations = maximum_generations.into_inner();
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
         self.inner
             .live_rebase(
                 native_idempotency_key(idempotency_key)?,
@@ -2147,8 +2166,9 @@ impl NativeWorkspace {
         &self,
         from: &NativeGeneration,
         to: &NativeGeneration,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
+        let maximum_changes = maximum_changes.into_inner();
         self.inner
             .diff(&from.inner, &to.inner, maximum_changes)
             .await
@@ -2172,9 +2192,9 @@ impl NativeWorkspace {
             .join_into(&target.inner)
             .history(history)
             .bounds(
-                options.maximum_generations,
-                options.maximum_changes,
-                options.maximum_conflicts,
+                options.maximum_generations.into_inner(),
+                options.maximum_changes.into_inner(),
+                options.maximum_conflicts.into_inner(),
             )
             .plan()
             .await
@@ -2262,8 +2282,9 @@ impl NativeChangeSet {
     pub async fn compose(
         &self,
         next: &NativeChangeSet,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
+        let maximum_changes = maximum_changes.into_inner();
         self.inner
             .compose(&next.inner, maximum_changes)
             .await
@@ -2414,8 +2435,9 @@ impl NativeGeneration {
         &self,
         path: String,
         after: Option<NativeWorkspaceName>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeWorkspaceDirectoryPage> {
+        let maximum_entries = maximum_entries.into_inner();
         let after = after.map(native_workspace_name).transpose()?;
         Box::pin(
             self.inner
@@ -2440,8 +2462,9 @@ impl NativeGeneration {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeWorkspaceExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
         Box::pin(self.inner.plan_extents(
             &path,
             bigint_u64(&offset)?,
@@ -2599,9 +2622,9 @@ const fn operation_reconcile_limits(
     options: NativeOperationReconcileOptions,
 ) -> OperationReconcileLimits {
     OperationReconcileLimits {
-        maximum_generations: options.maximum_generations,
-        maximum_changes: options.maximum_changes,
-        maximum_conflicts: options.maximum_conflicts,
+        maximum_generations: options.maximum_generations.into_inner(),
+        maximum_changes: options.maximum_changes.into_inner(),
+        maximum_conflicts: options.maximum_conflicts.into_inner(),
     }
 }
 
@@ -2994,7 +3017,11 @@ impl NativeWorkspaceTransaction {
     ///
     /// Returns dependency-probe, authentication, storage, or replay failures.
     #[napi]
-    pub async fn rebase(&self, maximum_conflicts: u32) -> Result<NativeTransactionRebaseResult> {
+    pub async fn rebase(
+        &self,
+        maximum_conflicts: NapiU32,
+    ) -> Result<NativeTransactionRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.into_inner();
         self.inner
             .lock()
             .await
@@ -3494,8 +3521,9 @@ impl NativeWorkspaceContextRegistry {
         &self,
         parent_context_id: Buffer,
         child_context_id: Buffer,
-        maximum: u32,
+        maximum: NapiU32,
     ) -> Result<Buffer> {
+        let maximum = maximum.into_inner();
         let discarded = self
             .inner
             .discard_subtree(
@@ -3860,9 +3888,9 @@ impl NativeFs {
                 PathBuf::from(path),
                 SourceOptions {
                     mode,
-                    maximum_paths: options.maximum_paths,
-                    maximum_extent_spans: options.maximum_extent_spans,
-                    maximum_queued_changes: options.maximum_queued_changes,
+                    maximum_paths: options.maximum_paths.into_inner(),
+                    maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+                    maximum_queued_changes: options.maximum_queued_changes.into_inner(),
                     excluded_paths: options
                         .excluded_paths
                         .unwrap_or_default()
@@ -4025,9 +4053,10 @@ impl NativeFs {
         &self,
         manifest: NativeExportManifest,
         cursor: BigInt,
-        maximum_objects: u32,
+        maximum_objects: NapiU32,
         maximum_object_bytes: BigInt,
     ) -> Result<NativeGenerationTransferBatch> {
+        let maximum_objects = maximum_objects.into_inner();
         let manifest = decode_export_manifest(&manifest)?;
         let receipt = self
             .inner
@@ -4069,8 +4098,9 @@ impl NativeFs {
         manifest: NativeExportManifest,
         cursor: BigInt,
         objects: Vec<Buffer>,
-        maximum_objects: u32,
+        maximum_objects: NapiU32,
     ) -> Result<NativeGenerationTransferCursor> {
+        let maximum_objects = maximum_objects.into_inner();
         let manifest = decode_export_manifest(&manifest)?;
         let objects = objects
             .into_iter()
@@ -4156,8 +4186,9 @@ impl NativeVolume {
         &self,
         before: Buffer,
         after: Buffer,
-        maximum_changes: u32,
+        maximum_changes: NapiU32,
     ) -> Result<NativeGenerationDiff> {
+        let maximum_changes = maximum_changes.into_inner();
         let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &before,
             "before generation identity",
@@ -4371,9 +4402,11 @@ impl NativeCheckout {
     pub async fn prepare_merge(
         &self,
         theirs: Buffer,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_changes: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeMergePreparation> {
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
         let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &theirs,
             "merge generation identity",
@@ -4436,8 +4469,8 @@ impl NativeCheckout {
             &mut checkout,
             &MaterializeOptions {
                 destination: options.destination.into(),
-                maximum_directory_entries: options.maximum_directory_entries,
-                maximum_extent_spans: options.maximum_extent_spans,
+                maximum_directory_entries: options.maximum_directory_entries.into_inner(),
+                maximum_extent_spans: options.maximum_extent_spans.into_inner(),
                 transfer_bytes: bigint_u64(&options.transfer_bytes)?,
             },
             boundary_budget(),
@@ -4469,9 +4502,11 @@ impl NativeCheckout {
         &self,
         source_root: String,
         paths: Vec<String>,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
         let paths = paths
@@ -4518,9 +4553,11 @@ impl NativeCheckout {
     pub async fn capture_baseline(
         &self,
         source_root: String,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
         let source_root = PathBuf::from(source_root);
         let expected_root_identity = capture_root_identity(&source_root).map_err(napi_error)?;
         let mut checkout = self.inner.lock().await;
@@ -4556,9 +4593,10 @@ impl NativeCheckout {
     pub fn watch(
         &self,
         source_root: String,
-        maximum_queued_changes: u32,
+        maximum_queued_changes: NapiU32,
         recursive: bool,
     ) -> Result<NativeWatcher> {
+        let maximum_queued_changes = maximum_queued_changes.into_inner();
         let source_root = PathBuf::from(source_root);
         let watcher = FsNativeWatch::open_with_profile(
             &source_root,
@@ -4913,8 +4951,9 @@ impl NativeCheckout {
         path: String,
         after_class: Option<String>,
         after_name: Option<Buffer>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeNamedAttributePage> {
+        let maximum_entries = maximum_entries.into_inner();
         let path = native_path(&path, self.config)?;
         let after = match (after_class, after_name) {
             (None, None) => None,
@@ -5161,8 +5200,9 @@ impl NativeCheckout {
         path: String,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
         let path = native_path(&path, self.config)?;
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -5193,8 +5233,9 @@ impl NativeCheckout {
         file_id: Buffer,
         offset: BigInt,
         length: BigInt,
-        maximum_spans: u32,
+        maximum_spans: NapiU32,
     ) -> Result<NativeExtentPlan> {
+        let maximum_spans = maximum_spans.into_inner();
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = self.inner.lock().await;
         let receipt = checkout
@@ -5328,8 +5369,9 @@ impl NativeCheckout {
         &self,
         path: String,
         after: Option<String>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeDirectoryPage> {
+        let maximum_entries = maximum_entries.into_inner();
         let portable = PortablePath::parse(&path, self.config.limits).map_err(napi_error)?;
         let path = NamespacePath::from_portable_in_profile(
             &portable,
@@ -5381,8 +5423,9 @@ impl NativeCheckout {
         &self,
         path: String,
         after: Option<String>,
-        maximum_entries: u32,
+        maximum_entries: NapiU32,
     ) -> Result<NativeDirectoryRecordPage> {
+        let maximum_entries = maximum_entries.into_inner();
         let path = native_path(&path, self.config)?;
         let after = after
             .as_deref()
@@ -5526,9 +5569,11 @@ impl NativeCheckout {
         &self,
         path: String,
         kind: String,
-        major: u32,
-        minor: u32,
+        major: NapiU32,
+        minor: NapiU32,
     ) -> Result<NativeMutationResult> {
+        let major = major.into_inner();
+        let minor = minor.into_inner();
         let path = native_path(&path, self.config)?;
         let kind = device_kind(&kind)?;
         let mut checkout = self.inner.lock().await;
@@ -6011,9 +6056,11 @@ impl NativeCheckout {
         &self,
         operations: Vec<NativeTransactionOperation>,
         operation_id: Buffer,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_attempts: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeAuthoredLiveMutationResult> {
+        let maximum_attempts = maximum_attempts.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
         let maximum =
             usize::try_from(self.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
         if operations.len() > maximum || operations.capacity() > maximum {
@@ -6086,9 +6133,11 @@ impl NativeCheckout {
     pub async fn resume_live(
         &self,
         operation_id: Buffer,
-        maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_attempts: NapiU32,
+        maximum_conflicts: NapiU32,
     ) -> Result<NativeLiveMutationResult> {
+        let maximum_attempts = maximum_attempts.into_inner();
+        let maximum_conflicts = maximum_conflicts.into_inner();
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = self.inner.lock().await;
         checkout
@@ -6122,7 +6171,8 @@ impl NativeCheckout {
     /// Returns a JavaScript error for unsupported consistency, zero bounds,
     /// corruption, cancellation, storage, replay, or bounded-work failure.
     #[napi]
-    pub async fn rebase_head(&self, maximum_conflicts: u32) -> Result<NativeRebaseResult> {
+    pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.into_inner();
         let mut checkout = self.inner.lock().await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
@@ -6256,9 +6306,11 @@ impl NativeWatcher {
     #[napi]
     pub async fn reconcile(
         &self,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchReconcileResult> {
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
         let _operation = self.operation.lock().await;
         ensure_no_pending_interval(&self.pending)?;
         self.verify_capture_root()?;
@@ -6332,10 +6384,13 @@ impl NativeWatcher {
     #[napi]
     pub async fn poll_capture(
         &self,
-        maximum_changes: u32,
-        maximum_paths: u32,
-        maximum_extent_spans: u32,
+        maximum_changes: NapiU32,
+        maximum_paths: NapiU32,
+        maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchCaptureResult> {
+        let maximum_changes = maximum_changes.into_inner();
+        let maximum_paths = maximum_paths.into_inner();
+        let maximum_extent_spans = maximum_extent_spans.into_inner();
         let _operation = self.operation.lock().await;
         self.verify_capture_root()?;
         let pending = {
@@ -6923,31 +6978,37 @@ fn decode_object_id(bytes: &[u8]) -> Result<ObjectId> {
 fn native_speculation_options(options: &NativeSpeculationOptions) -> Result<SpeculationOptions> {
     Ok(SpeculationOptions {
         residency: ResidencySpeculatorOptions {
-            maximum_active_operations: options.residency.maximum_active_operations,
+            maximum_active_operations: options.residency.maximum_active_operations.into_inner(),
             maximum_active_bytes: bigint_u64(&options.residency.maximum_active_bytes)?,
-            outcome_window: options.residency.outcome_window,
-            traffic_window: options.residency.traffic_window,
+            outcome_window: options.residency.outcome_window.into_inner(),
+            traffic_window: options.residency.traffic_window.into_inner(),
             speculative_cost_basis_points: u16_from_u32(
-                options.residency.speculative_cost_basis_points,
+                options.residency.speculative_cost_basis_points.into_inner(),
                 "speculativeCostBasisPoints",
             )?,
-            minimum_usefulness_samples: options.residency.minimum_usefulness_samples,
+            minimum_usefulness_samples: options.residency.minimum_usefulness_samples.into_inner(),
             minimum_usefulness_basis_points: u16_from_u32(
-                options.residency.minimum_usefulness_basis_points,
+                options
+                    .residency
+                    .minimum_usefulness_basis_points
+                    .into_inner(),
                 "residency minimumUsefulnessBasisPoints",
             )?,
         },
         promotion: PromotionSpeculatorOptions {
-            maximum_active_operations: options.promotion.maximum_active_operations,
+            maximum_active_operations: options.promotion.maximum_active_operations.into_inner(),
             maximum_active_bytes: bigint_u64(&options.promotion.maximum_active_bytes)?,
             maximum_active_cost_units: bigint_u64(&options.promotion.maximum_active_cost_units)?,
-            maximum_residency_facts: options.promotion.maximum_residency_facts,
-            maximum_destinations: options.promotion.maximum_destinations,
-            maximum_accepted_tiers: options.promotion.maximum_accepted_tiers,
-            outcome_window: options.promotion.outcome_window,
-            minimum_usefulness_samples: options.promotion.minimum_usefulness_samples,
+            maximum_residency_facts: options.promotion.maximum_residency_facts.into_inner(),
+            maximum_destinations: options.promotion.maximum_destinations.into_inner(),
+            maximum_accepted_tiers: options.promotion.maximum_accepted_tiers.into_inner(),
+            outcome_window: options.promotion.outcome_window.into_inner(),
+            minimum_usefulness_samples: options.promotion.minimum_usefulness_samples.into_inner(),
             minimum_usefulness_basis_points: u16_from_u32(
-                options.promotion.minimum_usefulness_basis_points,
+                options
+                    .promotion
+                    .minimum_usefulness_basis_points
+                    .into_inner(),
                 "promotion minimumUsefulnessBasisPoints",
             )?,
         },
@@ -6999,7 +7060,7 @@ fn native_object_residency(value: &NativeObjectResidency) -> Result<ObjectReside
         object_id: decode_object_id(&value.object_id)?,
         location_id: StorageLocationId::from_bytes(fixed_16(&value.location_id)?),
         tier: native_storage_tier(&value.tier)?,
-        source_priority: u16_from_u32(value.source_priority, "sourcePriority")?,
+        source_priority: u16_from_u32(value.source_priority.into_inner(), "sourcePriority")?,
     })
 }
 
@@ -7011,7 +7072,7 @@ fn native_promotion_destination(
         tier: native_storage_tier(&value.tier)?,
         writable: value.writable,
         maximum_object_bytes: bigint_u64(&value.maximum_object_bytes)?,
-        priority: u16_from_u32(value.priority, "promotion priority")?,
+        priority: u16_from_u32(value.priority.into_inner(), "promotion priority")?,
         cost_units_per_byte: bigint_u64(&value.cost_units_per_byte)?,
     })
 }
@@ -7308,8 +7369,8 @@ fn native_authored_transaction(
         "create-device" => AuthoredMutation::CreateDevice {
             path: native_path(&required(path, "path")?, config)?,
             kind: device_kind(&required(file_kind, "fileKind")?)?,
-            major: required(major, "major")?,
-            minor: required(minor, "minor")?,
+            major: required(major.map(NapiU32::into_inner), "major")?,
+            minor: required(minor.map(NapiU32::into_inner), "minor")?,
             metadata,
         },
         "create-reparse-point" => AuthoredMutation::CreateReparsePoint {
@@ -7509,9 +7570,15 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
         _ => return Err(Error::new(Status::InvalidArg, "invalid Unicode policy")),
     };
     let limits = options.limits;
-    let maximum_path_depth = u16::try_from(limits.maximum_path_depth)
+    let maximum_path_bytes = limits.maximum_path_bytes.into_inner();
+    let maximum_component_bytes = limits.maximum_component_bytes.into_inner();
+    let maximum_path_depth = u16::try_from(limits.maximum_path_depth.into_inner())
         .map_err(|_| Error::new(Status::InvalidArg, "maximum path depth exceeds u16"))?;
-    let maximum_page_height = u16::try_from(limits.maximum_page_height)
+    let maximum_mutations_per_batch = limits.maximum_mutations_per_batch.into_inner();
+    let maximum_paths_per_batch = limits.maximum_paths_per_batch.into_inner();
+    let maximum_checkout_dependencies = limits.maximum_checkout_dependencies.into_inner();
+    let maximum_directory_page_entries = limits.maximum_directory_page_entries.into_inner();
+    let maximum_page_height = u16::try_from(limits.maximum_page_height.into_inner())
         .map_err(|_| Error::new(Status::InvalidArg, "maximum page height exceeds u16"))?;
     VolumeConfig {
         profile,
@@ -7523,14 +7590,14 @@ fn native_volume_config(options: NativeVolumeOptions) -> Result<VolumeConfig> {
         hard_links: options.hard_links,
         sparse_files: options.sparse_files,
         limits: VolumeLimits {
-            maximum_path_bytes: limits.maximum_path_bytes,
-            maximum_component_bytes: limits.maximum_component_bytes,
+            maximum_path_bytes,
+            maximum_component_bytes,
             maximum_path_depth,
             maximum_object_bytes: bigint_u64(&limits.maximum_object_bytes)?,
-            maximum_mutations_per_batch: limits.maximum_mutations_per_batch,
-            maximum_paths_per_batch: limits.maximum_paths_per_batch,
-            maximum_checkout_dependencies: limits.maximum_checkout_dependencies,
-            maximum_directory_page_entries: limits.maximum_directory_page_entries,
+            maximum_mutations_per_batch,
+            maximum_paths_per_batch,
+            maximum_checkout_dependencies,
+            maximum_directory_page_entries,
             maximum_page_height,
             maximum_read_bytes: bigint_u64(&limits.maximum_read_bytes)?,
             maximum_files_per_generation: bigint_u64(&limits.maximum_files_per_generation)?,
@@ -7558,10 +7625,10 @@ fn bigint(value: u64) -> BigInt {
 
 fn native_object_cache_options(options: NativeObjectCacheOptions) -> Result<ObjectCacheOptions> {
     let converted = ObjectCacheOptions {
-        maximum_entries: options.maximum_entries,
+        maximum_entries: options.maximum_entries.into_inner(),
         maximum_bytes: bigint_u64(&options.maximum_bytes)?,
-        maximum_in_flight: options.maximum_in_flight,
-        maximum_waiters_per_object: options.maximum_waiters_per_object,
+        maximum_in_flight: options.maximum_in_flight.into_inner(),
+        maximum_waiters_per_object: options.maximum_waiters_per_object.into_inner(),
     };
     drop(options);
     Ok(converted)
@@ -7967,7 +8034,10 @@ mod tests {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ] {
-            assert!(validate_napi_u32(value).is_err(), "accepted invalid value {value}");
+            assert!(
+                validate_napi_u32(value).is_err(),
+                "accepted invalid value {value}"
+            );
         }
         Ok(())
     }
@@ -7979,10 +8049,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8000,10 +8070,10 @@ mod tests {
             NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
-                    maximum_entries: 0,
+                    maximum_entries: NapiU32(0),
                     maximum_bytes: bigint(1024),
-                    maximum_in_flight: 2,
-                    maximum_waiters_per_object: 2,
+                    maximum_in_flight: NapiU32(2),
+                    maximum_waiters_per_object: NapiU32(2),
                 },
             )
             .await
@@ -8013,13 +8083,13 @@ mod tests {
             NativeFs::open(
                 root.path().to_string_lossy().into_owned(),
                 NativeObjectCacheOptions {
-                    maximum_entries: 8,
+                    maximum_entries: NapiU32(8),
                     maximum_bytes: BigInt {
                         sign_bit: false,
                         words: vec![0, 1],
                     },
-                    maximum_in_flight: 2,
-                    maximum_waiters_per_object: 2,
+                    maximum_in_flight: NapiU32(2),
+                    maximum_waiters_per_object: NapiU32(2),
                 },
             )
             .await
@@ -8035,10 +8105,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8049,24 +8119,24 @@ mod tests {
             Buffer::from(generation_id.digest().into_bytes().to_vec()),
             NativeSpeculationOptions {
                 residency: NativeResidencySpeculationOptions {
-                    maximum_active_operations: 2,
+                    maximum_active_operations: NapiU32(2),
                     maximum_active_bytes: bigint(1024),
-                    outcome_window: 8,
-                    traffic_window: 8,
-                    speculative_cost_basis_points: 10_000,
-                    minimum_usefulness_samples: 2,
-                    minimum_usefulness_basis_points: 1,
+                    outcome_window: NapiU32(8),
+                    traffic_window: NapiU32(8),
+                    speculative_cost_basis_points: NapiU32(10_000),
+                    minimum_usefulness_samples: NapiU32(2),
+                    minimum_usefulness_basis_points: NapiU32(1),
                 },
                 promotion: NativePromotionSpeculationOptions {
-                    maximum_active_operations: 2,
+                    maximum_active_operations: NapiU32(2),
                     maximum_active_bytes: bigint(1024),
                     maximum_active_cost_units: bigint(1024),
-                    maximum_residency_facts: 4,
-                    maximum_destinations: 4,
-                    maximum_accepted_tiers: 4,
-                    outcome_window: 8,
-                    minimum_usefulness_samples: 2,
-                    minimum_usefulness_basis_points: 1,
+                    maximum_residency_facts: NapiU32(4),
+                    maximum_destinations: NapiU32(4),
+                    maximum_accepted_tiers: NapiU32(4),
+                    outcome_window: NapiU32(8),
+                    minimum_usefulness_samples: NapiU32(2),
+                    minimum_usefulness_basis_points: NapiU32(1),
                 },
             },
         )?;
@@ -8096,14 +8166,14 @@ mod tests {
                     object_id: encode_object_id(object_id),
                     location_id: Buffer::from([1_u8; 16].to_vec()),
                     tier: "durable-origin".to_owned(),
-                    source_priority: 0,
+                    source_priority: NapiU32(0),
                 }],
                 vec![NativePromotionDestination {
                     location_id: Buffer::from([2_u8; 16].to_vec()),
                     tier: "node-local".to_owned(),
                     writable: true,
                     maximum_object_bytes: bigint(1024),
-                    priority: 0,
+                    priority: NapiU32(0),
                     cost_units_per_byte: bigint(1),
                 }],
             )
@@ -8226,7 +8296,7 @@ mod tests {
         );
         let listing = workspace.sync().await?;
         let first_page = listing
-            .list_directory("/shapes".to_owned(), None, 1)
+            .list_directory("/shapes".to_owned(), None, NapiU32(1))
             .await?;
         assert!(first_page.has_more);
         let Some(first_entry) = first_page.entries.first() else {
@@ -8246,12 +8316,17 @@ mod tests {
                     encoding: first_entry.name.encoding.clone(),
                     bytes: Buffer::from(first_entry.name.bytes.as_ref().to_vec()),
                 }),
-                16,
+                NapiU32(16),
             )
             .await?;
         assert_eq!(remaining_page.entries.len(), 3);
         let extents = workspace
-            .plan_extents("/shapes/source".to_owned(), bigint(0), bigint(6), 8)
+            .plan_extents(
+                "/shapes/source".to_owned(),
+                bigint(0),
+                bigint(6),
+                NapiU32(8),
+            )
             .await?;
         assert!(extents.spans.iter().any(|span| span.kind == "content"));
         assert!(
@@ -8280,7 +8355,7 @@ mod tests {
             .await?;
         assert_eq!(first.commit().await?.status, "committed");
         assert_eq!(disjoint.commit().await?.status, "conflict");
-        let safe = disjoint.rebase(16).await?;
+        let safe = disjoint.rebase(NapiU32(16)).await?;
         assert_eq!(safe.status, "rebased");
         assert!(safe.conflicts.is_empty());
         assert_eq!(disjoint.commit().await?.status, "committed");
@@ -8299,7 +8374,7 @@ mod tests {
             .await?;
         assert_eq!(winner.commit().await?.status, "committed");
         assert_eq!(loser.commit().await?.status, "conflict");
-        let conflict = loser.rebase(16).await?;
+        let conflict = loser.rebase(NapiU32(16)).await?;
         assert_eq!(conflict.status, "conflicted");
         assert!(!conflict.conflicts.is_empty());
         assert!(!conflict.truncated);
@@ -8313,10 +8388,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8391,10 +8466,10 @@ mod tests {
         let reopened = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?
@@ -8419,10 +8494,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 8,
+                maximum_entries: NapiU32(8),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 2,
-                maximum_waiters_per_object: 2,
+                maximum_in_flight: NapiU32(2),
+                maximum_waiters_per_object: NapiU32(2),
             },
         )
         .await?;
@@ -8432,9 +8507,9 @@ mod tests {
                 source.path().to_string_lossy().into_owned(),
                 NativeSourceOptions {
                     mode: "tracking".to_owned(),
-                    maximum_paths: 128,
-                    maximum_extent_spans: 128,
-                    maximum_queued_changes: 128,
+                    maximum_paths: NapiU32(128),
+                    maximum_extent_spans: NapiU32(128),
+                    maximum_queued_changes: NapiU32(128),
                     excluded_paths: None,
                 },
             )
@@ -8475,10 +8550,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 32,
+                maximum_entries: NapiU32(32),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 4,
-                maximum_waiters_per_object: 4,
+                maximum_in_flight: NapiU32(4),
+                maximum_waiters_per_object: NapiU32(4),
             },
         )
         .await?;
@@ -8495,9 +8570,9 @@ mod tests {
             .write("/second".to_owned(), Buffer::from(vec![3_u8]))
             .await?;
         let end = agent.sync().await?;
-        let first = agent.diff(&base, &middle, 32).await?;
-        let second = agent.diff(&middle, &end, 32).await?;
-        let composed = first.compose(&second, 32).await?;
+        let first = agent.diff(&base, &middle, NapiU32(32)).await?;
+        let second = agent.diff(&middle, &end, NapiU32(32)).await?;
+        let composed = first.compose(&second, NapiU32(32)).await?;
         assert_eq!(composed.from().id().as_ref(), base.id().as_ref());
         assert_eq!(composed.to().id().as_ref(), end.id().as_ref());
         assert!(!composed.changes()?.files.is_empty());
@@ -8507,9 +8582,9 @@ mod tests {
                 &main,
                 NativeJoinOptions {
                     history: "merge".to_owned(),
-                    maximum_generations: 64,
-                    maximum_changes: 64,
-                    maximum_conflicts: 16,
+                    maximum_generations: NapiU32(64),
+                    maximum_changes: NapiU32(64),
+                    maximum_conflicts: NapiU32(16),
                 },
             )
             .await?;
@@ -8529,10 +8604,10 @@ mod tests {
         let fs = NativeFs::open(
             root.path().to_string_lossy().into_owned(),
             NativeObjectCacheOptions {
-                maximum_entries: 32,
+                maximum_entries: NapiU32(32),
                 maximum_bytes: bigint(1024 * 1024),
-                maximum_in_flight: 4,
-                maximum_waiters_per_object: 4,
+                maximum_in_flight: NapiU32(4),
+                maximum_waiters_per_object: NapiU32(4),
             },
         )
         .await?;
@@ -8649,9 +8724,13 @@ mod tests {
             source_root: source_root.path().to_path_buf(),
             cancellation: CancellationToken::new(),
         };
-        assert!(Box::pin(watcher.reconcile(64, 64)).await.is_err());
+        assert!(
+            Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64)))
+                .await
+                .is_err()
+        );
         shared.lock().await.clear_retained_operation(unresolved);
-        Box::pin(watcher.reconcile(64, 64)).await?;
+        Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
         Ok(())
     }
 }

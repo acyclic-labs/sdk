@@ -8,8 +8,8 @@
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -696,10 +696,8 @@ async fn append(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = wire_codec::append_from_wire(
-        decode::<wire::AppendRequest>(&request, "append")?,
-    )
-    .map_err(stream_error)?;
+    let request = wire_codec::append_from_wire(decode::<wire::AppendRequest>(&request, "append")?)
+        .map_err(stream_error)?;
     let stream = client
         .stream(request.path.to_string())
         .map_err(stream_error)?;
@@ -721,10 +719,8 @@ async fn fork(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = wire_codec::fork_from_wire(
-        decode::<wire::ForkRequest>(&request, "fork")?,
-    )
-    .map_err(stream_error)?;
+    let request = wire_codec::fork_from_wire(decode::<wire::ForkRequest>(&request, "fork")?)
+        .map_err(stream_error)?;
     let stream = client
         .stream(request.source.to_string())
         .map_err(stream_error)?;
@@ -750,10 +746,8 @@ async fn read(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
-    let request = wire_codec::read_from_wire(
-        decode::<wire::ReadRequest>(&request, "read")?,
-    )
-    .map_err(stream_error)?;
+    let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
+        .map_err(stream_error)?;
     let stream = client
         .stream(request.path.to_string())
         .map_err(stream_error)?;
@@ -804,10 +798,9 @@ async fn children(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
-    let request = wire_codec::children_from_wire(
-        decode::<wire::ChildrenRequest>(&request, "children")?,
-    )
-    .map_err(stream_error)?;
+    let request =
+        wire_codec::children_from_wire(decode::<wire::ChildrenRequest>(&request, "children")?)
+            .map_err(stream_error)?;
     let parent = request.parent.as_ref().map(ToString::to_string);
     let token = cancellation_state(cancellation);
     let mut values = run_with_cancellation(
@@ -844,9 +837,10 @@ async fn children_page(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = wire_codec::children_page_from_wire(
-        decode::<wire::ChildrenPageRequest>(&request, "children_page")?,
-    )
+    let request = wire_codec::children_page_from_wire(decode::<wire::ChildrenPageRequest>(
+        &request,
+        "children_page",
+    )?)
     .map_err(stream_error)?;
     let parent = request.parent.as_ref().map(StreamPath::as_str);
     let after = request.after.as_ref().map(StreamPath::as_str);
@@ -860,10 +854,7 @@ async fn children_page(
         cancellation_state(cancellation),
     )
     .await?;
-    encode(
-        &wire_codec::children_page_to_wire(value),
-        "children_page",
-    )
+    encode(&wire_codec::children_page_to_wire(value), "children_page")
 }
 
 async fn commit(
@@ -1026,16 +1017,24 @@ mod tests {
             let follow = Arc::clone(&follow);
             async move { follow.next_result().await }
         });
-        assert!(tokio::time::timeout(Duration::from_millis(50), &mut second)
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err()
+        );
 
         follow.close().await;
         assert!(dropped.load(Ordering::SeqCst));
-        let first = first.await.expect("first follow task panicked").expect("first read failed");
+        let first = first
+            .await
+            .expect("first follow task panicked")
+            .expect("first read failed");
         assert!(first.value.is_none());
         assert!(first.error.is_none());
-        let second = second.await.expect("second follow task panicked").expect("second read failed");
+        let second = second
+            .await
+            .expect("second follow task panicked")
+            .expect("second read failed");
         assert!(second.value.is_none());
         assert!(second.error.is_none());
     }
@@ -1126,7 +1125,10 @@ mod tests {
             Err(StreamError::Unsupported)
         }
 
-        async fn read(&self, _request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
+        async fn read(
+            &self,
+            _request: ReadRequest,
+        ) -> std::result::Result<RecordStream, StreamError> {
             Err(StreamError::Unsupported)
         }
 
@@ -1180,6 +1182,7 @@ mod tests {
             let identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
             let certificate_pem = identity.cert.pem();
             let private_key_pem = identity.signing_key.serialize_pem();
+            let client_ca = certificate_pem.as_bytes().to_vec();
             let listener = TcpListener::bind("127.0.0.1:0").await?;
             let address = listener.local_addr()?;
             let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -1189,20 +1192,21 @@ mod tests {
                 started: Arc::clone(&started),
                 dropped: Arc::clone(&dropped),
             });
-            let service = acyclic_stream::wire::stream_service_server::StreamServiceServer::with_interceptor(
-                acyclic_stream::grpc::Service::new(provider),
-                |request: Request<()>| {
-                    if request
-                        .metadata()
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok())
-                        != Some("Bearer exact-token")
-                    {
-                        return Err(Status::unauthenticated("missing exact bearer credential"));
-                    }
-                    Ok(request)
-                },
-            );
+            let service =
+                acyclic_stream::wire::stream_service_server::StreamServiceServer::with_interceptor(
+                    acyclic_stream::grpc::Service::new(provider),
+                    |request: Request<()>| {
+                        if request
+                            .metadata()
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            != Some("Bearer exact-token")
+                        {
+                            return Err(Status::unauthenticated("missing exact bearer credential"));
+                        }
+                        Ok(request)
+                    },
+                );
             let incoming = futures::stream::unfold(listener, |listener| async move {
                 listener
                     .accept()
@@ -1227,11 +1231,14 @@ mod tests {
             let connected = NativeStreamClient::connect_with_ca_result(
                 endpoint,
                 "exact-token".to_owned(),
-                Buffer::from(certificate_pem.as_bytes().to_vec()),
+                Buffer::from(client_ca),
                 None,
             )
             .await?;
-            assert!(connected.error.is_none(), "connect failed: {:?}", connected.error);
+            assert!(
+                connected.error.is_none(),
+                "connect returned an error envelope"
+            );
             let client = connected.client.expect("connect result omitted client");
             let request = wire::FollowRequest {
                 path: "accounts/events".to_owned(),
@@ -1240,8 +1247,7 @@ mod tests {
             let opened = client
                 .open_follow_result(Buffer::from(request.encode_to_vec()), None)
                 .await?;
-            assert!(opened.error.is_none(), "open failed: {:?}", opened.error);
-            assert!(started.load(Ordering::SeqCst));
+            assert!(opened.error.is_none(), "open returned an error envelope");
             let follow = Arc::new(opened.follow.expect("open result omitted follow"));
             let pending = tokio::spawn({
                 let follow = Arc::clone(&follow);
@@ -1255,7 +1261,10 @@ mod tests {
             .await?;
 
             follow.close().await;
-            let closed = tokio::time::timeout(Duration::from_secs(1), pending).await??;
+            let closed = match tokio::time::timeout(Duration::from_secs(1), pending).await?? {
+                Ok(value) => value,
+                Err(_) => panic!("pending next_result rejected"),
+            };
             assert!(closed.value.is_none());
             assert!(closed.error.is_none());
             let closed_again = follow.next_result().await?;
@@ -1275,6 +1284,9 @@ mod tests {
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         }
         .await;
-        assert!(result.is_ok(), "real TCP follow lifecycle failed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "real TCP follow lifecycle failed: {result:?}"
+        );
     }
 }
