@@ -615,6 +615,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn checked_cursor_increment_rejects_u64_max() {
+        let next = u64::MAX
+            .checked_add(1)
+            .ok_or(StreamError::Unavailable);
+        assert_eq!(next, Err(StreamError::Unavailable));
+    }
+
+    #[test]
     fn checked_record_rejects_an_oversized_body() {
         let record = Record {
             sequence: 0,

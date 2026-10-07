@@ -766,6 +766,18 @@ pub trait DurableTaskHost: Send + Sync {
             ))
         })
     }
+    /// Replays scheduler history with the admission identity retained by the
+    /// typed runtime. The legacy task-only method remains the default for
+    /// providers whose task and operation identifiers are identical.
+    fn scheduler_events_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        _operation_id: OperationId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        self.scheduler_events(task_id, after_revision, limit)
+    }
     /// Waits for a terminal observation. Hosts with completion notification
     /// can override this bounded-poll fallback without changing task handles.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
@@ -782,6 +794,17 @@ pub trait DurableTaskHost: Send + Sync {
     }
     /// Requests cancellation; an acknowledgement does not assert completion.
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>>;
+
+    /// Requests cancellation with the admitted operation identity retained by
+    /// the typed runtime. Providers that use one identity for both values may
+    /// continue implementing the legacy task-only method.
+    fn cancel_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        _operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.cancel(task_id)
+    }
 
     /// Routes an addressable interaction through the durable owner journal.
     fn interact<'a>(
@@ -910,6 +933,17 @@ pub trait TaskStateProvider: Send + Sync {
             ))
         })
     }
+    /// Replays scheduler history with the admission identity retained by the
+    /// typed runtime. The task-only method remains the compatibility default.
+    fn scheduler_events_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        _operation_id: OperationId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        self.scheduler_events(task_id, after_revision, limit)
+    }
     /// Waits for a terminal result; providers may override polling.
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         Box::pin(async move {
@@ -925,6 +959,15 @@ pub trait TaskStateProvider: Send + Sync {
     }
     /// Requests cancellation without claiming a terminal result.
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>>;
+    /// Requests cancellation with the admission identity retained by the
+    /// typed runtime. The task-only method remains the compatibility default.
+    fn cancel_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        _operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.cancel(task_id)
+    }
     /// Routes an addressable interaction through owner-retained state.
     fn interact<'a>(
         &'a self,
@@ -1040,11 +1083,28 @@ impl TaskStateProvider for HostTaskState {
     ) -> BoxFuture<'a, Result<TaskEventPage>> {
         self.0.scheduler_events(task_id, after_revision, limit)
     }
+    fn scheduler_events_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        self.0
+            .scheduler_events_for(task_id, operation_id, after_revision, limit)
+    }
     fn wait_outcome<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<Outcome<Value>>> {
         self.0.wait_outcome(task_id)
     }
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
         self.0.cancel(task_id)
+    }
+    fn cancel_for<'a>(
+        &'a self,
+        task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
+        self.0.cancel_for(task_id, operation_id)
     }
     fn interact<'a>(
         &'a self,
@@ -1542,6 +1602,9 @@ pub enum RuntimeTask<O> {
     Durable {
         /// Stable task address at the durable host.
         task_id: TaskId,
+        /// Admission identity used to authenticate scheduler history and
+        /// cancellation independently from the host task address.
+        operation_id: OperationId,
         /// Provider that resolves the task after process recovery.
         host: Arc<dyn TaskStateProvider>,
         /// Pinned schema for the task result.
@@ -1567,6 +1630,7 @@ enum TaskCancellationInner {
     Live(tokio::task::AbortHandle),
     Durable {
         task_id: TaskId,
+        operation_id: OperationId,
         host: Arc<dyn TaskStateProvider>,
     },
 }
@@ -1579,7 +1643,11 @@ impl TaskCancellation {
                 handle.abort();
                 Ok(())
             }
-            TaskCancellationInner::Durable { task_id, host } => host.cancel(*task_id).await,
+            TaskCancellationInner::Durable {
+                task_id,
+                operation_id,
+                host,
+            } => host.cancel_for(*task_id, *operation_id).await,
         }
     }
 }
@@ -1587,10 +1655,15 @@ impl TaskCancellation {
 impl<O> RuntimeTask<O> {
     pub(crate) fn scheduler_event_source(
         &self,
-    ) -> Option<(TaskId, Arc<dyn TaskStateProvider>)> {
+    ) -> Option<(TaskId, OperationId, Arc<dyn TaskStateProvider>)> {
         match self {
             Self::Live(_) => None,
-            Self::Durable { task_id, host, .. } => Some((*task_id, Arc::clone(host))),
+            Self::Durable {
+                task_id,
+                operation_id,
+                host,
+                ..
+            } => Some((*task_id, *operation_id, Arc::clone(host))),
         }
     }
 
@@ -1610,9 +1683,15 @@ impl<O> RuntimeTask<O> {
             Self::Live(handle) => TaskCancellation {
                 inner: TaskCancellationInner::Live(handle.cancellation_handle()),
             },
-            Self::Durable { task_id, host, .. } => TaskCancellation {
+            Self::Durable {
+                task_id,
+                operation_id,
+                host,
+                ..
+            } => TaskCancellation {
                 inner: TaskCancellationInner::Durable {
                     task_id: *task_id,
+                    operation_id: *operation_id,
                     host: Arc::clone(host),
                 },
             },
@@ -1632,19 +1711,20 @@ impl<O> RuntimeTask<O> {
         if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
             return Err(Error::Invalid("task event page limit is out of bounds".into()));
         }
-        let Self::Durable { task_id, host, .. } = self else {
+        let Self::Durable {
+            task_id,
+            operation_id,
+            host,
+            ..
+        } = self else {
             return Err(Error::Unsupported(
                 "live task event replay is not durable".into(),
             ));
         };
         let page = host
-            .scheduler_events(*task_id, after_revision, limit)
+            .scheduler_events_for(*task_id, *operation_id, after_revision, limit)
             .await?;
-        page.validate_for(
-            OperationId::from_bytes(task_id.into_bytes()),
-            after_revision,
-            limit,
-        )?;
+        page.validate_for(*operation_id, after_revision, limit)?;
         Ok(page)
     }
 }
@@ -1773,6 +1853,7 @@ impl<O: DeserializeOwned> RuntimeTask<O> {
             }),
             Self::Durable {
                 task_id,
+                operation_id: _,
                 host,
                 output_schema,
                 extensions: _,
@@ -2363,6 +2444,7 @@ impl AgentHarness {
         let extension_leases = self.retain_task_extensions_existing(definition, scope)?;
         Ok(Some(Admission::Accepted(RuntimeTask::Durable {
             task_id,
+            operation_id,
             host: Arc::clone(host),
             output_schema: definition.output_schema.clone(),
             extensions: Some(extension_leases),
@@ -3227,6 +3309,7 @@ impl AgentHarness {
         let extensions = self.retain_task_extensions_existing(definition, &self.scope)?;
         Ok(RuntimeTask::Durable {
             task_id,
+            operation_id: observed.operation_id,
             host: Arc::clone(host),
             output_schema: definition.output_schema.clone(),
             extensions: Some(extensions),
@@ -3339,6 +3422,7 @@ impl AgentHarness {
                 self.verify_spawner_admission(task_id, &expected).await?;
                 Admission::Accepted(RuntimeTask::Durable {
                     task_id,
+                    operation_id,
                     host: Arc::clone(host),
                     output_schema: definition.output_schema.clone(),
                     extensions: extension_leases,
@@ -5181,6 +5265,7 @@ impl RuntimeGroup {
                     {
                         Ok(()) => Admission::Accepted(RuntimeTask::Durable {
                             task_id,
+                            operation_id,
                             host: Arc::clone(&host),
                             output_schema: request.output_schema.clone(),
                             extensions: None,

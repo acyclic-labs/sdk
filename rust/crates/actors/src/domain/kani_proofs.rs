@@ -5,8 +5,8 @@
 //! visibility or creating a second validation rule.
 
 use super::{
-    valid_code_sha256, wire, ActorLimits, ActorState, DomainError, ErrorCode,
-    PositiveU64, SubscriptionStart, SubscriptionState,
+    valid_code_sha256, wire, ActorLimits, ActorState, CodeSha256, DomainError,
+    ErrorCode, PositiveU64, SubscriptionStart, SubscriptionState,
 };
 
 #[kani::proof]
@@ -16,6 +16,19 @@ fn code_sha256_fixed_length_matches_contract() {
     // This is the admission invariant consumed by `CodeSha256::new`; keep the
     // Vec conversion and newtype construction in runtime property tests.
     assert_eq!(valid_code_sha256(&bytes), bytes != [0; 32]);
+}
+
+#[kani::proof]
+#[kani::unwind(65)]
+fn code_sha256_constructor_preserves_valid_bytes() {
+    // Kani's maintained exact_vec model gives a symbolic, fixed-length Vec;
+    // this avoids an unbounded allocation while exercising the real
+    // CodeSha256::new conversion and accessor.
+    let input = kani::vec::exact_vec::<u8, 32>();
+    kani::assume(input.iter().any(|byte| *byte != 0));
+
+    let digest = CodeSha256::new(input.clone()).expect("non-zero 32-byte input is valid");
+    assert_eq!(digest.as_bytes(), input.as_slice());
 }
 
 #[kani::proof]

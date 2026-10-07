@@ -75,6 +75,16 @@ pub fn upload_length(size: u64) -> Result<(), Error> {
     Ok(())
 }
 
+/// Validates one multipart part number against the canonical inclusive bound.
+pub const fn part_number(value: u32) -> Result<(), Error> {
+    if value == 0 || value > wire::ObjectsLimit::MaxMultipartParts as u32 {
+        return Err(Error {
+            code: wire::ErrorCode::InvalidArgument,
+        });
+    }
+    Ok(())
+}
+
 /// Validates a canonical binary request before any transport or provider side effect.
 /// Upload routes accept their generated header message, with the decoded body length separate.
 #[allow(clippy::too_many_lines)]
@@ -155,7 +165,7 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
             key(&value.object_key)?;
             upload_id(&value.upload_id)?;
             page_size(value.page_size)?;
-            if value.after_part_number > 10_000 {
+            if value.after_part_number > wire::ObjectsLimit::MaxMultipartParts as u32 {
                 return Err(InvalidArgument.into());
             }
         }
@@ -216,9 +226,7 @@ pub fn upload_part_stream_digest(header: &wire::UploadPartHeader) -> Result<Body
     key(&header.object_key)?;
     upload_id(&header.upload_id)?;
     identity(&header.mutation)?;
-    if !(1..=10_000).contains(&header.part_number) {
-        return Err(InvalidArgument.into());
-    }
+    part_number(header.part_number)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
     Ok(BodyDigest {
@@ -279,13 +287,14 @@ pub fn complete_multipart_digest(
     upload_id(&value.upload_id)?;
     preconditions(&value.preconditions)?;
     identity(&value.mutation)?;
-    if value.parts.is_empty() || value.parts.len() > 10_000 {
+    if value.parts.is_empty()
+        || value.parts.len() > wire::ObjectsLimit::MaxMultipartParts as usize
+    {
         return Err(InvalidArgument.into());
     }
     let mut previous = 0;
     for part in &value.parts {
         if part.part_number <= previous
-            || part.part_number > 10_000
             || part.etag.is_empty()
             || part.etag.len() > 8192
             || part.etag.contains(['\r', '\n', '\0'])
@@ -293,6 +302,7 @@ pub fn complete_multipart_digest(
         {
             return Err(InvalidArgument.into());
         }
+        part_number(part.part_number)?;
         previous = part.part_number;
     }
     let mut value = value.clone();
@@ -583,6 +593,13 @@ mod tests {
             assert!(bucket_name(name).is_err());
         }
         assert!(key("a/../b//c").is_ok());
+    }
+    #[test]
+    fn part_numbers_use_the_contract_bounds() {
+        assert!(part_number(1).is_ok());
+        assert!(part_number(wire::ObjectsLimit::MaxMultipartParts as u32).is_ok());
+        assert!(part_number(0).is_err());
+        assert!(part_number(wire::ObjectsLimit::MaxMultipartParts as u32 + 1).is_err());
     }
     #[test]
     fn ranges_clip_suffixes_and_ends_without_wrapping() -> Result<(), Error> {

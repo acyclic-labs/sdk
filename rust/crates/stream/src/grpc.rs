@@ -20,6 +20,7 @@ use tonic::{
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
 };
 
+use crate::wire_codec;
 use crate::wire_codec::{
     append_outcome_from_wire, append_outcome_wire, commit_id, commit_outcome_from_wire,
     commit_outcome_wire, condition_from_wire, condition_wire, envelope_from_wire, envelope_wire,
@@ -1108,6 +1109,7 @@ mod tests {
 
     struct MismatchedReadCommit {
         children_page: Option<ChildrenPage>,
+        oversized_record: Option<Record>,
     }
 
     #[async_trait]
@@ -1131,7 +1133,10 @@ mod tests {
             Err(StreamError::Unsupported)
         }
         async fn read(&self, _request: ReadRequest) -> Result<RecordStream, StreamError> {
-            Err(StreamError::Unsupported)
+            self.oversized_record
+                .clone()
+                .map(|record| stream::once(async move { Ok(record) }).boxed())
+                .ok_or(StreamError::Unsupported)
         }
         async fn follow(
             &self,
@@ -1207,6 +1212,7 @@ mod tests {
             Arc::from([provider_channel(Service::new(Arc::new(
                 MismatchedReadCommit {
                     children_page: None,
+                    oversized_record: None,
                 },
             )))]),
             "fixture",
@@ -1229,6 +1235,7 @@ mod tests {
                 }],
                 next_after: None,
             }),
+            oversized_record: None,
         };
         let transport = Client::from_channels(
             Arc::from([provider_channel(Service::new(Arc::new(provider)))]),
@@ -1246,6 +1253,41 @@ mod tests {
             Err(StreamError::Unavailable)
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn grpc_rejects_an_oversized_read_record_at_the_adapter_boundary()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider = MismatchedReadCommit {
+            children_page: None,
+            oversized_record: Some(Record {
+                sequence: 0,
+                value: Bytes::from(vec![0; crate::MAX_RECORD_BYTES + 1]),
+                commit_id: CommitId::from_bytes([9; 32]),
+                committed_at_micros: 0,
+            }),
+        };
+        let transport = Client::from_channels(
+            Arc::from([provider_channel(Service::new(Arc::new(provider)))]),
+            "fixture",
+        )?;
+        let mut records = transport
+            .read(ReadRequest {
+                path: StreamPath::new("runs/events")?,
+                from: 0,
+                limit: 1,
+            })
+            .await?;
+        assert_eq!(records.next().await, Some(Err(StreamError::Unavailable)));
+        Ok(())
+    }
+
+    #[test]
+    fn grpc_normalizes_a_malformed_response_path() {
+        assert_eq!(
+            response_path("runs//events".to_owned()),
+            Err(StreamError::Unavailable)
+        );
     }
 
     #[tokio::test]

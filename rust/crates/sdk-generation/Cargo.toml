@@ -14,6 +14,7 @@ sha2 = "=0.10.9"
 
 [dependencies]
 acyclic-actors = { path = "../actors", default-features = false }
+acyclic-workers = { path = "../workers", default-features = false }
 depinfo = "=0.7.10"
 sdk-docs = { path = "../sdk-docs" }
 serde = { version = "=1.0.228", features = ["derive"] }

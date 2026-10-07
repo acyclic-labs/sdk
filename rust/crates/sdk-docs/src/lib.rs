@@ -849,13 +849,13 @@ fn public_use_occurrences(
     crate_name: &str,
 ) -> Result<HashMap<(Id, String), Id>, Error> {
     let mut occurrences = HashMap::new();
-    let mut visited = HashSet::new();
+    let mut ancestors = Vec::new();
     collect_public_use_occurrences(
         krate,
         krate.root,
         vec![crate_name.to_owned()],
         &mut occurrences,
-        &mut visited,
+        &mut ancestors,
     )?;
     Ok(occurrences)
 }
@@ -865,15 +865,20 @@ fn collect_public_use_occurrences(
     id: Id,
     path: Vec<String>,
     occurrences: &mut HashMap<(Id, String), Id>,
-    visited: &mut HashSet<Id>,
+    ancestors: &mut Vec<Id>,
 ) -> Result<(), Error> {
-    if !visited.insert(id) {
+    // A module can be reachable through multiple public aliases. Keep the
+    // current path in the cycle guard so each alias gets its own descendants,
+    // while a re-export back to an ancestor terminates immediately.
+    if ancestors.contains(&id) {
         return Ok(());
     }
+    ancestors.push(id);
     let item = krate.index.get(&id).ok_or_else(|| {
         Error::Invalid(format!("rustdoc module item {} is absent from index", id.0))
     })?;
     let ItemEnum::Module(module) = &item.inner else {
+        ancestors.pop();
         return Ok(());
     };
     for child_id in &module.items {
@@ -888,19 +893,40 @@ fn collect_public_use_occurrences(
                 if let Some(target) = use_.id {
                     let mut exported = path.clone();
                     exported.push(use_.name.clone());
-                    occurrences.insert((target, exported.join("::")), *child_id);
+                    let exported_path = exported.join("::");
+                    occurrences.insert((target, exported_path), *child_id);
+                    if matches!(
+                        krate.index.get(&target).map(|item| &item.inner),
+                        Some(ItemEnum::Module(_))
+                    ) {
+                        let nested_path = if use_.is_glob { path.clone() } else { exported };
+                        collect_public_use_occurrences(
+                            krate,
+                            target,
+                            nested_path,
+                            occurrences,
+                            ancestors,
+                        )?;
+                    }
                 }
             }
             ItemEnum::Module(_) => {
                 if let Some(name) = item_name(child) {
                     let mut nested = path.clone();
                     nested.push(name);
-                    collect_public_use_occurrences(krate, *child_id, nested, occurrences, visited)?;
+                    collect_public_use_occurrences(
+                        krate,
+                        *child_id,
+                        nested,
+                        occurrences,
+                        ancestors,
+                    )?;
                 }
             }
             _ => {}
         }
     }
+    ancestors.pop();
     Ok(())
 }
 
@@ -1751,6 +1777,104 @@ mod tests {
         changed_source.source_sha256 = Some(format!("sha256:{}", "c".repeat(64)));
         let changed = build_data(&changed_source).expect("source identity should be retained");
         assert_ne!(first.source.source_sha256, changed.source.source_sha256);
+
+        let mut alias_graph = fixture.clone();
+        alias_graph["index"]["0"]["inner"]["module"]["items"] =
+            serde_json::json!([2, 4, 5, 6, 8, 10, 11, 12]);
+        alias_graph["index"]["8"] = serde_json::json!({
+            "id": 8,
+            "crate_id": 0,
+            "name": "source",
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"module": {"is_crate": false, "items": [9], "is_stripped": false}}
+        });
+        alias_graph["index"]["9"] = serde_json::json!({
+            "id": 9,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "associated_target", "name": "associated_target", "id": 5, "is_glob": false}}
+        });
+        alias_graph["index"]["10"] = serde_json::json!({
+            "id": 10,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "source", "name": "first", "id": 8, "is_glob": false}}
+        });
+        alias_graph["index"]["11"] = serde_json::json!({
+            "id": 11,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "source", "name": "second", "id": 8, "is_glob": false}}
+        });
+        alias_graph["index"]["12"] = serde_json::json!({
+            "id": 12,
+            "crate_id": 0,
+            "name": null,
+            "span": null,
+            "visibility": "public",
+            "docs": null,
+            "links": {},
+            "attrs": [],
+            "deprecation": null,
+            "stability": null,
+            "const_stability": null,
+            "inner": {"use": {"source": "source", "name": "source", "id": 8, "is_glob": true}}
+        });
+        let alias_graph: Crate =
+            serde_json::from_value(alias_graph).expect("module alias fixture should deserialize");
+        let occurrences = public_use_occurrences(&alias_graph, "demo")
+            .expect("module alias occurrences should resolve");
+        assert_eq!(
+            occurrences.get(&(Id(5), "demo::source::associated_target".into())),
+            Some(&Id(9))
+        );
+        assert_eq!(
+            occurrences.get(&(Id(5), "demo::associated_target".into())),
+            Some(&Id(9))
+        );
+        assert_eq!(
+            occurrences.get(&(Id(5), "demo::first::associated_target".into())),
+            Some(&Id(9))
+        );
+        assert_eq!(
+            occurrences.get(&(Id(5), "demo::second::associated_target".into())),
+            Some(&Id(9))
+        );
+        assert_eq!(
+            occurrences.get(&(Id(0), "demo::nested::crate".into())),
+            Some(&Id(7))
+        );
         let missing_version_path = root.join("missing-version.json");
         let mut missing_version = fixture.clone();
         missing_version["crate_version"] = serde_json::Value::Null;

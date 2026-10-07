@@ -450,7 +450,12 @@ async function qualifyInstalledTransport(packageRoot, rootModule, nativeModule, 
     } finally {
       releasePendingResolve();
     }
-    if (cancellation === undefined || cancellation.code !== "cancelled") {
+    if (
+      cancellation === undefined ||
+      cancellation.code !== "cancelled" ||
+      cancellation.grpcCode !== 1 ||
+      cancellation.grpcName !== "cancelled"
+    ) {
       throw new Error("installed Actors root did not preserve in-flight cancellation");
     }
   } finally {

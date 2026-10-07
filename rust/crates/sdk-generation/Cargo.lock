@@ -24,6 +24,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-workers"
+version = "0.2.0"
+dependencies = [
+ "prost",
+ "prost-reflect",
+ "protify",
+ "protoc-bin-vendored",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2052,6 +2069,7 @@ name = "sdk-generation"
 version = "0.1.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-workers",
  "depinfo",
  "sdk-docs",
  "serde",

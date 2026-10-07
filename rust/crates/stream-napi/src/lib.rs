@@ -12,6 +12,7 @@ use futures::StreamExt;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
 use prost::Message;
+use serde::Serialize;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -20,7 +21,7 @@ const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Structured Rust-owned error metadata shared by connection, operation, and
 /// follow results.
 #[napi(object)]
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize)]
 pub struct NativeStreamErrorMetadata {
     /// Stable Stream error code.
     pub code: String,
@@ -201,10 +202,13 @@ fn connect_error(error: grpc::ConnectError) -> NativeStreamErrorMetadata {
 }
 
 fn napi_error(error: NativeStreamErrorMetadata) -> Error {
-    Error::new(
-        Status::GenericFailure,
-        format!("{}: {}", error.code, error.message),
-    )
+    let reason = match serde_json::to_string(&error) {
+        Ok(reason) => reason,
+        Err(_) => String::from(
+            r#"{"code":"internal","message":"failed to encode Stream error metadata"}"#,
+        ),
+    };
+    Error::new(Status::GenericFailure, reason)
 }
 
 fn decode<T: Message + Default>(
@@ -355,7 +359,11 @@ impl NativeStreamFollow {
         }
     }
 
-    /// Cancels this cursor and releases its transport stream.
+    /// Requests cancellation of this cursor.
+    ///
+    /// A pending `nextResult` call is woken by the cancellation token and
+    /// releases its transport stream when that call returns. A cursor cannot
+    /// be reopened after it has been cancelled.
     #[napi]
     pub fn close(&self) {
         self.state.token.cancel();
@@ -379,6 +387,32 @@ impl NativeStreamClient {
     }
 }
 
+async fn connect_native(
+    endpoint: String,
+    token: String,
+    ca_certificate_pem: Option<Vec<u8>>,
+    cancellation: Option<CancellationToken>,
+) -> std::result::Result<StreamClient<grpc::Client>, NativeStreamErrorMetadata> {
+    run_with_cancellation(
+        async move {
+            match ca_certificate_pem {
+                Some(ca_certificate_pem) => {
+                    StreamClient::<grpc::Client>::connect_with_ca_certificate(
+                        &endpoint,
+                        &token,
+                        &ca_certificate_pem,
+                    )
+                    .await
+                }
+                None => StreamClient::<grpc::Client>::connect(&endpoint, &token).await,
+            }
+            .map_err(connect_error)
+        },
+        cancellation,
+    )
+    .await
+}
+
 #[napi]
 impl NativeStreamClient {
     /// Connects using the canonical Rust native gRPC transport.
@@ -388,16 +422,9 @@ impl NativeStreamClient {
         token: String,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<Self> {
-        let result = run_with_cancellation(
-            async {
-                StreamClient::<grpc::Client>::connect(&endpoint, &token)
-                    .await
-                    .map_err(connect_error)
-            },
-            cancellation_state(cancellation),
-        )
-        .await
-        .map_err(napi_error)?;
+        let result = connect_native(endpoint, token, None, cancellation_state(cancellation))
+            .await
+            .map_err(napi_error)?;
         Ok(Self::from_client(result))
     }
 
@@ -408,15 +435,7 @@ impl NativeStreamClient {
         token: String,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamConnectResult> {
-        let result = run_with_cancellation(
-            async {
-                StreamClient::<grpc::Client>::connect(&endpoint, &token)
-                    .await
-                    .map_err(connect_error)
-            },
-            cancellation_state(cancellation),
-        )
-        .await;
+        let result = connect_native(endpoint, token, None, cancellation_state(cancellation)).await;
         Ok(match result {
             Ok(client) => NativeStreamConnectResult::success(Self::from_client(client)),
             Err(error) => NativeStreamConnectResult::failure(error),
@@ -431,13 +450,10 @@ impl NativeStreamClient {
         ca_certificate_pem: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<Self> {
-        let ca = ca_certificate_pem.to_vec();
-        let result = run_with_cancellation(
-            async {
-                StreamClient::<grpc::Client>::connect_with_ca_certificate(&endpoint, &token, &ca)
-                    .await
-                    .map_err(connect_error)
-            },
+        let result = connect_native(
+            endpoint,
+            token,
+            Some(ca_certificate_pem.to_vec()),
             cancellation_state(cancellation),
         )
         .await
@@ -453,13 +469,10 @@ impl NativeStreamClient {
         ca_certificate_pem: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
     ) -> Result<NativeStreamConnectResult> {
-        let ca = ca_certificate_pem.to_vec();
-        let result = run_with_cancellation(
-            async {
-                StreamClient::<grpc::Client>::connect_with_ca_certificate(&endpoint, &token, &ca)
-                    .await
-                    .map_err(connect_error)
-            },
+        let result = connect_native(
+            endpoint,
+            token,
+            Some(ca_certificate_pem.to_vec()),
             cancellation_state(cancellation),
         )
         .await;

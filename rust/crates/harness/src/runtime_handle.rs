@@ -31,7 +31,7 @@ struct PersistentState<O> {
 pub struct PersistentRuntimeTask<O> {
     identity: String,
     cancellation: TaskCancellation,
-    event_source: Option<(TaskId, Arc<dyn TaskStateProvider>)>,
+    event_source: Option<(TaskId, OperationId, Arc<dyn TaskStateProvider>)>,
     state: Mutex<PersistentState<O>>,
 }
 
@@ -134,19 +134,15 @@ where
         if limit == 0 || limit > MAX_TASK_EVENT_PAGE {
             return Err(Error::Invalid("task event page limit is out of bounds".into()));
         }
-        let Some((task_id, host)) = &self.event_source else {
+        let Some((task_id, operation_id, host)) = &self.event_source else {
             return Err(Error::Unsupported(
                 "live task event replay is not durable".into(),
             ));
         };
         let page = host
-            .scheduler_events(*task_id, after_revision, limit)
+            .scheduler_events_for(*task_id, *operation_id, after_revision, limit)
             .await?;
-        page.validate_for(
-            OperationId::from_bytes(task_id.into_bytes()),
-            after_revision,
-            limit,
-        )?;
+        page.validate_for(*operation_id, after_revision, limit)?;
         Ok(page)
     }
 }

@@ -728,13 +728,9 @@ impl PartNumber {
     /// The largest part number accepted by the Objects contract.
     pub const MAX: u32 = wire::ObjectsLimit::MaxMultipartParts as u32;
 
-    /// Constructs a nonzero multipart part number.
+    /// Constructs a multipart part number in the canonical inclusive range.
     pub const fn new(value: u32) -> Result<Self, Error> {
-        if value == 0 || value > Self::MAX {
-            return Err(Error {
-                code: wire::ErrorCode::InvalidArgument,
-            });
-        }
+        request::part_number(value)?;
         Ok(Self(value))
     }
 

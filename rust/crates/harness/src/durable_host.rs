@@ -924,8 +924,22 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         after_revision: u64,
         limit: u32,
     ) -> BoxFuture<'a, Result<TaskEventPage>> {
+        self.scheduler_events_for(
+            task_id,
+            OperationId::from_bytes(task_id.into_bytes()),
+            after_revision,
+            limit,
+        )
+    }
+
+    fn scheduler_events_for<'a>(
+        &'a self,
+        _task_id: TaskId,
+        operation_id: OperationId,
+        after_revision: u64,
+        limit: u32,
+    ) -> BoxFuture<'a, Result<TaskEventPage>> {
         Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh().await?;
             coordinator.observe_operation(
@@ -939,8 +953,15 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
     }
 
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+        self.cancel_for(task_id, OperationId::from_bytes(task_id.into_bytes()))
+    }
+
+    fn cancel_for<'a>(
+        &'a self,
+        _task_id: TaskId,
+        operation_id: OperationId,
+    ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let operation_id = OperationId::from_bytes(task_id.into_bytes());
             self.coordinator
                 .lock()
                 .await

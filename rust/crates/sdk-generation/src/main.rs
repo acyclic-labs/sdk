@@ -139,6 +139,7 @@ struct RustdocOwner {
 }
 
 const ACTORS_GENERATED_ROOT: &str = "generated/actors";
+const WORKERS_GENERATED_ROOT: &str = "generated/workers";
 const ACTORS_TYPESCRIPT_ROOT: &str = "generated/typescript";
 const ACTORS_TYPESCRIPT_BARREL: &str = "types.ts";
 
@@ -356,6 +357,20 @@ fn generate_actors_contract_artifacts(config: &Config) -> io::Result<()> {
     if !descriptor.is_file() {
         return Err(io::Error::other(
             "Actors contract metadata did not produce a descriptor",
+        ));
+    }
+    Ok(())
+}
+
+fn generate_workers_contract_artifacts(config: &Config) -> io::Result<()> {
+    let stage = config.output.join(WORKERS_GENERATED_ROOT);
+    let proto_root = stage.join("proto");
+    acyclic_workers::contract::render_proto_files(&proto_root).map_err(io::Error::other)?;
+    let descriptor = stage.join("acyclic-workers-v1.bin");
+    fs::write(&descriptor, acyclic_workers::FILE_DESCRIPTOR_SET)?;
+    if !descriptor.is_file() {
+        return Err(io::Error::other(
+            "Workers contract metadata did not produce a descriptor",
         ));
     }
     Ok(())
@@ -1334,6 +1349,7 @@ fn generate(config: &Config) -> io::Result<()> {
     let source_before_stage =
         collect_sources(&config.root, &source_extras_before, &owner_roots)?;
     generate_actors_contract_artifacts(config)?;
+    generate_workers_contract_artifacts(config)?;
     generate_actors_typescript_artifacts(config)?;
     let rustdoc_input = resolve_rustdoc(config, &owners)?;
     let source_extras_after = baseline_source_extras(&config.root)?;

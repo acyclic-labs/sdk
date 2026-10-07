@@ -5,7 +5,7 @@ usage() {
   cat <<'USAGE'
 Usage: run-kani.sh --isolated-root DIR [options]
 
-Runs the nine source-owned Actors Kani harnesses in a parameterized isolated
+Runs the ten source-owned Actors Kani harnesses in a parameterized isolated
 tool/cache directory and writes a receipt only after successful verification
 and unchanged source hashes.
 
@@ -170,6 +170,7 @@ set +e
     --manifest-path "$sdk_root/rust/crates/actors/Cargo.toml" \
     --package acyclic-actors \
     --harness domain::kani_proofs::code_sha256_fixed_length_matches_contract \
+    --harness domain::kani_proofs::code_sha256_constructor_preserves_valid_bytes \
     --harness domain::kani_proofs::code_sha256_rejects_empty \
     --harness domain::kani_proofs::code_sha256_rejects_31_bytes \
     --harness domain::kani_proofs::code_sha256_rejects_33_bytes \
@@ -261,8 +262,8 @@ summary = re.search(
     r"(\d+) failures, (\d+) total",
     log_text,
 )
-if not summary or tuple(map(int, summary.groups())) != (9, 0, 9):
-    raise SystemExit("Kani log does not report exactly nine successful harnesses")
+if not summary or tuple(map(int, summary.groups())) != (10, 0, 10):
+    raise SystemExit("Kani log does not report exactly ten successful harnesses")
 if "VERIFICATION:- SUCCESSFUL" not in log_text:
     raise SystemExit("Kani log does not contain a successful verification marker")
 if "CARGO_KANI_EXIT=0" not in log_text:
@@ -272,6 +273,10 @@ harnesses = [
     {
         "name": "domain::kani_proofs::code_sha256_fixed_length_matches_contract",
         "obligation": "A symbolic 32-byte digest is accepted by the code_sha256 constructor.",
+    },
+    {
+        "name": "domain::kani_proofs::code_sha256_constructor_preserves_valid_bytes",
+        "obligation": "CodeSha256::new preserves every byte for a symbolic valid 32-byte input.",
     },
     {
         "name": "domain::kani_proofs::code_sha256_rejects_empty",
@@ -340,9 +345,9 @@ receipt = {
     },
     "harnesses": harnesses,
     "result": {
-        "successful": 9,
+        "successful": 10,
         "failures": 0,
-        "total": 9,
+        "total": 10,
         "unwind": int(os.environ["DEFAULT_UNWIND"]),
         "jobs": int(os.environ["JOBS"]),
     },
@@ -351,7 +356,7 @@ receipt = {
         "log_sha256": log_digest,
     },
     "verification_policy": {
-        "summary": "Manual Harness Summary: Complete - 9 successfully verified harnesses, 0 failures, 9 total",
+        "summary": "Manual Harness Summary: Complete - 10 successfully verified harnesses, 0 failures, 10 total",
         "required_markers": ["VERIFICATION:- SUCCESSFUL", "CARGO_KANI_EXIT=0"],
     },
     "scope": [
