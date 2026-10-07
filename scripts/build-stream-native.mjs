@@ -13,7 +13,9 @@ const defaultOutput = resolve(root, "typescript/packages/stream/generated/native
 const nativeTargetsSchema = "acyclic.stream.native-targets.v1";
 const generationSchema = "acyclic.stream.native-generation.v1";
 const buildInputsSchema = "acyclic.stream.native-build-inputs.v3";
+const buildInputsReceiptSchema = "acyclic.stream.native-build-inputs-receipt.v1";
 const generationManifestName = "generation-manifest.json";
+const buildInputsReceiptName = "stream-native-build-inputs.receipt.json";
 const require = createRequire(import.meta.url);
 const sourceRoots = [
   "Cargo.toml",
@@ -158,6 +160,39 @@ function envValue(name, environment = process.env) {
   return Object.prototype.hasOwnProperty.call(environment, name) ? environment[name] : null;
 }
 
+function splitRustflags(value) {
+  if (typeof value !== "string" || value.trim().length === 0) return [];
+  const flags = [];
+  let current = "";
+  let quote = null;
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      else if (character === "\\" && index + 1 < value.length) current += value[++index];
+      else current += character;
+    } else if (character === "'" || character === '"') quote = character;
+    else if (/\s/u.test(character)) {
+      if (current.length > 0) { flags.push(current); current = ""; }
+    } else if (character === "\\" && index + 1 < value.length) current += value[++index];
+    else current += character;
+  }
+  if (quote !== null) throw new Error("RUSTFLAGS contains an unterminated quote");
+  if (current.length > 0) flags.push(current);
+  return flags;
+}
+
+export function deterministicRustflags(sourceRoot, targetDir, target, { plain = process.env.RUSTFLAGS, encoded = process.env.CARGO_ENCODED_RUSTFLAGS } = {}) {
+  const flags = [
+    ...splitRustflags(plain),
+    ...(typeof encoded === "string" && encoded.length > 0 ? encoded.split("\x1f") : []),
+    `--remap-path-prefix=${resolve(sourceRoot).replaceAll("\\", "/")}=/__acyclic_stream_source`,
+    `--remap-path-prefix=${resolve(targetDir).replaceAll("\\", "/")}=/__acyclic_stream_target`,
+  ];
+  if (typeof target === "string" && target.endsWith("-pc-windows-msvc")) flags.push("-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro");
+  return flags.join("\x1f");
+}
+
 function targetEnvName(target, suffix) {
   return `CARGO_TARGET_${target.replaceAll("-", "_").toUpperCase()}_${suffix}`;
 }
@@ -166,13 +201,7 @@ export function linkerInputs(target, environment = process.env) {
   const targetLinkerName = targetEnvName(target, "LINKER");
   const configured = {
     target: envValue(targetLinkerName, environment),
-    rustc: null,
   };
-  const linkerCommand = configured.target ?? configured.rustc;
-  const defaultCommand = linkerCommand === null
-    ? (target.endsWith("-msvc") ? "link.exe" : target.endsWith("-gnu") ? "cc" : null)
-    : null;
-  const command = linkerCommand ?? defaultCommand;
   return {
     configured,
     environment: {
@@ -185,7 +214,6 @@ export function linkerInputs(target, environment = process.env) {
       WindowsSdkDir: envValue("WindowsSdkDir", environment),
       VisualStudioVersion: envValue("VisualStudioVersion", environment),
     },
-    default: command,
   };
 }
 
@@ -310,13 +338,113 @@ async function maintainedBunVersion() {
   return versions[0];
 }
 
+function maintainedBunCandidates(version) {
+  const executable = process.platform === "win32" ? "bun.exe" : "bun";
+  const target = process.platform === "win32" ? "bun-windows-x64" : process.platform === "darwin" ? `bun-darwin-${process.arch === "arm64" ? "aarch64" : "x64"}` : `bun-linux-${process.arch === "arm64" ? "aarch64" : "x64"}`;
+  const candidates = [];
+  const configured = envValue("BUN_BINARY");
+  if (configured !== null) candidates.push(configured);
+  const tools = envValue("TOOLS_DIR");
+  if (tools !== null) candidates.push(resolve(tools, "bun", version, target, executable));
+  candidates.push("bun");
+  return [...new Set(candidates)];
+}
+
+function maintainedBunIdentity(version) {
+  const observed = [];
+  for (const candidate of maintainedBunCandidates(version)) {
+    const identity = optionalCommandIdentity(candidate, ["--version"]);
+    if (identity === null) continue;
+    observed.push(identity);
+    if (identity.output === version) return identity;
+  }
+  const versions = observed.map(identity => `${identity.command}: ${identity.output}`).join(", ");
+  throw new Error(`maintained Bun ${version} is unavailable${versions.length === 0 ? "" : `; observed ${versions}`}`);
+}
+
+function normalizedPath(value, { targetDir, outputDir } = {}) {
+  if (typeof value !== "string") return value;
+  let text = value.replaceAll("\\", "/");
+  const prefixes = [
+    [targetDir, "<target-dir>"],
+    [outputDir, "<output-dir>"],
+    [root, "<source-root>"],
+  ];
+  let replacedPrefix = false;
+  for (const [prefix, replacement] of prefixes) {
+    if (typeof prefix !== "string") continue;
+    const normalizedPrefix = prefix.replaceAll("\\", "/").replace(/\/$/u, "");
+    if (text === normalizedPrefix) return replacement;
+    const prefixPattern = new RegExp(`${normalizedPrefix.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?=[/=]|$)`, "u");
+    if (prefixPattern.test(text)) {
+      text = text.replace(prefixPattern, replacement);
+      replacedPrefix = true;
+    }
+  }
+  if (replacedPrefix) return text;
+  if (/^(?:[A-Za-z]:\/|\/|\\\\)/u.test(text)) return "<host-path>";
+  return value;
+}
+
+function normalizeBuildInputPaths(value, context) {
+  if (typeof value === "string") return normalizedPath(value, context);
+  if (Array.isArray(value)) return value.map(item => normalizeBuildInputPaths(item, context));
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, normalizeBuildInputPaths(item, context)]));
+}
+
+function normalizeToolPath(value, context) {
+  if (typeof value !== "string") return value;
+  const normalized = normalizedPath(value, context);
+  if (normalized !== "<host-path>") return normalized;
+  const parts = value.replaceAll("\\", "/").split("/").filter(Boolean);
+  return `<toolchain-path>/${parts.slice(-3).join("/")}`;
+}
+
+function normalizeFlagValue(value, context) {
+  if (typeof value !== "string") return value;
+  const withToolIdentity = value.replace(/(-C(?:\s+)?linker=)([^\s\u001f]+)/gu, (_match, prefix, linker) => `${prefix}${normalizeToolPath(linker, context)}`);
+  return normalizedPath(withToolIdentity, context);
+}
+
+export function normalizeBuildInputs(value, { targetDir, outputDir }) {
+  const context = { targetDir: resolve(targetDir), outputDir: resolve(outputDir) };
+  const normalized = normalizeBuildInputPaths(value, context);
+  normalized.target_dir = "<target-dir>";
+  normalized.runtime.node_path = "<runtime>";
+  normalized.runtime.bun.actual.command = "bun";
+  normalized.invocation.runtime = "bun";
+  normalized.generator.options.output_dir = "<output-dir>";
+  normalized.generator.options.target_dir = "<target-dir>";
+  normalized.linker.actual.rustc = "rustc";
+  normalized.linker.actual.linker = normalizeToolPath(value.linker.actual.linker, context);
+  normalized.linker.actual.args = normalized.linker.actual.args.map((arg, index) => {
+    const raw = value.linker.actual.args[index];
+    if (typeof raw === "string" && raw.startsWith("-Clinker=")) return `-Clinker=${normalizeToolPath(raw.slice("-Clinker=".length), context)}`;
+    if (index > 0 && value.linker.actual.args[index - 1] === "-C" && typeof raw === "string" && raw.startsWith("linker=")) return `linker=${normalizeToolPath(raw.slice("linker=".length), context)}`;
+    return arg;
+  });
+  normalized.linker.configured.target = normalizeToolPath(value.linker.configured.target, context);
+  for (const field of ["LINK", "CC", "AR", "RUSTC_LINKER"]) normalized.linker.environment[field] = normalizeToolPath(value.linker.environment[field], context);
+  for (const field of ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"]) normalized.environment[field] = normalizeFlagValue(value.environment[field], context);
+  return normalized;
+}
+
+export function buildInputsReceipt(raw, published) {
+  assertBuildInputs(raw);
+  assertBuildInputs(published);
+  return {
+    schema: buildInputsReceiptSchema,
+    published_build_inputs_sha256: digest(Buffer.from(JSON.stringify(published))),
+    raw_build_inputs: raw,
+  };
+}
+
 export async function buildInputs(target, targetDir, outputDir, packageName) {
   if (typeof target !== "string" || target.length === 0) throw new Error("native build inputs require a target");
   const wrapper = envValue("RUSTC_WRAPPER");
-  const wrapperCommand = wrapper === null ? null : wrapper.trim();
   const maintainedBun = await maintainedBunVersion();
-  const bunIdentity = optionalCommandIdentity("bun", ["--version"]);
-  if (bunIdentity !== null && bunIdentity.output !== maintainedBun) throw new Error(`loaded Bun ${bunIdentity.output} does not match maintained version ${maintainedBun}`);
+  const bunIdentity = maintainedBunIdentity(maintainedBun);
   const configBytes = await readFile(resolve(root, ".cargo/config.toml"));
   return {
     schema: buildInputsSchema,
@@ -367,8 +495,7 @@ export async function buildInputs(target, targetDir, outputDir, packageName) {
     },
     cache: {
       wrapper,
-      wrapper_command: wrapperCommand,
-      wrapper_version: wrapperCommand === null ? null : optionalCommandIdentity(wrapperCommand, ["--version"]),
+      wrapper_version: wrapper === null ? null : optionalCommandIdentity(wrapper, ["--version"]),
       directory: envValue("SCCACHE_DIR"),
       size: envValue("SCCACHE_CACHE_SIZE"),
     },
@@ -379,70 +506,71 @@ function assertString(value, label) {
   if (typeof value !== "string" || value.length === 0) throw new Error(`native build input ${label} is missing`);
 }
 
+function assertObject(value, label) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`native build input ${label} is invalid`);
+  return value;
+}
+
+function assertStringArray(value, label) {
+  if (!Array.isArray(value) || value.some(item => typeof item !== "string")) throw new Error(`native build input ${label} is invalid`);
+}
+
+function assertStringFields(value, fields, label) {
+  const object = assertObject(value, label);
+  for (const field of fields) assertString(object[field], `${label}.${field}`);
+  return object;
+}
+
+function assertNullableStringFields(value, fields, label) {
+  const object = assertObject(value, label);
+  for (const field of fields) {
+    if (object[field] !== null && typeof object[field] !== "string") throw new Error(`native build input ${label}.${field} is invalid`);
+  }
+  return object;
+}
+
 function assertDigest(value, label) {
   if (canonicalSha256(value) === undefined) throw new Error(`native build input ${label} is invalid`);
 }
 
 export function assertBuildInputs(value) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("native build inputs are invalid");
+  assertObject(value, "build inputs");
   if (value.schema !== buildInputsSchema) throw new Error("native build inputs have unsupported schema");
-  assertString(value.target, "target");
-  assertString(value.target_dir, "target_dir");
-  for (const label of ["node", "node_path", "platform", "arch"]) assertString(value.runtime?.[label], `runtime.${label}`);
-  if (value.runtime?.bun === null || typeof value.runtime?.bun !== "object") throw new Error("native build Bun identity is missing");
-  assertString(value.runtime.bun.maintained, "runtime.bun.maintained");
-  if (value.runtime.bun.actual !== null && (typeof value.runtime.bun.actual !== "object" || typeof value.runtime.bun.actual.output !== "string")) throw new Error("native build Bun identity is invalid");
-  assertString(value.invocation?.script, "invocation.script");
-  assertString(value.invocation?.runtime, "invocation.runtime");
-  if (!Array.isArray(value.invocation.args) || value.invocation.args.some(item => typeof item !== "string")) throw new Error("native build invocation arguments are invalid");
-  for (const compiler of ["rustc", "cargo"]) {
-    if (value.compiler?.[compiler] === null || typeof value.compiler?.[compiler] !== "object") throw new Error(`native build input compiler.${compiler} is missing`);
-    assertString(value.compiler[compiler].command, `compiler.${compiler}.command`);
-    assertString(value.compiler[compiler].output, `compiler.${compiler}.output`);
-    if (!Array.isArray(value.compiler[compiler].args)) throw new Error(`native build input compiler.${compiler}.args is invalid`);
+  assertStringFields(value, ["target", "target_dir"], "build inputs");
+  const runtime = assertStringFields(value.runtime, ["node", "node_path", "platform", "arch"], "runtime");
+  const bun = assertStringFields(runtime.bun, ["maintained"], "runtime.bun");
+  if (bun.actual !== null) {
+    const actualBun = assertStringFields(bun.actual, ["command", "output"], "runtime.bun.actual");
+    assertStringArray(actualBun.args, "runtime.bun.actual.args");
   }
-  assertString(value.generator?.package, "generator.package");
+  const invocation = assertStringFields(value.invocation, ["script", "runtime"], "invocation");
+  assertStringArray(invocation.args, "invocation.args");
+  for (const compiler of ["rustc", "cargo"]) {
+    const identity = assertStringFields(value.compiler?.[compiler], ["command", "output"], `compiler.${compiler}`);
+    assertStringArray(identity.args, `compiler.${compiler}.args`);
+  }
+  const generator = assertStringFields(value.generator, ["package", "version", "package_sha256", "entry_sha256", "lock_sha256"], "generator");
+  assertString(generator.package, "generator.package");
   if (value.generator.package !== "@napi-rs/cli") throw new Error("native build generator package is unsupported");
-  assertString(value.generator?.version, "generator.version");
-  assertString(value.generator?.package_sha256, "generator.package_sha256");
-  assertString(value.generator?.entry_sha256, "generator.entry_sha256");
-  assertString(value.generator?.lock_sha256, "generator.lock_sha256");
-  for (const field of ["package_sha256", "entry_sha256", "lock_sha256"]) assertDigest(value.generator[field], `generator.${field}`);
-  const generatorOptions = value.generator.options;
-  if (generatorOptions === null || typeof generatorOptions !== "object") throw new Error("native build generator options are missing");
-  for (const field of ["output_dir", "target_dir", "js_package_name", "js_binding", "dts"]) assertString(generatorOptions[field], `generator.options.${field}`);
+  for (const field of ["package_sha256", "entry_sha256", "lock_sha256"]) assertDigest(generator[field], `generator.${field}`);
+  const generatorOptions = assertStringFields(generator.options, ["output_dir", "target_dir", "js_package_name", "js_binding", "dts"], "generator.options");
   if (generatorOptions.release !== true || generatorOptions.platform !== true) throw new Error("native build generator options are invalid");
   if (generatorOptions.target !== value.target) throw new Error("native build generator target differs");
   if (generatorOptions.target_dir !== value.target_dir) throw new Error("native build generator target directory differs");
-  assertString(value.profile?.name, "profile.name");
+  const profile = assertStringFields(value.profile, ["name", "manifest_sha256", "config_sha256"], "profile");
   if (value.profile.name !== "release") throw new Error("native build profile is not release");
-  for (const field of ["manifest_sha256", "config_sha256"]) {
-    assertString(value.profile?.[field], `profile.${field}`);
-    assertDigest(value.profile[field], `profile.${field}`);
-  }
-  for (const field of ["cargo_incremental", "release_incremental", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "CARGO_TARGET_DIR"]) {
-    const section = ["cargo_incremental", "release_incremental"].includes(field) ? value.profile : value.environment;
-    if (section[field] !== null && typeof section[field] !== "string") throw new Error(`native build input ${field} is invalid`);
-  }
-  if (value.cache === null || typeof value.cache !== "object") throw new Error("native build cache inputs are missing");
-  for (const field of ["wrapper", "wrapper_command", "directory", "size"]) {
-    if (value.cache[field] !== null && typeof value.cache[field] !== "string") throw new Error(`native build cache input ${field} is invalid`);
-  }
-  if (value.cache.wrapper_version !== null && (typeof value.cache.wrapper_version !== "object" || typeof value.cache.wrapper_version.output !== "string")) throw new Error("native build cache wrapper identity is invalid");
-  if (value.linker === null || typeof value.linker !== "object") throw new Error("native build linker inputs are missing");
-  for (const section of ["configured", "environment"]) {
-    if (value.linker[section] === null || typeof value.linker[section] !== "object") throw new Error(`native build linker ${section} inputs are missing`);
-    for (const item of Object.values(value.linker[section])) if (item !== null && typeof item !== "string") throw new Error("native build linker environment input is invalid");
-  }
-  if (value.linker.default !== null && typeof value.linker.default !== "string") throw new Error("native build linker default is invalid");
-  const actualLinker = value.linker.actual;
-  if (actualLinker === null || typeof actualLinker !== "object") throw new Error("native build linker invocation is missing");
-  assertString(actualLinker.source, "linker.actual.source");
+  for (const field of ["manifest_sha256", "config_sha256"]) assertDigest(profile[field], `profile.${field}`);
+  assertNullableStringFields(profile, ["cargo_incremental", "release_incremental"], "profile");
+  assertNullableStringFields(value.environment, ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC_WRAPPER", "CARGO_TARGET_DIR"], "environment");
+  const cache = assertNullableStringFields(value.cache, ["wrapper", "directory", "size"], "cache");
+  if (cache.wrapper_version !== null) assertStringFields(cache.wrapper_version, ["output"], "cache.wrapper_version");
+  const linker = assertObject(value.linker, "linker");
+  assertNullableStringFields(linker.configured, ["target"], "linker.configured");
+  assertNullableStringFields(linker.environment, ["LINK", "CC", "AR", "RUSTC_LINKER", "VCINSTALLDIR", "VCToolsInstallDir", "WindowsSdkDir", "VisualStudioVersion"], "linker.environment");
+  const actualLinker = assertStringFields(linker.actual, ["source", "rustc", "target"], "linker.actual");
   if (actualLinker.source !== "rustc-invocation") throw new Error("native build linker invocation source is unsupported");
-  assertString(actualLinker.rustc, "linker.actual.rustc");
-  assertString(actualLinker.target, "linker.actual.target");
   if (actualLinker.linker !== null && typeof actualLinker.linker !== "string") throw new Error("native build linker invocation linker is invalid");
-  if (!Array.isArray(actualLinker.args) || actualLinker.args.some(item => typeof item !== "string")) throw new Error("native build linker invocation arguments are invalid");
+  assertStringArray(actualLinker.args, "linker.actual.args");
   return value;
 }
 
@@ -559,7 +687,20 @@ async function build(options) {
   const revision = sourceRevision();
   const source = await sourceSnapshot();
   const targetDir = resolve(options.targetDir ?? resolve(root, "target"));
-  const attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+  const priorRustflags = envValue("RUSTFLAGS");
+  const priorEncodedRustflags = envValue("CARGO_ENCODED_RUSTFLAGS");
+  process.env.CARGO_ENCODED_RUSTFLAGS = deterministicRustflags(root, targetDir, options.target, { plain: priorRustflags, encoded: priorEncodedRustflags });
+  delete process.env.RUSTFLAGS;
+  let attestedInputs;
+  try {
+    attestedInputs = await buildInputs(options.target, targetDir, output, packageManifest.name);
+  } catch (error) {
+    if (priorRustflags === null) delete process.env.RUSTFLAGS;
+    else process.env.RUSTFLAGS = priorRustflags;
+    if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
+    else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
+    throw error;
+  }
   const rootManifest = await rootPackageJson();
   const expectedGeneratorVersion = rootManifest.devDependencies?.["@napi-rs/cli"];
   if (typeof expectedGeneratorVersion === "string" && expectedGeneratorVersion !== attestedInputs.generator.version) {
@@ -585,6 +726,11 @@ async function build(options) {
       release: true,
     });
     await buildResult.task;
+    // NAPI's transaction helper can leave dot-prefixed recovery entries on
+    // mounted filesystems after commit. They are not published artifacts.
+    for (const entry of await readdir(output, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) await rm(resolve(output, entry.name), { recursive: true, force: true });
+    }
   };
   let rustcCapture = await createRustcInvocationCapture();
   try {
@@ -601,17 +747,27 @@ async function build(options) {
     } catch (error) {
       if (!/captured 0 Stream rustc link invocations/u.test(String(error?.message))) throw error;
       await rustcCapture.close();
-      execFileSync("cargo", ["clean", "--package", "acyclic-stream-napi", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+      execFileSync("cargo", ["clean", "--package", "acyclic-stream-napi", "--release", "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
       rustcCapture = await createRustcInvocationCapture();
       await runNapiBuild();
       attestedInputs.linker.actual = await rustcCapture.read(options.target);
     }
   } finally {
+    if (priorRustflags === null) delete process.env.RUSTFLAGS;
+    else process.env.RUSTFLAGS = priorRustflags;
+    if (priorEncodedRustflags === null) delete process.env.CARGO_ENCODED_RUSTFLAGS;
+    else process.env.CARGO_ENCODED_RUSTFLAGS = priorEncodedRustflags;
     await rustcCapture.close();
     await rm(temporary, { recursive: true, force: true });
   }
   await assertSourceSnapshot(source);
   if (sourceRevision() !== revision) throw new Error("Stream native source changed during native build");
+  const publishedInputs = normalizeBuildInputs(attestedInputs, { targetDir, outputDir: output });
+  const receipt = buildInputsReceipt(attestedInputs, publishedInputs);
+  // Keep host-specific compiler paths and argv in the Cargo target directory;
+  // publication manifests must remain stable when the checkout is relocated.
+  await mkdir(targetDir, { recursive: true });
+  await writeFile(resolve(targetDir, buildInputsReceiptName), `${JSON.stringify(receipt, null, 2)}\n`);
   const bundle = await bundleArtifacts(output);
   const generation = {
     schema: generationSchema,
@@ -623,7 +779,7 @@ async function build(options) {
     source_files: source.files,
     targets,
     selected_target: options.target,
-    build_inputs: attestedInputs,
+    build_inputs: publishedInputs,
     artifacts: bundle.artifacts,
   };
   const generationBytes = Buffer.from(`${JSON.stringify(generation, null, 2)}\n`);
@@ -638,7 +794,7 @@ async function build(options) {
     source_files: source.files,
     targets,
     selected_target: options.target,
-    build_inputs: attestedInputs,
+    build_inputs: publishedInputs,
     generation_manifest: `generated/native/${generationManifestName}`,
     generation_sha256: digest(generationBytes),
     artifacts: bundle.artifacts,

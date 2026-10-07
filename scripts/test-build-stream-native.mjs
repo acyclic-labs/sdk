@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, createRustcInvocationCapture, linkerInputs, sourceSnapshot } from "./build-stream-native.mjs";
+import { assertBuildInputs, assertExactInventory, assertMatchingBuildInputs, assertSourceSnapshot, buildInputsReceipt, createRustcInvocationCapture, deterministicRustflags, linkerInputs, normalizeBuildInputs, sourceSnapshot } from "./build-stream-native.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
@@ -74,9 +74,8 @@ function validBuildInputs() {
       },
     },
     linker: {
-      configured: { target: null, rustc: null },
-      environment: { LINK: null, CC: null, AR: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
-      default: "link.exe",
+      configured: { target: null },
+      environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null },
       actual: {
         source: "rustc-invocation",
         rustc: "C:/Rust/bin/rustc.exe",
@@ -100,13 +99,27 @@ function validBuildInputs() {
     },
     cache: {
       wrapper: null,
-      wrapper_command: null,
       wrapper_version: null,
       directory: null,
       size: null,
     },
   };
 }
+
+test("native qualification encodes remap and MSVC reproducibility flags without losing prior flags", () => {
+  const encoded = deterministicRustflags("C:/agent checkout/sdk", "C:/cargo target", "x86_64-pc-windows-msvc", {
+    plain: "-C opt-level=3 -C link-arg=\"C:/tool path/extra.lib\"",
+    encoded: "--cfg\x1fprior_flag",
+  });
+  const flags = encoded.split("\x1f");
+  assert.deepEqual(flags.slice(0, 5), ["-C", "opt-level=3", "-C", "link-arg=C:/tool path/extra.lib", "--cfg"]);
+  assert.ok(flags.includes("prior_flag"));
+  assert.ok(flags.includes("-C"));
+  assert.equal(flags.at(-3), "target-feature=+crt-static");
+  assert.equal(flags.at(-1), "link-arg=/Brepro");
+  assert.ok(flags.some(flag => flag.includes("--remap-path-prefix=C:/agent checkout/sdk=/__acyclic_stream_source")));
+  assert.ok(flags.some(flag => flag.includes("--remap-path-prefix=C:/cargo target=/__acyclic_stream_target")));
+});
 
 test("native qualification rejects build input identity mutations", () => {
   const valid = validBuildInputs();
@@ -121,7 +134,7 @@ test("native qualification rejects build input identity mutations", () => {
     ["linker", value => { value.linker.actual.linker = "C:/Program Files/LLVM/lld-link.exe"; }, /build input attestation differs/],
     ["environment", value => { value.environment.RUSTFLAGS = "-C opt-level=3"; }, /build input attestation differs/],
     ["profile", value => { value.profile.name = "dev"; }, /native build profile is not release/],
-    ["cache", value => { value.cache.wrapper = 42; }, /native build cache input wrapper is invalid/],
+    ["cache", value => { value.cache.wrapper = 42; }, /native build input cache\.wrapper is invalid/],
   ]) {
     const mutated = structuredClone(valid);
     mutate(mutated);
@@ -130,8 +143,7 @@ test("native qualification rejects build input identity mutations", () => {
   }
 
   const ambientRustcLinker = linkerInputs("x86_64-pc-windows-msvc", { RUSTC_LINKER: "C:/fake/lld-link.exe" });
-  assert.equal(ambientRustcLinker.configured.rustc, null);
-  assert.equal(ambientRustcLinker.default, "link.exe");
+  assert.equal(ambientRustcLinker.configured.target, null);
   assert.equal(ambientRustcLinker.environment.RUSTC_LINKER, "C:/fake/lld-link.exe");
 
   const configuredTargetLinker = linkerInputs("x86_64-pc-windows-msvc", {
@@ -139,8 +151,82 @@ test("native qualification rejects build input identity mutations", () => {
     RUSTC_LINKER: "C:/ambient/lld-link.exe",
   });
   assert.equal(configuredTargetLinker.configured.target, "C:/configured/link.exe");
-  assert.equal(configuredTargetLinker.configured.rustc, null);
-  assert.equal(configuredTargetLinker.default, "C:/configured/link.exe");
+});
+
+test("native qualification normalizes host paths in published build inputs", () => {
+  const original = validBuildInputs();
+  original.invocation.args.push("--output", "C:/runner/_work/native-bundle", "--target-dir", "C:/runner/_work/target-stream-native");
+  original.linker.actual.args.push("--out-dir", "C:/runner/_work/target-stream-native/x86_64-pc-windows-msvc/release/deps");
+  original.linker.actual.rustc = "C:/Rust/bin/rustc.exe";
+  original.environment.RUSTFLAGS = "-C link-arg=C:/runner/_work/target-stream-native/x86_64-pc-windows-msvc/release/deps";
+  const normalized = normalizeBuildInputs(original, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+  assert.equal(normalized.target_dir, "<target-dir>");
+  assert.equal(normalized.runtime.node_path, "<runtime>");
+  assert.equal(normalized.invocation.runtime, "bun");
+  assert.equal(normalized.generator.options.output_dir, "<output-dir>");
+  assert.equal(normalized.generator.options.target_dir, "<target-dir>");
+  assert.equal(normalized.linker.actual.rustc, "rustc");
+  assert.equal(normalized.invocation.args.at(-1), "<target-dir>");
+  assert.match(normalized.linker.actual.args.at(-1), /^<target-dir>\//u);
+  assert.equal(normalized.environment.RUSTFLAGS, "-C link-arg=<target-dir>/x86_64-pc-windows-msvc/release/deps");
+  assertBuildInputs(normalized);
+
+  const relocated = validBuildInputs();
+  relocated.invocation.args.push("--output", "D:/agent/work/native-bundle", "--target-dir", "D:/agent/work/target-stream-native");
+  relocated.linker.actual.args.push("--out-dir", "D:/agent/work/target-stream-native/x86_64-pc-windows-msvc/release/deps");
+  relocated.linker.actual.rustc = "D:/Rust/bin/rustc.exe";
+  relocated.linker.actual.linker = "D:/Program Files/MSVC/link.exe";
+  relocated.environment.RUSTFLAGS = "-C link-arg=D:/agent/work/target-stream-native/x86_64-pc-windows-msvc/release/deps";
+  const normalizedRelocated = normalizeBuildInputs(relocated, {
+    targetDir: "D:/agent/work/target-stream-native",
+    outputDir: "D:/agent/work/native-bundle",
+  });
+  assert.deepEqual(normalizedRelocated, normalized);
+  assertMatchingBuildInputs(normalized, normalizedRelocated);
+
+  const llvm = validBuildInputs();
+  llvm.linker.actual.linker = "C:/LLVM/bin/lld-link.exe";
+  llvm.linker.actual.args = ["--crate-name", "acyclic_stream_napi", "-Clinker=C:/LLVM/bin/lld-link.exe"];
+  llvm.environment.RUSTFLAGS = "-C linker=C:/LLVM/bin/lld-link.exe";
+  const normalizedLlvm = normalizeBuildInputs(llvm, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+  assert.notEqual(normalizedLlvm.linker.actual.linker, normalized.linker.actual.linker);
+  assert.equal(normalizedLlvm.linker.actual.linker, "<toolchain-path>/LLVM/bin/lld-link.exe");
+  assert.equal(normalizedLlvm.linker.actual.args.at(-1), "-Clinker=<toolchain-path>/LLVM/bin/lld-link.exe");
+  assert.equal(normalizedLlvm.environment.RUSTFLAGS, "-C linker=<toolchain-path>/LLVM/bin/lld-link.exe");
+});
+
+test("native qualification keeps raw producer paths in an external receipt", () => {
+  const raw = validBuildInputs();
+  raw.linker.actual.args.push("--out-dir", "C:/runner/_work/target-stream-native/x86_64-pc-windows-msvc/release");
+  raw.linker.actual.rustc = "C:/Rust/bin/rustc.exe";
+  const published = normalizeBuildInputs(raw, {
+    targetDir: "C:/runner/_work/target-stream-native",
+    outputDir: "C:/runner/_work/native-bundle",
+  });
+  const receipt = buildInputsReceipt(raw, published);
+  assert.equal(receipt.schema, "acyclic.stream.native-build-inputs-receipt.v1");
+  assert.equal(receipt.raw_build_inputs.linker.actual.rustc, "C:/Rust/bin/rustc.exe");
+  assert.equal(receipt.raw_build_inputs.linker.actual.args.at(-1), "C:/runner/_work/target-stream-native/x86_64-pc-windows-msvc/release");
+  assert.equal(receipt.published_build_inputs_sha256.startsWith("sha256:"), true);
+  assert.equal(receipt.raw_build_inputs, raw);
+  assertBuildInputs(published);
+});
+
+test("native qualification adds stable Rust path remapping flags", () => {
+  assert.deepEqual(
+    deterministicRustflags("C:/agent/one", "C:/agent/one/target", undefined, { plain: "-C target-cpu=native" }).split("\x1f"),
+    ["-C", "target-cpu=native", "--remap-path-prefix=C:/agent/one=/__acyclic_stream_source", "--remap-path-prefix=C:/agent/one/target=/__acyclic_stream_target"],
+  );
+  assert.deepEqual(
+    deterministicRustflags("D:/agent/two", "D:/agent/two/target", undefined, { plain: null, encoded: null }).split("\x1f"),
+    ["--remap-path-prefix=D:/agent/two=/__acyclic_stream_source", "--remap-path-prefix=D:/agent/two/target=/__acyclic_stream_target"],
+  );
 });
 
 test("native qualification records explicit and implicit rustc linkers through a delegated wrapper", async () => {
@@ -172,9 +258,11 @@ test("native qualification records explicit and implicit rustc linkers through a
     process.env.RUSTC_WRAPPER = delegateCommand;
     const capture = await createRustcInvocationCapture();
     try {
-      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "-C", "linker=C:/fake/lld-link.exe", "-Clinker=C:/fake/effective-link.exe"]);
+      const remapFlag = "--remap-path-prefix=C:/checkout=$ROOT";
+      invoke(capture.wrapper, [rustcCommand, "--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", remapFlag, "-C", "linker=C:/fake/lld-link.exe", "-Clinker=C:/fake/effective-link.exe"]);
       const explicit = await capture.read("x86_64-pc-windows-msvc");
       assert.equal(explicit.linker, "C:/fake/effective-link.exe");
+      assert.ok(explicit.args.includes(remapFlag));
       assert.match((await readFile(marker)).toString("utf8"), /delegate/);
     } finally {
       await capture.close();
