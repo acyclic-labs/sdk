@@ -4436,6 +4436,19 @@ impl TaskContext {
         definition: &ToolDefinition,
         invocation: &ToolInvocation,
     ) -> Result<()> {
+        match self.authorize_tool_pending(definition, invocation).await? {
+            Some(operation) => Err(Error::Indeterminate(operation)),
+            None => Ok(()),
+        }
+    }
+
+    // Only a successfully routed, durably pending outcome becomes a wait.
+    // Publication/evaluation errors, including indeterminate errors, propagate.
+    pub(crate) async fn authorize_tool_pending(
+        &self,
+        definition: &ToolDefinition,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<OperationId>> {
         if let Some(policy) = &self.harness.policy {
             if self.harness.policy_identity.as_ref() != Some(&policy.identity()) {
                 return Err(Error::Conflict(
@@ -4446,7 +4459,11 @@ impl TaskContext {
                 .policy_approval(policy.as_ref(), definition, invocation)
                 .await?
             {
-                check_tool_approval(self.interact(approval_id, request).await?)?;
+                let outcome = self.interact(approval_id, request).await?;
+                if let InteractionOutcome::Indeterminate { operation_id } = outcome {
+                    return Ok(Some(operation_id));
+                }
+                check_tool_approval(outcome)?;
             }
         }
         for (identity, policy) in &self.policy_overrides {
@@ -4459,10 +4476,14 @@ impl TaskContext {
                 .policy_approval(policy.as_ref(), definition, invocation)
                 .await?
             {
-                check_tool_approval(self.interact(approval_id, request).await?)?;
+                let outcome = self.interact(approval_id, request).await?;
+                if let InteractionOutcome::Indeterminate { operation_id } = outcome {
+                    return Ok(Some(operation_id));
+                }
+                check_tool_approval(outcome)?;
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Computes a policy decision without routing it through a caller-owned

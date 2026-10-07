@@ -343,6 +343,92 @@ async fn worker_pinned_policy_model_binding_survives_reopen() -> Result<()> {
     worker_restart(WorkerCommand::PolicyModel).await
 }
 
+#[allow(clippy::too_many_lines)]
+async fn resolve_worker_approval<P, A, O>(
+    stream: &StreamClient<P>,
+    filesystem: Arc<FilesystemHost<A, O>>,
+    issuer: &AuthorityIssuer,
+    owner_scope: acyclic_harness::core::Scope,
+    volume: VolumeRef,
+    agent: AgentId,
+) -> Result<()>
+where
+    P: StreamProvider + Send + Sync + 'static,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    let aggregate = acyclic_harness::store::StreamAggregate::open(
+        stream,
+        issuer.verifier().audience().clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?;
+    let events = aggregate.reducer().events_after(0, 64)?;
+    assert_eq!(events.len(), 2, "request retry must reuse its ticket");
+    let ticket = events
+        .into_iter()
+        .find_map(|event| match event.payload {
+            EventPayload::InteractionOpened { ticket } => Some(ticket),
+            _ => None,
+        })
+        .ok_or_else(|| Error::NotFound("approval ticket".into()))?;
+    let interactions = FilesystemInteractionHost::new(
+        stream.clone(),
+        filesystem.clone(),
+        issuer.verifier().audience().clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+        owner_scope.clone(),
+        volume.clone(),
+        65_536,
+    )?;
+    assert!(matches!(
+        interactions
+            .resolve_approval(
+                OperationId::from_bytes([91; 16]),
+                owner_scope.clone(),
+                acyclic_harness::InteractionId::from_bytes(*ticket.id.as_bytes()),
+                1,
+                true,
+                None
+            )
+            .await,
+        Err(Error::Unauthorized(_))
+    ));
+    let responder = issuer.root_for_agent(
+        agent,
+        "approver",
+        Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]),
+    );
+    interactions
+        .resolve_approval(
+            OperationId::from_bytes([92; 16]),
+            responder,
+            acyclic_harness::InteractionId::from_bytes(*ticket.id.as_bytes()),
+            1,
+            true,
+            None,
+        )
+        .await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_approval_releases_slot_and_wakes_after_store_reopen() -> Result<()> {
+    worker_restart(WorkerCommand::ApprovalWaitTool).await
+}
+
+#[tokio::test]
+async fn cancelled_approval_is_not_woken_after_store_reopen() -> Result<()> {
+    Box::pin(worker_restart_with_options(
+        WorkerCommand::ApprovalWaitTool,
+        true,
+        true,
+    ))
+    .await
+}
+
 struct TestClock(AtomicU64);
 impl UnixMillisClock for TestClock {
     fn now_unix_millis(&self) -> u64 {
@@ -357,6 +443,7 @@ enum WorkerCommand {
     PolicyModel,
     Tool,
     PolicyTool,
+    ApprovalWaitTool,
     Timer,
     TimerThenMail,
     MailSend,
@@ -427,7 +514,9 @@ impl ResumableMachine for CommandMachine {
                         TIMER_TASK_COMMAND_KIND
                     } else if matches!(
                         self.command,
-                        WorkerCommand::Tool | WorkerCommand::PolicyTool
+                        WorkerCommand::Tool
+                            | WorkerCommand::PolicyTool
+                            | WorkerCommand::ApprovalWaitTool
                     ) {
                         TOOL_TASK_COMMAND_KIND
                     } else {
@@ -469,7 +558,7 @@ impl ResumableMachine for CommandMachine {
                 assert!(value.is_null());
             } else if matches!(
                 self.command,
-                WorkerCommand::Tool | WorkerCommand::PolicyTool
+                WorkerCommand::Tool | WorkerCommand::PolicyTool | WorkerCommand::ApprovalWaitTool
             ) {
                 assert_eq!(value, json!("tool-restored"));
             } else {
@@ -501,6 +590,7 @@ async fn worker_restart_with_options(
     allow_mail_read: bool,
     cancel_wait: bool,
 ) -> Result<()> {
+    let with_approval_wait = command == WorkerCommand::ApprovalWaitTool;
     let with_child = command == WorkerCommand::Child;
     let with_command = command != WorkerCommand::Wait;
     let with_mail_send = command == WorkerCommand::MailSend;
@@ -515,10 +605,13 @@ async fn worker_restart_with_options(
             | WorkerCommand::PolicyTool
     );
     let clock = Arc::new(TestClock(AtomicU64::new(100)));
-    let with_tool = matches!(command, WorkerCommand::Tool | WorkerCommand::PolicyTool);
+    let with_tool = matches!(
+        command,
+        WorkerCommand::Tool | WorkerCommand::PolicyTool | WorkerCommand::ApprovalWaitTool
+    );
     let with_policy = matches!(
         command,
-        WorkerCommand::PolicyTool | WorkerCommand::PolicyModel
+        WorkerCommand::PolicyTool | WorkerCommand::PolicyModel | WorkerCommand::ApprovalWaitTool
     );
     let policy = Arc::new(RestartPolicy {
         evaluated: AtomicUsize::new(0),
@@ -782,7 +875,10 @@ async fn worker_restart_with_options(
                 Err(Error::Conflict(_))
             ));
             drop(wrong);
-            assert_eq!(tool.executed.load(Ordering::SeqCst), usize::from(with_tool));
+            assert_eq!(
+                tool.executed.load(Ordering::SeqCst),
+                usize::from(with_tool && !with_approval_wait)
+            );
             assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
         }
         if !reopened {
@@ -858,7 +954,7 @@ async fn worker_restart_with_options(
             .with_payload_store(payloads.clone());
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task).await?);
-            if with_timer || with_mail_receive || with_child {
+            if with_timer || with_mail_receive || with_child || with_approval_wait {
                 let cursor = discovery_cursor
                     .as_ref()
                     .map(|bytes: &Vec<u8>| serde_json::from_slice(bytes))
@@ -964,6 +1060,18 @@ async fn worker_restart_with_options(
                         .await?;
                 }
             }
+            if with_approval_wait {
+                assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
+                Box::pin(resolve_worker_approval(
+                    &stream,
+                    filesystem.clone(),
+                    &conversation_issuer,
+                    conversation_scope.clone(),
+                    volume.clone(),
+                    agent,
+                ))
+                .await?;
+            }
             let input = payloads.stage(operation, "wake-seven", b"7").await?;
             assert!(
                 runtime
@@ -977,7 +1085,7 @@ async fn worker_restart_with_options(
                     .await
                     .is_err()
             );
-            if with_timer || with_mail_receive || with_child {
+            if with_timer || with_mail_receive || with_child || with_approval_wait {
                 assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert!(!runtime.poll_task_wake(task).await?);
@@ -1348,72 +1456,22 @@ async fn worker_restart_with_options(
                                             pending.clone()
                                         )
                                         .await,
-                                    Err(Error::Indeterminate(_))
+                                    Ok(TaskCommandProgress::Pending)
                                 ));
                             }
                             assert_eq!(tool.executed.load(Ordering::SeqCst), 0);
                             assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
-                            let aggregate = acyclic_harness::store::StreamAggregate::open(
-                                &stream,
-                                conversation_issuer.verifier().audience().clone(),
-                                conversation_issuer.verifier(),
-                                SchemaRegistry::new(),
-                            )
-                            .await?;
-                            let events = aggregate.reducer().events_after(0, 64)?;
-                            assert_eq!(events.len(), 2, "request retry must reuse its ticket");
-                            let ticket = events
-                                .into_iter()
-                                .find_map(|event| match event.payload {
-                                    EventPayload::InteractionOpened { ticket } => Some(ticket),
-                                    _ => None,
-                                })
-                                .ok_or_else(|| Error::NotFound("approval ticket".into()))?;
-                            let interactions = FilesystemInteractionHost::new(
-                                stream.clone(),
-                                filesystem.clone(),
-                                conversation_issuer.verifier().audience().clone(),
-                                conversation_issuer.verifier(),
-                                SchemaRegistry::new(),
-                                conversation_scope.clone(),
-                                volume.clone(),
-                                65_536,
-                            )?;
-                            assert!(matches!(
-                                interactions
-                                    .resolve_approval(
-                                        OperationId::from_bytes([91; 16]),
-                                        conversation_scope.clone(),
-                                        acyclic_harness::InteractionId::from_bytes(
-                                            *ticket.id.as_bytes()
-                                        ),
-                                        1,
-                                        true,
-                                        None
-                                    )
-                                    .await,
-                                Err(Error::Unauthorized(_))
-                            ));
-                            let responder = conversation_issuer.root_for_agent(
-                                agent,
-                                "approver",
-                                Capabilities::new([
-                                    "interaction:resolve".to_owned(),
-                                    ticket.responder_grant(),
-                                ]),
-                            );
-                            interactions
-                                .resolve_approval(
-                                    OperationId::from_bytes([92; 16]),
-                                    responder,
-                                    acyclic_harness::InteractionId::from_bytes(
-                                        *ticket.id.as_bytes(),
-                                    ),
-                                    1,
-                                    true,
-                                    None,
-                                )
+                            if !with_approval_wait {
+                                Box::pin(resolve_worker_approval(
+                                    &stream,
+                                    filesystem.clone(),
+                                    &conversation_issuer,
+                                    conversation_scope.clone(),
+                                    volume.clone(),
+                                    agent,
+                                ))
                                 .await?;
+                            }
                             Ok::<(), Error>(())
                         })
                         .await?;
@@ -1456,6 +1514,23 @@ async fn worker_restart_with_options(
             }
         } else {
             runtime.run_task(lease.clone(), &NoCommands, 1).await?
+        };
+        let outcome = if with_approval_wait && reopened {
+            assert!(
+                matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
+            );
+            assert_eq!(tool.executed.load(Ordering::SeqCst), 1);
+            assert_eq!(tool.reconciled.load(Ordering::SeqCst), 0);
+            assert!(coordinator.pull(&worker).await?.is_none());
+            match runtime
+                .resume_task(lease.clone(), &runtime.commands(), 2)
+                .await
+            {
+                TaskWorkerAttempt::Progress(progress) => progress,
+                TaskWorkerAttempt::Unresolved { error, .. } => return Err(error),
+            }
+        } else {
+            outcome
         };
         if with_mail_receive && !allow_mail_read {
             assert!(
@@ -1543,7 +1618,7 @@ async fn worker_restart_with_options(
             }
             old_lease = Some(lease.clone());
         }
-        if !reopened && (with_timer || with_mail_receive || with_child) {
+        if !reopened && (with_timer || with_mail_receive || with_child || with_approval_wait) {
             let first = runtime.poll_task_wake_page(None, 1).await?;
             assert_eq!(first.events_read, 1);
             assert!(first.woken.is_empty());

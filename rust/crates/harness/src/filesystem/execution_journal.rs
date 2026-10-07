@@ -420,7 +420,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         P: StreamProvider,
     {
         self.stream
-            .stream(format!("harness/v2/execution/{operation_id}"))
+            .stream(crate::distributed::execution_path(operation_id)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 

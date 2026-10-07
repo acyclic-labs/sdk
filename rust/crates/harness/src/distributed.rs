@@ -870,6 +870,29 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
     }
 
+    /// Compares the empty execution journal at the scheduler release boundary.
+    pub(crate) async fn suspend_if_execution_idle(
+        &mut self,
+        key: IdempotencyKey,
+        event: SchedulerEvent,
+        execution: OperationId,
+    ) -> Result<CoordinatorApply> {
+        if !matches!(event, SchedulerEvent::WorkflowSuspended { .. }) {
+            return Err(Error::Invalid(
+                "idle execution guard requires suspension".into(),
+            ));
+        }
+        self.apply_internal_guarded(
+            event.operation_id(),
+            key,
+            event,
+            None,
+            None,
+            Some(execution),
+        )
+        .await
+    }
+
     /// Authenticates the exact owner before filling one durable resume slot.
     #[allow(
         clippy::too_many_arguments,
@@ -961,6 +984,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             },
             None,
             waiting_command,
+            None,
         )
         .await
     }
@@ -1046,8 +1070,15 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let event = SchedulerEvent::Declared {
             spec: Box::new(spec),
         };
-        self.apply_internal_guarded(operation_id, idempotency_key, event, parent_fence, None)
-            .await
+        self.apply_internal_guarded(
+            operation_id,
+            idempotency_key,
+            event,
+            parent_fence,
+            None,
+            None,
+        )
+        .await
     }
 
     /// Publishes a root and its immutable shared ceilings in one atomic append.
@@ -1256,7 +1287,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         idempotency_key: IdempotencyKey,
         event: SchedulerEvent,
     ) -> Result<CoordinatorApply> {
-        self.apply_internal_guarded(operation_id, idempotency_key, event, None, None)
+        self.apply_internal_guarded(operation_id, idempotency_key, event, None, None, None)
             .await
     }
 
@@ -1267,6 +1298,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         event: SchedulerEvent,
         parent_fence: Option<LeaseFence>,
         waiting_command: Option<OperationId>,
+        idle_execution: Option<OperationId>,
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.require_parent_owner(&event, parent_fence.as_ref())?;
@@ -1312,18 +1344,36 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             stream_key(&format!("{key}:owned-parent:{}", self.revision))?
         } else if waiting_command.is_some() {
             stream_key(&format!("{key}:owned-wait:{}", self.revision))?
+        } else if let Some(execution) = idle_execution {
+            stream_key(&format!(
+                "{key}:idle-execution:{execution}:{}",
+                self.revision
+            ))?
         } else {
             stream_key(key)?
         };
-        let outcome = append_keyed(
-            (&self.stream, &self.client),
-            Bytes::copy_from_slice(&bytes),
-            Some(self.revision),
-            stream_key,
-            operation_id,
-            "coordinator retry identity",
-        )
-        .await?;
+        let outcome = if let Some(execution) = idle_execution {
+            Box::pin(append_if_execution_idle(
+                &self.client,
+                &self.stream,
+                Bytes::copy_from_slice(&bytes),
+                self.revision,
+                stream_key,
+                operation_id,
+                execution,
+            ))
+            .await?
+        } else {
+            append_keyed(
+                (&self.stream, &self.client),
+                Bytes::copy_from_slice(&bytes),
+                Some(self.revision),
+                stream_key,
+                operation_id,
+                "coordinator retry identity",
+            )
+            .await?
+        };
         let applied = self
             .finish_append(outcome, &event, key, &digest, revision)
             .await?;
@@ -1886,6 +1936,106 @@ pub(crate) async fn append_keyed<P: StreamProvider>(
         }
         Err(error) => Err(Error::Storage(error.to_string())),
     }
+}
+
+pub(crate) fn execution_path(operation: OperationId) -> Result<acyclic_stream::StreamPath> {
+    Ok(acyclic_stream::StreamPath::new(format!(
+        "harness/v2/execution/{operation}"
+    ))?)
+}
+
+pub(crate) async fn commit_keyed<P: StreamProvider>(
+    client: &StreamClient<P>,
+    request: acyclic_stream::CommitRequest,
+    operation: OperationId,
+) -> Result<acyclic_stream::CommitOutcome> {
+    let key = request.idempotency_key.clone();
+    match client.commit(request).await {
+        Ok(outcome) => Ok(outcome),
+        Err(StreamError::Unavailable) => match client.inspect_idempotency(key).await {
+            Ok(Some(observation)) => match observation.outcome {
+                IdempotencyOutcome::Commit(outcome) => Ok(outcome),
+                _ => Err(Error::Conflict("commit recovery identity reused".into())),
+            },
+            Ok(None) | Err(_) => Err(Error::Indeterminate(operation)),
+        },
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one coordinator append with an exact execution condition"
+)]
+async fn append_if_execution_idle<P: StreamProvider>(
+    client: &StreamClient<P>,
+    stream: &Stream<P>,
+    record: Bytes,
+    tail: u64,
+    key: StreamIdempotencyKey,
+    operation: OperationId,
+    execution: OperationId,
+) -> Result<AppendOutcome> {
+    use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, CommittedMutation};
+    let path = execution_path(execution)?;
+    let guard = match client.bounds(path.as_str()).await {
+        Ok(bounds) if bounds.tail == 0 => CommitCondition::Tail { path, expected: 0 },
+        Ok(_) => return Err(Error::Conflict("execution has already started".into())),
+        Err(StreamError::NotFound) => CommitCondition::Absent { path },
+        Err(error) => return Err(error.into()),
+    };
+    let mut digest = blake3::Hasher::new();
+    digest.update(b"harness/v2/idle-execution\0");
+    digest.update(key.as_bytes());
+    digest.update(&[u8::from(matches!(guard, CommitCondition::Absent { .. }))]);
+    let outcome = commit_keyed(
+        client,
+        acyclic_stream::CommitRequest {
+            conditions: vec![
+                CommitCondition::Tail {
+                    path: stream.path().clone(),
+                    expected: tail,
+                },
+                guard,
+            ],
+            mutations: vec![CommitMutation::Append {
+                path: stream.path().clone(),
+                records: vec![record.clone()],
+            }],
+            idempotency_key: StreamIdempotencyKey::new(Bytes::copy_from_slice(
+                digest.finalize().as_bytes(),
+            ))?,
+        },
+        operation,
+    )
+    .await?;
+    let CommitOutcome::Committed(envelope) = outcome else {
+        return Err(Error::Conflict(
+            "execution or coordinator changed before suspension".into(),
+        ));
+    };
+    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+        return Err(Error::Storage("invalid guarded suspension receipt".into()));
+    };
+    if append.path != *stream.path()
+        || append.start != tail
+        || append.end != next_revision(tail)?
+        || append.tail != append.end
+        || append.records.len() != 1
+        || append.records.first().is_none_or(|entry| {
+            entry.sequence != tail || entry.value != record || entry.commit_id != envelope.commit_id
+        })
+    {
+        return Err(Error::Storage(
+            "guarded suspension differs from its commit".into(),
+        ));
+    }
+    Ok(AppendOutcome::Committed(acyclic_stream::AppendReceipt {
+        start: append.start,
+        end: append.end,
+        tail: append.tail,
+        commit_id: envelope.commit_id,
+    }))
 }
 
 fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
@@ -3401,6 +3551,8 @@ mod tests {
         observation_reads: std::sync::atomic::AtomicUsize,
         observation_maximum: std::sync::atomic::AtomicU32,
         observation_writes: std::sync::atomic::AtomicUsize,
+        execution_race: std::sync::atomic::AtomicBool,
+        commit_lose_ack: std::sync::atomic::AtomicBool,
     }
 
     #[tokio::test]
@@ -3738,7 +3890,40 @@ mod tests {
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return Err(StreamError::Unavailable);
             }
-            self.inner.commit(request).await
+            if self
+                .execution_race
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                let path = request
+                    .conditions
+                    .iter()
+                    .find_map(|condition| match condition {
+                        acyclic_stream::CommitCondition::Absent { path }
+                        | acyclic_stream::CommitCondition::Tail { path, .. }
+                            if path.as_str().starts_with("harness/v2/execution/") =>
+                        {
+                            Some(path.clone())
+                        }
+                        _ => None,
+                    })
+                    .ok_or(StreamError::Unavailable)?;
+                self.inner
+                    .append(acyclic_stream::AppendRequest {
+                        path,
+                        records: vec![Bytes::from_static(b"dispatch won")],
+                        if_tail: Some(0),
+                        idempotency_key: None,
+                    })
+                    .await?;
+            }
+            let outcome = self.inner.commit(request).await?;
+            if self
+                .commit_lose_ack
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            Ok(outcome)
         }
         async fn read_commit(
             &self,
@@ -3746,6 +3931,145 @@ mod tests {
         ) -> std::result::Result<acyclic_stream::CommittedEnvelope, StreamError> {
             self.inner.read_commit(id).await
         }
+    }
+
+    #[tokio::test]
+    async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack() -> Result<()>
+    {
+        for existing_empty in [false, true] {
+            for mode in 0..4 {
+                let provider = Arc::new(LostSessionAck::default());
+                let client = StreamClient::new(provider.clone());
+                let mut coordinator =
+                    DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+                let task = OperationId::from_bytes([91; 16]);
+                let execution = OperationId::from_bytes([92; 16]);
+                declare(&mut coordinator, spec(task, 0)?, "idle-task").await?;
+                let lease = coordinator
+                    .pull(&Worker {
+                        id: "idle-worker".into(),
+                        available: ResourceSnapshot::default(),
+                        labels: BTreeMap::new(),
+                    })
+                    .await?
+                    .ok_or_else(|| Error::NotFound("idle lease".into()))?;
+                let fence = LeaseFence::from(&lease.reservation);
+                coordinator
+                    .apply(
+                        task,
+                        IdempotencyKey::new("idle-start")?,
+                        SchedulerEvent::Started {
+                            operation_id: task,
+                            fence: fence.clone(),
+                        },
+                    )
+                    .await?;
+                if existing_empty {
+                    client
+                        .stream(COORDINATOR_PATH)?
+                        .fork(execution_path(execution)?.as_str(), Some(0), None)
+                        .await?;
+                }
+                provider
+                    .commit_lose_ack
+                    .store(mode == 1 || mode == 2, std::sync::atomic::Ordering::SeqCst);
+                provider
+                    .hide_receipt
+                    .store(mode == 2, std::sync::atomic::Ordering::SeqCst);
+                provider
+                    .execution_race
+                    .store(mode == 3, std::sync::atomic::Ordering::SeqCst);
+                let event = SchedulerEvent::WorkflowSuspended {
+                    operation_id: task,
+                    fence: fence.clone(),
+                    workflow_revision: 1,
+                    waiting_command: Some(execution),
+                };
+                let result = coordinator
+                    .suspend_if_execution_idle(
+                        IdempotencyKey::new("idle-suspend")?,
+                        event.clone(),
+                        execution,
+                    )
+                    .await;
+                if mode == 3 {
+                    assert!(matches!(result, Err(Error::Conflict(_))));
+                } else if mode == 2 {
+                    assert!(matches!(result, Err(Error::Indeterminate(id)) if id == task));
+                } else {
+                    assert_eq!(result?, CoordinatorApply::Applied);
+                }
+                let reopened =
+                    DistributedCoordinator::open(&client, Arc::new(TestContentVerifier)).await?;
+                let retained = reopened
+                    .scheduler()
+                    .operation(task)
+                    .ok_or_else(|| Error::NotFound("idle task".into()))?;
+                if mode == 3 {
+                    assert_eq!(retained.phase, OperationPhase::Running);
+                    assert_eq!(retained.reservation.as_ref(), Some(&lease.reservation));
+                    assert_eq!(
+                        client
+                            .stream(execution_path(execution)?.as_str())?
+                            .tail()
+                            .await?,
+                        1
+                    );
+                    // Retrying the failed condition cannot turn dispatch into a passive wait.
+                    assert!(
+                        coordinator
+                            .suspend_if_execution_idle(
+                                IdempotencyKey::new("idle-suspend")?,
+                                event,
+                                execution
+                            )
+                            .await
+                            .is_err()
+                    );
+                } else {
+                    assert_eq!(retained.phase, OperationPhase::Suspended);
+                    assert!(retained.reservation.is_none());
+                    assert_eq!(
+                        retained
+                            .workflow
+                            .as_ref()
+                            .and_then(|slot| slot.waiting_command),
+                        Some(execution)
+                    );
+                    // Suspension won: the old coordinator condition cannot dispatch next.
+                    let outcome = client
+                        .commit(acyclic_stream::CommitRequest {
+                            conditions: vec![
+                                acyclic_stream::CommitCondition::Tail {
+                                    path: acyclic_stream::StreamPath::new(COORDINATOR_PATH)?,
+                                    expected: reopened.revision() - 1,
+                                },
+                                if existing_empty {
+                                    acyclic_stream::CommitCondition::Tail {
+                                        path: execution_path(execution)?,
+                                        expected: 0,
+                                    }
+                                } else {
+                                    acyclic_stream::CommitCondition::Absent {
+                                        path: execution_path(execution)?,
+                                    }
+                                },
+                            ],
+                            mutations: vec![acyclic_stream::CommitMutation::Append {
+                                path: execution_path(execution)?,
+                                records: vec![Bytes::from_static(b"stale dispatch")],
+                            }],
+                            idempotency_key: stream_key("stale-idle-dispatch")?,
+                        })
+                        .await?;
+                    assert!(matches!(
+                        outcome,
+                        acyclic_stream::CommitOutcome::Conflict(_)
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

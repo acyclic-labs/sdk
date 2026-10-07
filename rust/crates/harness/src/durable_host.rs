@@ -337,7 +337,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: Bytes,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<bool> {
-        let path = acyclic_stream::StreamPath::new(format!("harness/v2/execution/{operation}"))?;
+        let path = crate::distributed::execution_path(operation)?;
         self.append(
             path,
             expected_tail,
@@ -427,27 +427,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         bytes: Bytes,
         write: crate::distributed::JournalWrite,
     ) -> Result<bool> {
-        use acyclic_stream::{CommitOutcome, CommittedMutation, IdempotencyOutcome};
+        use acyclic_stream::{CommitOutcome, CommittedMutation};
         let request = self
             .prepare_append(&path, expected_tail, key, &bytes, write)
             .await?;
-        let transaction_key = request.idempotency_key.clone();
-        let outcome = match self.stream.commit(request).await {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
-                match self.stream.inspect_idempotency(transaction_key).await {
-                    Ok(Some(observation)) => match observation.outcome {
-                        IdempotencyOutcome::Commit(outcome) => outcome,
-                        _ => {
-                            return Err(Error::Conflict("journal recovery identity reused".into()));
-                        }
-                    },
-                    Ok(None) | Err(_) => return Err(Error::Indeterminate(self.operation_id())),
-                }
-            }
-            Err(error) => return Err(error.into()),
-        };
-        self.condition(write).await?;
+        let outcome =
+            crate::distributed::commit_keyed(&self.stream, request, self.operation_id()).await?;
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
             CommitOutcome::Committed(envelope) => {
@@ -656,6 +641,33 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         revision: u64,
         waiting_command: Option<OperationId>,
     ) -> Result<()> {
+        self.suspend_workflow_command_guarded(task, fence, revision, waiting_command, None)
+            .await
+    }
+
+    /// Releases a passive command's slot only while its existing execution
+    /// journal is empty, atomically with the scheduler publication. The caller
+    /// supplies the exact execution identity; this is not an effects settlement.
+    pub async fn suspend_workflow_command_if_execution_idle(
+        &self,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        revision: u64,
+        command: OperationId,
+        execution: OperationId,
+    ) -> Result<()> {
+        self.suspend_workflow_command_guarded(task, fence, revision, Some(command), Some(execution))
+            .await
+    }
+
+    async fn suspend_workflow_command_guarded(
+        &self,
+        task: TaskId,
+        fence: crate::scheduler::LeaseFence,
+        revision: u64,
+        waiting_command: Option<OperationId>,
+        idle_execution: Option<OperationId>,
+    ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh().await?;
@@ -665,18 +677,20 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.verifier,
             operation_id,
         )?;
-        coordinator
-            .apply(
-                operation_id,
-                worker_key("suspend", operation_id, &fence, revision)?,
-                crate::scheduler::SchedulerEvent::WorkflowSuspended {
-                    operation_id,
-                    fence,
-                    workflow_revision: revision,
-                    waiting_command,
-                },
-            )
-            .await?;
+        let key = worker_key("suspend", operation_id, &fence, revision)?;
+        let event = crate::scheduler::SchedulerEvent::WorkflowSuspended {
+            operation_id,
+            fence,
+            workflow_revision: revision,
+            waiting_command,
+        };
+        if let Some(execution) = idle_execution {
+            coordinator
+                .suspend_if_execution_idle(key, event, execution)
+                .await?;
+        } else {
+            coordinator.apply(operation_id, key, event).await?;
+        }
         let current = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,

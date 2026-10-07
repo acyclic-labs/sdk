@@ -16,7 +16,7 @@ use crate::{
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, ContentBindings, DurableTaskHost, InteractionRouter, ResumableTaskSession,
-        RuntimeScope, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
+        RuntimeScope, TaskAdmissionRecord, TaskContext, TaskRegistry, TaskRunLimits, ToolPolicy,
     },
     scheduler::{LeaseFence, SessionLimits},
     tool::{ToolDefinition, ToolRegistry},
@@ -55,7 +55,10 @@ pub enum TaskCommandProgress {
 
 enum CommandDispatch {
     Ready(Value),
-    Pending(OperationId),
+    Pending {
+        command: OperationId,
+        guard_execution: bool,
+    },
     Indeterminate,
 }
 
@@ -368,23 +371,74 @@ where
                 "interaction owner lacks interaction:open".into(),
             ));
         }
-        FilesystemInteractionHost::new(
-            self.stream.clone(),
-            self.filesystem.clone(),
-            verifier.audience().clone(),
-            verifier.clone(),
-            schemas.clone(),
-            scope.clone(),
-            private_volume.clone(),
-            self.maximum_payload_bytes,
-        )?;
         self.interaction_owner = Some(TaskInteractionOwner {
             verifier,
             schemas,
             scope,
             volume: private_volume,
         });
+        self.interaction_host()?;
         Ok(self)
+    }
+
+    fn interaction_host(&self) -> Result<FilesystemInteractionHost<P, A, O>> {
+        let owner = self
+            .interaction_owner
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("task conversation owner is not bound".into()))?;
+        FilesystemInteractionHost::new(
+            self.stream.clone(),
+            self.filesystem.clone(),
+            owner.verifier.audience().clone(),
+            owner.verifier.clone(),
+            owner.schemas.clone(),
+            owner.scope.clone(),
+            owner.volume.clone(),
+            self.maximum_payload_bytes,
+        )
+    }
+
+    pub(super) async fn tool_approval_ready(
+        &self,
+        context: &TaskContext,
+        definition: &ToolDefinition,
+        invocation: &crate::tool::ToolInvocation,
+    ) -> Result<bool> {
+        if !context
+            .scope()
+            .grants()
+            .contains(crate::contract::capability::INTERACTION_ROUTE)
+        {
+            return Err(Error::Unauthorized(
+                "task scope lacks interaction:route".into(),
+            ));
+        }
+        let Some(policy) = &self.policy else {
+            return Ok(false);
+        };
+        let Some((operation, request)) = context
+            .policy_approval(policy.as_ref(), definition, invocation)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let task = context
+            .durable_task_id()
+            .ok_or_else(|| Error::Unauthorized("approval has no task".into()))?;
+        let id = crate::durable_host::task_interaction_id(task, operation);
+        let host = self.interaction_host()?;
+        match host.read_request(id).await? {
+            None => return Ok(false),
+            Some(original) if original != request => {
+                return Err(Error::Conflict("approval request changed".into()));
+            }
+            Some(_) => {}
+        }
+        Ok(host
+            .read(id)
+            .await?
+            .and_then(|(_, resolution)| resolution)
+            .is_some_and(|resolution| resolution.outcome.is_terminal()))
     }
 
     fn bind_interaction_owner(
@@ -458,21 +512,32 @@ where
     ) -> Result<Arc<FilesystemExecutionJournal<P, A, O>>> {
         let admission = self.host.observe_admission(task).await?;
         Ok(Arc::new(
-            self.bind_interaction_owner(
-                FilesystemExecutionJournal::for_task(
-                    self.host.journal_owner(task, fence).await?,
-                    execution_operation(task, turn),
-                    self.filesystem.clone(),
-                    self.volume.clone(),
-                    self.verifier.clone(),
-                    self.signed.clone(),
-                    self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                )?,
-                admission
-                    .grants
-                    .contains(crate::contract::capability::INTERACTION_ROUTE),
-            )?,
+            self.open_execution_journal(task, fence, turn, &admission)
+                .await?,
         ))
+    }
+
+    async fn open_execution_journal(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        turn: OperationId,
+        admission: &TaskAdmissionRecord,
+    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
+        self.bind_interaction_owner(
+            FilesystemExecutionJournal::for_task(
+                self.host.journal_owner(task, fence).await?,
+                execution_operation(task, turn),
+                self.filesystem.clone(),
+                self.volume.clone(),
+                self.verifier.clone(),
+                self.signed.clone(),
+                self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            )?,
+            admission
+                .grants
+                .contains(crate::contract::capability::INTERACTION_ROUTE),
+        )
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
@@ -667,6 +732,31 @@ where
         Ok(true)
     }
 
+    async fn suspend_command(
+        &self,
+        task: TaskId,
+        fence: LeaseFence,
+        revision: u64,
+        command: OperationId,
+        guard_execution: bool,
+    ) -> Result<()> {
+        if guard_execution {
+            self.host
+                .suspend_workflow_command_if_execution_idle(
+                    task,
+                    fence,
+                    revision,
+                    command,
+                    execution_operation(task, command),
+                )
+                .await
+        } else {
+            self.host
+                .suspend_workflow_command(task, fence, revision, Some(command))
+                .await
+        }
+    }
+
     /// Drives an already-claimed lease through the registered machine. The first
     /// trigger is null; wake values and ordered command results are subsequent
     /// machine inputs. Commands use `{"commands":[{"operation_id":...,"value":...}]}`.
@@ -715,9 +805,11 @@ where
                         .await?
                     {
                         CommandDispatch::Ready(value) => command_input = Some(value),
-                        CommandDispatch::Pending(command) => {
-                            self.host
-                                .suspend_workflow_command(task, fence, revision, Some(command))
+                        CommandDispatch::Pending {
+                            command,
+                            guard_execution,
+                        } => {
+                            self.suspend_command(task, fence, revision, command, guard_execution)
                                 .await?;
                             return Ok(TaskWorkerOutcome::Suspended { task, revision });
                         }
@@ -821,7 +913,10 @@ where
                     }
                 }
                 Ok(TaskCommandProgress::Pending) => {
-                    return Ok(CommandDispatch::Pending(command.operation_id));
+                    return Ok(CommandDispatch::Pending {
+                        command: command.operation_id,
+                        guard_execution: command.kind == super::TOOL_TASK_COMMAND_KIND,
+                    });
                 }
                 Ok(TaskCommandProgress::Indeterminate) | Err(_) => {
                     return Ok(CommandDispatch::Indeterminate);
@@ -869,20 +964,9 @@ where
             ));
         }
         let operation_id = execution_operation(task, turn);
-        let journal = self.bind_interaction_owner(
-            FilesystemExecutionJournal::for_task(
-                self.host.journal_owner(task, fence.clone()).await?,
-                operation_id,
-                self.filesystem.clone(),
-                self.volume.clone(),
-                self.verifier.clone(),
-                self.signed.clone(),
-                self.maximum_payload_bytes.min(limits.file_bytes),
-            )?,
-            admission
-                .grants
-                .contains(crate::contract::capability::INTERACTION_ROUTE),
-        )?;
+        let journal = self
+            .open_execution_journal(task, fence.clone(), turn, &admission)
+            .await?;
         let executor = StockExecutor::new(model, provider, context, self.tools.clone())
             .with_limits(limits)
             .with_tool_authority(scope, self.policy.clone())?

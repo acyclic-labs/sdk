@@ -6,11 +6,12 @@ use crate::{
     context::ContextPipeline,
     conversation::FileRef,
     durable_tool::DurableToolRunner,
-    executor::TurnInput,
+    executor::{ExecutionJournal, TurnInput},
     model::{Model, ModelContent, ModelProvider},
     projection::SelectedModelContext,
     runtime::{DurableTaskHost, TaskContext, ToolContext},
     scheduler::LeaseFence,
+    tool::{ToolInvocation, validate_value},
     workflow::WorkflowCommand,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -295,6 +296,18 @@ where
                     matches!(self.runtime.task_host().outcome(child).await?, Some(outcome) if !matches!(outcome, Outcome::Indeterminate { .. })),
                 )
             }
+            TOOL_TASK_COMMAND_KIND => {
+                let input: ToolTaskCommand = serde_json::from_value(payload)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let definition = self.runtime.tool_definition(&input.name, &input.revision)?;
+                let invocation =
+                    tool_invocation(context, command.operation_id, &definition, input.arguments)?;
+                Box::pin(
+                    self.runtime
+                        .tool_approval_ready(context, &definition, &invocation),
+                )
+                .await
+            }
             _ => Ok(false),
         }
     }
@@ -441,6 +454,22 @@ where
             .runtime
             .bind_context_interactions(context, task, journal.clone())?;
         let operation = super::task_runtime::execution_operation(task, turn);
+        if journal.replay(operation, 0, 1).await?.is_empty() {
+            let invocation = tool_invocation(&context, turn, &definition, input.arguments.clone())?;
+            match context
+                .authorize_tool_pending(&definition, &invocation)
+                .await
+            {
+                Ok(Some(_)) => return Ok(TaskCommandProgress::Pending),
+                Ok(None) => {}
+                Err(Error::InteractionRejected(reason)) => {
+                    return ready(Outcome::<Value>::Failed {
+                        message: reason.to_string(),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let limits = context.scope().limits();
         let runner =
             DurableToolRunner::new(self.runtime.tool_registry(), journal).with_limits(limits)?;
@@ -458,6 +487,36 @@ where
             outcome => ready(outcome),
         }
     }
+}
+
+fn tool_invocation(
+    context: &TaskContext,
+    turn: OperationId,
+    definition: &crate::tool::ToolDefinition,
+    arguments: Value,
+) -> Result<ToolInvocation> {
+    if !context
+        .scope()
+        .grants()
+        .contains(&crate::contract::capability::tool_call(&definition.name))
+    {
+        return Err(Error::Unauthorized(
+            "task scope lacks tool call grant".into(),
+        ));
+    }
+    validate_value(&definition.input_schema, &arguments, "tool input")?;
+    let task = context
+        .durable_task_id()
+        .ok_or_else(|| Error::Unauthorized("tool has no task".into()))?;
+    let operation = super::task_runtime::execution_operation(task, turn);
+    let invocation = ToolInvocation {
+        operation_id: operation,
+        call_id: operation.to_string(),
+        name: definition.name.clone(),
+        arguments,
+    };
+    invocation.validate()?;
+    Ok(invocation)
 }
 
 fn ready(value: impl Serialize) -> Result<TaskCommandProgress> {
