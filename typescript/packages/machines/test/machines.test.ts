@@ -69,6 +69,10 @@ describe("Machines simulation", () => {
       await reject(() => wasm.create({ ...base, expiration: { kind: "never", milliseconds: 1 } as never }), "unknown field");
       await reject(() => wasm.create({ ...base, expiration: { kind: "max-age", milliseconds: 0 } }), "nonzero");
       await reject(() => wasm.qualifyImage({ kind: "managed-oci", digestHex: "0".repeat(64) }), "zero");
+      // Rejections return through Rust rather than throwing past its frames,
+      // so the instance that saw every malformed input above stays usable.
+      const created = await wasm.create({ ...base, idempotencyKey: rustNormalizeIdentity("idempotency", "malformed-wasm") });
+      expect(created.kind).toBe("created");
     } finally {
       wasm.free();
     }

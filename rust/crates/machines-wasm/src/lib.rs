@@ -14,10 +14,6 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 mod http;
-#[allow(
-    deprecated,
-    reason = "tsify deprecates its wasm_abi attributes because a failed conversion throws past destructors (madonoharu/tsify#65); moving these exports to tsify::Ts is a separate binding change"
-)]
 mod public;
 
 /// Largest integer a JavaScript number represents exactly.
