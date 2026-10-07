@@ -14,6 +14,7 @@ use crate::workspace::{
     JoinHistory, TransactionDependencyUse, TransactionSparseSeek, WorkspaceExtentKind,
 };
 use serde_json::{Value, json};
+use strum::IntoEnumIterator;
 
 /// One typed wire enum value and its optional public representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -363,13 +364,13 @@ fn map<E: HostedWireEnum>(entries: &[HostedEnumEntry<E>]) -> Vec<Value> {
 
 /// Serializes the complete Rust-owned hosted contract for the TypeScript generator.
 pub fn contract_json() -> Value {
-    let file_kinds = EngineFileKind::ALL
+    let file_kinds = FILE_KIND
         .iter()
-        .map(|kind| Value::String((*kind).as_str().to_owned()))
+        .filter_map(|entry| entry.public)
+        .map(|kind| Value::String(kind.to_owned()))
         .collect::<Vec<_>>();
-    let payload_kinds = FilePayloadKind::ALL
-        .iter()
-        .map(|kind| Value::String((*kind).as_str().to_owned()))
+    let payload_kinds = FilePayloadKind::iter()
+        .map(|kind| Value::String(kind.as_ref().to_owned()))
         .collect::<Vec<_>>();
     #[allow(
         clippy::expect_used,

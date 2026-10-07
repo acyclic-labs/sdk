@@ -170,35 +170,6 @@ pub enum FileKind {
 }
 
 impl FileKind {
-    /// Every namespace kind in canonical declaration order.
-    pub const ALL: &[Self] = &[
-        Self::Regular,
-        Self::Directory,
-        Self::SymbolicLink,
-        Self::Fifo,
-        Self::Socket,
-        Self::CharacterDevice,
-        Self::BlockDevice,
-        Self::ReparsePoint,
-        Self::MountBoundary,
-    ];
-
-    /// Stable public spelling used by generated language bindings.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Regular => "regular",
-            Self::Directory => "directory",
-            Self::SymbolicLink => "symbolic-link",
-            Self::Fifo => "fifo",
-            Self::Socket => "socket",
-            Self::CharacterDevice => "character-device",
-            Self::BlockDevice => "block-device",
-            Self::ReparsePoint => "reparse-point",
-            Self::MountBoundary => "mount-boundary",
-        }
-    }
-
     /// Whether this kind has an exact representation in one volume profile.
     #[must_use]
     pub const fn is_supported_by_profile(self, profile: FilesystemProfile) -> bool {

@@ -1210,7 +1210,7 @@ export class BrowserResolvedFile {
     /**
      * Terminal file kind authenticated by the pinned generation.
      */
-    readonly kind: string;
+    readonly kind: BrowserFileKind;
     /**
      * Logical content length authenticated by the pinned generation.
      */
@@ -1726,7 +1726,7 @@ export interface InitOutput {
     readonly browserjoinplan_apply: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly browserjoinplan_commonAncestor: (a: number) => [number, number];
     readonly browserjoinplan_targetHead: (a: number) => [number, number];
-    readonly browserresolvedfile_kind: (a: number) => [number, number];
+    readonly browserresolvedfile_kind: (a: number) => [number, number, number];
     readonly browserresolvedfile_logicalBytes: (a: number) => bigint;
     readonly browserresolvedfile_metadataCanonicalBytes: (a: number) => [number, number, number, number];
     readonly browserresolvedfile_readRange: (a: number, b: bigint, c: bigint) => any;

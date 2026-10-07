@@ -1,0 +1,328 @@
+import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SCRIPT = join(HERE, "run.mjs");
+const ROOT = execFileSync("git", ["-C", HERE, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+const COMMIT = execFileSync("git", ["-C", ROOT, "rev-parse", "--verify", "HEAD"], { encoding: "utf8" }).trim();
+const CONSUMED_SOURCE = "rust/crates/filesystem/src/numeric.rs";
+
+const run = (arguments_, options = {}) => new Promise((resolveResult, reject) => {
+  const child = spawn(process.execPath, [SCRIPT, ...arguments_], {
+    cwd: ROOT,
+    ...options,
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  child.once("error", reject);
+  child.once("close", status => resolveResult({ status, stdout, stderr, output: `${stdout}${stderr}` }));
+});
+
+const writeManifest = async (manifestPath) => {
+  const result = await run([
+    "--write-source-manifest",
+    "--source-root", ROOT,
+    "--source-manifest", manifestPath,
+  ]);
+  assert.equal(result.status, 0, result.output);
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(manifest.inventory_complete, true, "the source inventory must be complete");
+  assert.equal(manifest.file_count, manifest.files.length, "the manifest file count must match its inventory");
+  const paths = manifest.files.map(entry => entry.path);
+  assert.equal(new Set(paths).size, paths.length, "the source inventory must not contain duplicate paths");
+  assert.deepEqual(paths, [...paths].sort(), "the source inventory must be canonically sorted");
+  assert.match(manifest.source_digest, /^sha256:[0-9a-f]{64}$/);
+  return manifest;
+};
+
+const attestationArgs = (manifestPath, commit = COMMIT) => [
+  "--attestation-only",
+  "--source-root", ROOT,
+  "--source-manifest", manifestPath,
+  "--source-commit", commit,
+];
+
+const withManifest = async (manifestPath, mutate, callback) => {
+  const original = await readFile(manifestPath);
+  try {
+    const manifest = JSON.parse(original.toString("utf8"));
+    mutate(manifest);
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    return await callback();
+  } finally {
+    await writeFile(manifestPath, original);
+  }
+};
+
+const makeFixture = async ({ mode = "normal", archiveJs = undefined, nativeName = "acyclic-fs-test.js", archiveNative = undefined } = {}) => {
+  const fixture = await mkdtemp(join(tmpdir(), "acyclic-fs-admission-test-"));
+  const packageRoot = join(fixture, "package");
+  const wasmRoot = join(packageRoot, "generated", "wasm");
+  const nativeRoot = join(fixture, "native");
+  const nativeArchiveRoot = join(fixture, "native-archive");
+  const archiveRoot = join(fixture, "archive", "package");
+  await mkdir(wasmRoot, { recursive: true });
+  await mkdir(nativeRoot, { recursive: true });
+  await mkdir(nativeArchiveRoot, { recursive: true });
+  await mkdir(join(archiveRoot, "generated", "wasm"), { recursive: true });
+  await mkdir(join(packageRoot, "dist"), { recursive: true });
+  await writeFile(join(packageRoot, "package.json"), '{"type":"module"}\n');
+  await writeFile(join(packageRoot, "dist", "contracts.js"), 'export function portableVolumeOptions(lifecycle) { return { lifecycle }; }\n');
+  await writeFile(join(wasmRoot, "acyclic_fs_wasm.d.ts"), "export interface BrowserWorkCounters {\n    first: bigint;\n    second: bigint;\n}\n");
+
+  const mutationTarget = JSON.stringify(mode === "mutate-source" ? join(ROOT, "Cargo.toml") : join(wasmRoot, "acyclic_fs_wasm_bg.wasm"));
+  const wasmSource = `
+import { appendFileSync } from "node:fs";
+const mutationTarget = ${mutationTarget};
+let mutated = false;
+const admission = "expected a finite integer in the u32 range";
+export default async function init() {}
+export function openMemoryFs() {
+  return {
+    async createVolume() {
+      const acquisitionWork = ${JSON.stringify(mode)} === "work-mismatch"
+        ? { first: 0n }
+        : ${JSON.stringify(mode)} === "work-extra"
+          ? { first: 0n, second: 0n, third: 0n }
+          : { first: 0n, second: 0n };
+      return { acquisitionWork, free() {} };
+    },
+    async createWorkspace() {
+      return { async liveRebase(_base, value) {
+        if ((${JSON.stringify(mode)} === "mutate-artifact" || ${JSON.stringify(mode)} === "mutate-source") && !mutated) {
+          appendFileSync(mutationTarget, Buffer.from("mutation"));
+          mutated = true;
+        }
+        const invalid = typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > 4294967295;
+        if (invalid) {
+          if (${JSON.stringify(mode)} === "unknown" && value === null) throw new Error("unknown: " + admission);
+          throw new Error(admission);
+        }
+        throw new Error(value === 0 ? "workspace join exceeds its configured bound" : "workspace is not a fork");
+      } };
+    },
+    close() {},
+  };
+}
+`;
+  const wasmJs = join(wasmRoot, "acyclic_fs_wasm.js");
+  const wasmBinary = join(wasmRoot, "acyclic_fs_wasm_bg.wasm");
+  await writeFile(wasmJs, wasmSource);
+  await writeFile(wasmBinary, "wasm-fixture");
+
+  const nativeBinding = join(nativeRoot, nativeName);
+  const nativeSource = `
+const admission = "expected a finite integer in the u32 range";
+const mode = ${JSON.stringify(mode)};
+function workspace() {
+  return { async liveRebase(_base, value) {
+    const invalid = typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value) || value < 0 || value > 4294967295;
+    if (invalid) {
+      if (mode === "napi-type" && value === null) throw new Error("Failed to convert napi value Null into rust type " + String.fromCharCode(96) + "f64" + String.fromCharCode(96));
+      if (mode === "unknown" && value === null) throw new Error("unknown: " + admission);
+      throw new Error(admission);
+    }
+    throw new Error(value === 0 ? "workspace join exceeds its configured bound" : "workspace is not a fork");
+  } };
+}
+module.exports = { NativeFs: { async open() { return {
+  async createVolume() {
+    const acquisitionWork = mode === "work-mismatch"
+      ? { first: "0" }
+      : mode === "work-extra"
+        ? { first: "0", second: "0", third: "0" }
+        : { first: "0", second: "0" };
+    return { acquisitionWorkJson: JSON.stringify(acquisitionWork), free() {} };
+  },
+  async createWorkspace() { return workspace(); },
+  cancel() {},
+}; } } };
+`;
+  await writeFile(nativeBinding, nativeSource);
+  await writeFile(join(nativeArchiveRoot, nativeName), archiveNative ?? nativeSource);
+  await writeFile(join(archiveRoot, "generated", "wasm", "acyclic_fs_wasm.js"), archiveJs ?? wasmSource);
+  await writeFile(join(archiveRoot, "generated", "wasm", "acyclic_fs_wasm_bg.wasm"), "wasm-fixture");
+  const packageArchive = join(fixture, "package.tgz");
+  const nativeArchive = join(fixture, "native.tgz");
+  execFileSync("tar", ["-czf", packageArchive, "-C", join(fixture, "archive"), "package"]);
+  execFileSync("tar", ["-czf", nativeArchive, "-C", nativeArchiveRoot, nativeName]);
+  return {
+    fixture,
+    packageRoot,
+    nativeBinding,
+    packageArchive,
+    nativeArchive,
+    receipt: join(fixture, "receipt.json"),
+  };
+};
+
+const qualifyArgs = (manifestPath, fixture) => [
+  "--package-root", fixture.packageRoot,
+  "--native-binding", fixture.nativeBinding,
+  "--native-archive", fixture.nativeArchive,
+  "--source-root", ROOT,
+  "--source-manifest", manifestPath,
+  "--source-commit", COMMIT,
+  "--archive", fixture.packageArchive,
+  "--receipt", fixture.receipt,
+];
+
+const main = async () => {
+  const progress = label => process.stderr.write(`[filesystem-admission-test] ${label}\n`);
+  const temporary = await mkdtemp(join(tmpdir(), "acyclic-fs-admission-regressions-"));
+  const manifestPath = join(temporary, "source-attestation.json");
+const selectedSource = join(ROOT, "Cargo.toml");
+const selectedSourceLabel = "Cargo.toml";
+  const selectedOriginal = await readFile(selectedSource);
+  try {
+    progress("write manifest");
+    const manifest = await writeManifest(manifestPath);
+    const repeatManifestPath = join(temporary, "source-attestation-repeat.json");
+    const repeatManifest = await writeManifest(repeatManifestPath);
+    assert.deepEqual(repeatManifest, manifest, "the source inventory and digest must be deterministic");
+
+    progress("attestation");
+    const valid = await run(attestationArgs(manifestPath));
+    assert.equal(valid.status, 0, valid.output);
+
+    progress("wrong commit");
+    const wrongCommit = await run(attestationArgs(manifestPath, "0".repeat(40)));
+    assert.notEqual(wrongCommit.status, 0);
+    assert.match(wrongCommit.output, /--source-commit does not match the source root HEAD/);
+
+    progress("missing selector");
+    const missingSelector = await withManifest(manifestPath, manifest => {
+      assert.ok(manifest.files.some(entry => entry.path === CONSUMED_SOURCE), `manifest must include ${CONSUMED_SOURCE}`);
+      manifest.files = manifest.files.filter(entry => entry.path !== CONSUMED_SOURCE);
+      manifest.file_count -= 1;
+    }, async () => await run(attestationArgs(manifestPath)));
+    assert.notEqual(missingSelector.status, 0);
+    assert.match(missingSelector.output, /source manifest does not match required source selector; missing=.*rust\/crates\/filesystem\/src\/numeric\.rs/);
+
+    progress("source mutation");
+    const sourceMutation = await (async () => {
+      await appendFile(selectedSource, "\n// qualification mutation regression\n");
+      try {
+        return await run(attestationArgs(manifestPath));
+      } finally {
+        await writeFile(selectedSource, selectedOriginal);
+      }
+    })();
+    assert.notEqual(sourceMutation.status, 0);
+    assert.match(sourceMutation.output, new RegExp(`source manifest hash mismatch for ${selectedSourceLabel}`));
+
+    progress("fresh git state");
+    const freshGitState = await withManifest(manifestPath, manifest => {
+      manifest.source_state = manifest.source_state === "clean" ? "dirty" : "clean";
+    }, async () => await run(attestationArgs(manifestPath)));
+    assert.notEqual(freshGitState.status, 0);
+    assert.match(freshGitState.output, /source manifest state does not match Git: expected/);
+
+    progress("archive mismatch fixture");
+    const archiveMismatch = await makeFixture({ archiveJs: "archive-A" });
+    try {
+      const installedB = await readFile(join(archiveMismatch.packageRoot, "generated", "wasm", "acyclic_fs_wasm.js"));
+      await writeFile(join(archiveMismatch.packageRoot, "generated", "wasm", "acyclic_fs_wasm.js"), Buffer.concat([installedB, Buffer.from("installed-B")]));
+      progress("archive mismatch qualify");
+      const result = await run(qualifyArgs(manifestPath, archiveMismatch));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /package WASM JavaScript differs from archive entry/);
+    } finally {
+      await rm(archiveMismatch.fixture, { recursive: true, force: true });
+    }
+
+    const nativeArchiveMismatch = await makeFixture({ nativeName: "acyclic-fs-test.node", archiveNative: "native-archive-A" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, nativeArchiveMismatch));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /installed native binding differs from native archive entry/);
+    } finally {
+      await rm(nativeArchiveMismatch.fixture, { recursive: true, force: true });
+    }
+
+    progress("unknown fixture");
+    const unknown = await makeFixture({ mode: "unknown" });
+    try {
+      progress("unknown qualify");
+      const result = await run(qualifyArgs(manifestPath, unknown));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /wasm accepted null: downstream:unknown: expected a finite integer in the u32 range/);
+    } finally {
+      await rm(unknown.fixture, { recursive: true, force: true });
+    }
+
+    progress("exact N-API decoder fixture");
+    const napiType = await makeFixture({ mode: "napi-type" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, napiType));
+      assert.equal(result.status, 0, result.output);
+      assert.ok(await readFile(napiType.receipt));
+    } finally {
+      await rm(napiType.fixture, { recursive: true, force: true });
+    }
+
+    progress("work receipt field mismatch");
+    const workMismatch = await makeFixture({ mode: "work-mismatch" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, workMismatch));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /wasm work receipt fields differ from generated Rust declaration/);
+    } finally {
+      await rm(workMismatch.fixture, { recursive: true, force: true });
+    }
+
+    progress("work receipt extra field mismatch");
+    const workExtra = await makeFixture({ mode: "work-extra" });
+    try {
+      const result = await run(qualifyArgs(manifestPath, workExtra));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /wasm work receipt fields differ from generated Rust declaration/);
+    } finally {
+      await rm(workExtra.fixture, { recursive: true, force: true });
+    }
+
+    progress("artifact mutation fixture");
+    const artifactMutation = await makeFixture({ mode: "mutate-artifact" });
+    try {
+      progress("artifact mutation qualify");
+      const result = await run(qualifyArgs(manifestPath, artifactMutation));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, /qualification artifact changed during execution: wasm_binary/);
+    } finally {
+      await rm(artifactMutation.fixture, { recursive: true, force: true });
+    }
+
+    progress("source during qualification fixture");
+    const sourceDuringQualification = await makeFixture({ mode: "mutate-source" });
+    try {
+      progress("source during qualification qualify");
+      const result = await run(qualifyArgs(manifestPath, sourceDuringQualification));
+      assert.notEqual(result.status, 0);
+      assert.match(result.output, new RegExp(`source manifest hash mismatch for ${selectedSourceLabel}`));
+    } finally {
+      await writeFile(selectedSource, selectedOriginal);
+      await rm(sourceDuringQualification.fixture, { recursive: true, force: true });
+    }
+  } finally {
+    await writeFile(selectedSource, selectedOriginal);
+    await rm(temporary, { recursive: true, force: true });
+  }
+};
+
+await main();
+console.log("filesystem-admission regression tests passed");

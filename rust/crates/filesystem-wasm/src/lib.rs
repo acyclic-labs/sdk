@@ -410,22 +410,6 @@ mod bindings {
         ReparsePoint,
     }
 
-    impl BrowserFileKind {
-        fn as_str(self) -> &'static str {
-            match self {
-                Self::Regular => "regular",
-                Self::Directory => "directory",
-                Self::SymbolicLink => "symbolic-link",
-                Self::Fifo => "fifo",
-                Self::Socket => "socket",
-                Self::CharacterDevice => "character-device",
-                Self::BlockDevice => "block-device",
-                Self::ReparsePoint => "reparse-point",
-                Self::MountBoundary => "mount-boundary",
-            }
-        }
-    }
-
     #[derive(Serialize, Tsify)]
     #[serde(rename_all = "camelCase")]
     #[tsify(large_number_types_as_bigints)]
@@ -4317,14 +4301,13 @@ mod bindings {
     impl BrowserResolvedFile {
         /// Terminal file kind authenticated by the pinned generation.
         #[wasm_bindgen(getter)]
-        #[must_use]
-        pub fn kind(&self) -> String {
+        pub fn kind(&self) -> Result<Ts<BrowserFileKind>, JsValue> {
             let kind = match &self.engine {
                 BrowserResolvedFileEngine::IndexedDb(file) => file.description().kind,
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file.description().kind,
                 BrowserResolvedFileEngine::Memory(file) => file.description().kind,
             };
-            file_kind(kind).as_str().to_owned()
+            ts(file_kind(kind))
         }
 
         /// Logical content length authenticated by the pinned generation.
